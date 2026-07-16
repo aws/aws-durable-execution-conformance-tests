@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aws_durable_execution_sdk_testing import config
+from aws_durable_execution_conformance_tests import config
 
 # region Exceptions
 

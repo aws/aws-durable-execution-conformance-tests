@@ -18,7 +18,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 if TYPE_CHECKING:
-    from aws_durable_execution_sdk_testing.variables import PlaceholderContext
+    from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 # region Exceptions
 

@@ -33,7 +33,7 @@ For bugs, include:
 
 ## Repository structure
 
-- `src/aws_durable_execution_sdk_testing/`: validator and report implementation
+- `src/aws_durable_execution_conformance_tests/`: validator and report implementation
 - `test-requirements/`: language-neutral requirement suites
 - `tests/`: unit tests for the Python runner
 
@@ -50,7 +50,7 @@ hatch env create
 hatch run test:run
 hatch run test:cov
 hatch run types:check
-hatch fmt --check src/aws_durable_execution_sdk_testing
+hatch fmt --check src/aws_durable_execution_conformance_tests
 hatch build -c
 ```
 

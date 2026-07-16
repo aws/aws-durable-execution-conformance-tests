@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from aws_durable_execution_sdk_testing.report import (
+from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_FAILED,
     FAIL_ON_FAILED_UNCOVERED,
     Report,

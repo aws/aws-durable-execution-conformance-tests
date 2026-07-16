@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from aws_durable_execution_sdk_testing.report import (
+from aws_durable_execution_conformance_tests.report import (
     Report,
     ReportEntry,
     ReportStatus,
     RunMetadata,
 )
-from aws_durable_execution_sdk_testing.reporters import (
+from aws_durable_execution_conformance_tests.reporters import (
     render_console,
     render_json,
     render_junit,

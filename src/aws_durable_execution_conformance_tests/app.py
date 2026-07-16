@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Main pipeline for the durable execution SDK testing framework.
+"""Main pipeline for the durable execution conformance test framework.
 
 1. Deploy all functions in template.yaml via SAM CLI
 2. Parse TestingMetadata.TestDescription from each function to discover test IDs
@@ -21,28 +21,28 @@ from pathlib import Path
 
 import yaml
 
-from aws_durable_execution_sdk_testing.config import (
+from aws_durable_execution_conformance_tests.config import (
     BUILD_DIR,
     DEFAULT_REGION,
     OUTPUT_DIR,
     STACK_NAME_PREFIX,
     TESTS_DIR,
 )
-from aws_durable_execution_sdk_testing.history import load_yaml_file
-from aws_durable_execution_sdk_testing.report import (
+from aws_durable_execution_conformance_tests.history import load_yaml_file
+from aws_durable_execution_conformance_tests.report import (
     Report,
     ReportEntry,
     ReportStatus,
     RunMetadata,
 )
-from aws_durable_execution_sdk_testing.reporters import render_console, write_report
-from aws_durable_execution_sdk_testing.sam import (
+from aws_durable_execution_conformance_tests.reporters import render_console, write_report
+from aws_durable_execution_conformance_tests.sam import (
     BuildRequiredError,
     Deployer,
     Invoker,
     SamCliError,
 )
-from aws_durable_execution_sdk_testing.validate import (
+from aws_durable_execution_conformance_tests.validate import (
     DescriptionResult,
     discover_suites,
     discover_test_files,

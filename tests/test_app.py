@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the command-line interface."""
 
-from aws_durable_execution_sdk_testing.app import parse_args
-from aws_durable_execution_sdk_testing.config import DEFAULT_REGION
+from aws_durable_execution_conformance_tests.app import parse_args
+from aws_durable_execution_conformance_tests.config import DEFAULT_REGION
 
 
 def test_region_defaults_to_configured_region() -> None:

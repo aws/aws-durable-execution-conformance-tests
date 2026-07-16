@@ -22,30 +22,30 @@ import boto3
 import yaml
 from botocore.exceptions import BotoCoreError, ClientError
 
-from aws_durable_execution_sdk_testing.callback import (
+from aws_durable_execution_conformance_tests.callback import (
     CallbackAction,
     CallbackError,
     CallbackSender,
 )
-from aws_durable_execution_sdk_testing.cloudwatch import (
+from aws_durable_execution_conformance_tests.cloudwatch import (
     CloudWatchLogRetriever,
     CloudWatchLogValidator,
 )
-from aws_durable_execution_sdk_testing.config import (
+from aws_durable_execution_conformance_tests.config import (
     OUTPUT_DIR,
     POLL_INTERVAL_SECONDS,
     POLL_NO_PROGRESS_TIMEOUT_SECONDS,
 )
-from aws_durable_execution_sdk_testing.history import (
+from aws_durable_execution_conformance_tests.history import (
     EventHistoryMatcher,
     load_yaml_file,
 )
-from aws_durable_execution_sdk_testing.sam import (
+from aws_durable_execution_conformance_tests.sam import (
     EventFileError,
     Invoker,
     SamCliError,
 )
-from aws_durable_execution_sdk_testing.variables import PlaceholderContext
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 # region Constants
 

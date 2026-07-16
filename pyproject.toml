@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aws-durable-execution-sdk-testing"
+name = "aws-durable-execution-conformance-tests"
 dynamic = ["version"]
-description = 'AWS Durable Execution SDK Testing framework'
+description = 'AWS Durable Execution Conformance Tests'
 readme = "README.md"
 requires-python = ">=3.14"
 license = "Apache-2.0"
@@ -29,7 +29,7 @@ Repository = "https://github.com/aws/aws-durable-execution-conformance-tests"
 Issues = "https://github.com/aws/aws-durable-execution-conformance-tests/issues"
 
 [tool.hatch.build.targets.sdist]
-packages = ["src/aws_durable_execution_sdk_testing"]
+packages = ["src/aws_durable_execution_conformance_tests"]
 
 [tool.hatch.build.targets.sdist.force-include]
 "LICENSE" = "LICENSE"
@@ -37,25 +37,25 @@ packages = ["src/aws_durable_execution_sdk_testing"]
 "test-requirements" = "test-requirements"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aws_durable_execution_sdk_testing"]
+packages = ["src/aws_durable_execution_conformance_tests"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"LICENSE" = "aws_durable_execution_sdk_testing/LICENSE"
-"NOTICE" = "aws_durable_execution_sdk_testing/NOTICE"
-"test-requirements" = "aws_durable_execution_sdk_testing/test_requirements"
+"LICENSE" = "aws_durable_execution_conformance_tests/LICENSE"
+"NOTICE" = "aws_durable_execution_conformance_tests/NOTICE"
+"test-requirements" = "aws_durable_execution_conformance_tests/test_requirements"
 
 [tool.hatch.version]
-path = "src/aws_durable_execution_sdk_testing/__about__.py"
+path = "src/aws_durable_execution_conformance_tests/__about__.py"
 
 [tool.hatch.envs.default.scripts]
-validate = "python -m aws_durable_execution_sdk_testing.app {args}"
+validate = "python -m aws_durable_execution_conformance_tests.app {args}"
 
 [tool.hatch.envs.types]
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
 [tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/aws_durable_execution_sdk_testing tests}"
+check = "mypy --install-types --non-interactive {args:src/aws_durable_execution_conformance_tests tests}"
 
 [tool.hatch.envs.test]
 extra-dependencies = [
@@ -64,8 +64,8 @@ extra-dependencies = [
 ]
 [tool.hatch.envs.test.scripts]
 run = "pytest {args:tests}"
-cov = "pytest --cov=aws_durable_execution_sdk_testing --cov-report=term-missing {args:tests}"
-cov-html = "pytest --cov=aws_durable_execution_sdk_testing --cov-report=html {args:tests}"
+cov = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=term-missing {args:tests}"
+cov-html = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=html {args:tests}"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -94,16 +94,16 @@ fix = "yamlfix {args:test-requirements/}"
 fmt = ["fix", "lint"]
 
 [tool.coverage.run]
-source_pkgs = ["aws_durable_execution_sdk_testing", "tests"]
+source_pkgs = ["aws_durable_execution_conformance_tests", "tests"]
 branch = true
 parallel = true
 omit = [
-  "src/aws_durable_execution_sdk_testing/__about__.py",
+  "src/aws_durable_execution_conformance_tests/__about__.py",
 ]
 
 [tool.coverage.paths]
-aws_durable_execution_sdk_testing = ["src/aws_durable_execution_sdk_testing", "*/aws-durable-execution-sdk-testing/src/aws_durable_execution_sdk_testing"]
-tests = ["tests", "*/aws-durable-execution-sdk-testing/tests"]
+aws_durable_execution_conformance_tests = ["src/aws_durable_execution_conformance_tests", "*/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests"]
+tests = ["tests", "*/aws-durable-execution-conformance-tests/tests"]
 
 [tool.coverage.report]
 exclude_lines = [

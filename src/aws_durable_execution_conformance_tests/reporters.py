@@ -15,7 +15,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from aws_durable_execution_sdk_testing.report import Report, ReportStatus
+from aws_durable_execution_conformance_tests.report import Report, ReportStatus
 
 # Console glyphs per status.
 _GLYPH: dict[ReportStatus, str] = {

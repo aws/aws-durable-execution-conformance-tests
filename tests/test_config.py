@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for runtime configuration."""
 
-from aws_durable_execution_sdk_testing.config import TESTS_DIR
-from aws_durable_execution_sdk_testing.validate import discover_suites
+from aws_durable_execution_conformance_tests.config import TESTS_DIR
+from aws_durable_execution_conformance_tests.validate import discover_suites
 
 
 def test_requirement_suites_are_available() -> None:

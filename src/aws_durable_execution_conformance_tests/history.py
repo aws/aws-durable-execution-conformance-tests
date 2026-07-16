@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-from aws_durable_execution_sdk_testing.variables import PlaceholderContext
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 # Pattern for placeholder references like ${ID1}, ${Name1}
 PLACEHOLDER_PATTERN = re.compile(r"^\$\{(.+)\}$")

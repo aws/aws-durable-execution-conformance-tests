@@ -1,4 +1,4 @@
-# aws-durable-execution-sdk-testing
+# aws-durable-execution-conformance-tests
 
 Conformance test suite for the AWS Durable Execution SDK. Validates SDK test requirements against test cases by deploying Lambda functions, invoking them, and asserting execution history matches expected results.
 
@@ -15,7 +15,7 @@ This repository contains the test runner and language-neutral requirements.
 ## Setup
 
 ```bash
-cd aws-durable-execution-sdk-testing
+cd aws-durable-execution-conformance-tests
 hatch env create
 ```
 
@@ -176,6 +176,6 @@ This project follows the [Amazon Open Source Code of Conduct](CODE_OF_CONDUCT.md
 
 ## License
 
-`aws-durable-execution-sdk-testing` is distributed under the terms of the
+`aws-durable-execution-conformance-tests` is distributed under the terms of the
 [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) license. See
 [NOTICE](NOTICE) for additional attribution information.
