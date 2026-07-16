@@ -7,7 +7,7 @@ name = "aws-durable-execution-sdk-testing"
 dynamic = ["version"]
 description = 'AWS Durable Execution SDK Testing framework'
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 keywords = []
 authors = [{ name = "AWS durable-execution-dev", email = "durable-execution-dev@amazon.com" }]
@@ -15,12 +15,8 @@ authors = [{ name = "AWS durable-execution-dev", email = "durable-execution-dev@
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
   "boto3>=1.42.1",

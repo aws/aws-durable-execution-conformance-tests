@@ -8,7 +8,7 @@ This repository contains the test runner and language-neutral requirements.
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.14+
 - [Hatch](https://hatch.pypa.io/dev/install/) (build system and environment manager)
 - SAM CLI configured with appropriate credentials
 
