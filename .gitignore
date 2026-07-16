@@ -5,14 +5,6 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# Dotnet build artifacts
-examples/dotnet/publish/
-examples/dotnet/sdk/
-examples/dotnet/.nupkg-cache/
-examples/dotnet/**/obj/
-examples/dotnet/**/bin/
-tmp/
-
 # Python packaging / virtual environments
 __pycache__/
 *.py[cod]
