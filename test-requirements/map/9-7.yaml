@@ -1,0 +1,69 @@
+---
+# 9.7: Map min-successful early completion
+description: Map with a min-successful completion config stops early once enough items succeed
+handler: |
+  Handler invokes the map operation over four items (each returns a constant string) with a
+  completion config of min-successful=2. Max-concurrency is 1 so items run sequentially in index
+  order: after item 0 and item 1 both succeed, the min-successful threshold is reached and the
+  operation completes early without starting items 2 and 3. The handler returns a projection
+  {completionReason, successCount, totalCount}. Completion reason is MIN_SUCCESSFUL_REACHED,
+  success count is 2, and total count is 2 (only the started/completed items are counted).
+invocations: |
+  - Handler invokes map(name="min-successful", items=[i0, i1, i2, i3], mapFunc, max-concurrency=1,
+    completion config min-successful=2). The SDK checkpoints ContextStarted (SubType Map), runs
+    item 0 and item 1 sequentially (each ContextStarted / ContextSucceeded, SubType MapIteration),
+    reaches min-successful=2, and completes early without starting items 2 and 3. The SDK
+    checkpoints ContextSucceeded (SubType Map) and the invocation completes returning the
+    projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: MIN_SUCCESSFUL_REACHED
+    successCount: 2
+    totalCount: 2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

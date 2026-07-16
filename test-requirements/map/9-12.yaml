@@ -1,0 +1,72 @@
+---
+# 9.12: Map with FLAT nesting (virtual iteration contexts)
+description: Map with FLAT nesting executes items in virtual contexts, omitting per-iteration
+  ContextStarted/ContextSucceeded events
+handler: |
+  Handler invokes the map operation over two items, each running a single step that returns the
+  item value directly ("fa" then "fb"), max-concurrency 1, and nesting mode FLAT. With FLAT nesting
+  the items use virtual contexts, so no per-iteration MapIteration child contexts are checkpointed;
+  each item's step is checkpointed directly under the parent Map context. The handler returns the
+  ordered array of successful item results, in item index order.
+invocations: |
+  - Handler invokes map(name="flat", items=["fa", "fb"], mapFunc, max-concurrency=1, nesting mode
+    FLAT). The SDK checkpoints ContextStarted (SubType Map) for the parent. Because items run in
+    virtual contexts, no MapIteration context events are emitted; instead each item's step is
+    checkpointed (StepStarted/StepSucceeded) with ParentId pointing to the parent Map context. The
+    SDK checkpoints ContextSucceeded (SubType Map) and the invocation completes returning
+    ["fa", "fb"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - fa
+    - fb
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"fa"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"fb"'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

@@ -1,0 +1,50 @@
+---
+# 6.11: Wait-for-condition with custom state serdes
+description: Wait-for-condition configured with a custom serializer/deserializer for its
+  checkpointed state, exercising the serdes round-trip across suspensions
+handler: |
+  Handler runs a single wait_for_condition operation configured with a custom serdes for the
+  state. The state is a string that the custom serializer encodes when checkpointing and the
+  custom deserializer decodes when resuming. The check function appends a character to the state
+  on each invocation; the wait strategy continues until the state length reaches 2 and then stops.
+  Because the state survives suspension via the custom serdes, the final decoded state is "xx".
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check produces state "x", continue, the custom serializer encodes the state into the StepSucceeded checkpoint, invocation completes, execution suspends.
+  - Replay 1: The custom deserializer decodes the checkpointed state back to "x"; the second check produces "xx". The wait strategy stops, SDK checkpoints the terminal StepSucceeded with the encoded final state, execution succeeds returning "xx".
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: xx
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 8
+    EventTimestamp: '*'
+    ExecutionSucceededDetails: '*'

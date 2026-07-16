@@ -1,0 +1,80 @@
+---
+# 4.19: Two callbacks — create both then wait in reverse order
+description: Create callback A, create callback B, wait for B, wait for A
+async: true
+handler: |
+  Handler creates callback A using input[0] as the name, then creates callback B using input[1] as the name, then waits for B's result first, then waits for A's result, then returns both results.
+invocations: |
+  - Handler creates callback A and callback B. The SDK checkpoints CallbackStarted for A and CallbackStarted for B. The invocation completes and execution suspends.
+  - Replay 1: Received callback A success. The SDK replays state, sees callback B still pending, and the invocation completes.
+  - Replay 2: Received callback B success. The SDK replays both callbacks as completed, handler returns both results, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME_A: ${GEN_STR:10}
+  CB_NAME_B: ${GEN_STR:10}
+  CB_PAYLOAD_A: ${GEN_STR:12}
+  CB_PAYLOAD_B: ${GEN_STR:12}
+Input: ['${CB_NAME_A}', '${CB_NAME_B}']
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: ${CB_NAME_B}
+    Operation: success
+    Payload: ${CB_PAYLOAD_B}
+    Delay: 4
+  - CallbackName: ${CB_NAME_A}
+    Operation: success
+    Payload: ${CB_PAYLOAD_A}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME_A}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB2}
+    Name: ${CB_NAME_B}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 5
+    Id: ${CB1}
+    Name: ${CB_NAME_A}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD_A}"'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 7
+    Id: ${CB2}
+    Name: ${CB_NAME_B}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD_B}"'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 9
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

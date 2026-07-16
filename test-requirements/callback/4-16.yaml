@@ -1,0 +1,54 @@
+---
+# 4.16: Callback with custom serdes (numeric)
+description: Custom serdes converts callback string into a number
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a custom deserializer that parses the payload into a number.
+  The handler returns a structured output containing the deserialized count and its doubled value.
+invocations: |
+  - Handler creates a callback with a custom deserializer. The SDK checkpoints CallbackStarted. The invocation completes and execution suspends.
+  - Replay 1: Received callback success. The SDK invokes the custom deserializer which converts the payload into a number. The handler returns the numeric result, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    count: 42
+    doubled: 84
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: success
+    Payload: 42
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 4
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

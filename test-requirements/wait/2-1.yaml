@@ -1,0 +1,34 @@
+---
+# 2.1: Wait basic
+description: Wait basic
+handler: |
+  A single wait operation with a specified duration.
+invocations: |
+  - Handler invokes `context.wait(Duration.from_seconds(N))`, SDK checkpoints WaitStarted with the duration, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed, SDK checkpoints WaitSucceeded, execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

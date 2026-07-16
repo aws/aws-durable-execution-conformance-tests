@@ -1,0 +1,109 @@
+---
+# 3.18: Child context with step and wait inside, step and wait after
+description: Child context with step and wait inside, step and wait after
+handler: |
+  A child context containing a step followed by a wait, then after the child context
+  completes, a step and a wait at the top level. Validates that mixed operations work
+  correctly both inside and after a child context across multiple replay cycles.
+  The inner step returns the input string.
+  The child context returns the input string.
+  The outer step returns the input string.
+invocations: |
+  - Handler invokes a child context containing a step followed by a wait. ContextStarted, StepStarted with ParentId pointing to child context Id, StepSucceeded, WaitStarted with ParentId pointing to child context Id, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because child wait completed. Inner step is skipped, WaitSucceeded, ContextSucceeded, outer step executes and succeeds, outer WaitStarted, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because outer wait completed. Child and step are skipped, WaitSucceeded, execution succeeds.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${WAIT1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${WAIT1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 8
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 9
+    Id: ${STEP2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 10
+    Id: ${STEP2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 11
+    Id: ${WAIT2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 13
+    Id: ${WAIT2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 14
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

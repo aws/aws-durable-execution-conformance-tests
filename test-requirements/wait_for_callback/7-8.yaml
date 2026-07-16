@@ -1,0 +1,100 @@
+---
+# 7.8: Wait-for-callback inside a child context
+description: Wait-for-callback nested inside a child context — the operation's
+  ContextStarted/Succeeded carry a ParentId pointing to the enclosing child context
+async: true
+handler: |
+  Handler runs a child context named "wrapper". Inside that child context it runs a single
+  wait_for_callback operation using the input as the operation name. The submitter completes and the
+  operation suspends. The external system completes the callback with a success payload; the child
+  context returns the callback result, which the handler returns.
+invocations: |
+  - Fresh invoke: SDK checkpoints the outer ContextStarted (SubType RunInChildContext). Inside it checkpoints ContextStarted (SubType WaitForCallback) with ParentId pointing to the outer child context Id, creates the inner callback (CallbackStarted, ParentId pointing to the wait_for_callback operation Id), runs the submitter step (StepStarted/StepSucceeded, ParentId pointing to the wait_for_callback operation Id), the invocation completes and execution suspends.
+  - Replay 1: External system completed the callback. SDK checkpoints CallbackSucceeded, then ContextSucceeded for the wait_for_callback operation (ParentId pointing to the outer child context), then ContextSucceeded for the outer child context, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: wrapper
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 3
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 4
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 8
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 9
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 10
+    Id: ${CTX1}
+    Name: wrapper
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 12
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

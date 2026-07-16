@@ -1,0 +1,35 @@
+---
+# 3.15: Child context error without step (error thrown directly in child body)
+description: Child context error without step (error thrown directly in child body)
+handler: |
+  A child context where the child function throws an error directly without calling any
+  durable operation (no step/wait). The SDK checkpoints ContextStarted, then ContextFailed
+  with the error. No StepStarted/StepFailed events.
+invocations: |
+  - Handler invokes a child context where the child function throws an error directly without calling any durable operation. SDK checkpoints ContextStarted, child throws error directly (no step), SDK checkpoints ContextFailed with error details, execution fails with ChildContextError.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: RunInChildContext
+    EventId: 3
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

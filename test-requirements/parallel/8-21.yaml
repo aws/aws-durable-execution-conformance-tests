@@ -1,0 +1,129 @@
+---
+# 8.21: Nested parallel (a parallel operation inside a parallel branch)
+description: Parallel whose single branch itself runs a nested parallel of two steps, verifying
+  nested parallel contexts and result aggregation
+handler: |
+  Handler invokes an outer parallel operation with a single branch and max-concurrency 1. That
+  branch runs an inner parallel operation (also max-concurrency 1) with two branches, each a single
+  step returning a constant string ("i1" then "i2"); the inner branch returns the inner ordered
+  results ["i1", "i2"]. The outer parallel therefore produces one result — the inner list — so the
+  handler returns the outer ordered results, [["i1", "i2"]].
+invocations: |
+  - Handler invokes the outer parallel(name="outer", branches=[branchA], max-concurrency=1). The SDK
+    checkpoints ContextStarted (SubType Parallel) for the outer operation, then ContextStarted
+    (SubType ParallelBranch) for branchA. Inside branchA it runs parallel(name="inner",
+    branches=[s0, s1], max-concurrency=1): ContextStarted (SubType Parallel) for the inner operation
+    (parented to branchA), then each inner branch runs (ContextStarted / step / ContextSucceeded,
+    SubType ParallelBranch), then inner ContextSucceeded (SubType Parallel). branchA then succeeds
+    (ContextSucceeded, SubType ParallelBranch), the outer ContextSucceeded (SubType Parallel) is
+    checkpointed, and the invocation completes returning [["i1", "i2"]].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - [i1, i2]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_PO}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_BA}
+    ParentId: ${CTX_PO}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 4
+    Id: ${CTX_PI}
+    ParentId: ${CTX_BA}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_I1}
+    ParentId: ${CTX_PI}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${STEP1}
+    ParentId: ${CTX_I1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${STEP1}
+    ParentId: ${CTX_I1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"i1"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_I1}
+    ParentId: ${CTX_PI}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 9
+    Id: ${CTX_I2}
+    ParentId: ${CTX_PI}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 10
+    Id: ${STEP2}
+    ParentId: ${CTX_I2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 11
+    Id: ${STEP2}
+    ParentId: ${CTX_I2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"i2"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 12
+    Id: ${CTX_I2}
+    ParentId: ${CTX_PI}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 13
+    Id: ${CTX_PI}
+    ParentId: ${CTX_BA}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 14
+    Id: ${CTX_BA}
+    ParentId: ${CTX_PO}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 15
+    Id: ${CTX_PO}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 16
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

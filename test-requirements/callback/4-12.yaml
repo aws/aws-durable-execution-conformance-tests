@@ -1,0 +1,73 @@
+---
+# 4.12: Callback success → Wait → verify replay
+description: Callback resolves first, then a wait suspends, then handler returns —
+  verifies SDK replays callback and wait correctly across 3 invocations
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name, blocks on the result, then starts a 2-second wait, then returns the callback result.
+  This exercises 3 invocations and replay logic for both callback and wait.
+invocations: |
+  - Handler creates a callback and blocks on the callback result. The SDK checkpoints CallbackStarted. The invocation completes and execution suspends.
+  - Replay 1: Received callback success. The SDK replays CallbackSucceeded, the callback resolves, the handler starts a 2-second wait. The SDK checkpoints WaitStarted. The invocation completes and execution suspends.
+  - Replay 2: Wait completed. The SDK replays the callback and wait as done, the handler returns, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 4
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 9
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

@@ -1,0 +1,27 @@
+---
+# 8.19: Parallel with invalid max-concurrency raises a validation error
+description: Parallel invoked with max-concurrency 0 raises a validation error and the execution
+  fails
+handler: |
+  Handler invokes the parallel operation with two trivial branches but an invalid max-concurrency of
+  0. A positive max-concurrency (or none, for unlimited) is required, so the SDK raises a validation
+  error before running any branch. The error is not caught, so the execution fails.
+invocations: |
+  - Handler invokes parallel(name="bad-concurrency", branches=[b0, b1], max-concurrency=0). The SDK
+    rejects the invalid max-concurrency with a validation error before starting the parallel
+    operation; no branch contexts are created. The error propagates uncaught and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

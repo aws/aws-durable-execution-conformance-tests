@@ -1,0 +1,68 @@
+---
+# 6.6: Wait-for-condition max attempts exceeded (failure)
+description: Wait-for-condition where the condition is never met and the wait strategy
+  exhausts its maximum attempts, failing the execution
+handler: |
+  Handler runs a single wait_for_condition operation configured with a fixed-delay wait strategy
+  limited to a maximum of 3 attempts. The check function keeps incrementing an integer state and
+  the condition is never satisfied, so the wait strategy exhausts its attempt budget. On the final
+  attempt the strategy raises a max-attempts-exceeded failure, which the SDK records as a terminal
+  StepFailed and the execution fails. The handler does not catch the error.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check runs, continue, StepSucceeded checkpointed, invocation completes, execution suspends.
+  - Replay 1: Second check runs, continue, StepSucceeded checkpointed, execution suspends.
+  - Replay 2: Third (final permitted) check runs. The wait strategy has reached its maximum attempts and raises a max-attempts-exceeded error; SDK checkpoints the terminal StepFailed (SubType WaitForCondition) and the execution fails.
+Input: 0
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 8
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: WaitForCondition
+    EventId: 9
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: '*'
+  - EventType: ExecutionFailed
+    EventId: 11
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error: '*'

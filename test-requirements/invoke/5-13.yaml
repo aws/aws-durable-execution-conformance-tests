@@ -1,0 +1,50 @@
+---
+# 5.13: Invoke inside child context
+description: Invoke inside child context — invoke within run_in_child_context
+handler: |
+  A handler that runs a child context containing an invoke operation.
+  The invoke succeeds inside the child context, and the child context returns the invoke result.
+invocations: |
+  - Handler invokes `context.runInChildContext((childCtx) => { childCtx.invoke(targetFunctionName) })`, SDK checkpoints ContextStarted, then ChainedInvokeStarted with ParentId pointing to child context, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK replays ContextStarted, checkpoints ChainedInvokeSucceeded, ContextSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    EventId: 2
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ChainedInvokeStarted
+    EventId: 3
+    Id: ${ID1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 5
+    Id: ${ID1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: ContextSucceeded
+    EventId: 6
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

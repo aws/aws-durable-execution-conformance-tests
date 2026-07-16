@@ -1,0 +1,77 @@
+---
+# 3.8: Child context with step retry exhaustion (child fails)
+description: Child context with step retry exhaustion (child fails)
+handler: |
+  A child context containing a step that always fails. After retries are exhausted,
+  the child context is marked as failed.
+invocations: |
+  - Handler invokes a child context with a step that always fails (maxAttempts=2). ContextStarted, StepStarted, step fails, StepFailed with RetryDetails including NextAttemptDelaySeconds, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because retry delay elapsed. StepStarted, step fails again, StepFailed with RetryDetails (no NextAttemptDelaySeconds means retries exhausted), ContextFailed, execution fails.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 7
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: ContextFailed
+    SubType: RunInChildContext
+    EventId: 8
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

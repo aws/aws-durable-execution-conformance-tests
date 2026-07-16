@@ -1,0 +1,47 @@
+---
+# 5.8: Invoke with tenantId (tenant-isolated invocation)
+description: Invoke with tenantId — invoke a target function with tenant isolation
+  config
+handler: |
+  A handler that invokes a target function with a tenantId configuration option.
+  The tenantId is passed to the backend for tenant-isolated invocation.
+  The handler receives a structured input with tenantId and payload fields.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, event.payload, { tenantId: event.tenantId })`, SDK checkpoints ChainedInvokeStarted with tenantId and payload in the checkpoint, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Variables:
+  TENANT_ID: ${GEN_STR:8}
+  PAYLOAD: ${GEN_STR:8}
+Input:
+  tenantId: ${TENANT_ID}
+  payload: ${PAYLOAD}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      TenantId: ${TENANT_ID}
+      Input:
+        Payload: '"${PAYLOAD}"'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '"${PAYLOAD}"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

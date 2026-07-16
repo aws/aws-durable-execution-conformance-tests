@@ -1,0 +1,30 @@
+---
+# 8.11: Parallel real concurrency (max-concurrency > 1) preserves index-ordered results
+description: Parallel executing branches concurrently returns results in branch index order
+  regardless of completion order
+handler: |
+  Handler invokes the parallel operation with three branches that each return a constant string
+  directly ("r0", "r1", "r2") and a max-concurrency of 2, so up to two branches execute
+  concurrently and their completion order is not deterministic. The handler returns the ordered
+  array of successful branch results, which the SDK guarantees to be ordered by branch index (not
+  completion order). Because branch completion order is nondeterministic under concurrency, this
+  requirement only asserts the deterministic parent ContextStarted event plus the final
+  index-ordered result; the per-branch child-context events (whose EventIds depend on completion
+  order) are intentionally not asserted (the matcher ignores unlisted events).
+invocations: |
+  - Handler invokes parallel(name="concurrent", branches=[b0, b1, b2], max-concurrency=2). The SDK
+    checkpoints ContextStarted (SubType Parallel), starts branches in index order up to the
+    concurrency limit, and each branch runs in its own ParallelBranch child context. The branches
+    complete in a nondeterministic order, the SDK checkpoints ContextSucceeded (SubType Parallel),
+    and the invocation completes returning ["r0", "r1", "r2"] in branch index order.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [r0, r1, r2]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}

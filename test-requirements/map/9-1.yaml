@@ -1,0 +1,105 @@
+---
+# 9.1: Map basic (one step per item, all succeed)
+description: Map basic applies a function to each item, each item runs a single step, all succeed
+handler: |
+  Handler invokes the map operation with a fixed name "map" over a list of items. Each item runs
+  inside its own MapIteration child context and executes a single step that returns a greeting
+  string ("Hello, <item>!"). Max-concurrency is set to 1 so items are processed sequentially in
+  index order, producing a deterministic execution history. The handler returns the ordered array
+  of successful item results, in item index order.
+invocations: |
+  - Handler invokes map(name="map", items=["World", "Kiro"], mapFunc, max-concurrency=1). The SDK
+    checkpoints ContextStarted (SubType Map) for the parent operation. For item 0 it checkpoints
+    ContextStarted (SubType MapIteration) with ParentId pointing to the parent, runs the inner
+    step (StepStarted/StepSucceeded), and checkpoints ContextSucceeded for the iteration. It
+    repeats for item 1, then checkpoints ContextSucceeded (SubType Map) for the parent carrying
+    the batch summary. The invocation completes returning ["Hello, World!", "Hello, Kiro!"].
+Input:
+  - World
+  - Kiro
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - Hello, World!
+    - Hello, Kiro!
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"Hello, World!"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"Hello, World!"'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"Hello, Kiro!"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 10
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"Hello, Kiro!"'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 11
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

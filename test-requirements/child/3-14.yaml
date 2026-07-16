@@ -1,0 +1,51 @@
+---
+# 3.14: Child context with custom serdes (succeed)
+description: Child context with custom serdes (succeed)
+handler: |
+  A child context configured with a custom serdes that transforms the result to uppercase
+  on serialization. The child context succeeds and the serialized result is returned.
+  The step returns the input string.
+  The child context returns the uppercased input via custom serdes.
+invocations: |
+  - Handler invokes a child context with a custom serdes that transforms the result to uppercase, containing a step that returns the input. Child step returns the input, custom serdes serializes the child context result as uppercase.
+Input: hello child
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: HELLO CHILD
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"hello child"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: HELLO CHILD
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

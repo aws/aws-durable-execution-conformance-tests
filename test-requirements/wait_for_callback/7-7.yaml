@@ -1,0 +1,89 @@
+---
+# 7.7: Wait-for-callback submitter retry exhaustion
+description: Wait-for-callback whose submitter always throws; the configured retry
+  policy is exhausted and the operation fails before the callback is ever completed
+async: true
+handler: |
+  Handler runs a single wait_for_callback operation using the input as the operation name, with a
+  retry policy on the submitter allowing up to 2 attempts (one retry) with a 1-second delay between
+  attempts. The submitter throws on every attempt. After the retry budget is exhausted the submitter
+  step fails permanently, the operation fails, and the handler does not catch it so the execution
+  fails. The inner callback is created but is never completed by any external system.
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback), creates the inner callback (CallbackStarted, ParentId pointing to the operation Id), runs the submitter step which throws (StepStarted/StepFailed, attempt 1, ParentId pointing to the operation Id), the invocation completes and execution suspends for the retry delay.
+  - Replay 1: Submitter retried (attempt 2) and throws again (StepStarted/StepFailed). The retry budget is exhausted, SDK checkpoints ContextFailed, and execution fails.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 7
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 8
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: ContextFailed
+    SubType: WaitForCallback
+    EventId: 9
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 11
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

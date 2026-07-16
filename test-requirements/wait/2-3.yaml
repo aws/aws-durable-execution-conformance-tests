@@ -1,0 +1,59 @@
+---
+# 2.3: Multiple sequential waits
+description: Multiple sequential waits
+handler: |
+  Two sequential wait operations, each suspending and resuming the execution.
+invocations: |
+  - Handler invokes `context.wait(Duration.from_seconds(2), name="wait-1")`, SDK checkpoints WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait-1 completed, SDK checkpoints WaitSucceeded for wait-1, handler invokes `context.wait(Duration.from_seconds(2), name="wait-2")`, SDK checkpoints WaitStarted for wait-2, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because wait-2 completed, SDK checkpoints WaitSucceeded for wait-2, execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completedWaits: 2
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    Name: wait-1
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    Name: wait-1
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${ID2}
+    Name: wait-2
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${ID2}
+    Name: wait-2
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

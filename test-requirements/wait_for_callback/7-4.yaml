@@ -1,0 +1,92 @@
+---
+# 7.4: Wait-for-callback external failure (uncaught)
+description: Wait-for-callback where the external system reports failure and the handler
+  does not catch it, so the execution fails
+async: true
+handler: |
+  Handler runs a single wait_for_callback operation using the input as the operation name.
+  The submitter completes and the operation suspends. The external system completes the callback
+  with a failure (ErrorType="RejectedError", ErrorMessage="not approved"). The handler does not
+  catch the error, so the operation fails and the execution fails.
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback), creates the inner callback (CallbackStarted, ParentId pointing to the operation Id), runs the submitter step (StepStarted/StepSucceeded, ParentId pointing to the operation Id), the invocation completes and execution suspends.
+  - Replay 1: External system completed the callback with a failure. SDK checkpoints CallbackFailed carrying the error, raises it to the handler which does not catch it, checkpoints ContextFailed, and execution fails.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: failure
+    Payload:
+      ErrorType: RejectedError
+      ErrorMessage: not approved
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackFailed
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackFailedDetails:
+      Error:
+        Payload:
+          ErrorType: RejectedError
+          ErrorMessage: not approved
+  - EventType: ContextFailed
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

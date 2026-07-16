@@ -1,0 +1,36 @@
+---
+# 6.2: Wait-for-condition immediate stop (condition already met on first check)
+description: Wait-for-condition immediate — the condition is already satisfied on the
+  first check, so polling stops without any suspension
+handler: |
+  Handler runs a single wait_for_condition operation with an initial state of 5. The check function
+  returns the state unchanged. The wait strategy stops polling on the first attempt because the
+  condition (state >= 5) is already satisfied, so the operation completes synchronously without
+  suspending. Returns the final state (5).
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), runs the first check (state stays 5), the wait strategy stops immediately, SDK checkpoints the terminal StepSucceeded with the final state, the invocation completes, and execution succeeds returning 5. No suspend/resume cycle occurs.
+Input: 5
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 5
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '5'
+  - EventType: ExecutionSucceeded
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '5'

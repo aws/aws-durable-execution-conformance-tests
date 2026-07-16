@@ -1,0 +1,71 @@
+---
+# 8.15: Parallel with a custom per-branch serde (itemSerdes) round-trips results
+description: Parallel with a custom itemSerdes that wraps each branch result on serialize and
+  unwraps on deserialize, verifying the serde is honored and round-trips
+handler: |
+  Handler invokes the parallel operation with two branches and max-concurrency 1, passing a custom
+  per-branch serde (itemSerdes). Each branch returns a string directly ("x" for branch 0, "y" for
+  branch 1). The custom serde is symmetric: it serializes a value v as the envelope
+  {"wrapped": v} and deserializes that envelope back to v. Each branch result is therefore
+  checkpointed in the wrapped form but read back as the original value. The handler returns the
+  ordered array of successful branch results, ["x", "y"].
+invocations: |
+  - Handler invokes parallel(name="serde", branches=[branch0, branch1], max-concurrency=1, with a
+    custom per-branch serde that wraps/unwraps values). The SDK checkpoints ContextStarted (SubType
+    Parallel), runs each branch sequentially (ContextStarted / ContextSucceeded, SubType
+    ParallelBranch) storing the custom-serialized (wrapped) payload, then checkpoints
+    ContextSucceeded (SubType Parallel). The invocation completes returning ["x", "y"] (values
+    unwrapped by the serde).
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [x, y]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: ${/wrapped/}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: ${/wrapped/}
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

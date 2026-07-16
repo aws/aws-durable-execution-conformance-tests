@@ -1,0 +1,55 @@
+---
+# 4.3: Create callback general timeout (no external callback sent)
+description: Create callback with a short general timeout; no external callback is
+  sent so it times out
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a 5-second general timeout and blocks on the callback result.
+  No external system responds, so the callback times out and the execution fails with a CallbackError.
+invocations: |
+  - Handler creates a callback with a 5-second timeout. The SDK checkpoints
+    CallbackStarted with Timeout=5. The invocation completes and execution suspends.
+  - Replay 1: Callback timed out. The SDK raises CallbackTimeoutError, and
+    execution fails with CallbackError.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+# No CallbackActions: validator does not send any callback, allowing the timeout to fire.
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      Timeout: 5
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackTimedOut
+    SubType: Callback
+    EventId: 4
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackTimedOutDetails:
+      Error:
+        Payload:
+          ErrorType: Callback.Timeout
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

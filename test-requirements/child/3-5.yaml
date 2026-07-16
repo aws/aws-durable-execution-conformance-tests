@@ -1,0 +1,62 @@
+---
+# 3.5: Child context error caught (try/catch, execution succeeds)
+description: Child context error caught (try/catch, execution succeeds)
+handler: |
+  A child context where the inner step fails, but the error is caught by a try/catch
+  in the parent handler. Execution continues and succeeds.
+  The recovery step returns the input string.
+invocations: |
+  - Handler invokes a child context with a failing step inside, wrapped in try/catch. Child step fails (ContextStarted, StepStarted, StepFailed, ContextFailed), error is caught, handler continues with a subsequent recovery step that succeeds, execution completes with SUCCEEDED.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+  - EventType: ContextFailed
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${STEP2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${STEP2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

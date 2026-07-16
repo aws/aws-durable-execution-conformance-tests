@@ -1,0 +1,77 @@
+---
+# 8.6: Parallel fail-fast via tolerated-failure-count=0 stops after first failure
+description: Parallel configured with a fail-fast completion config (tolerated-failure-count=0)
+  stops on the first branch failure and does not start remaining branches
+handler: |
+  Handler invokes the parallel operation with three branches and a fail-fast completion config
+  (tolerated-failure-count=0). Max-concurrency is 1 so branches run sequentially: branch 0
+  returns "ok" and succeeds, branch 1 raises an error and fails, at which point fail-fast stops
+  the operation and branch 2 is never started. The parallel operation itself does not raise; it
+  returns a batch result. The handler returns a projection object built from the batch result:
+  {completionReason, status, successCount, failureCount, totalCount}. Because a failure occurred,
+  status is FAILED and completion reason is FAILURE_TOLERANCE_EXCEEDED.
+invocations: |
+  - Handler invokes parallel(name="failfast", branches=[b0, b1, b2], max-concurrency=1,
+    completion config tolerated-failure-count=0). The SDK checkpoints ContextStarted (SubType
+    Parallel). Branch 0 runs and succeeds (ContextStarted /
+    ContextSucceeded, SubType ParallelBranch). Branch 1 runs and fails (ContextStarted /
+    ContextFailed, SubType ParallelBranch). Fail-fast stops the operation without starting branch
+    2. The SDK checkpoints ContextSucceeded (SubType Parallel) for the parent carrying the batch
+    summary, and the invocation completes returning the projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: FAILURE_TOLERANCE_EXCEEDED
+    status: FAILED
+    successCount: 1
+    failureCount: 1
+    totalCount: 2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"ok"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

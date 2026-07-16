@@ -1,0 +1,56 @@
+---
+# 5.10: Invoke replay re-throws (failed invoke error re-thrown from cache)
+description: Invoke replay re-throws — failed invoke followed by wait; on replay,
+  error is re-thrown from cache
+handler: |
+  A handler that wraps invoke in try/catch, catches the error, then calls wait.
+  On the second replay (after wait completes), the failed invoke error is re-thrown
+  from cache and caught again without re-invoking.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName)` in try/catch, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function failed, SDK checkpoints ChainedInvokeFailed, handler catches error, calls `context.wait(1)`, WaitStarted, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because wait completed, SDK replays invoke (re-throws cached error), handler catches again, WaitSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeFailed
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeFailedDetails:
+      Error: '*'
+  - EventType: WaitStarted
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

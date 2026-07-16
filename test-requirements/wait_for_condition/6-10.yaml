@@ -1,0 +1,31 @@
+---
+# 6.10: Wait-for-condition null result
+description: Wait-for-condition that stops polling on the first check and returns a null
+  final state
+handler: |
+  Handler runs a single wait_for_condition operation whose check function returns null. The wait
+  strategy stops polling on the first attempt, so the operation completes synchronously with a
+  null final state and the execution succeeds returning null.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), the first check returns null, the wait strategy stops, SDK checkpoints the terminal StepSucceeded with the null state, the invocation completes, and the execution succeeds returning null.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: null
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionSucceededDetails: '*'

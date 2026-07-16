@@ -1,0 +1,33 @@
+---
+# 8.5: Parallel with an empty branches list
+description: Parallel invoked with an empty branches list completes immediately with no branches
+handler: |
+  Handler invokes the parallel operation with an empty branches list. No branch child contexts
+  are created; the batch completes immediately with completion reason ALL_COMPLETED, total count
+  0, and an empty results list. The handler returns the ordered array of successful branch
+  results, which is empty.
+invocations: |
+  - Handler invokes parallel(name="empty", branches=[]). The SDK checkpoints ContextStarted
+    (SubType Parallel) for the parent, immediately checkpoints ContextSucceeded (SubType Parallel)
+    with an empty batch summary (no branch contexts), and the invocation completes returning [].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: []
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 3
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

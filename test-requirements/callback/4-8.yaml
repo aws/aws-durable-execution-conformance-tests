@@ -1,0 +1,65 @@
+---
+# 4.8: Callback + Step + Wait for callback result (timeout)
+description: createCallback (5s timeout) then a step then await callback result —
+  no callback sent so it times out
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a 5-second timeout, then runs a step, then blocks on the callback result.
+  No external callback is sent. The handler does not catch the error, so execution fails with CallbackError after the timeout fires.
+invocations: |
+  - Handler creates a callback with a 5-second timeout, then runs a step. The SDK checkpoints CallbackStarted (Timeout=5) and StepStarted/StepSucceeded. The invocation completes and execution suspends.
+  - Replay 1: Callback timed out. The SDK replays the callback and step, observes CallbackTimedOut, raises CallbackTimeoutError to the handler, and execution fails with CallbackError.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+# No CallbackActions — let it time out
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      Timeout: 5
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackTimedOut
+    SubType: Callback
+    EventId: 6
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackTimedOutDetails:
+      Error:
+        Payload:
+          ErrorType: Callback.Timeout
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 8
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

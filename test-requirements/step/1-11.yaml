@@ -1,0 +1,52 @@
+---
+# 1.11: Step with retry (fails then succeeds)
+description: Step with retry (fails then succeeds)
+handler: |
+  A step that fails on the first attempt and succeeds on the second, with a retry strategy configured.
+invocations: |
+  - Handler invokes `context.step(unreliable_func, config={ retryStrategy: ... })`, step throws an error, SDK checkpoints StepFailed with RetryDetails (CurrentAttempt=1, NextAttemptDelaySeconds=1), invocation completes, execution suspends.
+  - Replay 1: Re-invoked because retry delay elapsed, SDK replays past checkpoints, re-executes the step, step succeeds, SDK checkpoints StepSucceeded with RetryDetails (CurrentAttempt=2), execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Operation succeeded
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

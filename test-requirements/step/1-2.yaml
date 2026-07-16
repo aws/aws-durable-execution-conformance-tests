@@ -1,0 +1,30 @@
+---
+# 1.2: Step with name
+description: Step with name
+handler: |
+  A single step with an explicit `name` parameter provided.
+invocations: |
+  - Handler invokes `context.step(func, name="custom_step_name")`, step succeeds on first attempt, returns the greeting result.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: custom_step_name
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: custom_step_name
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

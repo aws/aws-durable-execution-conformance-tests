@@ -1,0 +1,70 @@
+---
+# 3.9: Child context replay (returns cached result)
+description: Child context replay (returns cached result)
+handler: |
+  A handler with a child context followed by a wait. On replay after the wait completes,
+  the child context returns its cached result without re-executing.
+  The step returns the input string.
+  The child context returns the step result.
+invocations: |
+  - Handler invokes a child context with a step inside, followed by a wait. ContextStarted, step executes and succeeds, ContextSucceeded, WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed. SDK skips the completed child context and returns its cached result. WaitSucceeded, execution succeeds.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 6
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

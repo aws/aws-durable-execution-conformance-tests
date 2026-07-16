@@ -1,0 +1,74 @@
+---
+# 6.4: Wait-for-condition custom initial state (state threaded across polls)
+description: Wait-for-condition with a non-zero initial state — the configured initial
+  state seeds the first check and each returned state feeds the next
+handler: |
+  Handler runs a single wait_for_condition operation configured with an initial state of 5. The
+  check function increments the state by 1 on each invocation; the returned state is threaded into
+  the next check. The wait strategy continues while the state is below the input threshold (8) and
+  stops once it reaches it, returning the final state (8).
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check seeds with the initial state 5 (5 -> 6), continue, StepSucceeded checkpointed with state 6, invocation completes, execution suspends.
+  - Replay 1: Second check resumes from the checkpointed state 6 (6 -> 7), continue, StepSucceeded checkpointed with state 7, execution suspends.
+  - Replay 2: Third check resumes from state 7 (7 -> 8). State reaches the threshold, the wait strategy stops, SDK checkpoints the terminal StepSucceeded with state 8, execution succeeds returning 8.
+Input: 8
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 8
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '6'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '7'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 8
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 9
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '8'
+  - EventType: ExecutionSucceeded
+    EventId: 11
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '8'

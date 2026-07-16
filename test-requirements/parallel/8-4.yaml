@@ -1,0 +1,85 @@
+---
+# 8.4: Parallel with heterogeneous branch return types
+description: Parallel whose branches return different types (string, number, object)
+handler: |
+  Handler invokes the parallel operation with three branches that return values of different
+  types directly: branch 0 returns the string "hello", branch 1 returns the number 42, and
+  branch 2 returns the object {k: "v"}. Max-concurrency is 1 for deterministic ordering. The
+  handler returns the ordered array of successful branch results, in branch index order. This
+  verifies each branch's result is serialized and deserialized with its own type preserved.
+invocations: |
+  - Handler invokes parallel(name="hetero", branches=[b0, b1, b2], max-concurrency=1). The SDK
+    checkpoints ContextStarted (SubType Parallel), then for each branch in index order checkpoints
+    ContextStarted/ContextSucceeded (SubType ParallelBranch) carrying the branch's serialized
+    return value, then checkpoints ContextSucceeded (SubType Parallel). The invocation completes
+    returning ["hello", 42, {k: "v"}].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - hello
+    - 42
+    - k: v
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"hello"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '42'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 9
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

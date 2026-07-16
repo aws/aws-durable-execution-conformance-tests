@@ -1,0 +1,35 @@
+---
+# 9.4: Map with an empty items list
+description: Map invoked with an empty items list completes immediately with no iterations
+handler: |
+  Handler invokes the map operation with an empty items list. No MapIteration child contexts are
+  created; the batch completes immediately with completion reason ALL_COMPLETED, total count 0,
+  and an empty results list. The handler returns the ordered array of successful item results,
+  which is empty.
+invocations: |
+  - Handler invokes map(name="empty", items=[], mapFunc). The SDK checkpoints ContextStarted
+    (SubType Map) for the parent, immediately checkpoints ContextSucceeded (SubType Map) with an
+    empty batch summary (no iteration contexts), and the invocation completes returning [].
+    (An SDK that skips checkpointing the parent Map context entirely for an empty collection is a
+    divergence to surface during validation rather than mask here.)
+Input: []
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: []
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 3
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

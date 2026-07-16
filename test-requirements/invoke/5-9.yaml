@@ -1,0 +1,55 @@
+---
+# 5.9: Invoke replay skips (invoke result cached on replay)
+description: Invoke replay skips — invoke followed by a wait; on replay, invoke result
+  is cached
+handler: |
+  A handler that invokes a target function, then calls wait. On the second replay
+  (after wait completes), the invoke result is returned from cache without re-invoking.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, handler calls `context.wait(1)`, WaitStarted, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because wait completed, SDK replays invoke (returns cached result without re-invoking), WaitSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: WaitStarted
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

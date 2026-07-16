@@ -1,0 +1,35 @@
+---
+# 6.8: Wait-for-condition check throws, caught by handler (recovers)
+description: Wait-for-condition whose check raises on the first attempt, but the handler
+  catches the failure and returns a fallback value, so the execution succeeds
+handler: |
+  Handler wraps a single wait_for_condition operation in a try/catch. The check function raises an
+  exception on its first invocation; the SDK records a terminal StepFailed (SubType WaitForCondition)
+  and re-raises. The handler catches the error and returns the fallback string "recovered", so the
+  execution succeeds.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), the first check raises, SDK checkpoints the terminal StepFailed (SubType WaitForCondition), and the error propagates to the handler. The handler catches it and returns "recovered"; the invocation completes and the execution succeeds.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: recovered
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '"recovered"'

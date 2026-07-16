@@ -1,0 +1,87 @@
+---
+# 7.11: Wait-for-callback with structured (JSON) result deserialization
+description: Wait-for-callback whose result is deserialized from a JSON object rather
+  than the default raw string, exercising the deserialization path
+handler: |
+  Handler runs a single wait_for_callback operation using the input as the operation name and
+  configures it to deserialize the callback payload as a JSON object (instead of the default raw
+  string). The submitter completes and the operation suspends. The external system completes the
+  callback with the JSON object {"status": "approved"}. The handler deserializes it and returns the
+  value of the "status" field ("approved").
+async: true
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback), creates the inner callback (CallbackStarted, ParentId pointing to the operation Id), runs the submitter step (StepStarted/StepSucceeded, ParentId pointing to the operation Id), the invocation completes and execution suspends.
+  - Replay 1: External system completed the callback with a JSON object payload. SDK checkpoints CallbackSucceeded carrying the JSON payload, then ContextSucceeded; the handler deserializes the payload and returns the "status" field, and execution succeeds returning "approved".
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: approved
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload:
+      status: approved
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '{"status": "approved"}'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '"approved"'

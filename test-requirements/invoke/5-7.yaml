@@ -1,0 +1,39 @@
+---
+# 5.7: Invoke large payload (payload near size limit)
+description: Invoke large payload — payload near the size limit
+handler: |
+  A handler that invokes a target function with a large payload (near the Lambda payload size limit).
+  The target function receives the large payload, processes it, and returns a result.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, largePayload)`, SDK serializes and checkpoints ChainedInvokeStarted with large payload, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

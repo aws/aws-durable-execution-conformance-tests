@@ -1,0 +1,84 @@
+---
+# 7.1: Wait-for-callback basic (success via external callback)
+description: Wait-for-callback basic — submitter registers the callback id and the
+  external system completes it with a success payload
+async: true
+handler: |
+  Handler runs a single wait_for_callback operation, using the input as the operation name.
+  The submitter function receives the generated callback id and completes without doing anything
+  durable. The operation then suspends until an external system completes the callback with a
+  success payload, and that payload becomes the operation result which the handler returns.
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback) for the operation, creates the inner callback (CallbackStarted with ParentId pointing to the operation Id), runs the submitter as a step (StepStarted/StepSucceeded with ParentId pointing to the operation Id), the invocation completes and execution suspends waiting for the callback.
+  - Replay 1: External system completed the callback with a success payload. SDK checkpoints CallbackSucceeded carrying the payload, then ContextSucceeded for the operation, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

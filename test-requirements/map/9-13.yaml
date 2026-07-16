@@ -1,0 +1,78 @@
+---
+# 9.13: Map with a custom item namer
+description: Map with a custom item namer assigns per-iteration names while producing correct
+  index-ordered results
+handler: |
+  Handler invokes the map operation over the items [1, 2] with a custom item namer that derives a
+  name for each iteration from the item and its index (for example "item-1", "item-2"). The map
+  function returns item * 10 directly for each item. Max-concurrency is 1 for a deterministic
+  execution history. The custom name affects observability (the iteration operation name) but not
+  replay determinism or results, so the history is asserted with wildcard iteration ids. The
+  handler returns the ordered array of successful item results, in item index order.
+  Note: the item namer is a JS/Python MapConfig option; the Java MapConfig has no item-namer field,
+  so this requirement is expected to be uncovered for the Java SDK rather than satisfied by a
+  hand-rolled substitute.
+invocations: |
+  - Handler invokes map(name="named-items", items=[1, 2], mapFunc, max-concurrency=1, itemNamer set)
+    where the item namer names each iteration from its item/index. The SDK checkpoints
+    ContextStarted (SubType Map). For item 0 it checkpoints ContextStarted / ContextSucceeded
+    (SubType MapIteration) carrying result 10, then for item 1 ContextStarted / ContextSucceeded
+    carrying result 20. The SDK checkpoints ContextSucceeded (SubType Map) and the invocation
+    completes returning [10, 20].
+Input:
+  - 1
+  - 2
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - 10
+    - 20
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '10'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '20'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

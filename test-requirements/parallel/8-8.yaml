@@ -1,0 +1,71 @@
+---
+# 8.8: Parallel min-successful early completion
+description: Parallel with a min-successful completion config stops early once enough branches
+  succeed
+handler: |
+  Handler invokes the parallel operation with four branches (each returns a constant string) and
+  a completion config of min-successful=2. Max-concurrency is 1 so branches run sequentially in
+  index order: after branch 0 and branch 1 both succeed, the min-successful threshold is reached
+  and the operation completes early without starting branches 2 and 3. The handler returns a
+  projection {completionReason, successCount, totalCount}. Completion reason is
+  MIN_SUCCESSFUL_REACHED, success count is 2, and total count is 2 (only the started/completed
+  branches are counted).
+invocations: |
+  - Handler invokes parallel(name="min-successful", branches=[b0, b1, b2, b3], max-concurrency=1,
+    completion config min-successful=2). The SDK checkpoints ContextStarted (SubType Parallel),
+    runs branch 0 and branch 1 sequentially (each ContextStarted / ContextSucceeded, SubType
+    ParallelBranch), reaches min-successful=2, and completes early without starting branches 2 and
+    3. The SDK checkpoints ContextSucceeded (SubType Parallel) and the invocation completes
+    returning the projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: MIN_SUCCESSFUL_REACHED
+    successCount: 2
+    totalCount: 2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

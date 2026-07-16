@@ -1,0 +1,28 @@
+---
+# 1.1: Step basic (succeeds on first attempt)
+description: Step basic (succeeds on first attempt)
+handler: |
+  A single step that takes input and returns a greeting string.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt, returns the greeting result.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

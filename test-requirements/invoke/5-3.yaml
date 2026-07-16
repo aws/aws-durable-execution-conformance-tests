@@ -1,0 +1,44 @@
+---
+# 5.3: Invoke returning complex object (nested JSON)
+description: Invoke returning complex object — echo target returns the nested JSON
+  input as-is
+handler: |
+  A handler that invokes an echo target function with a complex nested JSON input.
+  The target function returns the input unchanged. The handler returns the invoke result.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, complexInput)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded with the echoed complex object, execution succeeds.
+AsyncInvoke: true
+Input:
+  nested:
+    key: value
+    items: [1, 2, 3]
+  source: test
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

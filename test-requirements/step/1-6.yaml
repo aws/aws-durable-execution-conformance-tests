@@ -1,0 +1,28 @@
+---
+# 1.6: Custom serdes (per-step)
+description: Custom serdes (per-step)
+handler: |
+  A step configured with a custom serdes that transforms all string values to uppercase on serialization.
+invocations: |
+  - Handler invokes `context.step(return_input, serdes=uppercase_serdes)`, step returns the input string, custom serdes serializes the result as uppercase.
+Input: hello world
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: HELLO WORLD
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

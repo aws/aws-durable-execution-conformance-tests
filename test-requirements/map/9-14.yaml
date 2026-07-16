@@ -1,0 +1,77 @@
+---
+# 9.14: Map with a custom per-item serdes
+description: Map configured with a custom per-item serializer round-trips each iteration result
+  through that serializer and returns the correct ordered results
+handler: |
+  Handler invokes the map operation over two string items with a custom per-item serializer
+  (item_serdes / itemSerdes) wired into the map config. Each iteration returns the uppercased item
+  directly; the SDK serializes and deserializes each iteration result through the custom serializer
+  as it is checkpointed and replayed. The serializer is a real, non-identity implementation (it
+  round-trips the value), not a no-op substitute. Max-concurrency is 1 for a deterministic history.
+  The handler returns the ordered results list, verifying the values survive the custom serde
+  round-trip.
+  Note: per-item serdes is a JS/Python MapConfig option (item_serdes/itemSerdes); the Java MapConfig
+  exposes a single serDes for the map result, so an item-level equivalent may be uncovered for Java.
+invocations: |
+  - Handler invokes map(name="serdes", items=["x", "y"], mapFunc, item serdes set, max-concurrency=1).
+    The SDK checkpoints ContextStarted (SubType Map). For each item it checkpoints ContextStarted /
+    ContextSucceeded (SubType MapIteration) carrying the custom-serialized result — the checkpointed
+    iteration payload is the serializer's output ("wrapped:X", "wrapped:Y"), which is asserted
+    directly to prove the item passed through the custom serializer — then checkpoints
+    ContextSucceeded (SubType Map). The invocation completes returning ["X", "Y"] after the custom
+    serde round-trip.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - X
+    - 'Y'
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: 'wrapped:X'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: 'wrapped:Y'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
