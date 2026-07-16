@@ -30,8 +30,16 @@ def _report() -> Report:
     return Report(
         run=run,
         entries=[
-            ReportEntry(id="8-1", suite="parallel", status=ReportStatus.PASSED, function="ParallelBasic", description="Parallel basic (all succeed)"),
-            ReportEntry(id="8-2", suite="parallel", status=ReportStatus.FAILED, function="ParallelFail", errors=["boom"]),
+            ReportEntry(
+                id="8-1",
+                suite="parallel",
+                status=ReportStatus.PASSED,
+                function="ParallelBasic",
+                description="Parallel basic (all succeed)",
+            ),
+            ReportEntry(
+                id="8-2", suite="parallel", status=ReportStatus.FAILED, function="ParallelFail", errors=["boom"]
+            ),
             ReportEntry(id="8-13", suite="parallel", status=ReportStatus.NOT_IMPLEMENTED, reason="pct rejected"),
             ReportEntry(id="8-9", suite="parallel", status=ReportStatus.UNCOVERED),
         ],
@@ -41,7 +49,10 @@ def _report() -> Report:
 def test_console_includes_all_sections() -> None:
     text = render_console(_report())
     assert "1 passed, 1 failed" in text
-    assert "8-1" in text and "8-2" in text and "8-13" in text and "8-9" in text
+    assert "8-1" in text
+    assert "8-2" in text
+    assert "8-13" in text
+    assert "8-9" in text
     assert "boom" in text  # failed errors shown
     assert "pct rejected" in text  # not-implemented reason shown
     assert "Parallel basic (all succeed)" in text  # description shown
@@ -72,10 +83,12 @@ def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:
     assert root.attrib["skipped"] == "2"  # not_implemented + uncovered
 
     by_name = {tc.attrib["name"]: tc for tc in root.findall("testcase")}
-    assert by_name["8-1"].find("failure") is None and by_name["8-1"].find("skipped") is None
+    assert by_name["8-1"].find("failure") is None
+    assert by_name["8-1"].find("skipped") is None
     assert by_name["8-2"].find("failure") is not None
     ni_skip = by_name["8-13"].find("skipped")
-    assert ni_skip is not None and "NOT_IMPLEMENTED" in ni_skip.attrib["message"]
+    assert ni_skip is not None
+    assert "NOT_IMPLEMENTED" in ni_skip.attrib["message"]
     assert by_name["8-9"].find("skipped") is not None
 
 
@@ -98,7 +111,8 @@ def test_junit_properties_and_system_out() -> None:
     assert props["description"] == "Parallel basic (all succeed)"
     assert props["example"] == "ParallelBasic"
     system_out = tc.find("system-out")
-    assert system_out is not None and system_out.text == "Parallel basic (all succeed)"
+    assert system_out is not None
+    assert system_out.text == "Parallel basic (all succeed)"
 
     # 8-13 (NOT_IMPLEMENTED) has no function -> no 'example' property, no system-out.
     ni = by_name["8-13"]

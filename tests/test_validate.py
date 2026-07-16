@@ -9,12 +9,15 @@ pure-function tests for ``validate`` belong here too.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aws_durable_execution_sdk_testing.validate import (
     discover_suites,
     parse_not_implemented,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- discover_suites --------------------------------------------------------
 
