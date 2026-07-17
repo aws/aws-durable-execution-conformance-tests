@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://aws.amazon.com/security/vulnerability-reporting/
+    about: Do NOT open a public issue for security vulnerabilities. Report them privately to AWS Security.
+  - name: Durable Execution SDK for Python
+    url: https://github.com/aws/aws-durable-execution-sdk-python/issues
+    about: Report bugs or behavior specific to the Python SDK here (not the conformance runner).
+  - name: Durable Execution SDK for JavaScript/TypeScript
+    url: https://github.com/aws/aws-durable-execution-sdk-js/issues
+    about: Report bugs or behavior specific to the JS/TS SDK here.
+  - name: Durable Execution SDK for Java
+    url: https://github.com/aws/aws-durable-execution-sdk-java/issues
+    about: Report bugs or behavior specific to the Java SDK here.

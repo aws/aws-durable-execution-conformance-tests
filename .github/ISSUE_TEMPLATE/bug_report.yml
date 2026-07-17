@@ -1,0 +1,67 @@
+name: Runner bug report
+description: Report a bug in the conformance test runner (crash, incorrect validation, false pass/fail).
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a runner bug. If the problem is behavior specific to a
+        durable-execution **SDK** (not the runner itself), please file it in that SDK's
+        repository instead — see the links on the issue chooser.
+  - type: input
+    id: runner-version
+    attributes:
+      label: Runner version
+      description: Output of `pip show aws-durable-execution-conformance-tests`, or the git commit SHA.
+      placeholder: "0.0.1"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.14.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: sdk-language
+    attributes:
+      label: Target SDK language
+      description: The SDK language you were validating, if applicable.
+      options:
+        - Not applicable
+        - Python
+        - JavaScript/TypeScript
+        - Java
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact CLI command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error output, stack traces, or the JSON/JUnit report if relevant.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+    validations:
+      required: false

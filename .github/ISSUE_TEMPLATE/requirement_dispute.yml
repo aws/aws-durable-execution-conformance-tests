@@ -1,0 +1,40 @@
+name: Requirement correctness dispute
+description: Report that an existing requirement YAML is wrong (asserts incorrect behavior / an SDK is actually compliant).
+title: "[Requirement dispute]: "
+labels: ["requirement", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when you believe a requirement's expected result or execution history is
+        incorrect — i.e. the **requirement YAML is wrong**, not the runner code and not the SDK.
+        (If the runner mis-validated a correct requirement, file a Runner bug report instead.)
+  - type: input
+    id: requirement-id
+    attributes:
+      label: Requirement ID
+      description: e.g. 1-6, 9-4, 8-17
+      placeholder: "9-4"
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: What the requirement currently asserts
+    validations:
+      required: true
+  - type: textarea
+    id: correct
+    attributes:
+      label: What it should assert (and why)
+      description: Cite the SDK behavior or spec that makes the current assertion incorrect.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: SDK source references, execution history, or run output supporting the correction.
+      render: shell
+    validations:
+      required: false
