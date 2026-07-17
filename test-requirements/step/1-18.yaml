@@ -1,0 +1,74 @@
+---
+description: Step with AtMostOncePerRetry semantics (with retry, succeeds on second
+  attempt)
+handler: |
+  A step configured with AtMostOncePerRetry semantics and a retry strategy.
+  The step crashes on the first attempt, then succeeds on the second retry attempt.
+  The step prints the input string to raw stdout each time it executes.
+invocations: |
+  - SDK checkpoints StepStarted, step begins execution, prints input to stdout, Lambda crashes.
+  - Replay 1: Re-invoked because Lambda crashed (Runtime.ExitError), SDK sees StepStarted with no completion, raises StepInterruptedError, retry configured, SDK checkpoints StepFailed with retry scheduled, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because retry delay elapsed, step re-executes (new retry attempt), prints input to stdout, step succeeds, SDK checkpoints StepSucceeded, execution succeeds.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: succeeded on second attempt
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: Runtime.ExitError
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"succeeded on second attempt"'
+        Truncated: false
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Step executes twice: once before crash, once on retry
+  - pattern: ${INPUT_1}
+    count: 2

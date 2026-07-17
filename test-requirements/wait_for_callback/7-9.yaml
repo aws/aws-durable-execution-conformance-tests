@@ -1,0 +1,139 @@
+---
+# 7.9: Multiple sequential wait-for-callback operations
+description: Two sequential wait_for_callback operations in one handler — each is a
+  distinct operation with its own Id, completed by the external system in order
+async: true
+handler: |
+  Handler runs two wait_for_callback operations back to back. The first is named "first"; its
+  submitter completes, the operation suspends, and the external system completes it with a success
+  payload. The handler then runs the second operation named "second"; its submitter completes, the
+  operation suspends, and the external system completes it with a second success payload. The
+  handler returns the second operation's result.
+invocations: |
+  - Fresh invoke: first wait_for_callback checkpoints ContextStarted (SubType WaitForCallback, Id ${ID1}), creates the inner callback (CallbackStarted, ParentId ${ID1}), runs the submitter step (StepStarted/StepSucceeded, ParentId ${ID1}), the invocation completes and execution suspends.
+  - Replay 1: External system completed the first callback. SDK checkpoints CallbackSucceeded and ContextSucceeded for ${ID1}. The handler then starts the second wait_for_callback in the same invocation: ContextStarted (Id ${ID2}), CallbackStarted (ParentId ${ID2}), submitter StepStarted/StepSucceeded (ParentId ${ID2}), the invocation completes and execution suspends.
+  - Replay 2: External system completed the second callback. SDK checkpoints CallbackSucceeded and ContextSucceeded for ${ID2}, and execution succeeds returning the second result.
+AsyncInvoke: true
+Variables:
+  CB_PAYLOAD1: ${GEN_STR:12}
+  CB_PAYLOAD2: ${GEN_STR:12}
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD1}
+    Delay: 1
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD2}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: first
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD1}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: first
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 9
+    Id: ${ID2}
+    Name: second
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 10
+    Id: ${CB2}
+    ParentId: ${ID2}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 11
+    Id: ${STEP2}
+    ParentId: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 12
+    Id: ${STEP2}
+    ParentId: ${ID2}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 13
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 14
+    Id: ${CB2}
+    ParentId: ${ID2}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD2}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 15
+    Id: ${ID2}
+    Name: second
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 16
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 17
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

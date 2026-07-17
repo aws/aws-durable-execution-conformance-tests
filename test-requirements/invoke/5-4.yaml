@@ -1,0 +1,37 @@
+---
+# 5.4: Invoke returning null (target echoes null input)
+description: Invoke returning null — echo target receives null and returns null
+handler: |
+  A handler that invokes an echo target function with null as the payload.
+  The target function returns null. The handler returns the null result.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, null)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded with null result, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

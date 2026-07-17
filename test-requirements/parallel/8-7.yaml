@@ -1,0 +1,59 @@
+---
+# 8.7: Parallel throw-if-error propagates a branch failure to the execution
+description: Parallel where the handler asks the batch result to rethrow, propagating a branch
+  failure so the execution fails
+handler: |
+  Handler invokes the parallel operation with two branches and a fail-fast completion config
+  (tolerated-failure-count=0). Max-concurrency is 1: branch 0 raises an error and fails, so
+  fail-fast stops the operation and branch 1 is never started. The parallel operation returns a
+  batch result; the handler then asks the batch result to rethrow, which rethrows the first branch
+  failure. The error is not caught, so the execution fails.
+invocations: |
+  - Handler invokes parallel(name="throwing", branches=[b0, b1], max-concurrency=1,
+    completion config tolerated-failure-count=0). The SDK checkpoints ContextStarted (SubType
+    Parallel). Branch 0 runs and fails (ContextStarted /
+    ContextFailed, SubType ParallelBranch). Fail-fast stops the operation without starting branch
+    1. The SDK checkpoints ContextSucceeded (SubType Parallel) for the parent. The handler asks
+    the batch result to rethrow, the error propagates uncaught, and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 5
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 7
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

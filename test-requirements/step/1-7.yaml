@@ -1,0 +1,43 @@
+---
+# 1.7: Step with context logger
+description: Step with context logger
+optional: true
+handler: |
+  A step that uses `step_context.logger` to emit log entries during execution.
+  Validates that the SDK's step context logger correctly writes to CloudWatch.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, function calls `step_context.logger.info("Greeting step started for: <input>")`, then `step_context.logger.info("Greeting step completed with: Hello, <input>!")`, returns the greeting result.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Logger.info called once at step start
+  - pattern: 'Greeting step started for: ${INPUT_1}'
+    count: 1
+  # Logger.info called once at step completion
+  - pattern: 'Greeting step completed with: Hello, ${INPUT_1}!'
+    count: 1
+  # No errors expected
+  - pattern: \[ERROR\]
+    match: regex
+    count: 0

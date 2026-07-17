@@ -1,0 +1,22 @@
+---
+# 2.5: Wait with long duration (1 hour)
+description: Wait with long duration (1 hour)
+async: true
+handler: |
+  A wait operation with a 1-hour duration, verifying correct conversion from hours to seconds.
+invocations: |
+  - Handler invokes `context.wait(Duration.from_hours(1))`, SDK converts to 3600 seconds and checkpoints WaitStarted with Duration=3600, invocation completes, execution suspends.
+AsyncInvoke: true
+Input:
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 3600
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

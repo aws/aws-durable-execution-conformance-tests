@@ -1,0 +1,71 @@
+---
+# 3.13: Child context with wait inside - verify replay
+description: Child context with wait inside - verify replay
+handler: |
+  A child context containing only a wait operation, followed by a step outside the child.
+  The child context returns the input string.
+  The outer step returns the input string.
+invocations: |
+  - Handler invokes a child context containing only a wait operation, followed by a step outside the child. ContextStarted, WaitStarted with ParentId pointing to child context Id, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed. WaitSucceeded, ContextSucceeded, outer step executes and succeeds, execution succeeds.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 3
+    Id: ${WAIT1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 5
+    Id: ${WAIT1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 6
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 7
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 8
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

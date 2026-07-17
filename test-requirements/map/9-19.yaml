@@ -1,0 +1,77 @@
+---
+# 9.19: Map with an operation-level (whole-result) serdes — serialize on a fresh operation
+description: Map configured with a custom operation-level serializer serializes the entire map
+  result through that serializer; the Map context result payload is the serializer's output
+handler: |
+  Handler invokes the map operation over two string items ["x", "y"] with a custom OPERATION-LEVEL
+  serializer (serdes / serDes) wired into the map config — this serializes the whole map result
+  (the batch/MapResult), not individual items. Each iteration returns the uppercased item using the
+  default per-item serializer, so the map result is ["X", "Y"]. The operation-level serializer is a
+  real, non-identity implementation that emits the deterministic string "OPSERDE:" followed by the
+  comma-joined results ("OPSERDE:X,Y"), and deserializes by reversing that encoding. Max-concurrency
+  is 1 for a deterministic history. The Map ContextSucceeded result payload is asserted directly to
+  prove the operation-level serializer ran on the fresh operation; per-iteration payloads use the
+  default serializer and are not asserted here. The handler returns the ordered results ["X", "Y"].
+  Note: JS and Python expose a distinct whole-result serdes (separate from the per-item serdes); the
+  Java MapConfig has a single serDes applied to BOTH items and the result, so a whole-result-only
+  operation-level serde cannot be expressed and is uncovered for Java.
+invocations: |
+  - Handler invokes map(name="op-serde", items=["x", "y"], mapFunc, operation-level serdes set,
+    max-concurrency=1). The SDK checkpoints ContextStarted (SubType Map), runs both iterations
+    (ContextStarted / ContextSucceeded, SubType MapIteration, default per-item payloads), then
+    serializes the whole map result with the custom operation-level serializer and checkpoints
+    ContextSucceeded (SubType Map) whose result payload is "OPSERDE:X,Y". The invocation completes
+    returning ["X", "Y"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - X
+    - 'Y'
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: 'OPSERDE:X,Y'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

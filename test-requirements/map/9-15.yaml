@@ -1,0 +1,127 @@
+---
+# 9.15: Map suspends inside an iteration and replay skips the completed iteration
+description: A wait inside one map iteration suspends the whole execution mid-map; on replay the
+  already-succeeded iteration is skipped and the suspended iteration resumes to completion
+handler: |
+  Handler invokes the map operation over two items with max-concurrency=1 so iterations run
+  sequentially. Iteration 0 runs a single step returning "r0" and succeeds. Iteration 1 issues a
+  durable wait (1 second) and then runs a step returning "r1". When iteration 1 hits the wait the
+  whole execution suspends. On replay (after the wait elapses) the SDK skips the already-succeeded
+  iteration 0, resumes iteration 1 after the wait, runs its step, completes the map, and the
+  execution succeeds. The handler returns the ordered results list.
+invocations: |
+  - Handler invokes map(name="suspend", items=["r0", "r1"], mapFunc, max-concurrency=1). The SDK
+    checkpoints ContextStarted (SubType Map). Iteration 0 runs its step (StepStarted/StepSucceeded)
+    and ContextSucceeded (SubType MapIteration). Iteration 1 starts (ContextStarted MapIteration)
+    and issues a wait (WaitStarted). The invocation completes and the execution suspends.
+  - Replay 1: Re-invoked once the wait elapses. The SDK skips the completed iteration 0, checkpoints
+    WaitSucceeded for iteration 1, runs iteration 1's step (StepStarted/StepSucceeded), checkpoints
+    ContextSucceeded (SubType MapIteration) and then ContextSucceeded (SubType Map). The invocation
+    completes returning ["r0", "r1"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - r0
+    - r1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"r0"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"r0"'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${WAIT1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 11
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 12
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"r1"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 13
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"r1"'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 14
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 15
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

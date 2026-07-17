@@ -1,0 +1,91 @@
+---
+# 9.3: Map function receives item and index
+description: Map function receives both the item and its zero-based index and uses both to compute
+  the result
+handler: |
+  Handler invokes the map operation over the items [10, 20, 30]. The map function receives each
+  item together with its zero-based index and returns item + index (10+0=10, 20+1=21, 30+2=32),
+  returning the value directly without an inner step. Max-concurrency is set to 1 for a
+  deterministic execution history. The handler returns the ordered array of successful item
+  results, in item index order.
+invocations: |
+  - Handler invokes map(name="indexed", items=[10, 20, 30], mapFunc, max-concurrency=1) where the
+    map function computes item + index. The SDK checkpoints ContextStarted (SubType Map), then for
+    each item in order checkpoints ContextStarted / ContextSucceeded (SubType MapIteration)
+    carrying results 10, 21, and 32 respectively. The SDK checkpoints ContextSucceeded (SubType
+    Map) and the invocation completes returning [10, 21, 32].
+Input:
+  - 10
+  - 20
+  - 30
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - 10
+    - 21
+    - 32
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '10'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '21'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER2}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 8
+    Id: ${ITER2}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '32'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 9
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

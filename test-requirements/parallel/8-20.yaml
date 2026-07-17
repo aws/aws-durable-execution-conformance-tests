@@ -1,0 +1,86 @@
+---
+# 8.20: Parallel BatchResult accessors (succeeded/failed/getErrors/hasFailure)
+description: Parallel with a mix of successes and a failure, exercising the batch-result accessors
+  succeeded(), failed(), getErrors(), and hasFailure
+handler: |
+  Handler invokes the parallel operation with three branches, max-concurrency 1, and a completion
+  config of tolerated-failure-count=1 so all branches run. Branch 0 succeeds, branch 1 fails, branch
+  2 succeeds. From the batch result the handler builds a projection using the accessor methods:
+  hasFailure (the has-failure flag), successCount (the length of the succeeded list), failureCount
+  (the length of the failed list), and errorCount (the length of the errors list). The projection is
+  {hasFailure: true, successCount: 2, failureCount: 1, errorCount: 1}.
+invocations: |
+  - Handler invokes parallel(name="accessors", branches=[b0, b1, b2], max-concurrency=1, completion
+    config tolerated-failure-count=1). The SDK checkpoints ContextStarted (SubType Parallel), then
+    branch 0 succeeds (ContextStarted / ContextSucceeded), branch 1 fails (ContextStarted /
+    ContextFailed), branch 2 succeeds (ContextStarted / ContextSucceeded), all SubType ParallelBranch.
+    The SDK checkpoints ContextSucceeded (SubType Parallel) and the invocation completes returning the
+    accessor-derived projection.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    hasFailure: true
+    successCount: 2
+    failureCount: 1
+    errorCount: 1
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 9
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

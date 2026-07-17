@@ -1,0 +1,57 @@
+---
+# 4.5: Create callback with heartbeat then success
+description: Heartbeat keeps callback alive past initial heartbeat interval, then
+  a success terminal callback is sent
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a 10-second heartbeat timeout and blocks on the callback result.
+  The external system sends a heartbeat to reset the timer, then later sends a success callback.
+invocations: |
+  - Handler creates a callback with a 10-second heartbeat timeout. The SDK checkpoints CallbackStarted with HeartbeatTimeout=10. The invocation completes and execution suspends.
+  - Replay 1: Received callback success (after heartbeat reset the timer). The SDK checkpoints CallbackSucceeded with the payload as Result, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: heartbeat
+  - CallbackName: ${CB_NAME}
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      HeartbeatTimeout: 10
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 4
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

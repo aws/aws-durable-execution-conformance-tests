@@ -1,0 +1,44 @@
+---
+# 1.20: Error caught and handled (try/catch)
+description: Error caught and handled (try/catch)
+handler: |
+  A step that throws an error inside a try/catch block. The error is caught by user code and execution continues.
+invocations: |
+  - Handler wraps `context.step(failing_func, config=noRetry)` in try/catch, step fails, SDK checkpoints StepFailed, throws StepError, user code catches the error and continues with a fallback value, then a second step executes successfully.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: fallback_result
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

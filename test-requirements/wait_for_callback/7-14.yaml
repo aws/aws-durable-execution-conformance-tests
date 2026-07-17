@@ -1,0 +1,85 @@
+---
+# 7.14: Wait-for-callback timeout caught (recovers)
+description: Wait-for-callback that times out on its base timeout; the handler catches
+  the timeout error and returns a fixed recovery message so the execution succeeds
+async: true
+handler: |
+  Handler runs a single wait_for_callback operation using the input as the operation name, configured
+  with a 3-second timeout, wrapped in error handling. The submitter completes and the operation
+  suspends. No external system completes the callback, so it times out. The handler catches the raised
+  timeout error and returns the fixed string "timed-out-handled", so the execution succeeds.
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback), creates the inner callback (CallbackStarted with Timeout=3, ParentId pointing to the operation Id), runs the submitter step (StepStarted/StepSucceeded, ParentId pointing to the operation Id), the invocation completes and execution suspends.
+  - Replay 1: The timeout elapses with no external completion. SDK checkpoints CallbackTimedOut and ContextFailed, raises the timeout error which the handler catches; the handler returns "timed-out-handled" and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: timed-out-handled
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      Timeout: 3
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackTimedOut
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackTimedOutDetails:
+      Error:
+        Payload:
+          ErrorType: Callback.Timeout
+  - EventType: ContextFailed
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '"timed-out-handled"'

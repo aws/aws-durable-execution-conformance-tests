@@ -1,0 +1,52 @@
+---
+description: Step with AtMostOncePerRetry semantics (interrupted, no retry)
+handler: |
+  A step configured with AtMostOncePerRetry semantics and no retry strategy.
+  The step causes a Lambda runtime crash (process.exit).
+  The step prints the input string to raw stdout before crashing.
+  Log validation uses the raw standard output of the SDK (not the context logger).
+invocations: |
+  - SDK checkpoints StepStarted, step begins execution, prints input to stdout, Lambda crashes.
+  - Replay 1: Re-invoked because Lambda crashed (Runtime.ExitError), SDK sees StepStarted with no completion, raises StepInterruptedError, no retry configured, SDK checkpoints StepFailed (permanent), execution fails.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: at_most_once_flaky_step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: Runtime.ExitError
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${ID1}
+    Name: at_most_once_flaky_step
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+      RetryDetails:
+        CurrentAttempt: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Step executes once (before crash), never re-executes on replay
+  - pattern: ${INPUT_1}
+    count: 1

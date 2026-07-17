@@ -1,0 +1,85 @@
+---
+# 7.5: Wait-for-callback timeout (no external completion)
+description: Wait-for-callback that times out because the external system never completes
+  the callback within the configured timeout
+async: true
+handler: |
+  Handler runs a single wait_for_callback operation configured with a short timeout of 3 seconds,
+  using the input as the operation name. The submitter completes and the operation suspends. No
+  external system ever completes the callback, so after the timeout elapses the callback times out,
+  the operation fails, and the handler does not catch it so the execution fails.
+invocations: |
+  - Fresh invoke: SDK checkpoints ContextStarted (SubType WaitForCallback), creates the inner callback (CallbackStarted, ParentId pointing to the operation Id), runs the submitter step (StepStarted/StepSucceeded, ParentId pointing to the operation Id), the invocation completes and execution suspends.
+  - Replay 1: The callback timeout elapses with no external completion. SDK checkpoints CallbackTimedOut, raises the timeout error to the handler which does not catch it, checkpoints ContextFailed, and execution fails.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 3
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      Timeout: 3
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackTimedOut
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackTimedOutDetails:
+      Error:
+        Payload:
+          ErrorType: Callback.Timeout
+  - EventType: ContextFailed
+    SubType: WaitForCallback
+    EventId: 8
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

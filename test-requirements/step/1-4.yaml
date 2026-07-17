@@ -1,0 +1,34 @@
+---
+# 1.4: Returning complex object
+description: Returning complex object
+handler: |
+  A step that returns a nested object with arrays and mixed types.
+invocations: |
+  - Handler invokes `context.step(build_response(event))`, step returns a nested object (e.g., {user: {name, tags: [...]}, count: N}), SDK serializes and deserializes the result correctly.
+Input:
+  name: Alice
+  tags: [admin, active]
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    user:
+      name: Alice
+      tags: [admin, active]
+    count: 2
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

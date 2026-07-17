@@ -1,0 +1,47 @@
+---
+# 5.2: Invoke with name (explicit name parameter)
+description: Invoke with name — invoke echo target with name set from input, assert
+  name in history
+handler: |
+  A handler that invokes an echo target function with a name parameter derived from the input.
+  The name appears in the ChainedInvokeStarted/Succeeded events.
+invocations: |
+  - Handler invokes `context.invoke(event.name, targetFunctionName, event.payload)`, SDK checkpoints ChainedInvokeStarted with Name matching the input name, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Variables:
+  INPUT_1: ${GEN_STR:8}
+  NAME_1: ${GEN_STR:6}
+Input:
+  name: ${NAME_1}
+  payload: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    Name: ${NAME_1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '"${INPUT_1}"'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    Name: ${NAME_1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

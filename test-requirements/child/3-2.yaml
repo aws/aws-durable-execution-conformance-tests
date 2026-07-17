@@ -1,0 +1,55 @@
+---
+# 3.2: Child context with name
+description: Child context with name
+handler: |
+  A named child context that uses the first input string as its name, containing a
+  single step that succeeds. The step returns the second input string.
+  The child context returns the step result.
+invocations: |
+  - Handler invokes a named child context using the first input as the name, with a step inside. SDK checkpoints ContextStarted with Name set to the first input, step executes and succeeds with ParentId pointing to child context Id, SDK checkpoints ContextSucceeded with Name set to the first input.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+  INPUT_2: ${GEN_STR:8}
+Input:
+  name: ${INPUT_1}
+  value: ${INPUT_2}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_2}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${INPUT_1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_2}"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    Name: ${INPUT_1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_2}"'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

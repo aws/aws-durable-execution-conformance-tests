@@ -1,0 +1,33 @@
+---
+# 6.7: Wait-for-condition check function throws (uncaught failure)
+description: Wait-for-condition where the check function raises an exception on the first
+  attempt — the operation fails and the error propagates, failing the execution
+handler: |
+  Handler runs a single wait_for_condition operation whose check function raises an exception on
+  its first invocation. wait_for_condition has no internal retry for check-function errors, so the
+  SDK records a terminal StepFailed (SubType WaitForCondition) and re-raises. The handler does not
+  catch the error, so the execution fails.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), the first check raises an exception, SDK checkpoints the terminal StepFailed (SubType WaitForCondition) carrying the error, the error propagates uncaught, and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: '*'
+  - EventType: ExecutionFailed
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error: '*'

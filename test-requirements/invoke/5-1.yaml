@@ -1,0 +1,42 @@
+---
+# 5.1: Invoke basic (target function succeeds)
+description: Invoke basic — invoke an echo target function with input, returns same
+  result
+handler: |
+  A handler that invokes an echo target function, passing the event input.
+  The target function returns whatever it receives. The handler returns the invoke result.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, event)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends waiting for target function.
+  - Replay 1: Re-invoked because target function completed successfully, SDK checkpoints ChainedInvokeSucceeded with the echoed result, execution succeeds.
+AsyncInvoke: true
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '"${INPUT_1}"'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

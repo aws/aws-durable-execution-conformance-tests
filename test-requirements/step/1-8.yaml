@@ -1,0 +1,47 @@
+---
+# 1.8: Step and wait with replay
+description: Step and wait with replay
+handler: |
+  A step followed by a wait, testing that replay correctly skips the already-completed step.
+invocations: |
+  - Handler invokes `context.step(func)`, step executes and succeeds, then wait is started, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed, SDK skips the completed step, wait checkpoint succeeds, execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: computed
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 4
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 6
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

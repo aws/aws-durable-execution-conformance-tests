@@ -1,0 +1,60 @@
+---
+# 3.17: Child context with print only (verify no re-execution on replay)
+description: Child context with print only (verify no re-execution on replay)
+handler: |
+  A child context that only prints to raw stdout (no durable operation inside),
+  followed by a wait that causes a replay. Verifies the print is only executed once
+  and not re-executed during replay.
+  The child context returns the input string.
+invocations: |
+  - Handler invokes a child context that only prints to raw stdout and returns the input (no durable operation inside), followed by a wait. SDK checkpoints ContextStarted, child prints input to stdout and returns, SDK checkpoints ContextSucceeded, WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed. SDK skips the completed child context and returns its cached result without re-executing the print. WaitSucceeded, execution succeeds.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 3
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 4
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 6
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Child executes once (first invocation), not re-executed on replay
+  - pattern: ${INPUT_1}
+    count: 1

@@ -1,0 +1,81 @@
+---
+# 1.13: Default retry strategy
+description: Default retry strategy
+handler: |
+  A step that fails on the first two attempts and succeeds on the third, using the SDK's default retry strategy (no explicit config).
+  Default: 6 max attempts, 5s initial delay, 60s max delay, 2x backoff rate, FULL jitter.
+invocations: |
+  - Handler invokes `context.step(unreliable_func)` with no retry config, step fails, SDK checkpoints StepFailed with RetryDetails (5s initial delay with FULL jitter), invocation completes, execution suspends.
+  - Replay 1: Re-invoked because retry delay elapsed, SDK replays, re-executes step, step fails again, SDK checkpoints StepFailed with RetryDetails (10s delay with FULL jitter, 2x backoff), invocation completes, execution suspends.
+  - Replay 2: Re-invoked because retry delay elapsed, SDK replays, re-executes step, step succeeds, SDK checkpoints StepSucceeded with RetryDetails (CurrentAttempt=3), execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+DefaultRetryParameters:
+  MaxAttempts: 6
+  InitialDelay: 5s
+  MaxDelay: 60s
+  BackoffRate: 2
+  Jitter: FULL
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: ${/^[0-5]$/}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload: {}
+      RetryDetails:
+        CurrentAttempt: 2
+        NextAttemptDelaySeconds: ${/^([0-9]|10)$/}
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+      RetryDetails:
+        CurrentAttempt: 3
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

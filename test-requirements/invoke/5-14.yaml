@@ -1,0 +1,57 @@
+---
+# 5.14: Multiple sequential invokes
+description: Multiple sequential invokes — two invokes in sequence, each suspends/resumes
+handler: |
+  A handler that invokes two target functions sequentially. The first invoke completes,
+  then the second invoke is started. Both succeed.
+invocations: |
+  - Handler invokes `context.invoke(targetFunction1)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because first target completed, SDK replays ChainedInvokeSucceeded, handler invokes `context.invoke(targetFunction2)`, SDK checkpoints second ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 2: Re-invoked because second target completed, SDK replays both invokes, checkpoints second ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: ChainedInvokeStarted
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

@@ -1,0 +1,117 @@
+---
+# 8.14: Parallel replay skips succeeded branches across a wait suspension
+description: Parallel where one branch suspends on a wait; on resume the already-succeeded branch
+  is skipped and the batch result is reconstructed
+async: true
+handler: |
+  Handler invokes the parallel operation with two branches and max-concurrency 1 (sequential,
+  deterministic). Branch 0 runs a single step that returns "b0" and succeeds. Branch 1 starts a
+  2-second wait and then returns "b1". On the first invocation branch 0 completes and branch 1
+  suspends on its wait, so the invocation completes and execution suspends. On replay the wait
+  completes, branch 1 returns, and the already-succeeded branch 0 is skipped (its result is
+  reconstructed from the checkpoint, not re-executed). The handler returns the ordered array of
+  successful branch results, ["b0", "b1"].
+invocations: |
+  - Handler invokes parallel(name="replay", branches=[branch0, branch1], max-concurrency=1). The
+    SDK checkpoints ContextStarted (SubType Parallel), runs branch 0 (ContextStarted / step /
+    ContextSucceeded, SubType ParallelBranch), then starts branch 1 (ContextStarted, SubType
+    ParallelBranch) which checkpoints WaitStarted and suspends. The invocation completes and
+    execution suspends.
+  - Replay 1: the wait completes. The SDK skips the already-succeeded branch 0, replays branch 1's
+    WaitSucceeded, checkpoints branch 1 ContextSucceeded, then the parent ContextSucceeded (SubType
+    Parallel), and the execution succeeds returning ["b0", "b1"].
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [b0, b1]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"b0"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"b0"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${WAIT1}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 11
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"b1"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 12
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 13
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 14
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

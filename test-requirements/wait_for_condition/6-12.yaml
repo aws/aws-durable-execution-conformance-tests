@@ -1,0 +1,69 @@
+---
+# 6.12: Wait-for-condition followed by a step (result passed onward)
+description: Wait-for-condition whose final state feeds a subsequent step, verifying the
+  resolved value flows into later operations and that the completed poll is not re-run
+  after the resume
+handler: |
+  Handler first runs a wait_for_condition operation that increments an integer state from 0 and
+  stops once it reaches the input threshold (2), yielding a final state of 2. The handler then
+  passes that result into a step that multiplies it by 10. The execution succeeds returning 20.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check (0 -> 1), continue, StepSucceeded checkpointed with state 1, invocation completes, execution suspends.
+  - Replay 1: Second check (1 -> 2). The wait strategy stops, SDK checkpoints the terminal StepSucceeded (SubType WaitForCondition) with state 2. The handler then runs the step synchronously in the same invocation: SDK checkpoints StepStarted (SubType Step) and StepSucceeded (SubType Step) with result 20, and the execution succeeds returning 20.
+Input: 2
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 20
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '2'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 8
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '20'
+  - EventType: ExecutionSucceeded
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '20'

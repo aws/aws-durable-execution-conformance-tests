@@ -1,0 +1,42 @@
+---
+# 5.15: Invoke with custom payload serdes
+description: Invoke with custom payload serdes — custom serializer for the outgoing
+  payload
+handler: |
+  A handler that invokes a target function with a custom payload serializer configured.
+  The custom serdes transforms the payload before sending (e.g., uppercases a string).
+  The target function receives the transformed payload and succeeds.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, payload, { payloadSerdes: customSerdes })`, SDK serializes payload with custom serdes, checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+  data: hello
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

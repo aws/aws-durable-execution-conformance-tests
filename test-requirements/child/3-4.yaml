@@ -1,0 +1,52 @@
+---
+# 3.4: Child context error (step fails, execution fails)
+description: Child context error (step fails, execution fails)
+handler: |
+  A child context where the inner step throws an error with no retry. The error propagates
+  as a ChildContextError and the execution fails.
+invocations: |
+  - Handler invokes a child context with a step that throws an error (no retry configured). SDK checkpoints ContextStarted, step starts and fails with ParentId pointing to child context Id, SDK checkpoints ContextFailed with error details, execution fails with ChildContextError.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: ContextFailed
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

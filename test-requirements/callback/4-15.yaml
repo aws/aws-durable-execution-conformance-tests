@@ -1,0 +1,61 @@
+---
+# 4.15: Callback with custom serdes (happy path)
+description: Custom serdes deserializes a JSON callback payload into a typed object
+  with a Date field
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a custom deserializer that parses the raw JSON string into a typed object and converts the
+  timestamp string into a second timestamp. The handler returns the deserialized result as a structured output.
+invocations: |
+  - Handler creates a callback with a custom deserializer. The SDK checkpoints CallbackStarted. The invocation completes and execution suspends.
+  - Replay 1: Received callback success. The SDK invokes the custom deserializer which converts the payload into a typed object. The handler returns the deserialized result, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD_ID: ${GEN_STR:8}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    received:
+      id: ${CB_PAYLOAD_ID}
+      message: hello
+      timestamp: 1767225600
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: success
+    Payload:
+      id: ${CB_PAYLOAD_ID}
+      message: hello
+      timestamp: '2026-01-01T00:00:00.000Z'
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 4
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

@@ -1,0 +1,91 @@
+---
+# 9.17: Suspension after a successful map (replay skips the completed map)
+description: A durable wait placed after a fully successful map suspends the execution; on replay
+  the completed map is skipped and the execution resumes to success
+handler: |
+  Handler invokes the map operation over two items that each return the uppercased item directly;
+  all iterations succeed. After the map completes, the handler issues a durable wait (1 second),
+  which suspends the whole execution. On replay (after the wait elapses) the SDK skips the
+  already-completed map and its iterations, checkpoints the wait success, and the execution
+  succeeds. Max-concurrency is 1 for a deterministic history. The handler returns the ordered
+  results list.
+invocations: |
+  - Handler invokes map(name="then-wait", items=["a", "b"], mapFunc, max-concurrency=1); both
+    iterations succeed (ContextStarted / ContextSucceeded, SubType MapIteration) and the SDK
+    checkpoints ContextSucceeded (SubType Map). The handler then starts a wait (WaitStarted), the
+    invocation completes, and the execution suspends.
+  - Replay 1: Re-invoked once the wait elapses. The SDK skips the completed map, checkpoints
+    WaitSucceeded, and the invocation completes returning ["A", "B"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - A
+    - B
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"A"'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"B"'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

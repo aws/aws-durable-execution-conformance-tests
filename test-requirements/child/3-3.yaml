@@ -1,0 +1,70 @@
+---
+# 3.3: Child context with multiple sequential steps
+description: Child context with multiple sequential steps
+handler: |
+  A child context containing two sequential steps where the second receives the first
+  step's result as input.
+  The first step returns the input string.
+  The second step receives the first step's result and returns it unchanged.
+  The child context returns the second step result.
+invocations: |
+  - Handler invokes a child context with two sequential steps inside where the second depends on the first. SDK checkpoints ContextStarted, first step executes and succeeds with ParentId pointing to child context Id, second step executes and succeeds with ParentId pointing to child context Id, SDK checkpoints ContextSucceeded with the final result.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP2}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP2}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 7
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

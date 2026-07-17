@@ -1,0 +1,88 @@
+---
+# 3.6: Nested child contexts
+description: Nested child contexts
+handler: |
+  A child context that contains another child context inside it, each with a step.
+  The outer step returns the input string.
+  The inner step returns the input string.
+  The inner child context returns the inner step result.
+  The outer child context returns the inner child context result.
+invocations: |
+  - Handler invokes an outer child context containing a step and a nested inner child context with its own step. Outer ContextStarted, outer step executes and succeeds with ParentId pointing to outer context Id, inner ContextStarted with ParentId pointing to outer context Id, inner step executes and succeeds with ParentId pointing to inner context Id, inner ContextSucceeded with ParentId pointing to outer context Id, outer ContextSucceeded.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX_OUTER}
+    Name: ${NAME_OUTER}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX_OUTER}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX_OUTER}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX_INNER}
+    Name: ${NAME_INNER}
+    ParentId: ${CTX_OUTER}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${STEP2}
+    ParentId: ${CTX_INNER}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${STEP2}
+    ParentId: ${CTX_INNER}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 8
+    Id: ${CTX_INNER}
+    Name: ${NAME_INNER}
+    ParentId: ${CTX_OUTER}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 9
+    Id: ${CTX_OUTER}
+    Name: ${NAME_OUTER}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"${INPUT_1}"'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

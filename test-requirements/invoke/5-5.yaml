@@ -1,0 +1,37 @@
+---
+# 5.5: Invoke target fails (execution fails with InvokeError)
+description: Invoke target fails — invoked function throws an error, caller gets ChainedInvokeFailed
+handler: |
+  A handler that invokes a target function which throws an error.
+  The SDK propagates the error as an InvokeError and the execution fails.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function failed, SDK checkpoints ChainedInvokeFailed, handler throws InvokeError, execution fails.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeFailed
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeFailedDetails:
+      Error: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

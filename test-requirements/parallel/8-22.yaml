@@ -1,0 +1,101 @@
+---
+# 8.22: Parallel tolerated-failure-percentage at the boundary (not exceeded, ALL_COMPLETED)
+description: Parallel where the failure percentage exactly equals the tolerated-failure-percentage
+  and therefore does not stop the operation
+handler: |
+  Handler invokes the parallel operation with four branches, max-concurrency 1, and a completion
+  config of tolerated-failure-percentage=25. Branch 0 fails (1 of 4 = 25%), branches 1, 2 and 3
+  succeed. Because 25% does not exceed the tolerated 25% (the check is strictly greater-than), the
+  operation is not stopped and all four branches run. The completion reason is ALL_COMPLETED and the
+  status is FAILED (a failure occurred). The handler returns a projection {completionReason, status,
+  successCount, failureCount, totalCount}.
+invocations: |
+  - Handler invokes parallel(name="pct-boundary", branches=[b0, b1, b2, b3], max-concurrency=1,
+    completion config tolerated-failure-percentage=25). The SDK checkpoints ContextStarted (SubType
+    Parallel), then branch 0 fails (ContextStarted / ContextFailed) and branches 1, 2, 3 succeed
+    (ContextStarted / ContextSucceeded), all SubType ParallelBranch. The failure percentage equals
+    but does not exceed the tolerance, so all branches run. The SDK checkpoints ContextSucceeded
+    (SubType Parallel) and the invocation completes returning the projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: ALL_COMPLETED
+    status: FAILED
+    successCount: 3
+    failureCount: 1
+    totalCount: 4
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 9
+    Id: ${CTX_B4}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 10
+    Id: ${CTX_B4}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 11
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

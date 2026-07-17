@@ -1,0 +1,99 @@
+---
+# 9.16: Map with a large aggregate result (exceeds the checkpoint size threshold)
+description: Map whose combined item results exceed the large-result threshold checkpoints the Map
+  context with a stripped payload (replay-children) and still completes successfully
+handler: |
+  Handler invokes the map operation over four items, each returning a large (~70KB) string so the
+  aggregate map result exceeds the SDK's large-result checkpoint threshold (256KB). When the result
+  is too large to checkpoint inline, the SDK checkpoints the Map ContextSucceeded with a stripped
+  payload and marks it replay-children (so the full result is reconstructed by re-executing the
+  iterations on a later replay). Max-concurrency is 1 for a deterministic iteration order. The
+  handler returns a small projection {successCount, totalCount} derived from the map result so the
+  expected result stays compact; the per-iteration and Map result payloads are large and are
+  matched with wildcards.
+invocations: |
+  - Handler invokes map(name="large", items=[4 large-string producers], mapFunc, max-concurrency=1).
+    The SDK checkpoints ContextStarted (SubType Map), then for each item ContextStarted /
+    ContextSucceeded (SubType MapIteration) carrying the large per-item result. Because the
+    aggregate result exceeds the checkpoint size threshold, the SDK checkpoints ContextSucceeded
+    (SubType Map) with a stripped payload and replay-children set. The invocation completes
+    returning {successCount: 4, totalCount: 4}.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    successCount: 4
+    totalCount: 4
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER2}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 8
+    Id: ${ITER2}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 9
+    Id: ${ITER3}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 10
+    Id: ${ITER3}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 11
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

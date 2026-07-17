@@ -1,0 +1,31 @@
+---
+# 1.19: Step with error (fails permanently)
+description: Step with error (fails permanently)
+handler: |
+  A single step that always raises an exception, configured with no retries.
+invocations: |
+  - Handler invokes `context.step(failing_func, config=StepConfig(retry_strategy=RetryPresets.none()))`, step throws an error, no retry is attempted (max_attempts=1), step is checkpointed as failed.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

@@ -1,0 +1,31 @@
+---
+# 1.16: Retry specific exception (non-retryable fails)
+description: Retry specific exception (non-retryable fails)
+handler: |
+  A step that throws a custom TransientError. The retry strategy does not retry TransientError.
+invocations: |
+  - Handler invokes `context.step(func, config=StepConfig(retry_strategy=no_retry_on_transient_error))`, step throws TransientError, strategy checks error type, returns shouldRetry=false, step fails permanently without retry.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: ${/.*TransientError$/}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

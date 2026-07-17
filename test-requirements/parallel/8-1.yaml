@@ -1,0 +1,101 @@
+---
+# 8.1: Parallel basic (two branches, each a single step, all succeed)
+description: Parallel basic (two branches, each a single step, all succeed)
+handler: |
+  Handler invokes the parallel operation with a fixed name "parallel" and two branches. Each
+  branch runs a single step that returns a constant string ("task-1" for branch 0, "task-2" for
+  branch 1). Max-concurrency is set to 1 so branches execute sequentially in index order,
+  producing a deterministic execution history. The handler returns the ordered array of
+  successful branch results, in branch index order.
+invocations: |
+  - Handler invokes parallel(name="parallel", branches=[branch0, branch1], max-concurrency=1).
+    The SDK checkpoints ContextStarted (SubType Parallel) for the parent operation. For branch 0
+    it checkpoints ContextStarted (SubType ParallelBranch) with ParentId pointing to the parent,
+    runs the inner step (StepStarted/StepSucceeded), and checkpoints ContextSucceeded for the
+    branch. It repeats for branch 1, then checkpoints ContextSucceeded (SubType Parallel) for the
+    parent carrying the batch summary. The invocation completes returning ["task-1", "task-2"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [task-1, task-2]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"task-1"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"task-1"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${STEP2}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${STEP2}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"task-2"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 10
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"task-2"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 11
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

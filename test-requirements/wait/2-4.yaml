@@ -1,0 +1,22 @@
+---
+# 2.4: Wait with different duration units
+description: Wait with different duration units
+async: true
+handler: |
+  A wait operation using minutes as the duration unit, verifying correct conversion to seconds.
+invocations: |
+  - Handler invokes `context.wait(Duration.from_minutes(1))`, SDK converts to 60 seconds and checkpoints WaitStarted with Duration=60, invocation completes, execution suspends.
+AsyncInvoke: true
+Input:
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 60
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

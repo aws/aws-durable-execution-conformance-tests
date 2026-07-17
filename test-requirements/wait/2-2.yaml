@@ -1,0 +1,36 @@
+---
+# 2.2: Wait with name
+description: Wait with name
+handler: |
+  A wait operation with an explicit `name` parameter.
+invocations: |
+  - Handler invokes `context.wait(Duration.from_seconds(N), name="custom_wait_name")`, SDK checkpoints WaitStarted with the duration and name, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed, SDK checkpoints WaitSucceeded, execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    Name: custom_wait_name
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    Name: custom_wait_name
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

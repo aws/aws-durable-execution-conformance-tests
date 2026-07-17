@@ -1,0 +1,47 @@
+---
+# 5.11: Step then invoke (sequential operations)
+description: Step then invoke — step succeeds, then invoke succeeds
+handler: |
+  A handler that first executes a step, then invokes a target function with the step result.
+  The step succeeds, then the invoke succeeds.
+invocations: |
+  - Handler invokes `context.step(fn)`, step succeeds (StepStarted, StepSucceeded), then invokes `context.invoke(targetFunctionName, stepResult)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK replays step (skips re-execution), checkpoints ChainedInvokeSucceeded, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    EventId: 2
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    EventId: 3
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: ChainedInvokeStarted
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

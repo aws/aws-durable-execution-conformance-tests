@@ -1,0 +1,33 @@
+---
+# 9.11: Map real concurrency (max-concurrency > 1) preserves index-ordered results
+description: Map executing items concurrently returns results in item index order regardless of
+  completion order
+handler: |
+  Handler invokes the map operation over three items that each return a constant string directly
+  ("r0", "r1", "r2") with a max-concurrency of 2, so up to two items execute concurrently and their
+  completion order is not deterministic. The handler returns the ordered array of successful item
+  results, which the SDK guarantees to be ordered by item index (not completion order). Because
+  item completion order is nondeterministic under concurrency, this requirement only asserts the
+  deterministic parent ContextStarted event plus the final index-ordered result; the per-iteration
+  child-context events (whose EventIds depend on completion order) are intentionally not asserted
+  (the matcher ignores unlisted events).
+invocations: |
+  - Handler invokes map(name="concurrent", items=[i0, i1, i2], mapFunc, max-concurrency=2). The SDK
+    checkpoints ContextStarted (SubType Map), starts items in index order up to the concurrency
+    limit, and each item runs in its own MapIteration child context. The items complete in a
+    nondeterministic order, the SDK checkpoints ContextSucceeded (SubType Map), and the invocation
+    completes returning ["r0", "r1", "r2"] in item index order.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - r0
+    - r1
+    - r2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}

@@ -1,0 +1,97 @@
+---
+# 9.18: Suspension after a map that completed with a failure (replay skips the completed map)
+description: A durable wait placed after a map that ran every item but recorded a failure suspends
+  the execution; on replay the completed map (including the failed iteration) is skipped and the
+  execution resumes to success
+handler: |
+  Handler invokes the map operation over two items with a tolerated-failure-count of 1, so a single
+  failure is tolerated and every item runs: item 0 succeeds, item 1 raises and is recorded as
+  failed. The map returns a batch result whose status is FAILED (a failure occurred) with
+  completion reason ALL_COMPLETED; the handler does NOT rethrow. After the map, the handler issues
+  a durable wait (1 second), which suspends the whole execution. On replay (after the wait elapses)
+  the SDK skips the already-completed map (including the failed iteration), checkpoints the wait
+  success, and the execution succeeds. Max-concurrency is 1 for a deterministic history. The handler
+  returns a projection {completionReason, status, successCount, failureCount, totalCount}.
+invocations: |
+  - Handler invokes map(name="fail-then-wait", items=["ok", "fail"], mapFunc, max-concurrency=1,
+    completion config tolerated-failure-count=1). Item 0 succeeds (ContextStarted / ContextSucceeded)
+    and item 1 fails (ContextStarted / ContextFailed), both SubType MapIteration. The SDK checkpoints
+    ContextSucceeded (SubType Map). The handler then starts a wait (WaitStarted), the invocation
+    completes, and the execution suspends.
+  - Replay 1: Re-invoked once the wait elapses. The SDK skips the completed map, checkpoints
+    WaitSucceeded, and the invocation completes returning the projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: ALL_COMPLETED
+    status: FAILED
+    successCount: 1
+    failureCount: 1
+    totalCount: 2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"ok"'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

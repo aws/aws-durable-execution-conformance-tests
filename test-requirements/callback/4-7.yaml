@@ -1,0 +1,72 @@
+---
+# 4.7: Callback + Step + Wait for callback result (failure)
+description: createCallback then a step then await callback result — external system
+  reports failure handler does not catch
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name, then runs a step, then blocks on the callback result.
+  The external system reports failure with ErrorType="RejectedError" and ErrorMessage="not approved".
+  The handler does not catch the error, so execution fails with CallbackError.
+invocations: |
+  - Handler creates a callback, then runs a step. The SDK checkpoints CallbackStarted and StepStarted/StepSucceeded. The invocation completes and execution suspends waiting for the callback.
+  - Replay 1: Received callback failure. The SDK replays the callback and step, observes CallbackFailed, raises the error to the handler, and execution fails with CallbackError.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: failure
+    Payload:
+      ErrorType: RejectedError
+      ErrorMessage: not approved
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackFailed
+    SubType: Callback
+    EventId: 6
+    Id: ${CB1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackFailedDetails:
+      Error:
+        Payload:
+          ErrorType: RejectedError
+          ErrorMessage: not approved
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 8
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

@@ -1,0 +1,52 @@
+---
+# 4.2: Create callback with explicit name
+description: Create callback with an explicit Name
+async: true
+handler: |
+  Handler creates a callback named "approval" and blocks on the callback result.
+  The external system completes the callback with a success payload.
+invocations: |
+  - Handler creates a callback named "approval". The SDK checkpoints CallbackStarted with Name="approval". The invocation completes and execution suspends.
+  - Replay 1: Received callback success. The SDK checkpoints CallbackSucceeded with the payload as Result, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_PAYLOAD: ${GEN_STR:12}
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: approval
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: approval
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 4
+    Id: ${ID1}
+    Name: approval
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

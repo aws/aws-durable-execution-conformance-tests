@@ -1,0 +1,70 @@
+---
+# 8.12: Parallel with FLAT nesting (virtual branch contexts)
+description: Parallel with FLAT nesting executes branches in virtual contexts, omitting per-branch
+  ContextStarted/ContextSucceeded events
+handler: |
+  Handler invokes the parallel operation with two branches, each running a single step that
+  returns a constant string ("fa" then "fb"), max-concurrency 1, and nesting mode FLAT. With FLAT
+  nesting the branches use virtual contexts, so no per-branch ParallelBranch child contexts are
+  checkpointed; each branch's step is checkpointed directly under the parent Parallel context.
+  The handler returns the ordered array of successful branch results, in branch index order.
+invocations: |
+  - Handler invokes parallel(name="flat", branches=[b0, b1], max-concurrency=1, nesting mode FLAT).
+    The SDK checkpoints ContextStarted (SubType Parallel) for the parent. Because branches run in
+    virtual contexts, no ParallelBranch context events are emitted; instead each branch's step is
+    checkpointed (StepStarted/StepSucceeded) with ParentId pointing to the parent Parallel context.
+    The SDK checkpoints ContextSucceeded (SubType Parallel) and the invocation completes returning
+    ["fa", "fb"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [fa, fb]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"fa"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"fb"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

@@ -1,0 +1,31 @@
+---
+# 3.16: Child context returning null
+description: Child context returning null
+handler: |
+  A child context where the child function directly returns null without calling any
+  durable operation. Tests that the serdes handles null/undefined correctly.
+invocations: |
+  - Handler invokes a child context where the child function returns null without calling any durable operation. SDK checkpoints ContextStarted, child returns null directly, SDK checkpoints ContextSucceeded, execution succeeds with null output.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 3
+    Id: ${CTX1}
+    Name: ${NAME1}
+    EventTimestamp: '*'
+    ContextSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

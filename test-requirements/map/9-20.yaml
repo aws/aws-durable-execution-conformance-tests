@@ -1,0 +1,97 @@
+---
+# 9.20: Map with an operation-level serdes — deserialize on replay (wait after the map)
+description: A durable wait after a map with a custom operation-level serializer forces a replay;
+  the checkpointed map result is deserialized through that serializer and the execution resumes
+  with the correct result
+handler: |
+  Handler invokes the map operation over two string items ["x", "y"] with the same custom
+  OPERATION-LEVEL serializer as 9-19 (emits "OPSERDE:X,Y" on serialize, reverses it on deserialize).
+  The map result is ["X", "Y"] and its ContextSucceeded payload is "OPSERDE:X,Y". After the map, the
+  handler issues a durable wait (1 second), which suspends the whole execution. On replay (after the
+  wait elapses) the SDK reconstructs the completed map result by DESERIALIZING the checkpointed
+  payload through the custom serializer, resumes, and the handler returns the ordered results. The
+  serialize step is proven by asserting the Map ContextSucceeded payload; the deserialize step is
+  proven by the correct post-replay result (reconstruction only succeeds if the custom deserializer
+  ran). Max-concurrency is 1 for a deterministic history.
+  Note: JS and Python expose a distinct whole-result serdes; the Java MapConfig has a single serDes
+  applied to both items and the result, so this operation-level serde test is uncovered for Java.
+invocations: |
+  - Handler invokes map(name="op-serde-replay", items=["x", "y"], mapFunc, operation-level serdes
+    set, max-concurrency=1). The SDK checkpoints ContextStarted (SubType Map), runs both iterations
+    (ContextStarted / ContextSucceeded, SubType MapIteration), and checkpoints ContextSucceeded
+    (SubType Map) with result payload "OPSERDE:X,Y". The handler then starts a wait (WaitStarted),
+    the invocation completes, and the execution suspends.
+  - Replay 1: Re-invoked once the wait elapses. The SDK deserializes the checkpointed map result
+    through the custom serializer, checkpoints WaitSucceeded, and the invocation completes returning
+    ["X", "Y"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - X
+    - 'Y'
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: 'OPSERDE:X,Y'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${WAIT1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

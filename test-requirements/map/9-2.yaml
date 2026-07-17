@@ -1,0 +1,72 @@
+---
+# 9.2: Map items-only form (no operation name)
+description: Map invoked with the items-only form (no name argument), each item returns directly
+handler: |
+  Handler invokes the map operation with the items-only form (no name argument). The map function
+  returns a value directly for each item without running an inner step, so each MapIteration child
+  context has no nested operations. Items are the numbers [1, 2] and the map function doubles each
+  item. Max-concurrency is set to 1 for a deterministic execution history. The handler returns the
+  ordered array of successful item results, in item index order.
+invocations: |
+  - Handler invokes map(items=[1, 2], mapFunc, max-concurrency=1) using the items-only overload
+    (no name). The SDK checkpoints ContextStarted (SubType Map). For item 0 it checkpoints
+    ContextStarted / ContextSucceeded (SubType MapIteration) carrying result 2, then for item 1
+    ContextStarted / ContextSucceeded carrying result 4. The SDK checkpoints ContextSucceeded
+    (SubType Map) and the invocation completes returning [2, 4].
+Input:
+  - 1
+  - 2
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - 2
+    - 4
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '2'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '4'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

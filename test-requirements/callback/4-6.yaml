@@ -1,0 +1,61 @@
+---
+# 4.6: Create callback failure (external system reports failure)
+description: External system reports failure via SendDurableExecutionCallbackFailure
+  handler fails
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name and blocks on the callback result.
+  The external system reports failure with ErrorType="RejectedError" and ErrorMessage="not approved".
+  The handler does not catch the error, so the execution fails with a CallbackError that wraps the original error.
+invocations: |
+  - Handler creates a callback. The SDK checkpoints CallbackStarted. The invocation completes and execution suspends.
+  - Replay 1: Received callback failure. The SDK observes CallbackFailed, raises the error to the handler, and execution fails.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: failure
+    Payload:
+      ErrorType: RejectedError
+      ErrorMessage: not approved
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackFailed
+    SubType: Callback
+    EventId: 4
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackFailedDetails:
+      Error:
+        Payload:
+          ErrorType: RejectedError
+          ErrorMessage: not approved
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+          ErrorMessage: not approved

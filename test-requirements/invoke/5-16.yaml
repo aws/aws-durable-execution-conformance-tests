@@ -1,0 +1,42 @@
+---
+# 5.16: Invoke with custom result serdes
+description: Invoke with custom result serdes — custom deserializer for the returned
+  result
+handler: |
+  A handler that invokes a target function with a custom result deserializer configured.
+  The custom serdes transforms the result after receiving (e.g., uppercases the result string).
+  The handler returns the transformed result.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName, payload, { resultSerdes: customSerdes })`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK checkpoints ChainedInvokeSucceeded, deserializes result with custom serdes, execution succeeds.
+AsyncInvoke: true
+Input: hello
+ExpectedResult:
+  Result: '"HELLO"'
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '"hello"'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '"hello"'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

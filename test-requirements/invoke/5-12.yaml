@@ -1,0 +1,47 @@
+---
+# 5.12: Invoke then step (invoke result used by subsequent step)
+description: Invoke then step — invoke succeeds, then step uses invoke result
+handler: |
+  A handler that first invokes a target function, then passes the invoke result to a step.
+  The invoke succeeds, then the step processes the result and returns it.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName)`, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function completed, SDK replays ChainedInvokeSucceeded, handler invokes `context.step(fn(invokeResult))`, step succeeds, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result: '*'
+  - EventType: StepStarted
+    EventId: 5
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    EventId: 6
+    Id: ${STEP1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

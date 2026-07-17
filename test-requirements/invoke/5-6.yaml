@@ -1,0 +1,38 @@
+---
+# 5.6: Invoke target fails, caught (try/catch, execution succeeds)
+description: Invoke target fails, caught — caller wraps invoke in try/catch, execution
+  succeeds
+handler: |
+  A handler that wraps `context.invoke(...)` in a try/catch. The target function fails,
+  the InvokeError is caught, and the handler returns a fallback value.
+invocations: |
+  - Handler invokes `context.invoke(targetFunctionName)` inside try/catch, SDK checkpoints ChainedInvokeStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because target function failed, SDK checkpoints ChainedInvokeFailed, handler catches InvokeError, returns fallback value, execution succeeds.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ChainedInvokeStarted
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input: '*'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeFailed
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    ChainedInvokeFailedDetails:
+      Error: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

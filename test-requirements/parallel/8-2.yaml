@@ -1,0 +1,67 @@
+---
+# 8.2: Parallel branches-only form (no operation name)
+description: Parallel invoked with the branches-only form (no name argument)
+handler: |
+  Handler invokes the parallel operation using the form that omits the leading operation name,
+  passing two branches. Each branch returns a constant string directly without an inner step
+  ("alpha" for branch 0, "beta" for branch 1). Max-concurrency is 1 so branches run sequentially
+  in index order. The handler returns the ordered array of successful branch results.
+invocations: |
+  - Handler invokes parallel(branches=[branch0, branch1], max-concurrency=1). The SDK checkpoints
+    ContextStarted (SubType Parallel) for the parent, then for each branch (in index order)
+    checkpoints ContextStarted/ContextSucceeded (SubType ParallelBranch) carrying the branch
+    return value, then checkpoints ContextSucceeded (SubType Parallel) for the parent. The
+    invocation completes returning ["alpha", "beta"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [alpha, beta]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"alpha"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"beta"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

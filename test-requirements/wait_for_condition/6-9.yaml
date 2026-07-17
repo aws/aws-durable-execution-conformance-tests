@@ -1,0 +1,53 @@
+---
+# 6.9: Wait-for-condition with a complex object state
+description: Wait-for-condition that threads a structured object as its state and returns
+  the final object when the condition is met
+handler: |
+  Handler runs a single wait_for_condition operation whose state is a structured object of the
+  form {status, attempts}. The initial state is {status: PENDING, attempts: 0}. Each check
+  increments attempts by 1 and, once attempts reaches 2, sets status to DONE. The wait strategy
+  continues while status is PENDING and stops when it becomes DONE, returning the final object
+  {status: DONE, attempts: 2}.
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check produces {status: PENDING, attempts: 1}, continue, StepSucceeded checkpointed, invocation completes, execution suspends.
+  - Replay 1: Second check produces {status: DONE, attempts: 2}. The wait strategy stops, SDK checkpoints the terminal StepSucceeded with the final object, execution succeeds returning {status: DONE, attempts: 2}.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: DONE
+    attempts: 2
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 8
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'

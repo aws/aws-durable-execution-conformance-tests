@@ -1,0 +1,79 @@
+---
+# 6.5: Wait-for-condition fixed-delay wait strategy
+description: Wait-for-condition with a fixed-delay wait strategy — each continue checkpoint
+  records the constant next-attempt delay
+handler: |
+  Handler runs a single wait_for_condition operation configured with a fixed-delay wait strategy
+  of 2 seconds (no jitter, no backoff). The check function increments an integer state starting
+  from 0; the strategy continues while the state is below the input threshold (3) and stops once
+  it reaches it. Each continue decision schedules the next poll exactly 2 seconds later. Returns
+  the final state (3).
+invocations: |
+  - Handler invokes wait_for_condition. SDK checkpoints StepStarted (SubType WaitForCondition), first check (0 -> 1), continue, SDK checkpoints StepSucceeded with state 1 and NextAttemptDelaySeconds 2, invocation completes, execution suspends for 2 seconds.
+  - Replay 1: Second check (1 -> 2), continue, StepSucceeded checkpointed with state 2 and NextAttemptDelaySeconds 2, execution suspends for 2 seconds.
+  - Replay 2: Third check (2 -> 3). State reaches the threshold, the wait strategy stops, SDK checkpoints the terminal StepSucceeded with state 3, execution succeeds returning 3.
+Input: 3
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 3
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+      RetryDetails:
+        NextAttemptDelaySeconds: 2
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '2'
+      RetryDetails:
+        NextAttemptDelaySeconds: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 8
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 9
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '3'
+  - EventType: ExecutionSucceeded
+    EventId: 11
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '3'

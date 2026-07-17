@@ -1,0 +1,52 @@
+---
+# 4.4: Create callback heartbeat timeout (no heartbeat sent)
+description: Create callback with a short heartbeat timeout; no heartbeat is sent
+  so it times out
+async: true
+handler: |
+  Handler creates a callback using the input as the callback name with a 5-second heartbeat timeout and blocks on the callback result.
+  No heartbeat or terminal callback is sent, so the durable execution service emits CallbackTimedOut after the heartbeat interval.
+invocations: |
+  - Handler creates a callback with a 5-second heartbeat timeout. The SDK checkpoints CallbackStarted with HeartbeatTimeout=5. The invocation completes and execution suspends.
+  - Replay 1: Heartbeat timed out. The SDK raises CallbackTimeoutError, and execution fails with CallbackError.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+      HeartbeatTimeout: 5
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackTimedOut
+    SubType: Callback
+    EventId: 4
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackTimedOutDetails:
+      Error:
+        Payload:
+          ErrorType: Callback.Heartbeat
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

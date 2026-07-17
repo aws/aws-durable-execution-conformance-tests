@@ -1,0 +1,68 @@
+---
+# 8.3: Parallel with named branch objects
+description: Parallel invoked with named-branch objects (a name plus a function)
+handler: |
+  Handler invokes the parallel operation with a name and two branches expressed as named-branch
+  objects, each pairing a name (branch names "first" and "second") with a branch function. Each
+  function returns a constant string directly ("one" then "two"). Max-concurrency is 1 for
+  deterministic ordering. The handler returns the ordered array of successful branch results, in
+  branch index order.
+invocations: |
+  - Handler invokes parallel(name="named", branches=[named-branch("first"), named-branch("second")],
+    max-concurrency=1). The SDK checkpoints ContextStarted (SubType Parallel) for the parent, then
+    runs each named branch sequentially (ContextStarted/ContextSucceeded, SubType ParallelBranch)
+    carrying the branch return value, then checkpoints ContextSucceeded (SubType Parallel). The
+    invocation completes returning ["one", "two"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [one, two]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"one"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"two"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

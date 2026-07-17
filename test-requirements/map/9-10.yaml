@@ -1,0 +1,72 @@
+---
+# 9.10: Map tolerated-failure-percentage exceeded (stops early)
+description: Map stops early once the failure percentage exceeds the tolerated-failure-percentage
+handler: |
+  Handler invokes the map operation over four items with a completion config of
+  tolerated-failure-percentage=25. The tolerated failure percentage is computed against the total
+  item count (4). Max-concurrency is 1 so items run sequentially: item 0 fails (1/4 = 25%, not
+  exceeding 25), item 1 also fails (2/4 = 50%, now exceeding 25), so the operation stops early and
+  items 2 and 3 are never started. The handler returns a projection {completionReason,
+  successCount, failureCount, totalCount}. Completion reason is FAILURE_TOLERANCE_EXCEEDED.
+invocations: |
+  - Handler invokes map(name="tolerated-pct", items=[i0, i1, i2, i3], mapFunc, max-concurrency=1,
+    completion config tolerated-failure-percentage=25). The SDK checkpoints ContextStarted (SubType
+    Map), then item 0 fails (ContextStarted / ContextFailed) and item 1 fails (ContextStarted /
+    ContextFailed), all SubType MapIteration. The failure percentage now exceeds the tolerance so
+    the operation stops without starting the remaining items. The SDK checkpoints ContextSucceeded
+    (SubType Map) and the invocation completes returning the projection object.
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    completionReason: FAILURE_TOLERANCE_EXCEEDED
+    successCount: 0
+    failureCount: 2
+    totalCount: 2
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 5
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextFailed
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 7
+    Id: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

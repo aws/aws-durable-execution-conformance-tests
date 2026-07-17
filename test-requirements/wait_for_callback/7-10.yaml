@@ -1,0 +1,115 @@
+---
+# 7.10: Wait-for-callback mixed with wait and step
+description: Wait-for-callback combined with a preceding durable wait and a top-level
+  step, exercising interleaving of operation types in one handler
+async: true
+handler: |
+  Handler first runs a 1-second durable wait, then a top-level step that returns fixed data, then a
+  single wait_for_callback operation using the input as the operation name. The submitter completes
+  and the operation suspends; the external system completes the callback with a success payload,
+  which the handler returns.
+invocations: |
+  - Fresh invoke: SDK checkpoints WaitStarted (Duration 1), the invocation completes and execution suspends for the timer.
+  - Replay 1: The wait completes (WaitSucceeded). The handler runs a top-level step (StepStarted/StepSucceeded, no ParentId). It then starts the wait_for_callback operation: ContextStarted (SubType WaitForCallback), CallbackStarted (ParentId pointing to the operation Id), submitter StepStarted/StepSucceeded (ParentId pointing to the operation Id); the invocation completes and execution suspends.
+  - Replay 2: External system completed the callback. SDK checkpoints CallbackSucceeded and ContextSucceeded for the operation, and execution succeeds.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${W1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${W1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${S1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${S1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 7
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 8
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 9
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 10
+    Id: ${STEP1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 12
+    Id: ${CB1}
+    ParentId: ${ID1}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 13
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 14
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 15
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'
