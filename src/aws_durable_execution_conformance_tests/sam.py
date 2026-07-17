@@ -17,7 +17,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+
 from aws_durable_execution_conformance_tests import config
+
+# region Cleanup
+
+
+def delete_stack(stack_name: str, region: str | None = None) -> bool:
+    """Best-effort, fire-and-forget CloudFormation stack deletion.
+
+    Initiates deletion and returns immediately without waiting for the stack to
+    reach ``DELETE_COMPLETE``. Never raises -- cleanup must not fail a run.
+
+    Args:
+        stack_name: CloudFormation stack name to delete.
+        region: AWS region the stack lives in.
+
+    Returns:
+        True if the delete request was accepted, False if it could not be issued.
+    """
+    try:
+        client = boto3.client("cloudformation", region_name=region)
+        client.delete_stack(StackName=stack_name)
+    except (BotoCoreError, ClientError):
+        return False
+    return True
+
+
+# endregion
+
 
 # region Exceptions
 

@@ -41,6 +41,7 @@ from aws_durable_execution_conformance_tests.sam import (
     Deployer,
     Invoker,
     SamCliError,
+    delete_stack,
 )
 from aws_durable_execution_conformance_tests.validate import (
     DescriptionResult,
@@ -101,6 +102,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "passed as an ImageUri parameter override during sam deploy.",
     )
     parser.add_argument(
+        "--cleanup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete the CloudFormation stack after the run (best-effort, "
+        "fire-and-forget). Enabled by default; pass --no-cleanup to keep the "
+        "deployed stack for debugging.",
+    )
+    parser.add_argument(
         "--language",
         required=True,
         metavar="LANGUAGE",
@@ -149,6 +158,43 @@ def run(argv: list[str] | None = None) -> None:
         print(f"  Build failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    try:
+        _deploy_validate_report(args, deployer, stack_name, template_path, run_start, started_at)
+    finally:
+        _maybe_cleanup(args, stack_name)
+
+
+def _maybe_cleanup(args: argparse.Namespace, stack_name: str) -> None:
+    """Best-effort stack teardown after a run (enabled unless --no-cleanup).
+
+    Fire-and-forget: initiates deletion and returns immediately. Never raises --
+    a cleanup failure must not mask the run's own exit code.
+    """
+    if not args.cleanup:
+        print(f"\n=== Cleanup skipped (--no-cleanup); stack '{stack_name}' left deployed ===")
+        return
+    print(f"\n=== Cleanup: deleting stack '{stack_name}' (best-effort, not waiting) ===")
+    if delete_stack(stack_name, args.region):
+        print("  Delete request submitted.")
+    else:
+        print(
+            "  Cleanup request could not be issued; delete the stack manually if it exists.",
+            file=sys.stderr,
+        )
+
+
+def _deploy_validate_report(
+    args: argparse.Namespace,
+    deployer: Deployer,
+    stack_name: str,
+    template_path: str,
+    run_start: float,
+    started_at: str,
+) -> None:
+    """Deploy the stack, validate every test description, and emit the report.
+
+    Calls ``sys.exit`` with the report's exit code (or 0/1 for early outcomes).
+    """
     try:
         parameter_overrides: dict[str, str] | None = None
         resolve_image_repos: bool = True
