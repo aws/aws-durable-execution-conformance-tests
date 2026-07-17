@@ -37,12 +37,18 @@ jobs:
         run: |
           pkg_version="$(hatch version)"
           tag="${{ github.event.release.tag_name }}"
-          tag="${tag#v}"  # tolerate an optional leading "v" (v0.0.1 -> 0.0.1)
-          if [ "$pkg_version" != "$tag" ]; then
-            echo "::error::Release tag ('$tag') does not match package version ('$pkg_version' from __about__.py). Bump __about__.py or fix the release tag before publishing."
+          case "$tag" in
+            v*) ;;
+            *)
+              echo "::error::Release tag ('$tag') must start with 'v' (e.g. v$pkg_version)."
+              exit 1
+              ;;
+          esac
+          if [ "v$pkg_version" != "$tag" ]; then
+            echo "::error::Release tag ('$tag') does not match package version ('v$pkg_version' from __about__.py). Bump __about__.py or fix the release tag before publishing."
             exit 1
           fi
-          echo "Release tag '$tag' matches package version '$pkg_version'."
+          echo "Release tag '$tag' matches package version 'v$pkg_version'."
 
       - name: Build release distributions
         run: hatch build
