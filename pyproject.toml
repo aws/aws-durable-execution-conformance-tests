@@ -3,107 +3,95 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aws-durable-execution-conformance-tests"
-dynamic = ["version"]
-description = 'AWS Durable Execution Conformance Tests'
-readme = "README.md"
+name = "aws-durable-execution-conformance-tests-workspace"
+version = "0"
+description = "Development workspace for AWS Durable Execution conformance packages"
 requires-python = ">=3.14"
-license = "Apache-2.0"
-keywords = []
-authors = [{ name = "AWS durable-execution-dev", email = "durable-execution-dev@amazon.com" }]
+dependencies = []
 
-classifiers = [
-  "Development Status :: 4 - Beta",
-  "Programming Language :: Python",
-  "Programming Language :: Python :: 3.14",
-  "Programming Language :: Python :: Implementation :: CPython",
-]
+[tool.hatch.build]
+skip-excluded-dirs = true
+
+[tool.hatch.envs.default]
+detached = true
 dependencies = [
-  "boto3>=1.42.1",
-  "pyyaml>=6.0",
+  "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
 ]
 
-[project.urls]
-Homepage = "https://github.com/aws/aws-durable-execution-conformance-tests"
-Repository = "https://github.com/aws/aws-durable-execution-conformance-tests"
-Issues = "https://github.com/aws/aws-durable-execution-conformance-tests/issues"
-
-[tool.hatch.build.targets.sdist]
-packages = ["src/aws_durable_execution_conformance_tests"]
-
-[tool.hatch.build.targets.sdist.force-include]
-"LICENSE" = "LICENSE"
-"NOTICE" = "NOTICE"
-"test-requirements" = "test-requirements"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/aws_durable_execution_conformance_tests"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"LICENSE" = "aws_durable_execution_conformance_tests/LICENSE"
-"NOTICE" = "aws_durable_execution_conformance_tests/NOTICE"
-"test-requirements" = "aws_durable_execution_conformance_tests/test_requirements"
-
-[tool.hatch.version]
-path = "src/aws_durable_execution_conformance_tests/__about__.py"
+[tool.hatch.envs.default.env-vars]
+PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src"
 
 [tool.hatch.envs.default.scripts]
 validate = "python -m aws_durable_execution_conformance_tests.app {args}"
 
-[tool.hatch.envs.types]
-extra-dependencies = [
-  "mypy>=1.0.0",
-]
-[tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/aws_durable_execution_conformance_tests tests}"
-
 [tool.hatch.envs.test]
-extra-dependencies = [
+detached = true
+dependencies = [
+  "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
   "pytest>=8.0.0",
   "pytest-cov>=5.0.0",
 ]
+
+[tool.hatch.envs.test.env-vars]
+PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src"
+
 [tool.hatch.envs.test.scripts]
-run = "pytest {args:tests}"
-cov = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=term-missing {args:tests}"
-cov-html = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=html {args:tests}"
+all = "pytest {args:packages/aws-durable-execution-conformance-tests/tests}"
+core = "pytest {args:packages/aws-durable-execution-conformance-tests/tests}"
+cov = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=term-missing {args:packages/aws-durable-execution-conformance-tests/tests}"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra"
+[tool.hatch.envs.types]
+detached = true
+dependencies = [
+  "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
+  "mypy>=1.0.0",
+]
 
-[tool.mypy]
-# Enable the type-checker inside functions that lack type annotations.
-check_untyped_defs = true
-# Show error codes to make silencing specific errors easier.
-show_error_codes = true
-# Show source snippets and location markers in error messages.
-pretty = true
-# Suppress errors for third-party packages that do not ship type hints
-# (e.g. boto3/botocore). See
-# https://mypy.readthedocs.io/en/latest/running_mypy.html#missing-imports
-ignore_missing_imports = true
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:packages/aws-durable-execution-conformance-tests/src packages/aws-durable-execution-conformance-tests/tests}"
 
 [tool.hatch.envs.yaml]
-extra-dependencies = [
+detached = true
+dependencies = [
   "yamllint>=1.35.0",
   "yamlfix>=1.16.0",
 ]
+
 [tool.hatch.envs.yaml.scripts]
-lint = "yamllint {args:test-requirements/}"
-fix = "yamlfix {args:test-requirements/}"
+lint = "yamllint {args:packages/aws-durable-execution-conformance-tests/test-requirements}"
+fix = "yamlfix {args:packages/aws-durable-execution-conformance-tests/test-requirements}"
 fmt = ["fix", "lint"]
 
+[tool.hatch.envs.dist]
+detached = true
+
+[tool.hatch.envs.dist.scripts]
+build = "python scripts/build_distributions.py"
+clean = "python scripts/build_distributions.py --clean-only"
+check = "python scripts/check_distributions.py"
+all = ["build", "check"]
+
+[tool.pytest.ini_options]
+testpaths = [
+  "packages/aws-durable-execution-conformance-tests/tests",
+]
+addopts = "-ra --import-mode=importlib"
+
+[tool.mypy]
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+ignore_missing_imports = true
+
+[tool.hatch.envs.hatch-static-analysis]
+config-path = "ruff.toml"
+
 [tool.coverage.run]
-source_pkgs = ["aws_durable_execution_conformance_tests", "tests"]
 branch = true
 parallel = true
 omit = [
-  "src/aws_durable_execution_conformance_tests/__about__.py",
+  "*/__about__.py",
 ]
-
-[tool.coverage.paths]
-aws_durable_execution_conformance_tests = ["src/aws_durable_execution_conformance_tests", "*/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests"]
-tests = ["tests", "*/aws-durable-execution-conformance-tests/tests"]
 
 [tool.coverage.report]
 exclude_lines = [

@@ -32,16 +32,19 @@ jobs:
         run: python -m pip install hatch==1.16.5
 
       - name: Run unit tests
-        run: hatch run test:run
+        run: hatch run test:all
 
       - name: Run type checks
         run: hatch run types:check
 
       - name: Check formatting and lint
-        run: hatch fmt --check src tests
+        run: hatch fmt --check packages scripts
 
       - name: Lint requirement YAML
         run: hatch run yaml:lint
 
       - name: Build distributions
-        run: hatch build -c
+        run: hatch run dist:build
+
+      - name: Verify distributions
+        run: hatch run dist:check

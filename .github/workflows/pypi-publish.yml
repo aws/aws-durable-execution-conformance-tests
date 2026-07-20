@@ -34,6 +34,7 @@ jobs:
         run: python -m pip install --upgrade hatch==1.16.5
 
       - name: Verify tag matches package version
+        working-directory: packages/aws-durable-execution-conformance-tests
         run: |
           pkg_version="$(hatch version)"
           tag="${{ github.event.release.tag_name }}"
@@ -51,13 +52,14 @@ jobs:
           echo "Release tag '$tag' matches package version 'v$pkg_version'."
 
       - name: Build release distributions
+        working-directory: packages/aws-durable-execution-conformance-tests
         run: hatch build
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-dists
-          path: dist/
+          path: packages/aws-durable-execution-conformance-tests/dist/
 
   pypi-publish:
     name: Publish to PyPI
