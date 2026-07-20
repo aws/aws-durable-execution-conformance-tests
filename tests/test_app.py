@@ -47,3 +47,37 @@ def test_suite_accepts_discovered_suite() -> None:
     )
 
     assert args.suite == ["step"]
+
+
+def test_cleanup_enabled_by_default() -> None:
+    args = parse_args(["--template", "template.yaml", "--language", "python"])
+
+    assert args.cleanup is True
+
+
+def test_cleanup_can_be_disabled() -> None:
+    args = parse_args(
+        [
+            "--template",
+            "template.yaml",
+            "--language",
+            "python",
+            "--no-cleanup",
+        ]
+    )
+
+    assert args.cleanup is False
+
+
+def test_cleanup_explicit_enable() -> None:
+    args = parse_args(
+        [
+            "--template",
+            "template.yaml",
+            "--language",
+            "python",
+            "--cleanup",
+        ]
+    )
+
+    assert args.cleanup is True
