@@ -310,7 +310,7 @@ class CommandBuilder:
         region: str | None = None,
         capabilities: list[str] | None = None,
         parameter_overrides: dict[str, str] | None = None,
-        resolve_image_repos: bool = True,  # noqa: FBT001, FBT002
+        resolve_image_repos: bool = True,
         image_repository: str | None = None,
     ) -> list[str]:
         """Construct the argument list for sam deploy.
@@ -534,7 +534,8 @@ class Deployer:
         stack_name: str,
         capabilities: list[str] | None = None,
         parameter_overrides: dict[str, str] | None = None,
-        resolve_image_repos: bool = True,  # noqa: FBT001, FBT002
+        secret_parameter_overrides: dict[str, str] | None = None,
+        resolve_image_repos: bool = True,
         image_repository: str | None = None,
     ) -> DeployResult:
         """Run sam deploy for the given stack name.
@@ -543,6 +544,8 @@ class Deployer:
             stack_name: CloudFormation stack name.
             capabilities: Optional list of IAM capabilities.
             parameter_overrides: Optional key-value pairs for template parameters.
+            secret_parameter_overrides: Optional parameters passed to SAM but
+                redacted from returned commands, output, and errors.
             resolve_image_repos: Whether to include --resolve-image-repos.
                 Set to False when using a pre-built ImageUri.
             image_repository: ECR repository URI to satisfy SAM's image repo
@@ -558,41 +561,58 @@ class Deployer:
         if not self._built:
             raise BuildRequiredError
 
+        all_parameter_overrides = {
+            **(parameter_overrides or {}),
+            **(secret_parameter_overrides or {}),
+        }
         cmd = CommandBuilder.deploy_command(
             template_path=self._deploy_template_path,
             stack_name=stack_name,
             region=self._region,
             capabilities=capabilities,
-            parameter_overrides=parameter_overrides,
+            parameter_overrides=all_parameter_overrides or None,
             resolve_image_repos=resolve_image_repos,
             image_repository=image_repository,
         )
         result = SamExecutor.run(cmd)
-        command_str = " ".join(cmd)
+        secret_values = tuple((secret_parameter_overrides or {}).values())
+        command_str = _redact_text(" ".join(cmd), secret_values)
+        stdout = _redact_text(result.stdout, secret_values)
+        stderr = _redact_text(result.stderr, secret_values)
 
         if result.returncode != 0:
             # "No changes to deploy" is not a real failure — the stack is
             # already up to date, so treat it as a successful no-op.
-            combined = f"{result.stdout}\n{result.stderr}"
+            combined = f"{stdout}\n{stderr}"
             if "No changes to deploy" in combined:
                 return DeployResult(
                     success=True,
                     command=command_str,
-                    output=result.stdout or result.stderr,
+                    output=stdout or stderr,
                     stack_name=stack_name,
                 )
             raise SamCliError(
                 command=command_str,
                 exit_code=result.returncode,
-                stderr=result.stderr,
+                stderr=stderr,
             )
 
         return DeployResult(
             success=True,
             command=command_str,
-            output=result.stdout,
+            output=stdout,
             stack_name=stack_name,
         )
+
+
+def _redact_text(value: str, secrets: tuple[str, ...]) -> str:
+    """Remove secret parameter values from SAM diagnostics."""
+
+    result = value
+    for secret in secrets:
+        if secret:
+            result = result.replace(secret, "[REDACTED]")
+    return result
 
 
 # endregion

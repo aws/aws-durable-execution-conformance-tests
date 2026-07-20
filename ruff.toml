@@ -3,7 +3,7 @@ line-length = 120
 extend-exclude = ["dist", "build"]
 
 [lint]
-select = ["B", "E", "F", "SIM", "UP"]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 ignore = ["E501"]
 
 [format]

@@ -34,6 +34,7 @@ For bugs, include:
 ## Repository structure
 
 - `packages/aws-durable-execution-conformance-tests/`: core runner, generic requirements, and tests
+- `packages/aws-durable-execution-conformance-tests-otel/`: optional OTel extension, requirements, and tests
 - `scripts/`: workspace and distribution verification
 
 SDK-specific test handlers and deployment templates live in their respective SDK
@@ -49,8 +50,9 @@ hatch env create
 hatch run test:all
 hatch run test:cov
 hatch run types:check
-hatch fmt --check packages scripts
-hatch run dist:all
+hatch fmt --check packages
+hatch run dist:build
+hatch run dist:check
 ```
 
 To validate requirement YAML files:

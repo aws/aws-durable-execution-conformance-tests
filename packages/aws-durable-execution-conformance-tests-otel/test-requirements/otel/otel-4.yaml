@@ -1,0 +1,14 @@
+description: OpenTelemetry represents a terminal execution failure
+Input:
+  scenario: terminal-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 1
+  require_execution_correlation: true
+  required_outcomes:
+    - failure

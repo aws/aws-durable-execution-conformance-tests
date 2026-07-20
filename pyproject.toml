@@ -16,10 +16,11 @@ skip-excluded-dirs = true
 detached = true
 dependencies = [
   "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
+  "aws-durable-execution-conformance-tests-otel @ {root:uri}/packages/aws-durable-execution-conformance-tests-otel",
 ]
 
 [tool.hatch.envs.default.env-vars]
-PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src"
+PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src:{root}/packages/aws-durable-execution-conformance-tests-otel/src"
 
 [tool.hatch.envs.default.scripts]
 validate = "python -m aws_durable_execution_conformance_tests.app {args}"
@@ -28,27 +29,30 @@ validate = "python -m aws_durable_execution_conformance_tests.app {args}"
 detached = true
 dependencies = [
   "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
+  "aws-durable-execution-conformance-tests-otel @ {root:uri}/packages/aws-durable-execution-conformance-tests-otel",
   "pytest>=8.0.0",
   "pytest-cov>=5.0.0",
 ]
 
 [tool.hatch.envs.test.env-vars]
-PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src"
+PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src:{root}/packages/aws-durable-execution-conformance-tests-otel/src"
 
 [tool.hatch.envs.test.scripts]
-all = "pytest {args:packages/aws-durable-execution-conformance-tests/tests}"
+all = "pytest {args:packages/aws-durable-execution-conformance-tests/tests packages/aws-durable-execution-conformance-tests-otel/tests}"
 core = "pytest {args:packages/aws-durable-execution-conformance-tests/tests}"
-cov = "pytest --cov=aws_durable_execution_conformance_tests --cov-report=term-missing {args:packages/aws-durable-execution-conformance-tests/tests}"
+otel = "pytest {args:packages/aws-durable-execution-conformance-tests-otel/tests}"
+cov = "pytest --cov=aws_durable_execution_conformance_tests --cov=aws_durable_execution_conformance_tests_otel --cov-report=term-missing {args:packages/aws-durable-execution-conformance-tests/tests packages/aws-durable-execution-conformance-tests-otel/tests}"
 
 [tool.hatch.envs.types]
 detached = true
 dependencies = [
   "aws-durable-execution-conformance-tests @ {root:uri}/packages/aws-durable-execution-conformance-tests",
+  "aws-durable-execution-conformance-tests-otel @ {root:uri}/packages/aws-durable-execution-conformance-tests-otel",
   "mypy>=1.0.0",
 ]
 
 [tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:packages/aws-durable-execution-conformance-tests/src packages/aws-durable-execution-conformance-tests/tests}"
+check = "mypy --install-types --non-interactive {args:packages/aws-durable-execution-conformance-tests/src packages/aws-durable-execution-conformance-tests/tests packages/aws-durable-execution-conformance-tests-otel/src packages/aws-durable-execution-conformance-tests-otel/tests}"
 
 [tool.hatch.envs.yaml]
 detached = true
@@ -58,22 +62,33 @@ dependencies = [
 ]
 
 [tool.hatch.envs.yaml.scripts]
-lint = "yamllint {args:packages/aws-durable-execution-conformance-tests/test-requirements}"
-fix = "yamlfix {args:packages/aws-durable-execution-conformance-tests/test-requirements}"
+lint = "yamllint {args:packages/aws-durable-execution-conformance-tests/test-requirements packages/aws-durable-execution-conformance-tests-otel/test-requirements}"
+fix = "yamlfix {args:packages/aws-durable-execution-conformance-tests/test-requirements packages/aws-durable-execution-conformance-tests-otel/test-requirements}"
 fmt = ["fix", "lint"]
 
 [tool.hatch.envs.dist]
 detached = true
+dependencies = [
+  "boto3>=1.42.1",
+  "opentelemetry-proto>=1.29.0",
+  "packaging>=24.0",
+  "protobuf>=5.0",
+  "pyyaml>=6.0",
+]
 
 [tool.hatch.envs.dist.scripts]
 build = "python scripts/build_distributions.py"
 clean = "python scripts/build_distributions.py --clean-only"
-check = "python scripts/check_distributions.py"
+check = [
+  "python scripts/check_distributions.py",
+  "python scripts/smoke_wheels.py",
+]
 all = ["build", "check"]
 
 [tool.pytest.ini_options]
 testpaths = [
   "packages/aws-durable-execution-conformance-tests/tests",
+  "packages/aws-durable-execution-conformance-tests-otel/tests",
 ]
 addopts = "-ra --import-mode=importlib"
 
