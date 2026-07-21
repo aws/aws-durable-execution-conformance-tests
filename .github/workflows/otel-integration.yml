@@ -31,6 +31,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: otel-hosted-integrations-${{ inputs.aws_region || 'us-west-2' }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PYTHON_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml
@@ -42,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      TEST_NAME: xray-${{ github.run_number }}-${{ github.run_attempt }}
+      TEST_NAME: xray
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -105,6 +109,7 @@ jobs:
             --language python \
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
+            --no-cleanup \
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
@@ -129,6 +134,7 @@ jobs:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
+      TEST_NAME: datadog
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -164,6 +170,8 @@ jobs:
             --template "$PYTHON_TEST_TEMPLATE" \
             --language python \
             --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --no-cleanup \
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
@@ -178,6 +186,7 @@ jobs:
     env:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DASH0_OTLP_HEADERS }}
+      TEST_NAME: dash0
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -213,6 +222,8 @@ jobs:
             --template "$PYTHON_TEST_TEMPLATE" \
             --language python \
             --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --no-cleanup \
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
@@ -225,6 +236,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != '' && inputs.collector_query_endpoint != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TEST_NAME: collector
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -260,6 +273,8 @@ jobs:
             --template "$PYTHON_TEST_TEMPLATE" \
             --language python \
             --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --no-cleanup \
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
