@@ -114,7 +114,7 @@ repository. For Java, JavaScript/Node.js, and Python:
    execution and OTel APIs.
 4. Accept the OTel template parameters documented in the package
    [README](README.md).
-5. Exercise the scenario with the test collector before using a hosted backend.
+5. Exercise the scenario with the S3 collector before using a hosted backend.
 6. Declare a missing handler under `TestingMetadata.NotImplemented`; its
    `reason` may be empty.
 
@@ -174,23 +174,30 @@ hatch run dist:all
 `hatch run dist:all` verifies both archives and installs the built wheels in
 isolation to confirm extension discovery and packaged requirement loading.
 
-For an end-to-end local run, start the test collector:
+For an end-to-end run, start OpenTelemetry Collector Contrib with the example
+[`awss3exporter` configuration](examples/collector/config.yaml):
 
 ```bash
-durable-execution-otel-collector --host 0.0.0.0 --port 4318
+AWS_REGION=us-west-2 \
+OTEL_S3_BUCKET=example-telemetry \
+OTEL_S3_PREFIX=durable-execution \
+otelcol-contrib --config examples/collector/config.yaml
 ```
 
 Then run the conformance CLI with `--suite otel`,
-`--otel-exporter community`, and `--otel-backend collector`. Hosted-backend
-coverage should be added separately and must read all credentials from
-environment variables or CI secrets.
+`--otel-exporter community`, `--otel-backend collector`, the collector's
+reachable OTLP endpoint, and `--otel-backend-endpoint s3://bucket/prefix`.
+The backend supports the exporter's `otlp_json` and `otlp_proto` marshalers,
+with no compression, gzip, or zstd. Hosted-backend coverage should be added
+separately and must read all credentials from environment variables or CI
+secrets.
 
 ## Pull-Request Checklist
 
 - The requirement is language-neutral and provider-neutral.
 - Java, JavaScript/Node.js, and Python handlers are implemented or their gaps
   are declared.
-- The test collector exercises the new behavior.
+- The S3 collector exercises the new behavior.
 - Unit tests cover success and actionable failure diagnostics.
 - Requirement discovery works from both source and built wheels.
 - No secrets or provider credentials appear in fixtures, diagnostics, or

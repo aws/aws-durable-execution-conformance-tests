@@ -53,11 +53,12 @@ Set `ADOT_LAYER_ARN` to the current regional ARN from the
 The runner supplies all OTel SAM parameters. The execution role must allow
 Durable Execution, logs, and X-Ray access.
 
-## Run Against The Test Collector
+## Run Against The AWS S3 Collector
 
-Start `durable-execution-otel-collector` on an HTTPS endpoint reachable from
-the deployed Lambda functions. Pass the OTLP ingest endpoint separately from
-the collector query endpoint:
+Start OpenTelemetry Collector Contrib with the package's
+[`awss3exporter` configuration](../collector/config.yaml) on an HTTPS endpoint
+reachable from the deployed Lambda functions. Pass its OTLP ingest endpoint
+separately from the S3 location queried by the conformance backend:
 
 ```bash
 durable-execution-conformance \
@@ -67,12 +68,15 @@ durable-execution-conformance \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter community \
   --otel-backend collector \
-  --otel-endpoint https://collector.example/v1/traces \
-  --otel-backend-endpoint https://collector.example
+  --otel-endpoint https://otel-collector.example/v1/traces \
+  --otel-backend-endpoint s3://example-telemetry/durable-execution
 ```
 
 `localhost` is not reachable from a Lambda function deployed by SAM. Use a
-network-accessible collector endpoint for an end-to-end run.
+network-accessible collector endpoint for an end-to-end run. The collector
+writes official `awss3exporter` OTLP files; this repository does not provide a
+custom S3 exporter. The runner's AWS identity must be able to list the bucket
+and read objects under the configured prefix.
 
 ## Build Only
 

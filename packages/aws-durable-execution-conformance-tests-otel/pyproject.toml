@@ -27,9 +27,6 @@ Homepage = "https://github.com/aws/aws-durable-execution-conformance-tests"
 Repository = "https://github.com/aws/aws-durable-execution-conformance-tests"
 Issues = "https://github.com/aws/aws-durable-execution-conformance-tests/issues"
 
-[project.scripts]
-durable-execution-otel-collector = "aws_durable_execution_conformance_tests_otel.collector:main"
-
 [project.entry-points."aws_durable_execution_conformance_tests.extensions"]
 otel = "aws_durable_execution_conformance_tests_otel.extension:OtelExtension"
 

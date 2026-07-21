@@ -109,7 +109,7 @@ class OtelExtension:
         group.add_argument(
             "--otel-backend-endpoint",
             default=None,
-            help="Non-secret backend query endpoint override.",
+            help="Backend query endpoint (for collector, s3://bucket/prefix).",
         )
         group.add_argument(
             "--otel-service-name",

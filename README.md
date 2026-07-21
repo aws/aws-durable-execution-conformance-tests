@@ -80,7 +80,7 @@ The OTel package supports these v1 combinations:
 | ADOT | X-Ray |
 | OpenTelemetry community layer | Datadog |
 | OpenTelemetry community layer | Dash0 |
-| OpenTelemetry community layer | Test OTLP collector |
+| OpenTelemetry community layer | AWS S3 collector |
 
 Java, JavaScript/Node.js, and Python profiles are included. Unsupported
 combinations fail during argument validation, before SAM build or deployment.
@@ -92,8 +92,8 @@ hatch run validate \
   --suite otel \
   --otel-exporter community \
   --otel-backend collector \
-  --otel-endpoint https://collector.example/v1/traces \
-  --otel-backend-endpoint https://collector.example
+  --otel-endpoint https://otel-collector.example/v1/traces \
+  --otel-backend-endpoint s3://example-telemetry/durable-execution
 ```
 
 Credentials are read only from the environment:
@@ -101,11 +101,13 @@ Credentials are read only from the environment:
 - Datadog: `DD_API_KEY`, `DD_APPLICATION_KEY`
 - Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
+- S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
 
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
-for the template parameter contract and collector command.
+for the template parameter contract and the prototype OpenTelemetry Collector
+Contrib `awss3exporter` configuration.
 
 The self-contained
 [Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)

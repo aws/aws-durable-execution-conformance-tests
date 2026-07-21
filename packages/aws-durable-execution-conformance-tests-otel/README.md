@@ -25,8 +25,8 @@ durable-execution-conformance \
   --suite otel \
   --otel-exporter community \
   --otel-backend collector \
-  --otel-endpoint https://collector.example/v1/traces \
-  --otel-backend-endpoint https://collector.example
+  --otel-endpoint https://otel-collector.example/v1/traces \
+  --otel-backend-endpoint s3://example-telemetry/durable-execution
 ```
 
 The SDK test template must accept the non-secret parameters `OtelLayerArn`,
@@ -48,21 +48,39 @@ syntax and supported span fields.
 | ADOT | X-Ray | AWS credential chain |
 | Community layer | Datadog | `DD_API_KEY`, `DD_APPLICATION_KEY` |
 | Community layer | Dash0 | `DASH0_AUTH_TOKEN` |
-| Community layer | Test collector | none |
+| Community layer | AWS S3 collector | AWS credential chain |
 
 Java, JavaScript/Node.js, and Python wrapper settings are included. Provide the
 ADOT layer ARN with `--otel-layer-arn` or the runtime-specific
 `ADOT_<RUNTIME>_LAYER_ARN` environment variable. The hosted integration
 workflow discovers the latest Python layer from the ADOT release.
 
-Run the deterministic collector with:
+## AWS S3 Collector Prototype
+
+The `collector` backend reads trace files written by the OpenTelemetry
+Collector Contrib
+[`awss3exporter`](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/awss3exporter).
+This repository does not implement an exporter. Start `otelcol-contrib` with
+the included [configuration](examples/collector/config.yaml):
 
 ```bash
-durable-execution-otel-collector --host 0.0.0.0 --port 4318
+AWS_REGION=us-west-2 \
+OTEL_S3_BUCKET=example-telemetry \
+OTEL_S3_PREFIX=durable-execution \
+otelcol-contrib --config examples/collector/config.yaml
 ```
 
-It accepts OTLP JSON or protobuf at `/v1/traces` and exposes its canonical,
-in-memory trace lookup API at `/api/traces`.
+The sample receives OTLP over HTTP or gRPC and uses the exporter's
+`otlp_json` marshaler with gzip compression. The backend also supports
+`otlp_proto` objects and the exporter's uncompressed, gzip, and zstd modes.
+Pass the collector's reachable OTLP endpoint through `--otel-endpoint` and its
+S3 destination through `--otel-backend-endpoint s3://bucket/prefix` (or
+`OTEL_COLLECTOR_S3_URI`). The runner's AWS identity needs `s3:ListBucket` on
+the bucket and `s3:GetObject` under the prefix; the collector identity needs
+write access.
+
+This is a query-side prototype and is not wired into the hosted integration
+workflow.
 
 ## Python Examples
 
