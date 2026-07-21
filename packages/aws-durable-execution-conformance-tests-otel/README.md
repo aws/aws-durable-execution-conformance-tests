@@ -50,10 +50,10 @@ syntax and supported span fields.
 | Community layer | Dash0 | `DASH0_AUTH_TOKEN` |
 | Community layer | Test collector | none |
 
-Java, JavaScript/Node.js, and Python layer settings are included. Layer ARNs can
-be overridden with `--otel-layer-arn` or the profile/runtime-specific
-environment variables documented by `AdotExporterProfile` and
-`CommunityExporterProfile`.
+Java, JavaScript/Node.js, and Python wrapper settings are included. Provide the
+ADOT layer ARN with `--otel-layer-arn` or the runtime-specific
+`ADOT_<RUNTIME>_LAYER_ARN` environment variable. The hosted integration
+workflow discovers the latest Python layer from the ADOT release.
 
 Run the deterministic collector with:
 

@@ -16,12 +16,13 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 
 
-def _options(runtime: str = "python") -> ExporterOptions:
+def _options(runtime: str = "python", *, layer_arn: str | None = None) -> ExporterOptions:
     return ExporterOptions(
         runtime=runtime,
         region="us-west-2",
         endpoint="https://collector.example/v1/traces",
         service_name="conformance",
+        layer_arn=layer_arn,
     )
 
 
@@ -34,36 +35,16 @@ def _options(runtime: str = "python") -> ExporterOptions:
     ],
 )
 def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: str) -> None:
-    config = AdotExporterProfile().configure(_options(runtime))
+    config = AdotExporterProfile().configure(_options(runtime, layer_arn=expected_layer))
 
     assert config.layer_arns == (expected_layer,)
     assert config.environment["OTEL_TRACES_EXPORTER"] == "xray"
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
-def test_adot_uses_region_specific_account_version_and_partition() -> None:
-    options = ExporterOptions(
-        runtime="python",
-        region="cn-north-1",
-        endpoint=None,
-        service_name="test",
-    )
-
-    config = AdotExporterProfile().configure(options)
-
-    assert config.layer_arns == ("arn:aws-cn:lambda:cn-north-1:440179912924:layer:AWSOpenTelemetryDistroPython:14",)
-
-
-def test_adot_requires_override_when_runtime_is_unavailable_in_region() -> None:
-    options = ExporterOptions(
-        runtime="python",
-        region="me-south-1",
-        endpoint=None,
-        service_name="test",
-    )
-
-    with pytest.raises(ValueError, match="provide an explicit layer ARN"):
-        AdotExporterProfile().configure(options)
+def test_adot_requires_explicit_layer_arn() -> None:
+    with pytest.raises(ValueError, match="pass --otel-layer-arn or set ADOT_PYTHON_LAYER_ARN"):
+        AdotExporterProfile().configure(_options())
 
 
 @pytest.mark.parametrize("runtime", ["java", "js", "python"])
@@ -101,7 +82,7 @@ def _args(exporter: str, backend: str) -> argparse.Namespace:
         otel_endpoint="http://collector:4318",
         otel_backend_endpoint=None,
         otel_service_name="test",
-        otel_layer_arn=None,
+        otel_layer_arn="arn:aws:lambda:us-west-2:123456789012:layer:adot:1" if exporter == "adot" else None,
         otel_poll_timeout=10.0,
         otel_poll_interval=0.0,
         otel_poll_attempts=3,

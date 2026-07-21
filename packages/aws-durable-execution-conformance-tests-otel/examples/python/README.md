@@ -44,11 +44,14 @@ durable-execution-conformance \
   --suite otel \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter adot \
+  --otel-layer-arn "$ADOT_LAYER_ARN" \
   --otel-backend xray
 ```
 
-The runner supplies the ADOT layer ARN and all OTel SAM parameters. The
-execution role must allow Durable Execution, logs, and X-Ray access.
+Set `ADOT_LAYER_ARN` to the current regional ARN from the
+[ADOT Python release](https://github.com/aws-observability/aws-otel-python-instrumentation/releases/latest).
+The runner supplies all OTel SAM parameters. The execution role must allow
+Durable Execution, logs, and X-Ray access.
 
 ## Run Against The Test Collector
 
