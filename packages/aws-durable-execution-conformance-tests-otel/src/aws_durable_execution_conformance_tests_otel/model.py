@@ -89,19 +89,22 @@ def trace_to_dict(trace: Trace) -> dict[str, Any]:
     return {
         "trace_id": trace.trace_id,
         "log_trace_ids": list(trace.log_trace_ids),
-        "spans": [
-            {
-                "trace_id": span.trace_id,
-                "span_id": span.span_id,
-                "parent_span_id": span.parent_span_id,
-                "name": span.name,
-                "start_time": span.start_time.isoformat(),
-                "end_time": span.end_time.isoformat(),
-                "status": span.status,
-                "service_name": span.service_name,
-                "attributes": dict(span.attributes),
-                "links": [{"trace_id": link.trace_id, "span_id": link.span_id} for link in span.links],
-            }
-            for span in trace.spans
-        ],
+        "spans": [span_to_dict(span) for span in trace.spans],
+    }
+
+
+def span_to_dict(span: Span) -> dict[str, Any]:
+    """Serialize every canonical span property for generic assertions."""
+
+    return {
+        "trace_id": span.trace_id,
+        "span_id": span.span_id,
+        "parent_span_id": span.parent_span_id,
+        "name": span.name,
+        "start_time": span.start_time.isoformat(),
+        "end_time": span.end_time.isoformat(),
+        "status": span.status,
+        "service_name": span.service_name,
+        "attributes": dict(span.attributes),
+        "links": [{"trace_id": link.trace_id, "span_id": link.span_id} for link in span.links],
     }

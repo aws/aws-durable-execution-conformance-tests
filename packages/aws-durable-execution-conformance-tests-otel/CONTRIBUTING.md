@@ -62,6 +62,33 @@ The currently supported telemetry assertions are:
 | `require_continuation` | Require an in-trace parent or span-link relationship. |
 | `require_log_trace_correlation` | Require backend-provided log trace IDs to match the active trace. |
 | `required_outcomes` | Require outcomes such as `retry`, `success`, or `failure`. |
+| `span_assertions` | Select one span and assert arbitrary canonical properties or metadata. |
+
+`span_assertions` accepts one mapping or a list of mappings. Each `select`
+mapping must match exactly one span. The corresponding `expect` mapping is a
+partial assertion, so unlisted properties and metadata are ignored:
+
+```yaml
+TelemetryAssertions:
+  span_assertions:
+    select:
+      name: durable step
+      attributes:
+        durable.operation.type: step
+    expect:
+      status: OK
+      service_name: conformance
+      parent_span_id: "*"
+      attributes:
+        durable.operation.outcome: success
+```
+
+Both `select` and `expect` can use any canonical span property: `trace_id`,
+`span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,
+`service_name`, `attributes`, or `links`. Nested mappings support arbitrary
+attribute metadata without interpreting provider-specific keys. Use `"*"` when
+a property must exist but its value is intentionally dynamic. Sequence
+assertions, including `links`, compare length, order, and nested values.
 
 Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable
@@ -104,7 +131,8 @@ When a new assertion is necessary:
 5. Document the new key in the table above.
 
 Do not read raw backend payloads from a requirement validator. Provider-specific
-translation belongs in `normalizers.py` or the relevant backend adapter.
+translation belongs in the relevant backend module; shared OTLP translation
+belongs in `normalizers.py`.
 
 ## Update Package Tests
 

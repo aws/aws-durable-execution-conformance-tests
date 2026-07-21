@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from aws_durable_execution_conformance_tests_otel.model import (
     Span,
+    SpanLink,
     TelemetryQuery,
     Trace,
 )
@@ -44,7 +45,12 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         attributes={
             "durable.execution.arn": execution_arn,
             "faas.invocation_id": "invocation-2",
+            "custom.metadata": {
+                "attempt": 2,
+                "labels": ["durable", "resumed"],
+            },
         },
+        links=(SpanLink(trace_id="1" * 32, span_id=root.span_id),),
     )
     return Trace(trace_id="1" * 32, spans=(root, child), log_trace_ids=("1" * 32,))
 
@@ -81,6 +87,108 @@ def test_reports_correlation_and_outcome_mismatches() -> None:
     )
     assert any("durable execution ARN" in error for error in errors)
     assert any("Missing operation outcome" in error for error in errors)
+
+
+def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {
+                    "name": "child",
+                    "attributes": {"faas.invocation_id": "invocation-2"},
+                },
+                "expect": {
+                    "trace_id": "1" * 32,
+                    "span_id": "3" * 16,
+                    "parent_span_id": "2" * 16,
+                    "name": "child",
+                    "start_time": "*",
+                    "end_time": "*",
+                    "status": "OK",
+                    "service_name": "service",
+                    "attributes": {
+                        "durable.execution.arn": "arn:test",
+                        "faas.invocation_id": "invocation-2",
+                        "custom.metadata": {
+                            "attempt": 2,
+                            "labels": ["durable", "resumed"],
+                        },
+                    },
+                    "links": [
+                        {
+                            "trace_id": "1" * 32,
+                            "span_id": "2" * 16,
+                        }
+                    ],
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": [
+                {
+                    "select": {"name": "missing"},
+                    "expect": {"status": "OK"},
+                },
+                {
+                    "select": {"status": "OK"},
+                    "expect": {"service_name": "service"},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "status": "ERROR",
+                        "attributes": {"missing.key": "value"},
+                        "links": [],
+                    },
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert "span_assertions[0].select matched no spans" in errors
+    assert "span_assertions[1].select matched 2 spans; it must select exactly one" in errors
+    assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
+    assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
+    assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
+
+
+def test_reports_invalid_span_assertion_schema() -> None:
+    assert validate_trace(
+        _trace(),
+        {"span_assertions": "not-a-mapping-or-sequence"},
+        _query(),
+    ) == ["span_assertions must be a mapping or sequence of mappings"]
+
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": [
+                "not-a-mapping",
+                {"select": "root", "expect": {}},
+                {"select": {"name": "root"}},
+                {"select": {}, "expect": {}, "unknown": True},
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == [
+        "span_assertions[0] must be a mapping",
+        "span_assertions[1].select must be a mapping",
+        "span_assertions[2].expect must be a mapping",
+        "span_assertions[3] has unknown field(s): unknown",
+    ]
 
 
 def test_redacts_secret_keys_and_values() -> None:

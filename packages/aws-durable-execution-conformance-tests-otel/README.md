@@ -36,6 +36,11 @@ The SDK test template must accept the non-secret parameters `OtelLayerArn`,
 Credentials and OTLP headers remain in environment variables or the CI secret
 store; the runner redacts the secret parameter from commands and SAM output.
 
+`TelemetryAssertions.span_assertions` can select exactly one canonical span and
+assert any of its properties or nested attributes. See the
+[contribution guide](CONTRIBUTING.md#add-a-requirement) for the requirement
+syntax and supported span fields.
+
 ## Support Matrix
 
 | Exporter | Backend | Credentials |

@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
     normalize_id,
+    span_to_dict,
 )
 
 _EXECUTION_ATTRIBUTE_KEYS = (
@@ -35,6 +36,117 @@ def _attribute_values(
     keys: tuple[str, ...],
 ) -> list[str]:
     return [str(span.attributes[key]).lower() for span in trace.spans for key in keys if key in span.attributes]
+
+
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _matches(expected: Any, actual: Any) -> bool:
+    if expected == "*":
+        return True
+    if isinstance(expected, Mapping):
+        return isinstance(actual, Mapping) and all(
+            key in actual and _matches(value, actual[key]) for key, value in expected.items()
+        )
+    if _is_sequence(expected):
+        return (
+            _is_sequence(actual)
+            and len(expected) == len(actual)
+            and all(
+                _matches(expected_item, actual_item)
+                for expected_item, actual_item in zip(expected, actual, strict=True)
+            )
+        )
+    return expected == actual
+
+
+def _expectation_errors(
+    expected: Any,
+    actual: Any,
+    *,
+    path: str,
+) -> list[str]:
+    if expected == "*":
+        return []
+    if isinstance(expected, Mapping):
+        if not isinstance(actual, Mapping):
+            return [f"{path}: expected a mapping"]
+        errors: list[str] = []
+        for key, value in expected.items():
+            child_path = f"{path}.{key}"
+            if key not in actual:
+                errors.append(f"{child_path}: property is missing")
+                continue
+            errors.extend(_expectation_errors(value, actual[key], path=child_path))
+        return errors
+    if _is_sequence(expected):
+        if not _is_sequence(actual):
+            return [f"{path}: expected a sequence"]
+        if len(expected) != len(actual):
+            return [f"{path}: expected {len(expected)} item(s), found {len(actual)}"]
+        errors = []
+        for index, (expected_item, actual_item) in enumerate(zip(expected, actual, strict=True)):
+            errors.extend(
+                _expectation_errors(
+                    expected_item,
+                    actual_item,
+                    path=f"{path}[{index}]",
+                )
+            )
+        return errors
+    if expected != actual:
+        return [f"{path}: expected {expected!r}"]
+    return []
+
+
+def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
+    if raw_assertions is None:
+        return []
+    if isinstance(raw_assertions, Mapping):
+        span_assertions = [raw_assertions]
+    elif _is_sequence(raw_assertions):
+        span_assertions = list(raw_assertions)
+    else:
+        return ["span_assertions must be a mapping or sequence of mappings"]
+
+    spans = [span_to_dict(span) for span in trace.spans]
+    errors: list[str] = []
+    for index, assertion in enumerate(span_assertions):
+        path = f"span_assertions[{index}]"
+        if not isinstance(assertion, Mapping):
+            errors.append(f"{path} must be a mapping")
+            continue
+
+        unknown = sorted(set(assertion) - {"select", "expect"}, key=str)
+        if unknown:
+            errors.append(f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}")
+            continue
+
+        selector = assertion.get("select", {})
+        expected = assertion.get("expect")
+        if not isinstance(selector, Mapping):
+            errors.append(f"{path}.select must be a mapping")
+            continue
+        if not isinstance(expected, Mapping):
+            errors.append(f"{path}.expect must be a mapping")
+            continue
+
+        matches = [span for span in spans if _matches(selector, span)]
+        if not matches:
+            errors.append(f"{path}.select matched no spans")
+            continue
+        if len(matches) > 1:
+            errors.append(f"{path}.select matched {len(matches)} spans; it must select exactly one")
+            continue
+        errors.extend(
+            _expectation_errors(
+                expected,
+                matches[0],
+                path=f"{path}.expect",
+            )
+        )
+    return errors
 
 
 def validate_trace(
@@ -104,5 +216,7 @@ def validate_trace(
         }
         if mismatched:
             errors.append("Log trace identifiers do not match the active trace")
+
+    errors.extend(_span_assertion_errors(trace, assertions.get("span_assertions")))
 
     return errors
