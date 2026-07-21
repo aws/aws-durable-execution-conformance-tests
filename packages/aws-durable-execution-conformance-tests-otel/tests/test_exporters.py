@@ -25,19 +25,45 @@ def _options(runtime: str = "python") -> ExporterOptions:
     )
 
 
-@pytest.mark.parametrize("runtime", ["java", "javascript", "python"])
-def test_adot_configures_each_supported_runtime(runtime: str) -> None:
+@pytest.mark.parametrize(
+    ("runtime", "expected_layer"),
+    [
+        ("java", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16"),
+        ("javascript", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJs:15"),
+        ("python", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroPython:33"),
+    ],
+)
+def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: str) -> None:
     config = AdotExporterProfile().configure(_options(runtime))
 
-    assert config.layer_arns[0].startswith("arn:aws:lambda:us-west-2:")
+    assert config.layer_arns == (expected_layer,)
     assert config.environment["OTEL_TRACES_EXPORTER"] == "xray"
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
-def test_adot_uses_current_public_python_layer() -> None:
-    config = AdotExporterProfile().configure(_options())
+def test_adot_uses_region_specific_account_version_and_partition() -> None:
+    options = ExporterOptions(
+        runtime="python",
+        region="cn-north-1",
+        endpoint=None,
+        service_name="test",
+    )
 
-    assert config.layer_arns == ("arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-python-amd64-ver-1-32-0:2",)
+    config = AdotExporterProfile().configure(options)
+
+    assert config.layer_arns == ("arn:aws-cn:lambda:cn-north-1:440179912924:layer:AWSOpenTelemetryDistroPython:14",)
+
+
+def test_adot_requires_override_when_runtime_is_unavailable_in_region() -> None:
+    options = ExporterOptions(
+        runtime="python",
+        region="me-south-1",
+        endpoint=None,
+        service_name="test",
+    )
+
+    with pytest.raises(ValueError, match="provide an explicit layer ARN"):
+        AdotExporterProfile().configure(options)
 
 
 @pytest.mark.parametrize("runtime", ["java", "js", "python"])
