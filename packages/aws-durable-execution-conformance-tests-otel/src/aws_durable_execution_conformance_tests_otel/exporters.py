@@ -73,7 +73,7 @@ class AdotExporterProfile:
         environment = {
             "AWS_LAMBDA_EXEC_WRAPPER": self._WRAPPERS[runtime],
             "OTEL_SERVICE_NAME": options.service_name,
-            "OTEL_TRACES_EXPORTER": "xray",
+            "OTEL_TRACES_EXPORTER": "otlp",
             "OTEL_PROPAGATORS": "xray",
         }
         return ExporterConfiguration(

@@ -38,7 +38,9 @@ def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: st
     config = AdotExporterProfile().configure(_options(runtime, layer_arn=expected_layer))
 
     assert config.layer_arns == (expected_layer,)
-    assert config.environment["OTEL_TRACES_EXPORTER"] == "xray"
+    assert config.environment["OTEL_TRACES_EXPORTER"] == "otlp"
+    assert config.environment["OTEL_PROPAGATORS"] == "xray"
+    assert config.parameter_overrides["OtelTracesExporter"] == "otlp"
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
