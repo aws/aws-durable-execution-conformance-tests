@@ -119,7 +119,7 @@ jobs:
         if: failure()
         run: |
           for case_number in 1 2 3 4; do
-            log_group="/aws/lambda/otel-${case_number}-durable-execution-conformance-tests-${TEST_NAME}"
+            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"

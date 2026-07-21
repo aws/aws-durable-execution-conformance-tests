@@ -47,7 +47,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS)
     assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS)
     for case_number in range(1, 5):
-        assert f'FunctionName: !Sub "otel-{case_number}-${{AWS::StackName}}"' in template
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
 
 
 def test_python_example_handlers_are_valid_python() -> None:

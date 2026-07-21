@@ -107,8 +107,9 @@ repository. For Java, JavaScript/Node.js, and Python:
 
 1. Map the function to the new requirement ID with
    `TestingMetadata.TestDescription`.
-2. Prefix the handler filename and deployed `FunctionName` with the case ID
-   (for example, `otel_5_scenario.py` and `otel-5-${AWS::StackName}`).
+2. Prefix the handler filename with the case ID and suffix the deployed
+   `FunctionName` with it (for example, `otel_5_scenario.py` and
+   `${AWS::StackName}-otel-5`).
 3. Implement the `Input.scenario` contract with the SDK's public durable
    execution and OTel APIs.
 4. Accept the OTel template parameters documented in the package
