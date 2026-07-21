@@ -38,10 +38,10 @@ adot = "aws_durable_execution_conformance_tests_otel.exporters:AdotExporterProfi
 community = "aws_durable_execution_conformance_tests_otel.exporters:CommunityExporterProfile"
 
 [project.entry-points."aws_durable_execution_conformance_tests_otel.backends"]
-xray = "aws_durable_execution_conformance_tests_otel.backends:XRayBackendFactory"
-datadog = "aws_durable_execution_conformance_tests_otel.backends:DatadogBackendFactory"
-dash0 = "aws_durable_execution_conformance_tests_otel.backends:Dash0BackendFactory"
-collector = "aws_durable_execution_conformance_tests_otel.backends:CollectorBackendFactory"
+xray = "aws_durable_execution_conformance_tests_otel.backends.xray:XRayBackendFactory"
+datadog = "aws_durable_execution_conformance_tests_otel.backends.datadog:DatadogBackendFactory"
+dash0 = "aws_durable_execution_conformance_tests_otel.backends.dash0:Dash0BackendFactory"
+collector = "aws_durable_execution_conformance_tests_otel.backends.collector:CollectorBackendFactory"
 
 [tool.hatch.version]
 path = "src/aws_durable_execution_conformance_tests_otel/__about__.py"

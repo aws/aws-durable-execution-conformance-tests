@@ -10,11 +10,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from aws_durable_execution_conformance_tests_otel.backends import (
-    Dash0Backend,
+from aws_durable_execution_conformance_tests_otel.backends.dash0 import Dash0Backend
+from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DatadogBackend,
-    XRayBackend,
 )
+from aws_durable_execution_conformance_tests_otel.backends.xray import XRayBackend
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery
 from aws_durable_execution_conformance_tests_otel.polling import PollingPolicy
 

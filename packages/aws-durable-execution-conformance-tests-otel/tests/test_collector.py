@@ -9,7 +9,9 @@ import json
 import urllib.request
 from datetime import UTC, datetime
 
-from aws_durable_execution_conformance_tests_otel.backends import CollectorBackend
+from aws_durable_execution_conformance_tests_otel.backends.collector import (
+    CollectorBackend,
+)
 from aws_durable_execution_conformance_tests_otel.collector import CollectorServer
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery
 from aws_durable_execution_conformance_tests_otel.polling import PollingPolicy
