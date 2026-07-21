@@ -46,7 +46,7 @@ class AdotExporterProfile:
     supported_backends = frozenset({"xray"})
 
     _LAYERS: ClassVar[dict[str, str]] = {
-        "python": "aws-otel-python-amd64-ver-1-29-0:4",
+        "python": "aws-otel-python-amd64-ver-1-32-0:2",
         "java": "aws-otel-java-agent-amd64-ver-1-32-0:4",
         "javascript": "aws-otel-nodejs-amd64-ver-1-30-0:4",
     }

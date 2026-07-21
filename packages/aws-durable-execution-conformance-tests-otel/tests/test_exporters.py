@@ -34,6 +34,12 @@ def test_adot_configures_each_supported_runtime(runtime: str) -> None:
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
+def test_adot_uses_current_public_python_layer() -> None:
+    config = AdotExporterProfile().configure(_options())
+
+    assert config.layer_arns == ("arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-python-amd64-ver-1-32-0:2",)
+
+
 @pytest.mark.parametrize("runtime", ["java", "js", "python"])
 def test_community_configures_each_supported_runtime(runtime: str) -> None:
     config = CommunityExporterProfile().configure(_options(runtime))
