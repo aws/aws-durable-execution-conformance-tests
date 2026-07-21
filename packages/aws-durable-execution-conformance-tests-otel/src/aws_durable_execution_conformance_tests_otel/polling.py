@@ -50,18 +50,30 @@ class PollingBackend(ABC):
         self._monotonic = monotonic
         self._sleep = sleep
 
-    def find_trace(self, query: TelemetryQuery, policy: PollingPolicy) -> Trace:
+    def find_trace(
+        self,
+        query: TelemetryQuery,
+        policy: PollingPolicy,
+        *,
+        accept: Callable[[Trace], bool] | None = None,
+    ) -> Trace:
         started = self._monotonic()
         attempts = 0
+        latest_trace: Trace | None = None
         while attempts < policy.max_attempts:
             attempts += 1
             trace = self._lookup(query)
             if trace is not None:
-                return trace
+                latest_trace = trace
+                if accept is None or accept(trace):
+                    return trace
             elapsed = self._monotonic() - started
             if elapsed >= policy.timeout_seconds:
                 break
             self._sleep(min(policy.interval_seconds, policy.timeout_seconds - elapsed))
+
+        if latest_trace is not None:
+            return latest_trace
 
         raise TelemetryTimeout(
             f"No correlated trace was found in backend {self.name!r} after "

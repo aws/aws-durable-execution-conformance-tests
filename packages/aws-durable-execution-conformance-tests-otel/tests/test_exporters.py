@@ -133,8 +133,6 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     tmp_path: Path,
 ) -> None:
     trace = Trace(trace_id="1" * 32, spans=())
-    backend = SimpleNamespace(find_trace=lambda _query, _policy: trace)
-    factory = SimpleNamespace(create=lambda _options, *, region: backend)
     received: dict[str, Any] = {}
 
     def capture_assertions(
@@ -145,6 +143,12 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         received.update(assertions)
         return []
 
+    def find_trace(_query: object, _policy: object, *, accept: Any) -> Trace:
+        assert accept(trace)
+        return trace
+
+    backend = SimpleNamespace(find_trace=find_trace)
+    factory = SimpleNamespace(create=lambda _options, *, region: backend)
     monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"collector": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
 

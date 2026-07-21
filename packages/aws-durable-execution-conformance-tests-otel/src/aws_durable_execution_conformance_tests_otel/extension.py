@@ -201,14 +201,6 @@ class OtelExtension:
                 )
                 + timedelta(seconds=timeout),
             )
-            trace = backend.find_trace(
-                query,
-                PollingPolicy(
-                    timeout_seconds=timeout,
-                    interval_seconds=float(options["otel_poll_interval"]),
-                    max_attempts=int(options["otel_poll_attempts"]),
-                ),
-            )
             raw_assertions = context.requirement.get("TelemetryAssertions", {})
             if not isinstance(raw_assertions, Mapping):
                 return ["TelemetryAssertions must be a mapping"]
@@ -216,6 +208,15 @@ class OtelExtension:
             for name, value in context.placeholders.items():
                 placeholders.bind(name, value)
             assertions = placeholders.substitute(raw_assertions)
+            trace = backend.find_trace(
+                query,
+                PollingPolicy(
+                    timeout_seconds=timeout,
+                    interval_seconds=float(options["otel_poll_interval"]),
+                    max_attempts=int(options["otel_poll_attempts"]),
+                ),
+                accept=lambda candidate: not validate_trace(candidate, assertions, query),
+            )
             errors = validate_trace(trace, assertions, query)
             if errors:
                 self._write_artifact(context, trace_to_dict(trace))
