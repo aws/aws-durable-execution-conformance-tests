@@ -13,7 +13,8 @@ pip install aws-durable-execution-conformance-tests-otel
 
 The package requires a compatible `>=0.2,<0.3` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
-validators, and requirement resources.
+validators, and requirement resources. Core `0.2.0` introduces the extension
+API used to discover this suite; core `0.1.x` cannot load it.
 
 ## Run
 
@@ -68,3 +69,8 @@ Additional profiles and backends register entry points in:
 Names must be unique. A backend factory exposes `name` and
 `create(options, region=...)`; an exporter profile exposes `name`,
 `supported_backends`, and `configure(options)`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidance on adding OTel requirements,
+SDK test handlers, provider-neutral assertions, and test coverage.

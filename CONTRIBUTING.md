@@ -81,6 +81,10 @@ SDK incompatibility is useful evidence and should remain visible in the report.
 Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED` with a clear
 reason rather than silently excluding the requirement.
 
+For the OpenTelemetry suite, see the
+[OTel test-case contribution guide](packages/aws-durable-execution-conformance-tests-otel/CONTRIBUTING.md)
+for its requirement schema, SDK handler expectations, and validation guidance.
+
 ## Contributing through pull requests
 
 Before opening a pull request:
