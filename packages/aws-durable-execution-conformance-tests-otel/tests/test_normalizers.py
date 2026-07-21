@@ -73,7 +73,14 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
         "name": "conformance",
         "start_time": 1,
         "end_time": 2,
-        "annotations": {"durable_execution_arn": "arn:test"},
+        "annotations": {"indexed": "value"},
+        "metadata": {
+            "default": {
+                "durable.execution.arn": "arn:test",
+                "faas.invocation_id": "invocation-1",
+            },
+            "custom": {"tenant": "example"},
+        },
         "subsegments": [
             {
                 "id": "2" * 16,
@@ -88,6 +95,10 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
     trace = normalize_xray([json.dumps(document)])[0]
     assert trace.trace_id == "a" * 8 + "b" * 24
     assert len(trace.spans) == 2
+    assert trace.spans[0].attributes["indexed"] == "value"
+    assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
+    assert trace.spans[0].attributes["faas.invocation_id"] == "invocation-1"
+    assert trace.spans[0].attributes["xray.custom.tenant"] == "example"
     assert trace.spans[1].parent_span_id == "1" * 16
 
 

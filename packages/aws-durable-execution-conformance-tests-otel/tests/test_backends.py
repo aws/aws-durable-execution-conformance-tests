@@ -131,7 +131,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
                 "name": "conformance",
                 "start_time": 1,
                 "end_time": 2,
-                "annotations": {"durable_execution_arn": "arn:test"},
+                "metadata": {"default": {"durable.execution.arn": "arn:test"}},
             }
             return {"Traces": [{"Segments": [{"Document": json.dumps(document)}]}]}
 
@@ -141,4 +141,4 @@ def test_xray_queries_summaries_then_batch_get() -> None:
         PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
     )
 
-    assert trace.spans[0].attributes["durable_execution_arn"] == "arn:test"
+    assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"

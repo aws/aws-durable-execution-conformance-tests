@@ -29,6 +29,20 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 )
 
 
+def _metadata_attributes(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    attributes: dict[str, Any] = {}
+    for namespace, values in metadata.items():
+        if not isinstance(values, Mapping):
+            attributes[f"xray.{namespace}"] = values
+        elif namespace == "default":
+            attributes.update(values)
+        else:
+            attributes.update({f"xray.{namespace}.{key}": value for key, value in values.items()})
+    return attributes
+
+
 def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
     """Normalize AWS X-Ray segment documents."""
 
@@ -46,7 +60,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
         end = parse_timestamp(segment.get("end_time", segment.get("start_time", 0)))
         attributes = {
             **dict(segment.get("annotations", {})),
-            **{f"xray.{key}": value for key, value in segment.get("metadata", {}).items()},
+            **_metadata_attributes(segment.get("metadata")),
         }
         status = "ERROR" if any(segment.get(flag) for flag in ("error", "fault", "throttle")) else "OK"
         grouped[trace_id].append(
