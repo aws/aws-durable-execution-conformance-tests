@@ -65,6 +65,8 @@ def test_python_example_template_accepts_runner_parameters() -> None:
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")

@@ -204,7 +204,7 @@ Resources:
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
-          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Ref Otel11InvokeTarget
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"
 
   Otel11InvokeTarget:
     Type: AWS::Serverless::Function
@@ -311,7 +311,7 @@ Resources:
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
-          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Ref Otel18InvokeTarget
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"
 
   Otel18InvokeTarget:
     Type: AWS::Serverless::Function
