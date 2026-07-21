@@ -35,7 +35,7 @@ def _metadata_attributes(metadata: Any) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
     for namespace, values in metadata.items():
         if not isinstance(values, Mapping):
-            attributes[f"xray.{namespace}"] = values
+            attributes[str(namespace)] = values
         elif namespace == "default":
             attributes.update(values)
         else:

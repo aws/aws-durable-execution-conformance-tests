@@ -124,19 +124,13 @@ jobs:
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
-      - name: Show X-Ray trace diagnostics
+      - name: Show normalized X-Ray trace diagnostics
         if: failure()
         run: |
           shopt -s nullglob
           for artifact in packages/aws-durable-execution-conformance-tests/output/*-otel.json; do
             echo "::group::$artifact"
             cat "$artifact"
-            trace_id=$(jq -r '.trace_id' "$artifact")
-            xray_trace_id="1-${trace_id:0:8}-${trace_id:8}"
-            aws xray batch-get-traces \
-              --trace-ids "$xray_trace_id" \
-              --region "$AWS_REGION" \
-              --output json
             echo "::endgroup::"
           done
 

@@ -131,7 +131,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
                 "name": "conformance",
                 "start_time": 1,
                 "end_time": 2,
-                "metadata": {"default": {"durable.execution.arn": "arn:test"}},
+                "metadata": {"durable.execution.arn": "arn:test"},
             }
             return {"Traces": [{"Segments": [{"Document": json.dumps(document)}]}]}
 
