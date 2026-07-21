@@ -41,6 +41,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TEST_NAME: xray-${{ github.run_number }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -102,11 +104,21 @@ jobs:
             --template "$PYTHON_TEST_TEMPLATE" \
             --language python \
             --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-backend xray
+      - name: Show Lambda logs
+        if: failure()
+        run: |
+          for case_number in 1 2 3 4; do
+            log_group="/aws/lambda/otel-${case_number}-durable-execution-conformance-tests-${TEST_NAME}"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 20m --format short || true
+            echo "::endgroup::"
+          done
 
   datadog:
     name: Community layer + Datadog
