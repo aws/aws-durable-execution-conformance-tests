@@ -14,7 +14,7 @@ handler: |
   proven by the correct post-replay result (reconstruction only succeeds if the custom deserializer
   ran). Max-concurrency is 1 for a deterministic history.
   Note: JS and Python expose a distinct whole-result serdes; the Java MapConfig has a single serDes
-  applied to both items and the result, so this operation-level serde test is not implemented for Java.
+  applied to both items and the result, so this operation-level serde test is uncovered for Java.
 invocations: |
   - Handler invokes map(name="op-serde-replay", items=["x", "y"], mapFunc, operation-level serdes
     set, max-concurrency=1). The SDK checkpoints ContextStarted (SubType Map), runs both iterations

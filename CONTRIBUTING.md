@@ -78,8 +78,8 @@ real public API. Do not replace a missing or defective SDK capability with
 hand-written logic that forces a test to pass. A failing test that exposes an
 SDK incompatibility is useful evidence and should remain visible in the report.
 
-When an SDK has no handler for a requirement, omit that requirement's function
-from its template. The runner reports the missing mapping as `NOT_IMPLEMENTED`.
+Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED`; the reason may
+be left empty when the missing handler is self-explanatory.
 
 For the OpenTelemetry suite, see the
 [OTel test-case contribution guide](packages/aws-durable-execution-conformance-tests-otel/CONTRIBUTING.md)

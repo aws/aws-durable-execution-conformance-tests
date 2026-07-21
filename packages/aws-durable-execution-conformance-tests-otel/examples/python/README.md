@@ -9,9 +9,10 @@ AWS Durable Execution SDK for Python and its OpenTelemetry plugin:
 The project is intentionally self-contained so this directory can move into the
 Python SDK's OpenTelemetry package once the suite is complete.
 
-The runner discovers each requirement mapping from the `otel-N` prefix on the
-deployed Lambda function name. The same prefix appears in the handler module
-name so cases are easy to correlate across the template and source tree.
+The runner discovers each requirement mapping from
+`TestingMetadata.TestDescription`. The same `otel-N` prefix appears in the
+handler module and deployed function name so cases are easy to correlate across
+the template and source tree.
 
 ## Scenarios
 

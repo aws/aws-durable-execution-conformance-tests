@@ -4,7 +4,7 @@
 """Main pipeline for the durable execution conformance test framework.
 
 1. Deploy all functions in template.yaml via SAM CLI
-2. Discover test IDs from each function's deployed-name prefix
+2. Parse TestingMetadata.TestDescription from each function to discover test IDs
 3. For each test description, invoke the function and validate execution history
 4. Print a summary of which test descriptions passed / failed
 """
@@ -15,7 +15,6 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +53,7 @@ from aws_durable_execution_conformance_tests.sam import (
 from aws_durable_execution_conformance_tests.validate import (
     DescriptionResult,
     parse_function_descriptions,
+    parse_not_implemented,
     validate_description,
 )
 
@@ -144,7 +144,9 @@ def parse_args(
         "--language",
         required=True,
         metavar="LANGUAGE",
-        help="SDK language/runtime under test (free-form, e.g. python, js, java, dotnet, go). Recorded in the report.",
+        help="SDK language/runtime under test (free-form, e.g. python, js, java, "
+        "dotnet, go). Recorded in the report and used to scope NOT_IMPLEMENTED "
+        "resolution (the validator runs one SDK per run).",
     )
     parser.add_argument(
         "--report",
@@ -163,8 +165,9 @@ def parse_args(
         "--fail-on",
         default="failed",
         choices=["failed", "failed+uncovered"],
-        help="Exit-code policy retained for report compatibility. Missing "
-        "handlers are NOT_IMPLEMENTED and never block the run.",
+        help="Exit-code policy: which statuses cause a non-zero exit. "
+        "'failed' (default) blocks only on FAILED; 'failed+uncovered' also blocks "
+        "on UNCOVERED. NOT_IMPLEMENTED and OPTIONAL_FAILED never block.",
     )
     try:
         registry.add_arguments(parser)
@@ -264,7 +267,8 @@ def _deploy_validate_report(
     # 2. Discover test descriptions from template
     function_descriptions = parse_function_descriptions(template_path)
     if not function_descriptions:
-        print("No functions with requirement ID-prefixed FunctionName values found in template.")
+        print("No functions with TestingMetadata.TestDescription found in template.")
+        sys.exit(0)
 
     # 3. Filter by suite if specified
     try:
@@ -277,6 +281,7 @@ def _deploy_validate_report(
         function_descriptions = [(fn, did) for fn, did in function_descriptions if did in requirements]
         if not function_descriptions:
             print(f"No test descriptions match suite(s) {args.suite!r} in the template.")
+            sys.exit(0)
 
     print(f"\n=== Found {len(function_descriptions)} test description(s) to validate ===")
     for fn, did in function_descriptions:
@@ -336,8 +341,27 @@ def _deploy_validate_report(
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # 5. Build the report model from results and missing implementations.
-    not_implemented = _find_not_implemented(requirements, function_descriptions)
+    # 5. Build the report model from results + coverage.
+    # Coverage check -- descriptions in tests/ with no example in template.
+    all_description_ids = sorted(requirements)
+    referenced_description_ids = {did for _, did in function_descriptions}
+    uncovered = [did for did in all_description_ids if did not in referenced_description_ids]
+
+    # Declared intentional gaps for this SDK's template.
+    not_implemented = parse_not_implemented(template_path)
+
+    # Warn on stale declarations: an id declared NotImplemented that is actually
+    # covered by an example (e.g. the SDK gained the feature and an example was
+    # added, but the declaration was never removed). Only uncovered ids consult
+    # not_implemented, so such a declaration would otherwise be silently ignored.
+    report_warnings: list[str] = []
+    for did in sorted(set(not_implemented) & referenced_description_ids):
+        message = (
+            f"'{did}' is declared NotImplemented but is covered by an example in "
+            f"the template; the declaration may be stale."
+        )
+        report_warnings.append(message)
+        print(f"  WARNING: {message}", file=sys.stderr)
 
     def _suite_for(description_id: str) -> str | None:
         requirement = requirements.get(description_id)
@@ -372,6 +396,7 @@ def _deploy_validate_report(
             duration_seconds=time.monotonic() - run_start,
         ),
         fail_on=args.fail_on,
+        warnings=report_warnings,
     )
 
     for r in results:
@@ -392,15 +417,26 @@ def _deploy_validate_report(
             )
         )
 
-    for did in not_implemented:
-        report.add(
-            ReportEntry(
-                id=did,
-                suite=_suite_for(did),
-                status=ReportStatus.NOT_IMPLEMENTED,
-                description=_description_for(did),
+    for did in uncovered:
+        if did in not_implemented:
+            report.add(
+                ReportEntry(
+                    id=did,
+                    suite=_suite_for(did),
+                    status=ReportStatus.NOT_IMPLEMENTED,
+                    description=_description_for(did),
+                    reason=not_implemented[did],
+                )
             )
-        )
+        else:
+            report.add(
+                ReportEntry(
+                    id=did,
+                    suite=_suite_for(did),
+                    status=ReportStatus.UNCOVERED,
+                    description=_description_for(did),
+                )
+            )
 
     # 6. Emit reports.
     if "console" in args.report:
@@ -414,15 +450,6 @@ def _deploy_validate_report(
             print(f"  Wrote {fmt} report to {path}")
 
     sys.exit(report.exit_code())
-
-
-def _find_not_implemented(
-    description_ids: Iterable[str],
-    function_descriptions: list[tuple[str, str]],
-) -> list[str]:
-    """Return sorted requirement IDs that have no mapped function."""
-    implemented = {description_id for _, description_id in function_descriptions}
-    return sorted(set(description_ids) - implemented)
 
 
 def _run_extension_validation(

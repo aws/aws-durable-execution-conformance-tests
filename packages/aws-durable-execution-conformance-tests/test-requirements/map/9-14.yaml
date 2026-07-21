@@ -11,8 +11,7 @@ handler: |
   The handler returns the ordered results list, verifying the values survive the custom serde
   round-trip.
   Note: per-item serdes is a JS/Python MapConfig option (item_serdes/itemSerdes); the Java MapConfig
-  exposes a single serDes for the map result, so an item-level equivalent may be reported as not
-  implemented for Java.
+  exposes a single serDes for the map result, so an item-level equivalent may be uncovered for Java.
 invocations: |
   - Handler invokes map(name="serdes", items=["x", "y"], mapFunc, item serdes set, max-concurrency=1).
     The SDK checkpoints ContextStarted (SubType Map). For each item it checkpoints ContextStarted /

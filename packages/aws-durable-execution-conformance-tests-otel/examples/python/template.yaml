@@ -64,6 +64,9 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-1
     Properties:
       CodeUri: src/
       Handler: otel_1_success.handler
@@ -74,6 +77,9 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-2
     Properties:
       CodeUri: src/
       Handler: otel_2_wait_resume.handler
@@ -84,6 +90,9 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-3
     Properties:
       CodeUri: src/
       Handler: otel_3_retry.handler
@@ -94,6 +103,9 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-4
     Properties:
       CodeUri: src/
       Handler: otel_4_terminal_failure.handler

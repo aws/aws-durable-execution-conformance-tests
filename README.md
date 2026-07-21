@@ -56,9 +56,8 @@ distribution.
 
 ## Running Conformance
 
-The runner maps each SAM function to the requirement ID at the start of its
-`Properties.FunctionName`. For example, `otel-1-${AWS::StackName}` maps to
-`otel-1`:
+The runner accepts a SAM template whose functions map to requirement IDs with
+`TestingMetadata.TestDescription`:
 
 ```bash
 hatch run validate \
