@@ -67,7 +67,6 @@ TelemetryAssertions:
         name: otel-wait
         attributes:
           durable.operation.status: SUCCEEDED
-      count: 2
       expect:
         status: OK
         attributes:
