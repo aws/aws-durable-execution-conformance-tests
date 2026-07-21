@@ -9,7 +9,10 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PROJECTS = (ROOT / "packages/aws-durable-execution-conformance-tests",)
+PROJECTS = (
+    ROOT / "packages/aws-durable-execution-conformance-tests",
+    ROOT / "packages/aws-durable-execution-conformance-tests-otel",
+)
 
 
 def main(argv: list[str] | None = None) -> None:

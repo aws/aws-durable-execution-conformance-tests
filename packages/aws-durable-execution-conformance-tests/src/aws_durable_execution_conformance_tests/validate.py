@@ -6,7 +6,6 @@
 Handles both synchronous and asynchronous invocation validation, including
 execution history retrieval, event matching, and callback handling.
 """
-# ruff: noqa: T201
 
 from __future__ import annotations
 
@@ -77,6 +76,10 @@ class DescriptionResult:
     optional: bool = False
     errors: list[str] = field(default_factory=list)
     placeholders: dict = field(default_factory=dict)
+    execution_arn: str | None = None
+    invocation_started_at_ms: int | None = None
+    invocation_finished_at_ms: int | None = None
+    execution_history: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -994,6 +997,10 @@ def validate_description(
         optional=is_optional,
         errors=[],
         placeholders=match_result.resolved_placeholders,
+        execution_arn=execution_arn,
+        invocation_started_at_ms=invocation_start_ms,
+        invocation_finished_at_ms=int(time.time() * 1000),
+        execution_history=history,
     )
 
 
@@ -1004,7 +1011,7 @@ def _validate_description_async(
     invoker: Invoker,
     tmp_dir: str,
     region: str,
-    is_optional: bool = False,  # noqa: FBT001, FBT002
+    is_optional: bool = False,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
 ) -> DescriptionResult:
@@ -1149,6 +1156,10 @@ def _validate_description_async(
         optional=is_optional,
         errors=[],
         placeholders=async_result.placeholders,
+        execution_arn=execution_arn,
+        invocation_started_at_ms=invocation_start_ms,
+        invocation_finished_at_ms=int(time.time() * 1000),
+        execution_history=final_history or {},
     )
 
 

@@ -1,0 +1,16 @@
+description: OpenTelemetry represents a retried operation without losing correlation
+Input:
+  scenario: retry
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 2
+  require_execution_correlation: true
+  require_continuation: true
+  required_outcomes:
+    - retry
+    - success

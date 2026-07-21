@@ -85,6 +85,10 @@ The validator will:
 5. Validate the result and history against the requirement
 6. Report the status of every selected requirement
 
+Use `--parameter-overrides KEY=VALUE` to pass additional SAM template
+parameters, such as a pre-created Lambda execution role. Explicit overrides
+take precedence over values supplied by extensions.
+
 -----
 
 ## Test Reports

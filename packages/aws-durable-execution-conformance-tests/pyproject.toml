@@ -20,8 +20,12 @@ classifiers = [
 ]
 dependencies = [
   "boto3>=1.42.1",
+  "packaging>=24.0",
   "pyyaml>=6.0",
 ]
+
+[project.scripts]
+durable-execution-conformance = "aws_durable_execution_conformance_tests.app:run"
 
 [project.urls]
 Homepage = "https://github.com/aws/aws-durable-execution-conformance-tests"

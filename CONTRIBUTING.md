@@ -34,6 +34,7 @@ For bugs, include:
 ## Repository structure
 
 - `packages/aws-durable-execution-conformance-tests/`: core runner, generic requirements, and tests
+- `packages/aws-durable-execution-conformance-tests-otel/`: optional OTel extension, requirements, and tests
 - `scripts/`: workspace and distribution verification
 
 SDK-specific test handlers and deployment templates live in their respective SDK
@@ -49,8 +50,9 @@ hatch env create
 hatch run test:all
 hatch run test:cov
 hatch run types:check
-hatch fmt --check packages scripts
-hatch run dist:all
+hatch fmt --check packages
+hatch run dist:build
+hatch run dist:check
 ```
 
 To validate requirement YAML files:
@@ -76,8 +78,12 @@ real public API. Do not replace a missing or defective SDK capability with
 hand-written logic that forces a test to pass. A failing test that exposes an
 SDK incompatibility is useful evidence and should remain visible in the report.
 
-Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED` with a clear
-reason rather than silently excluding the requirement.
+Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED`; the reason may
+be left empty when the missing handler is self-explanatory.
+
+For the OpenTelemetry suite, see the
+[OTel test-case contribution guide](packages/aws-durable-execution-conformance-tests-otel/CONTRIBUTING.md)
+for its requirement schema, SDK handler expectations, and validation guidance.
 
 ## Contributing through pull requests
 

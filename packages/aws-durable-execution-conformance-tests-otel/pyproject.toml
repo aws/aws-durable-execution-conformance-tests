@@ -1,0 +1,126 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aws-durable-execution-conformance-tests-otel"
+dynamic = ["version"]
+description = "OpenTelemetry integration suite for AWS Durable Execution conformance tests"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+authors = [{ name = "AWS durable-execution-dev", email = "durable-execution-dev@amazon.com" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+  "aws-durable-execution-conformance-tests>=0.2.0,<0.3.0",
+  "opentelemetry-proto>=1.29.0",
+  "protobuf>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/aws/aws-durable-execution-conformance-tests"
+Repository = "https://github.com/aws/aws-durable-execution-conformance-tests"
+Issues = "https://github.com/aws/aws-durable-execution-conformance-tests/issues"
+
+[project.entry-points."aws_durable_execution_conformance_tests.extensions"]
+otel = "aws_durable_execution_conformance_tests_otel.extension:OtelExtension"
+
+[project.entry-points."aws_durable_execution_conformance_tests_otel.exporters"]
+adot = "aws_durable_execution_conformance_tests_otel.exporters:AdotExporterProfile"
+community = "aws_durable_execution_conformance_tests_otel.exporters:CommunityExporterProfile"
+
+[project.entry-points."aws_durable_execution_conformance_tests_otel.backends"]
+xray = "aws_durable_execution_conformance_tests_otel.backends.xray:XRayBackendFactory"
+datadog = "aws_durable_execution_conformance_tests_otel.backends.datadog:DatadogBackendFactory"
+dash0 = "aws_durable_execution_conformance_tests_otel.backends.dash0:Dash0BackendFactory"
+collector = "aws_durable_execution_conformance_tests_otel.backends.collector:CollectorBackendFactory"
+
+[tool.hatch.version]
+path = "src/aws_durable_execution_conformance_tests_otel/__about__.py"
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/aws_durable_execution_conformance_tests_otel"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"LICENSE" = "LICENSE"
+"NOTICE" = "NOTICE"
+"test-requirements" = "test-requirements"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aws_durable_execution_conformance_tests_otel"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"LICENSE" = "aws_durable_execution_conformance_tests_otel/LICENSE"
+"NOTICE" = "aws_durable_execution_conformance_tests_otel/NOTICE"
+"test-requirements" = "aws_durable_execution_conformance_tests_otel/test_requirements"
+
+[tool.hatch.envs.test]
+skip-install = true
+dependencies = [
+  "aws-durable-execution-conformance-tests @ {root:uri}/../aws-durable-execution-conformance-tests",
+  "opentelemetry-proto>=1.29.0",
+  "protobuf>=5.0",
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+]
+
+[tool.hatch.envs.test.env-vars]
+PYTHONPATH = "{root}/src"
+
+[tool.hatch.envs.test.scripts]
+run = "pytest {args:tests}"
+cov = "pytest --cov=aws_durable_execution_conformance_tests_otel --cov-report=term-missing {args:tests}"
+
+[tool.hatch.envs.types]
+skip-install = true
+dependencies = [
+  "aws-durable-execution-conformance-tests @ {root:uri}/../aws-durable-execution-conformance-tests",
+  "opentelemetry-proto>=1.29.0",
+  "protobuf>=5.0",
+  "mypy>=1.0.0",
+]
+
+[tool.hatch.envs.types.env-vars]
+PYTHONPATH = "{root}/src"
+
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src tests}"
+
+[tool.hatch.envs.yaml]
+skip-install = true
+dependencies = [
+  "yamllint>=1.35.0",
+  "yamlfix>=1.16.0",
+]
+
+[tool.hatch.envs.yaml.scripts]
+lint = "yamllint {args:test-requirements}"
+fix = "yamlfix {args:test-requirements}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source_pkgs = ["aws_durable_execution_conformance_tests_otel", "tests"]
+branch = true
+parallel = true
+omit = ["src/aws_durable_execution_conformance_tests_otel/__about__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

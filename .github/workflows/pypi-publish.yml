@@ -1,11 +1,4 @@
-# Uploads the Python package to PyPI when a GitHub Release is published.
-#
-# Uses PyPI Trusted Publishing (OIDC) -- no API tokens are stored as secrets.
-# https://docs.pypi.org/trusted-publishers/
-#
-# This workflow uses actions that are not certified by GitHub. They are
-# provided by a third-party and are governed by separate terms of service,
-# privacy policy, and support documentation.
+# Publishes one independently versioned distribution from a GitHub Release.
 name: Upload PyPI Package
 
 on:
@@ -17,8 +10,10 @@ permissions:
 
 jobs:
   release-build:
-    name: Build distributions
+    name: Build selected distribution
     runs-on: ubuntu-latest
+    outputs:
+      project: ${{ steps.package.outputs.project }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -31,51 +26,62 @@ jobs:
           python-version: "3.14"
 
       - name: Install Hatch
-        run: python -m pip install --upgrade hatch==1.16.5
+        run: python -m pip install hatch==1.16.5
 
-      - name: Verify tag matches package version
-        working-directory: packages/aws-durable-execution-conformance-tests
+      - name: Select package from release tag
+        id: package
+        shell: bash
         run: |
-          pkg_version="$(hatch version)"
-          tag="${{ github.event.release.tag_name }}"
-          case "$tag" in
-            v*) ;;
+          case "${{ github.event.release.tag_name }}" in
+            core-v*)
+              echo "directory=packages/aws-durable-execution-conformance-tests" >> "$GITHUB_OUTPUT"
+              echo "project=aws-durable-execution-conformance-tests" >> "$GITHUB_OUTPUT"
+              echo "version=${{ github.event.release.tag_name }}" | sed 's/^version=core-v/version=/' >> "$GITHUB_OUTPUT"
+              ;;
+            otel-v*)
+              echo "directory=packages/aws-durable-execution-conformance-tests-otel" >> "$GITHUB_OUTPUT"
+              echo "project=aws-durable-execution-conformance-tests-otel" >> "$GITHUB_OUTPUT"
+              echo "version=${{ github.event.release.tag_name }}" | sed 's/^version=otel-v/version=/' >> "$GITHUB_OUTPUT"
+              ;;
             *)
-              echo "::error::Release tag ('$tag') must start with 'v' (e.g. v$pkg_version)."
+              echo "::error::Release tags must be core-vX.Y.Z or otel-vX.Y.Z."
               exit 1
               ;;
           esac
-          if [ "v$pkg_version" != "$tag" ]; then
-            echo "::error::Release tag ('$tag') does not match package version ('v$pkg_version' from __about__.py). Bump __about__.py or fix the release tag before publishing."
-            exit 1
-          fi
-          echo "Release tag '$tag' matches package version 'v$pkg_version'."
 
-      - name: Build release distributions
-        working-directory: packages/aws-durable-execution-conformance-tests
+      - name: Verify release version
+        working-directory: ${{ steps.package.outputs.directory }}
+        run: |
+          actual="$(hatch version)"
+          test "$actual" = "${{ steps.package.outputs.version }}" || {
+            echo "::error::Tag version ${{ steps.package.outputs.version }} does not match package version $actual."
+            exit 1
+          }
+
+      - name: Build release distribution
+        working-directory: ${{ steps.package.outputs.directory }}
         run: hatch build
 
-      - name: Upload distributions
+      - name: Upload distribution
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-dists
-          path: packages/aws-durable-execution-conformance-tests/dist/
+          name: release-dist
+          path: ${{ steps.package.outputs.directory }}/dist/
 
   pypi-publish:
-    name: Publish to PyPI
+    name: Publish selected distribution
     runs-on: ubuntu-latest
-    needs:
-      - release-build
+    needs: [release-build]
     permissions:
       id-token: write
     environment:
       name: pypi
-      url: https://pypi.org/project/aws-durable-execution-conformance-tests/${{ github.event.release.name }}
+      url: https://pypi.org/project/${{ needs.release-build.outputs.project }}/
     steps:
-      - name: Retrieve release distributions
+      - name: Retrieve distribution
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-dists
+          name: release-dist
           path: dist/
 
       - name: Publish to PyPI

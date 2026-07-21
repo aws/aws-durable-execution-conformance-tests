@@ -1,0 +1,26 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  awss3:
+    s3uploader:
+      region: ${env:AWS_REGION}
+      s3_bucket: ${env:OTEL_S3_BUCKET}
+      s3_prefix: ${env:OTEL_S3_PREFIX}
+      s3_partition_timezone: UTC
+      unique_key_func_name: uuidv7
+      compression: gzip
+    marshaler: otlp_json
+
+service:
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      exporters:
+        - awss3
