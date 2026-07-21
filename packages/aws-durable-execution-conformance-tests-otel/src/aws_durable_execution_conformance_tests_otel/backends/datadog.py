@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 
 from aws_durable_execution_conformance_tests_otel.backends._common import (
@@ -14,14 +16,56 @@ from aws_durable_execution_conformance_tests_otel.backends._common import (
     JsonHttpClient,
     matching_trace,
 )
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.normalizers import (
-    normalize_datadog,
+from aws_durable_execution_conformance_tests_otel.model import (
+    Span,
+    TelemetryQuery,
+    Trace,
+    normalize_id,
+    parse_timestamp,
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingBackend,
 )
+
+
+def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
+    """Normalize Datadog v2 span-search events."""
+
+    grouped: dict[str, list[Span]] = defaultdict(list)
+    for item in payload.get("data", []):
+        outer = item.get("attributes", {})
+        attributes = dict(outer.get("attributes", outer.get("meta", {})) or {})
+        trace_raw = outer.get("trace_id", outer.get("traceId"))
+        span_raw = outer.get("span_id", outer.get("spanId", item.get("id")))
+        try:
+            trace_value: str | int | None = int(trace_raw) if str(trace_raw).isdigit() else trace_raw
+            span_value: str | int | None = int(span_raw) if str(span_raw).isdigit() else span_raw
+        except (TypeError, ValueError):
+            continue
+        trace_id = normalize_id(trace_value, 32)
+        span_id = normalize_id(span_value, 16)
+        if trace_id is None or span_id is None:
+            continue
+        start = parse_timestamp(outer.get("start_timestamp", outer.get("start", outer.get("timestamp"))))
+        duration_ns = int(outer.get("duration", 0) or 0)
+        end = start + timedelta(seconds=duration_ns / 1e9)
+        parent_raw = outer.get("parent_id", outer.get("parentId"))
+        parent_value = int(parent_raw) if parent_raw is not None and str(parent_raw).isdigit() else parent_raw
+        grouped[trace_id].append(
+            Span(
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=normalize_id(parent_value, 16),
+                name=str(outer.get("resource_name", outer.get("name", ""))),
+                start_time=start,
+                end_time=end,
+                status="ERROR" if outer.get("status") == "error" else "OK",
+                attributes=attributes,
+                service_name=str(outer.get("service") or "") or None,
+            )
+        )
+    return [Trace(trace_id=trace_id, spans=tuple(spans), raw_artifact=payload) for trace_id, spans in grouped.items()]
 
 
 class DatadogBackend(PollingBackend):

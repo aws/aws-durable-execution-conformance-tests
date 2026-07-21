@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import json
 
-from aws_durable_execution_conformance_tests_otel.normalizers import (
+from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
     normalize_dash0,
+)
+from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     normalize_datadog,
+)
+from aws_durable_execution_conformance_tests_otel.backends.xray import normalize_xray
+from aws_durable_execution_conformance_tests_otel.normalizers import (
     normalize_otlp_json,
-    normalize_xray,
 )
 
 

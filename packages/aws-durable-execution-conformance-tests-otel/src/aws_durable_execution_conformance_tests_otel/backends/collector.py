@@ -13,11 +13,42 @@ from aws_durable_execution_conformance_tests_otel.backends._common import (
     HttpClient,
     JsonHttpClient,
 )
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.normalizers import (
-    canonical_trace_from_dict,
+from aws_durable_execution_conformance_tests_otel.model import (
+    Span,
+    SpanLink,
+    TelemetryQuery,
+    Trace,
+    parse_timestamp,
 )
 from aws_durable_execution_conformance_tests_otel.polling import PollingBackend
+
+
+def canonical_trace_from_dict(payload: Mapping[str, Any]) -> Trace:
+    """Deserialize the test collector's canonical JSON representation."""
+
+    spans = tuple(
+        Span(
+            trace_id=str(item["trace_id"]),
+            span_id=str(item["span_id"]),
+            parent_span_id=item.get("parent_span_id"),
+            name=str(item.get("name", "")),
+            start_time=parse_timestamp(item["start_time"]),
+            end_time=parse_timestamp(item["end_time"]),
+            status=str(item.get("status", "UNSET")),
+            service_name=item.get("service_name"),
+            attributes=dict(item.get("attributes", {})),
+            links=tuple(
+                SpanLink(trace_id=str(link["trace_id"]), span_id=str(link["span_id"])) for link in item.get("links", [])
+            ),
+        )
+        for item in payload.get("spans", [])
+    )
+    return Trace(
+        trace_id=str(payload["trace_id"]),
+        spans=spans,
+        log_trace_ids=tuple(payload.get("log_trace_ids", [])),
+        raw_artifact=payload,
+    )
 
 
 class CollectorBackend(PollingBackend):

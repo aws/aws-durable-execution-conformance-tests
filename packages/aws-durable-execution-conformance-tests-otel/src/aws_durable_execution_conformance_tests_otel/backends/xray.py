@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import boto3
@@ -14,12 +16,65 @@ from botocore.exceptions import BotoCoreError, ClientError
 from aws_durable_execution_conformance_tests_otel.backends._common import (
     matching_trace,
 )
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.normalizers import normalize_xray
+from aws_durable_execution_conformance_tests_otel.model import (
+    Span,
+    TelemetryQuery,
+    Trace,
+    normalize_id,
+    parse_timestamp,
+)
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingBackend,
 )
+
+
+def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
+    """Normalize AWS X-Ray segment documents."""
+
+    grouped: dict[str, list[Span]] = defaultdict(list)
+
+    def ingest(
+        segment: Mapping[str, Any],
+        trace_id: str,
+        service_name: str | None,
+    ) -> None:
+        span_id = normalize_id(segment.get("id"), 16)
+        if span_id is None:
+            return
+        start = parse_timestamp(segment.get("start_time", 0))
+        end = parse_timestamp(segment.get("end_time", segment.get("start_time", 0)))
+        attributes = {
+            **dict(segment.get("annotations", {})),
+            **{f"xray.{key}": value for key, value in segment.get("metadata", {}).items()},
+        }
+        status = "ERROR" if any(segment.get(flag) for flag in ("error", "fault", "throttle")) else "OK"
+        grouped[trace_id].append(
+            Span(
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=normalize_id(segment.get("parent_id"), 16),
+                name=str(segment.get("name", "")),
+                start_time=start,
+                end_time=end,
+                status=status,
+                attributes=attributes,
+                service_name=service_name,
+            )
+        )
+        for child in segment.get("subsegments", []):
+            ingest(child, trace_id, service_name)
+
+    raw_documents = list(documents)
+    for document in raw_documents:
+        segment = json.loads(document) if isinstance(document, str) else document
+        trace_id = normalize_id(segment.get("trace_id"), 32)
+        if trace_id is None:
+            continue
+        ingest(segment, trace_id, str(segment.get("name") or "") or None)
+    return [
+        Trace(trace_id=trace_id, spans=tuple(spans), raw_artifact=raw_documents) for trace_id, spans in grouped.items()
+    ]
 
 
 class XRayBackend(PollingBackend):
