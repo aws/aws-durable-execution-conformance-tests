@@ -48,47 +48,6 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
-      - name: Diagnose AWS OIDC configuration
-        env:
-          TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
-          TEST_ROLE_ARN: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
-        run: |
-          python - <<'PY'
-          import base64
-          import json
-          import os
-          import urllib.request
-
-          role_parts = os.environ["TEST_ROLE_ARN"].split(":")
-          if len(role_parts) < 6 or role_parts[4] != os.environ["TEST_ACCOUNT_ID"]:
-              raise SystemExit(
-                  "PYTHON_TEST_ROLE_ARN does not belong to PYTHON_TEST_ACCOUNT_ID"
-              )
-
-          request = urllib.request.Request(
-              os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-              + "&audience=sts.amazonaws.com",
-              headers={
-                  "Authorization": (
-                      "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-                  )
-              },
-          )
-          with urllib.request.urlopen(request) as response:
-              token = json.load(response)["value"]
-          payload = token.split(".")[1]
-          payload += "=" * (-len(payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(payload))
-          print(
-              json.dumps(
-                  {
-                      key: claims.get(key)
-                      for key in ("iss", "aud", "sub", "repository", "event_name")
-                  },
-                  indent=2,
-              )
-          )
-          PY
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
