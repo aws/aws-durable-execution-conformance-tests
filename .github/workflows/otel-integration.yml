@@ -2,7 +2,7 @@ name: OpenTelemetry hosted integrations
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, codex/issue-8-otel]
     paths:
       - .github/workflows/otel-integration.yml
       - packages/aws-durable-execution-conformance-tests/**
