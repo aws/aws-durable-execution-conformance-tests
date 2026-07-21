@@ -16,10 +16,11 @@ Good requirements assert outcomes such as:
 - A continuation has a parent or span-link relationship.
 - Trace identifiers emitted to logs match the active trace.
 
-Do not standardize provider-specific response fields, exact span names, every
-span attribute, or language-specific implementation details. Backend adapters
-must normalize provider responses into the canonical `Trace` model before the
-requirement is evaluated.
+Do not standardize provider-specific response fields or language-specific
+implementation details. Stable SDK-wide span names, durable attributes, and
+parent relationships are part of the portable telemetry contract and should be
+asserted completely. Backend adapters must normalize provider responses into
+the canonical `Trace` model before the requirement is evaluated.
 
 Each requirement must exercise the SDK's public OTel integration. Do not emit
 synthetic telemetry in a test handler to make an unsupported behavior pass.
@@ -62,10 +63,15 @@ The currently supported telemetry assertions are:
 | `require_continuation` | Require an in-trace parent or span-link relationship. |
 | `require_log_trace_correlation` | Require backend-provided log trace IDs to match the active trace. |
 | `required_outcomes` | Require outcomes such as `retry`, `success`, or `failure`. |
+| `require_all_spans` | Require every normalized span to match at least one span assertion. |
+| `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
+| `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |
 | `span_assertions` | Select one span and assert arbitrary canonical properties or metadata. |
 
 `span_assertions` accepts one mapping or a list of mappings. Each `select`
-mapping must match exactly one span. The corresponding `expect` mapping is a
+mapping matches exactly one span by default. Set `count` to an exact positive
+number for repeated spans such as invocation or continuation spans. The
+corresponding `expect` mapping is applied to every match and is otherwise a
 partial assertion, so unlisted properties and metadata are ignored:
 
 ```yaml
@@ -86,15 +92,31 @@ TelemetryAssertions:
         durable.operation.outcome: success
 ```
 
+Use `require_all_spans: true` when a case defines the complete emitted span
+set. Use `span_assertion_scope` to exclude infrastructure spans from the
+backend response, for example by selecting spans with
+`attributes.durable.execution.arn`. Combine it with
+`exact_attribute_prefixes: [durable.]` and list every `durable.*` key under
+each `expect.attributes` mapping. Attributes from ADOT, Lambda resource
+detection, and telemetry backends remain outside that prefix and do not make
+the requirement provider-specific.
+
 Both `select` and `expect` can use any canonical span property: `trace_id`,
 `span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,
 `service_name`, `attributes`, or `links`. Nested mappings support arbitrary
-attribute metadata without interpreting provider-specific keys. Use `"*"` when
-a property must exist but its value is intentionally dynamic. Sequence
-assertions, including `links`, compare length, order, and nested values.
-The optional `expect.parent` mapping resolves the selected span's
-`parent_span_id` within the same trace and applies the same partial matching
-constructs to that parent span.
+attribute metadata without interpreting provider-specific keys. Sequence
+assertions, including `links`, compare length, order, and nested values. The
+optional `expect.parent` mapping resolves the selected span's `parent_span_id`
+within the same trace and applies the same partial matching constructs to that
+parent span.
+
+Capture dynamic values with placeholders in `ExpectedExecutionHistory`, then
+reuse those placeholders in telemetry assertions. For example, `Id: ${STEP1}`
+binds the operation ID from history so
+`durable.operation.id: ${STEP1}` asserts its exact telemetry value. The runner
+also provides `${EXECUTION_ARN}` for execution-correlation attributes. Every
+other telemetry placeholder must be bound by the requirement's expected
+history.
 
 Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable

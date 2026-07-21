@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Child-context hierarchy scenario for OTel requirement otel-6."""
+"""Child-context hierarchy scenario for OTel requirement otel-5."""
 
 from __future__ import annotations
 

@@ -118,12 +118,16 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..9}; do
+          for case_number in {1..11}; do
             log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
+          target_log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-11-target"
+          echo "::group::$target_log_group"
+          aws logs tail "$target_log_group" --since 20m --format short || true
+          echo "::endgroup::"
       - name: Show normalized X-Ray trace diagnostics
         if: failure()
         run: |

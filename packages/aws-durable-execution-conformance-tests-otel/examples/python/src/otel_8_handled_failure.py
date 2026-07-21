@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Handled step failure scenario for OTel requirement otel-9."""
+"""Handled step failure scenario for OTel requirement otel-8."""
 
 from __future__ import annotations
 

@@ -1,10 +1,39 @@
-description: OpenTelemetry preserves the hierarchy of parallel branches and their operations
+description: OpenTelemetry emits every map context, iteration, step, and attempt span
 Input:
-  scenario: parallel-hierarchy
+  scenario: map-hierarchy
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: Map
+    Id: ${MAP1}
+    Name: otel-map
+  - EventId: 3
+    EventType: ContextStarted
+    SubType: MapIteration
+    Id: ${ITERATION1}
+    ParentId: ${MAP1}
+    Name: otel-map-item-0
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${ITERATION1}
+    Name: otel-map-step-0
+  - EventId: 7
+    EventType: ContextStarted
+    SubType: MapIteration
+    Id: ${ITERATION2}
+    ParentId: ${MAP1}
+    Name: otel-map-item-1
+  - EventId: 8
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP2}
+    ParentId: ${ITERATION2}
+    Name: otel-map-step-1
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
@@ -13,34 +42,149 @@ TelemetryAssertions:
   require_continuation: true
   required_outcomes:
     - success
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
   span_assertions:
     - select:
-        name: otel-parallel
+        name: invocation
         attributes:
-          durable.operation.type: CONTEXT
-          durable.operation.name: otel-parallel
+          durable.execution.arn: ${EXECUTION_ARN}
       expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-map
+        attributes:
+          durable.operation.subtype: Map
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${MAP1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: Map
+          durable.operation.status: STARTED
+          durable.operation.name: otel-map
         parent:
           name: invocation
-    - select:
-        name: otel-parallel-branch-a
-        attributes:
-          durable.operation.type: CONTEXT
-          durable.operation.name: otel-parallel-branch-a
-      expect:
-        parent:
-          name: otel-parallel
           attributes:
-            durable.operation.type: CONTEXT
-            durable.operation.name: otel-parallel
+            durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-parallel-step-a
+        name: otel-map-item-0
+        attributes:
+          durable.operation.subtype: MapIteration
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${ITERATION1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: MapIteration
+          durable.operation.status: STARTED
+          durable.operation.name: otel-map-item-0
+        parent:
+          name: otel-map
+          attributes:
+            durable.operation.id: ${MAP1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: Map
+    - select:
+        name: otel-map-step-0
         attributes:
           durable.operation.type: STEP
-          durable.operation.name: otel-parallel-step-a
+          durable.operation.status: SUCCEEDED
       expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-map-step-0
+          durable.attempt.number: 1
         parent:
-          name: otel-parallel-branch-a
+          name: otel-map-item-0
           attributes:
+            durable.operation.id: ${ITERATION1}
             durable.operation.type: CONTEXT
-            durable.operation.name: otel-parallel-branch-a
+            durable.operation.subtype: MapIteration
+    - select:
+        name: otel-map-step-0 attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-map-step-0
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-map-item-0
+          attributes:
+            durable.operation.id: ${ITERATION1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: MapIteration
+    - select:
+        name: otel-map-item-1
+        attributes:
+          durable.operation.subtype: MapIteration
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${ITERATION2}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: MapIteration
+          durable.operation.status: STARTED
+          durable.operation.name: otel-map-item-1
+        parent:
+          name: otel-map
+          attributes:
+            durable.operation.id: ${MAP1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: Map
+    - select:
+        name: otel-map-step-1
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.status: SUCCEEDED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-map-step-1
+          durable.attempt.number: 1
+        parent:
+          name: otel-map-item-1
+          attributes:
+            durable.operation.id: ${ITERATION2}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: MapIteration
+    - select:
+        name: otel-map-step-1 attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-map-step-1
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-map-item-1
+          attributes:
+            durable.operation.id: ${ITERATION2}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: MapIteration

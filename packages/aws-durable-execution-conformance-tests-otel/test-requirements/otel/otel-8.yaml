@@ -1,46 +1,123 @@
-description: OpenTelemetry preserves the hierarchy of map iterations and their operations
+description: OpenTelemetry emits every failed and recovery step span with complete attributes
 Input:
-  scenario: map-hierarchy
+  scenario: handled-failure
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
+  - EventId: 3
+    EventType: StepFailed
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
+  - EventId: 5
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 8
+  minimum_spans: 5
   require_execution_correlation: true
-  require_continuation: true
   required_outcomes:
+    - failure
     - success
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
   span_assertions:
     - select:
-        name: otel-map
+        name: invocation
         attributes:
-          durable.operation.type: CONTEXT
-          durable.operation.name: otel-map
+          durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent:
-          name: invocation
-    - select:
-        name: otel-map-item-0
         attributes:
-          durable.operation.type: CONTEXT
-          durable.operation.name: otel-map-item-0
-      expect:
-        parent:
-          name: otel-map
-          attributes:
-            durable.operation.type: CONTEXT
-            durable.operation.name: otel-map
+          durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-map-step-0
+        name: otel-handled-failure
         attributes:
           durable.operation.type: STEP
-          durable.operation.name: otel-map-step-0
+          durable.operation.status: FAILED
       expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: FAILED
+          durable.operation.name: otel-handled-failure
+          durable.attempt.number: 1
         parent:
-          name: otel-map-item-0
+          name: invocation
           attributes:
-            durable.operation.type: CONTEXT
-            durable.operation.name: otel-map-item-0
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-handled-failure attempt 1
+        attributes:
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-handled-failure
+          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-recovery-step
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.status: SUCCEEDED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RECOVERY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-recovery-step attempt 1
+        attributes:
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RECOVERY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

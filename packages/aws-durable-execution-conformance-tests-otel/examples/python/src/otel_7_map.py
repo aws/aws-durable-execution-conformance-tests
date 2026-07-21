@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Map hierarchy scenario for OTel requirement otel-8."""
+"""Map hierarchy scenario for OTel requirement otel-7."""
 
 from __future__ import annotations
 
@@ -45,5 +45,6 @@ def handler(event: dict[str, Any], context: DurableContext) -> list[int]:
         name="otel-map",
         config=MapConfig(
             item_namer=lambda _item, index: f"otel-map-item-{index}",
+            max_concurrency=1,
         ),
     ).get_results()

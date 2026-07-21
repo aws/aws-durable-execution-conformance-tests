@@ -18,11 +18,13 @@ EXPECTED_MAPPINGS = [
     ("Otel2WaitResume", "otel-2"),
     ("Otel3Retry", "otel-3"),
     ("Otel4TerminalFailure", "otel-4"),
-    ("Otel5StepHierarchy", "otel-5"),
-    ("Otel6ChildContext", "otel-6"),
-    ("Otel7Parallel", "otel-7"),
-    ("Otel8Map", "otel-8"),
-    ("Otel9HandledFailure", "otel-9"),
+    ("Otel5ChildContext", "otel-5"),
+    ("Otel6Parallel", "otel-6"),
+    ("Otel7Map", "otel-7"),
+    ("Otel8HandledFailure", "otel-8"),
+    ("Otel9WaitForCondition", "otel-9"),
+    ("Otel10WaitForCallback", "otel-10"),
+    ("Otel11ChainedInvoke", "otel-11"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -49,10 +51,16 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     for parameter in REQUIRED_OTEL_PARAMETERS:
         assert f"  {parameter}:" in template
     assert "    NoEcho: true" in template
-    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS)
-    assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS)
-    for case_number in range(1, 10):
+    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 1
+    assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 1
+    for case_number in range(1, 12):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
+
+    makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
+    for logical_id, _description_id in EXPECTED_MAPPINGS:
+        assert f"build-{logical_id}" in makefile
+    assert "build-Otel11InvokeTarget" in makefile
 
 
 def test_python_example_handlers_are_valid_python() -> None:
@@ -65,11 +73,13 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_2_wait_resume",
         "otel_3_retry",
         "otel_4_terminal_failure",
-        "otel_5_step_hierarchy",
-        "otel_6_child_context",
-        "otel_7_parallel",
-        "otel_8_map",
-        "otel_9_handled_failure",
+        "otel_5_child_context",
+        "otel_6_parallel",
+        "otel_7_map",
+        "otel_8_handled_failure",
+        "otel_9_wait_for_condition",
+        "otel_10_wait_for_callback",
+        "otel_11_chained_invoke",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

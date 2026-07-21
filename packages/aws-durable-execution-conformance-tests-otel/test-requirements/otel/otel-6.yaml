@@ -1,46 +1,190 @@
-description: OpenTelemetry preserves parent relationships inside a child context
+description: OpenTelemetry emits every parallel context, branch, step, and attempt span
 Input:
-  scenario: child-context
+  scenario: parallel-hierarchy
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: Parallel
+    Id: ${PARALLEL1}
+    Name: otel-parallel
+  - EventId: 3
+    EventType: ContextStarted
+    SubType: ParallelBranch
+    Id: ${BRANCH1}
+    ParentId: ${PARALLEL1}
+    Name: otel-parallel-branch-a
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${BRANCH1}
+    Name: otel-parallel-step-a
+  - EventId: 7
+    EventType: ContextStarted
+    SubType: ParallelBranch
+    Id: ${BRANCH2}
+    ParentId: ${PARALLEL1}
+    Name: otel-parallel-branch-b
+  - EventId: 8
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP2}
+    ParentId: ${BRANCH2}
+    Name: otel-parallel-step-b
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 4
+  minimum_spans: 8
   require_execution_correlation: true
   require_continuation: true
   required_outcomes:
     - success
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
   span_assertions:
     - select:
-        name: otel-child-context
+        name: invocation
         attributes:
-          durable.operation.type: CONTEXT
-          durable.operation.name: otel-child-context
+          durable.execution.arn: ${EXECUTION_ARN}
       expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-parallel
+        attributes:
+          durable.operation.subtype: Parallel
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${PARALLEL1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: Parallel
+          durable.operation.status: STARTED
+          durable.operation.name: otel-parallel
         parent:
           name: invocation
-    - select:
-        name: otel-child-step
-        attributes:
-          durable.operation.type: STEP
-          durable.operation.name: otel-child-step
-      expect:
-        parent:
-          name: otel-child-context
           attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-parallel-branch-a
+        attributes:
+          durable.operation.subtype: ParallelBranch
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BRANCH1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: ParallelBranch
+          durable.operation.status: STARTED
+          durable.operation.name: otel-parallel-branch-a
+        parent:
+          name: otel-parallel
+          attributes:
+            durable.operation.id: ${PARALLEL1}
             durable.operation.type: CONTEXT
-            durable.operation.name: otel-child-context
+            durable.operation.subtype: Parallel
     - select:
-        name: otel-child-step attempt 1
+        name: otel-parallel-step-a
         attributes:
           durable.operation.type: STEP
-          durable.operation.name: otel-child-step
+          durable.operation.status: SUCCEEDED
       expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-parallel-step-a
+          durable.attempt.number: 1
         parent:
-          name: otel-child-step
+          name: otel-parallel-branch-a
           attributes:
-            durable.operation.type: STEP
-            durable.operation.name: otel-child-step
+            durable.operation.id: ${BRANCH1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: ParallelBranch
+    - select:
+        name: otel-parallel-step-a attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-parallel-step-a
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-parallel-branch-a
+          attributes:
+            durable.operation.id: ${BRANCH1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: ParallelBranch
+    - select:
+        name: otel-parallel-branch-b
+        attributes:
+          durable.operation.subtype: ParallelBranch
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BRANCH2}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: ParallelBranch
+          durable.operation.status: STARTED
+          durable.operation.name: otel-parallel-branch-b
+        parent:
+          name: otel-parallel
+          attributes:
+            durable.operation.id: ${PARALLEL1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: Parallel
+    - select:
+        name: otel-parallel-step-b
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.status: SUCCEEDED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-parallel-step-b
+          durable.attempt.number: 1
+        parent:
+          name: otel-parallel-branch-b
+          attributes:
+            durable.operation.id: ${BRANCH2}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: ParallelBranch
+    - select:
+        name: otel-parallel-step-b attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-parallel-step-b
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-parallel-branch-b
+          attributes:
+            durable.operation.id: ${BRANCH2}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: ParallelBranch

@@ -6,14 +6,20 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from aws_durable_execution_conformance_tests.extensions import ValidationContext
+from aws_durable_execution_conformance_tests_otel import extension as extension_module
 from aws_durable_execution_conformance_tests_otel.exporters import (
     AdotExporterProfile,
     CommunityExporterProfile,
     ExporterOptions,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.model import Trace
 
 
 def _options(runtime: str = "python", *, layer_arn: str | None = None) -> ExporterOptions:
@@ -120,3 +126,62 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     secrets = OtelExtension().deployment_secrets(_args("community", "collector"))
 
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
+
+
+def test_telemetry_assertions_resolve_history_and_execution_variables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trace = Trace(trace_id="1" * 32, spans=())
+    backend = SimpleNamespace(find_trace=lambda _query, _policy: trace)
+    factory = SimpleNamespace(create=lambda _options, *, region: backend)
+    received: dict[str, Any] = {}
+
+    def capture_assertions(
+        _trace: Trace,
+        assertions: dict[str, Any],
+        _query: object,
+    ) -> list[str]:
+        received.update(assertions)
+        return []
+
+    monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"collector": factory}))
+    monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
+
+    errors = OtelExtension().validate_telemetry(
+        ValidationContext(
+            description_id="otel-5",
+            function_name="function",
+            execution_arn="arn:execution",
+            invocation_started_at_ms=1,
+            invocation_finished_at_ms=2,
+            region="us-west-2",
+            language="python",
+            requirement={
+                "TelemetryAssertions": {
+                    "span_assertions": {
+                        "select": {
+                            "attributes": {
+                                "durable.execution.arn": "${EXECUTION_ARN}",
+                                "durable.operation.id": "${STEP1}",
+                            },
+                        },
+                        "expect": {},
+                    },
+                },
+            },
+            execution_history={},
+            output_dir=tmp_path,
+            placeholders={
+                "EXECUTION_ARN": "arn:execution",
+                "STEP1": "step-id",
+            },
+            options=vars(_args("community", "collector")),
+        )
+    )
+
+    assert errors == []
+    assert received["span_assertions"]["select"]["attributes"] == {
+        "durable.execution.arn": "arn:execution",
+        "durable.operation.id": "step-id",
+    }

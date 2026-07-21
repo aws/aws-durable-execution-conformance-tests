@@ -148,7 +148,14 @@ def _parent_expectation_errors(
     return _expectation_errors(expected, parents[0], path=path)
 
 
-def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
+def _span_assertion_errors(
+    trace: Trace,
+    raw_assertions: Any,
+    *,
+    require_all_spans: bool = False,
+    assertion_scope: Mapping[str, Any] | None = None,
+    exact_attribute_prefixes: Sequence[str] = (),
+) -> list[str]:
     if raw_assertions is None:
         return []
     if isinstance(raw_assertions, Mapping):
@@ -164,50 +171,85 @@ def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
         spans_by_id.setdefault(span["span_id"], []).append(span)
 
     errors: list[str] = []
+    covered_span_indexes: set[int] = set()
     for index, assertion in enumerate(span_assertions):
         path = f"span_assertions[{index}]"
         if not isinstance(assertion, Mapping):
             errors.append(f"{path} must be a mapping")
             continue
 
-        unknown = sorted(set(assertion) - {"select", "expect"}, key=str)
+        unknown = sorted(set(assertion) - {"select", "expect", "count"}, key=str)
         if unknown:
             errors.append(f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}")
             continue
 
         selector = assertion.get("select", {})
         expected = assertion.get("expect")
+        expected_count = assertion.get("count", 1)
         if not isinstance(selector, Mapping):
             errors.append(f"{path}.select must be a mapping")
             continue
         if not isinstance(expected, Mapping):
             errors.append(f"{path}.expect must be a mapping")
             continue
+        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
+            errors.append(f"{path}.count must be a positive integer")
+            continue
 
-        matches = [span for span in spans if _matches(selector, span)]
-        if not matches:
+        matches = [(span_index, span) for span_index, span in enumerate(spans) if _matches(selector, span)]
+        covered_span_indexes.update(span_index for span_index, _span in matches)
+        if not matches and expected_count == 1:
             errors.append(f"{path}.select matched no spans")
             continue
-        if len(matches) > 1:
+        if len(matches) > 1 and expected_count == 1:
             errors.append(f"{path}.select matched {len(matches)} spans; it must select exactly one")
             continue
+        if len(matches) != expected_count:
+            errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
+            continue
+
         expected_properties = {key: value for key, value in expected.items() if key != "parent"}
-        errors.extend(
-            _expectation_errors(
-                expected_properties,
-                matches[0],
-                path=f"{path}.expect",
-            )
-        )
-        if "parent" in expected:
+        expected_attributes = expected.get("attributes")
+        for match_index, (_span_index, matched_span) in enumerate(matches):
+            expectation_path = f"{path}.expect"
+            if expected_count > 1:
+                expectation_path = f"{expectation_path}[{match_index}]"
             errors.extend(
-                _parent_expectation_errors(
-                    expected["parent"],
-                    matches[0],
-                    spans_by_id,
-                    path=f"{path}.expect.parent",
+                _expectation_errors(
+                    expected_properties,
+                    matched_span,
+                    path=expectation_path,
                 )
             )
+            if "parent" in expected:
+                errors.extend(
+                    _parent_expectation_errors(
+                        expected["parent"],
+                        matched_span,
+                        spans_by_id,
+                        path=f"{expectation_path}.parent",
+                    )
+                )
+
+            if exact_attribute_prefixes and isinstance(expected_attributes, Mapping):
+                actual_attributes = matched_span["attributes"]
+                for prefix in exact_attribute_prefixes:
+                    expected_keys = sorted(str(key) for key in expected_attributes if str(key).startswith(prefix))
+                    actual_keys = sorted(str(key) for key in actual_attributes if str(key).startswith(prefix))
+                    if expected_keys != actual_keys:
+                        errors.append(
+                            f"{expectation_path}.attributes: expected exact {prefix!r} "
+                            f"attribute keys {expected_keys!r}, found {actual_keys!r}"
+                        )
+
+    if require_all_spans:
+        uncovered = [
+            f"{span['name']} ({span['span_id']})"
+            for span_index, span in enumerate(spans)
+            if span_index not in covered_span_indexes and _matches(assertion_scope or {}, span)
+        ]
+        if uncovered:
+            errors.append("Span assertions did not cover: " + ", ".join(uncovered))
     return errors
 
 
@@ -283,6 +325,29 @@ def validate_trace(
         if mismatched:
             errors.append("Log trace identifiers do not match the active trace")
 
-    errors.extend(_span_assertion_errors(trace, assertions.get("span_assertions")))
+    raw_prefixes = assertions.get("exact_attribute_prefixes", ())
+    exact_attribute_prefixes: tuple[str, ...]
+    if isinstance(raw_prefixes, str):
+        exact_attribute_prefixes = (raw_prefixes,)
+    elif _is_sequence(raw_prefixes) and all(isinstance(prefix, str) for prefix in raw_prefixes):
+        exact_attribute_prefixes = tuple(raw_prefixes)
+    else:
+        errors.append("exact_attribute_prefixes must be a string or sequence of strings")
+        exact_attribute_prefixes = ()
+
+    assertion_scope = assertions.get("span_assertion_scope", {})
+    if not isinstance(assertion_scope, Mapping):
+        errors.append("span_assertion_scope must be a mapping")
+        assertion_scope = {}
+
+    errors.extend(
+        _span_assertion_errors(
+            trace,
+            assertions.get("span_assertions"),
+            require_all_spans=bool(assertions.get("require_all_spans", False)),
+            assertion_scope=assertion_scope,
+            exact_attribute_prefixes=exact_attribute_prefixes,
+        )
+    )
 
     return errors

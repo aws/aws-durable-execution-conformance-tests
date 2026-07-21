@@ -145,6 +145,7 @@ def test_extension_hook_failure_uses_core_description_result(tmp_path: Path) -> 
             description_id="otel-1",
             function_name="TelemetrySuccess",
             passed=True,
+            placeholders={"STEP1": "step-id"},
             execution_arn="arn:test",
             invocation_started_at_ms=1,
             invocation_finished_at_ms=2,
@@ -162,3 +163,7 @@ def test_extension_hook_failure_uses_core_description_result(tmp_path: Path) -> 
     assert result.passed is False
     assert result.errors == ["trace was not correlated"]
     assert received[0].execution_arn == "arn:test"
+    assert received[0].placeholders == {
+        "STEP1": "step-id",
+        "EXECUTION_ARN": "arn:test",
+    }

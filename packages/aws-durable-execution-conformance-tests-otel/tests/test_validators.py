@@ -205,6 +205,80 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     assert errors == []
 
 
+def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "require_all_spans": True,
+            "exact_attribute_prefixes": ["durable."],
+            "span_assertions": [
+                {
+                    "select": {"status": "OK"},
+                    "count": 2,
+                    "expect": {
+                        "service_name": "service",
+                    },
+                },
+                {
+                    "select": {"name": "root"},
+                    "expect": {
+                        "attributes": {
+                            "durable.execution.arn": "arn:test",
+                            "durable.operation.outcome": "retry",
+                        },
+                    },
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "attributes": {
+                            "durable.execution.arn": "arn:test",
+                        },
+                        "parent": {"name": "root"},
+                    },
+                },
+            ],
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_reports_uncovered_spans_and_unasserted_plugin_attributes() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    infrastructure = replace(
+        child,
+        span_id="4" * 16,
+        name="infrastructure",
+        attributes={"cloud.provider": "aws"},
+    )
+    errors = validate_trace(
+        replace(trace, spans=(root, child, infrastructure)),
+        {
+            "require_all_spans": True,
+            "span_assertion_scope": {
+                "attributes": {"durable.execution.arn": "*"},
+            },
+            "exact_attribute_prefixes": "durable.",
+            "span_assertions": {
+                "select": {"name": "root"},
+                "expect": {
+                    "attributes": {
+                        "durable.execution.arn": "arn:test",
+                    },
+                },
+            },
+        },
+        _query(),
+    )
+
+    assert any("durable.operation.outcome" in error for error in errors)
+    assert any("Span assertions did not cover: child" in error for error in errors)
+    assert all("infrastructure" not in error for error in errors)
+
+
 def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -322,6 +396,25 @@ def test_reports_invalid_span_assertion_schema() -> None:
         "span_assertions[1].select must be a mapping",
         "span_assertions[2].expect must be a mapping",
         "span_assertions[3] has unknown field(s): unknown",
+    ]
+
+    count_errors = validate_trace(
+        _trace(),
+        {
+            "exact_attribute_prefixes": 1,
+            "span_assertion_scope": "plugin",
+            "span_assertions": {
+                "select": {"name": "root"},
+                "count": 0,
+                "expect": {},
+            },
+        },
+        _query(),
+    )
+    assert count_errors == [
+        "exact_attribute_prefixes must be a string or sequence of strings",
+        "span_assertion_scope must be a mapping",
+        "span_assertions[0].count must be a positive integer",
     ]
 
 

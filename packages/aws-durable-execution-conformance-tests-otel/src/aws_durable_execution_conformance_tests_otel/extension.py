@@ -18,6 +18,7 @@ from aws_durable_execution_conformance_tests.extensions import (
     RequirementSuite,
     ValidationContext,
 )
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 from aws_durable_execution_conformance_tests_otel.backends import BUILTIN_BACKENDS
 from aws_durable_execution_conformance_tests_otel.discovery import (
@@ -208,9 +209,13 @@ class OtelExtension:
                     max_attempts=int(options["otel_poll_attempts"]),
                 ),
             )
-            assertions = context.requirement.get("TelemetryAssertions", {})
-            if not isinstance(assertions, Mapping):
+            raw_assertions = context.requirement.get("TelemetryAssertions", {})
+            if not isinstance(raw_assertions, Mapping):
                 return ["TelemetryAssertions must be a mapping"]
+            placeholders = PlaceholderContext()
+            for name, value in context.placeholders.items():
+                placeholders.bind(name, value)
+            assertions = placeholders.substitute(raw_assertions)
             errors = validate_trace(trace, assertions, query)
             if errors:
                 self._write_artifact(context, trace_to_dict(trace))

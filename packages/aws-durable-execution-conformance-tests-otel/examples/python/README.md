@@ -18,15 +18,17 @@ the template and source tree.
 
 | Requirement | Handler | Behavior |
 |---|---|---|
-| `otel-1` | `otel_1_success.handler` | Completes a successful durable step. |
-| `otel-2` | `otel_2_wait_resume.handler` | Waits, resumes in another invocation, then completes a step. |
-| `otel-3` | `otel_3_retry.handler` | Fails the first step attempt and succeeds on the retry. |
-| `otel-4` | `otel_4_terminal_failure.handler` | Fails a step without retrying and terminates the execution. |
-| `otel-5` | `otel_5_step_hierarchy.handler` | Verifies named logical-step and attempt-span parenting. |
-| `otel-6` | `otel_6_child_context.handler` | Verifies nested step parenting inside a child context. |
-| `otel-7` | `otel_7_parallel.handler` | Verifies parallel context, branch, and step hierarchy. |
-| `otel-8` | `otel_8_map.handler` | Verifies map context, iteration, and step hierarchy. |
-| `otel-9` | `otel_9_handled_failure.handler` | Records a handled step failure followed by recovery. |
+| `otel-1` | `otel_1_success.handler` | Verifies every successful step and attempt span. |
+| `otel-2` | `otel_2_wait_resume.handler` | Verifies every wait, resume, and post-resume step span. |
+| `otel-3` | `otel_3_retry.handler` | Verifies failed and successful retry attempts across invocations. |
+| `otel-4` | `otel_4_terminal_failure.handler` | Verifies complete telemetry for a terminal execution failure. |
+| `otel-5` | `otel_5_child_context.handler` | Verifies every child-context and nested-step span. |
+| `otel-6` | `otel_6_parallel.handler` | Verifies every parallel context, branch, step, and attempt span. |
+| `otel-7` | `otel_7_map.handler` | Verifies every map context, iteration, step, and attempt span. |
+| `otel-8` | `otel_8_handled_failure.handler` | Verifies complete failed-step and recovery telemetry. |
+| `otel-9` | `otel_9_wait_for_condition.handler` | Verifies every condition polling attempt and continuation. |
+| `otel-10` | `otel_10_wait_for_callback.handler` | Verifies callback context, callback, and submitter spans. |
+| `otel-11` | `otel_11_chained_invoke.handler` | Verifies chained-invoke continuation spans. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages directly from the SDK repository's `main` branch because the

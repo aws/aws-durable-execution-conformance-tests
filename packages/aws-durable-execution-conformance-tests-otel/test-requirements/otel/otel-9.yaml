@@ -1,33 +1,122 @@
-description: OpenTelemetry records a handled step failure without failing the execution trace
+description: OpenTelemetry emits complete wait-for-condition spans for every polling attempt
 Input:
-  scenario: handled-failure
+  scenario: wait-for-condition
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 3
+    EventType: StepSucceeded
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 5
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
+  Result: 2
 TelemetryAssertions:
-  minimum_spans: 5
+  minimum_spans: 6
+  minimum_invocations: 2
   require_execution_correlation: true
+  require_continuation: true
   required_outcomes:
-    - failure
+    - retry
     - success
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
   span_assertions:
     - select:
-        name: otel-handled-failure
+        name: invocation
         attributes:
-          durable.operation.type: STEP
-          durable.operation.name: otel-handled-failure
+          durable.execution.arn: ${EXECUTION_ARN}
+      count: 2
       expect:
-        status: ERROR
-        parent:
-          name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-recovery-step
+        name: otel-condition
         attributes:
-          durable.operation.type: STEP
-          durable.operation.name: otel-recovery-step
+          durable.operation.status: STARTED
       expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: STARTED
+          durable.operation.name: otel-condition
         parent:
           name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-condition attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: STARTED
+          durable.operation.name: otel-condition
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-condition
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-condition
+          durable.attempt.number: 2
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-condition attempt 2
+        attributes:
+          durable.attempt.number: 2
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: STARTED
+          durable.operation.name: otel-condition
+          durable.attempt.number: 2
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
