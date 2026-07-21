@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -58,6 +59,11 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 _CALLBACK_CREATED_EVENT_TYPE: str = "CallbackStarted"
+
+_DESCRIPTION_ID_PREFIX = re.compile(
+    r"^(?P<description_id>[a-z0-9_]+-\d+)(?:-|$)",
+    re.IGNORECASE,
+)
 
 
 # endregion
@@ -163,15 +169,28 @@ class _CfnSafeLoader(yaml.SafeLoader):
 _CfnSafeLoader.add_multi_constructor("!", _cfn_tag_constructor)
 
 
+def _function_name_template(value: Any) -> str | None:
+    """Return the static portion of a literal or ``Fn::Sub`` function name."""
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return None
+
+    substitution = value.get("Fn::Sub", value.get("Sub"))
+    if isinstance(substitution, str):
+        return substitution
+    if isinstance(substitution, list) and substitution and isinstance(substitution[0], str):
+        return substitution[0]
+    return None
+
+
 def parse_function_descriptions(template_path: str) -> list[tuple[str, str]]:
-    """Parse template.yaml and return (function_name, description_id) pairs.
+    """Parse template.yaml and return (logical_id, description_id) pairs.
 
-    Each AWS::Serverless::Function with a TestingMetadata.TestDescription field
-    yields one tuple per description ID in the list.
-
-    We use TestingMetadata (a custom top-level key on the resource) instead of
-    Metadata to avoid conflicts with SAM CLI, which reserves Metadata for its
-    own purposes (BuildMethod, BuildProperties, DockerTag, etc.).
+    An ``AWS::Serverless::Function`` maps to a requirement when its
+    ``Properties.FunctionName`` starts with that requirement's ID followed by a
+    hyphen or the end of the name. For example, ``otel-1-my-stack`` maps to
+    ``otel-1`` and ``1-8-parallel-basic`` maps to ``1-8``.
     """
     with open(template_path) as f:
         loader: _CfnSafeLoader = _CfnSafeLoader(f)
@@ -181,68 +200,27 @@ def parse_function_descriptions(template_path: str) -> list[tuple[str, str]]:
             loader.dispose()
 
     results: list[tuple[str, str]] = []
-    for name, resource in template.get("Resources", {}).items():
+    if not isinstance(template, dict):
+        return results
+    resources = template.get("Resources", {})
+    if not isinstance(resources, dict):
+        return results
+
+    for name, resource in resources.items():
+        if not isinstance(resource, dict):
+            continue
         if resource.get("Type") != "AWS::Serverless::Function":
             continue
-        testing_metadata: dict = resource.get("TestingMetadata", {})
-        description_ids: list = testing_metadata.get("TestDescription", [])
-        results.extend((name, did) for did in description_ids)
+        properties = resource.get("Properties", {})
+        if not isinstance(properties, dict):
+            continue
+        function_name = _function_name_template(properties.get("FunctionName"))
+        if function_name is None:
+            continue
+        match = _DESCRIPTION_ID_PREFIX.match(function_name)
+        if match:
+            results.append((name, match.group("description_id").lower()))
     return results
-
-
-def parse_not_implemented(template_path: str) -> dict[str, str]:
-    """Parse declared intentional SDK gaps from a SAM template.
-
-    A ``NotImplemented`` block declares requirement IDs this SDK's template
-    intentionally does not satisfy, each with a human-readable reason. It may
-    appear as a top-level ``TestingMetadata`` block (sibling of ``Resources``)
-    and/or under any function resource's ``TestingMetadata`` -- a not-implemented
-    ID has no function to attach to, so the top-level form is expected, but both
-    are supported. Each entry is a mapping ``{ id: <requirement id>, reason: <str> }``::
-
-        TestingMetadata:
-          NotImplemented:
-            - id: "8-13"
-              reason: "toleratedFailurePercentage rejected at build() in this SDK"
-
-    Args:
-        template_path: Path to the SAM template file.
-
-    Returns:
-        Mapping of requirement ID -> reason. When an ID is declared more than
-        once, the first reason wins. Empty when nothing is declared.
-    """
-    with open(template_path, encoding="utf-8") as f:
-        loader: _CfnSafeLoader = _CfnSafeLoader(f)
-        try:
-            template = loader.get_single_data()
-        finally:
-            loader.dispose()
-
-    result: dict[str, str] = {}
-    if not isinstance(template, dict):
-        return result
-
-    def _ingest(metadata: Any) -> None:
-        if not isinstance(metadata, dict):
-            return
-        for entry in metadata.get("NotImplemented", []) or []:
-            if not isinstance(entry, dict):
-                continue
-            description_id = entry.get("id")
-            if not description_id or description_id in result:
-                continue
-            result[description_id] = str(entry.get("reason") or "")
-
-    # Top-level TestingMetadata block.
-    _ingest(template.get("TestingMetadata", {}))
-
-    # Per-resource TestingMetadata blocks.
-    for resource in template.get("Resources", {}).values():
-        if isinstance(resource, dict):
-            _ingest(resource.get("TestingMetadata", {}))
-
-    return result
 
 
 def discover_test_files(

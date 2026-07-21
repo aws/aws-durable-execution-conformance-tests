@@ -63,9 +63,11 @@ The validator handles the full lifecycle: invoke the function, wait for suspensi
 
 ## Running the Validator
 
-The runner accepts a SAM template whose functions map to requirement IDs through
-`TestingMetadata.TestDescription`. Configure AWS credentials for an account with
-permission to deploy and invoke the test resources, then run:
+The runner maps each SAM function to the requirement ID at the start of its
+`Properties.FunctionName`. The prefix must be followed by a hyphen or the end
+of the name; for example, `1-1-${AWS::StackName}` maps to `1-1`. Configure AWS
+credentials for an account with permission to deploy and invoke the test
+resources, then run:
 
 ```bash
 hatch run validate \
@@ -78,12 +80,16 @@ hatch run validate \
 
 The validator will:
 
-1. Parse `TestingMetadata.TestDescription` from the supplied template
+1. Discover requirement IDs from function name prefixes in the supplied template
 2. Load the corresponding requirement YAML for each ID
 3. Deploy and invoke the mapped Lambda functions
 4. Retrieve each durable execution's result and event history
 5. Validate the result and history against the requirement
 6. Report the status of every selected requirement
+
+Use `--parameter-overrides KEY=VALUE` to pass additional SAM template
+parameters, such as a pre-created Lambda execution role. Explicit overrides
+take precedence over values supplied by extensions.
 
 -----
 
@@ -114,27 +120,11 @@ Every requirement resolves to one status:
 | `PASSED` | History + result matched | no |
 | `FAILED` | Real mismatch or error | **yes** |
 | `OPTIONAL_FAILED` | Failed, but requirement marked `optional: true` | no |
-| `NOT_IMPLEMENTED` | Declared intentional SDK gap (see below) | no |
-| `UNCOVERED` | No mapped test case in the template, and not declared | no (see `--fail-on`) |
+| `NOT_IMPLEMENTED` | No function name starts with the requirement ID | no |
 
-**Exit code** follows `--fail-on`: `failed` (default) exits non-zero only on
-`FAILED`; `failed+uncovered` also treats `UNCOVERED` as blocking.
-`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` never block — intentional gaps stay
-visible without failing the run.
-
-### Declaring an intentional gap (`NOT_IMPLEMENTED`)
-
-When an SDK genuinely cannot satisfy a requirement, declare it in that SDK's
-SAM template under a `TestingMetadata.NotImplemented` list instead of silently
-omitting it. The runner reports it as `NOT_IMPLEMENTED` (non-blocking) with the
-reason, so the gap is tracked rather than hidden:
-
-```yaml
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason: "toleratedFailurePercentage is rejected at build() in this SDK"
-```
+The runner exits non-zero only when at least one requirement is `FAILED`.
+`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` remain visible without blocking the
+run.
 
 ### JUnit details (CI correlation)
 

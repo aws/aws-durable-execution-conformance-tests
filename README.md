@@ -56,8 +56,9 @@ distribution.
 
 ## Running Conformance
 
-The runner accepts a SAM template whose functions map to requirement IDs with
-`TestingMetadata.TestDescription`:
+The runner maps each SAM function to the requirement ID at the start of its
+`Properties.FunctionName`. For example, `otel-1-${AWS::StackName}` maps to
+`otel-1`:
 
 ```bash
 hatch run validate \
@@ -106,6 +107,11 @@ Credentials are read only from the environment:
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
 for the template parameter contract and collector command.
+
+The self-contained
+[Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
+map the four current OTel requirements to handlers built from the Python SDK
+and OTel plugin `main` branch.
 
 ## Extension API
 

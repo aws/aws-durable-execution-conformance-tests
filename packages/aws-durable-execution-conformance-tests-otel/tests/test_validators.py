@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from aws_durable_execution_conformance_tests_otel.model import (
@@ -87,6 +88,36 @@ def test_reports_correlation_and_outcome_mismatches() -> None:
     )
     assert any("durable execution ARN" in error for error in errors)
     assert any("Missing operation outcome" in error for error in errors)
+
+
+def test_infers_retry_outcome_from_later_attempt() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    trace = replace(
+        trace,
+        spans=(
+            replace(
+                root,
+                attributes={key: value for key, value in root.attributes.items() if key != "durable.operation.outcome"},
+            ),
+            replace(
+                child,
+                attributes={
+                    **child.attributes,
+                    "durable.attempt.number": 2,
+                },
+            ),
+        ),
+    )
+
+    assert (
+        validate_trace(
+            trace,
+            {"required_outcomes": ["retry", "success"]},
+            _query(),
+        )
+        == []
+    )
 
 
 def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:

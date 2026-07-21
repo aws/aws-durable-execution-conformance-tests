@@ -1,21 +1,14 @@
 name: OpenTelemetry hosted integrations
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/otel-integration.yml
+      - packages/aws-durable-execution-conformance-tests/**
+      - packages/aws-durable-execution-conformance-tests-otel/**
   workflow_dispatch:
     inputs:
-      template:
-        description: SDK SAM template path
-        required: true
-        type: string
-      language:
-        description: SDK language (java, javascript, or python)
-        required: true
-        type: choice
-        options: [java, javascript, python]
-      aws_role_arn:
-        description: AWS IAM role assumed through GitHub OIDC
-        required: true
-        type: string
       aws_region:
         description: AWS region
         required: true
@@ -38,70 +31,199 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
+  PYTHON_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml
+
 jobs:
   xray:
     name: ADOT + X-Ray
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          role-to-assume: ${{ inputs.aws_role_arn }}
-          aws-region: ${{ inputs.aws_region }}
-      - run: python -m pip install hatch==1.16.5
-      - run: hatch run validate --template "${{ inputs.template }}" --language "${{ inputs.language }}" --region "${{ inputs.aws_region }}" --suite otel --otel-exporter adot --otel-backend xray
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          role-session-name: durableExecutionConformanceOtelXRay
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify AWS test account
+        env:
+          TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACTUAL_ACCOUNT_ID" != "$TEST_ACCOUNT_ID" ]; then
+            echo "Expected AWS account $TEST_ACCOUNT_ID but assumed into $ACTUAL_ACCOUNT_ID"
+            exit 1
+          fi
+          echo "Using AWS test account $ACTUAL_ACCOUNT_ID"
+      - name: Set up SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+      - name: Install Hatch
+        run: python -m pip install hatch==1.16.5
+      - name: Run X-Ray conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$PYTHON_TEST_TEMPLATE" \
+            --language python \
+            --region "$AWS_REGION" \
+            --suite otel \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-exporter adot \
+            --otel-backend xray
 
   datadog:
     name: Community layer + Datadog
+    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          role-to-assume: ${{ inputs.aws_role_arn }}
-          aws-region: ${{ inputs.aws_region }}
-      - run: python -m pip install hatch==1.16.5
-      - run: hatch run validate --template "${{ inputs.template }}" --language "${{ inputs.language }}" --region "${{ inputs.aws_region }}" --suite otel --otel-exporter community --otel-backend datadog --otel-endpoint "${{ inputs.otlp_endpoint }}"
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          role-session-name: durableExecutionConformanceOtelDatadog
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify AWS test account
+        env:
+          TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACTUAL_ACCOUNT_ID" != "$TEST_ACCOUNT_ID" ]; then
+            echo "Expected AWS account $TEST_ACCOUNT_ID but assumed into $ACTUAL_ACCOUNT_ID"
+            exit 1
+          fi
+          echo "Using AWS test account $ACTUAL_ACCOUNT_ID"
+      - name: Set up SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+      - name: Install Hatch
+        run: python -m pip install hatch==1.16.5
+      - name: Run Datadog conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$PYTHON_TEST_TEMPLATE" \
+            --language python \
+            --region "$AWS_REGION" \
+            --suite otel \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-exporter community \
+            --otel-backend datadog \
+            --otel-endpoint "${{ inputs.otlp_endpoint }}"
 
   dash0:
     name: Community layer + Dash0
+    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != '' && inputs.dash0_query_endpoint != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DASH0_OTLP_HEADERS }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          role-to-assume: ${{ inputs.aws_role_arn }}
-          aws-region: ${{ inputs.aws_region }}
-      - run: python -m pip install hatch==1.16.5
-      - run: hatch run validate --template "${{ inputs.template }}" --language "${{ inputs.language }}" --region "${{ inputs.aws_region }}" --suite otel --otel-exporter community --otel-backend dash0 --otel-endpoint "${{ inputs.otlp_endpoint }}" --otel-backend-endpoint "${{ inputs.dash0_query_endpoint }}"
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          role-session-name: durableExecutionConformanceOtelDash0
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify AWS test account
+        env:
+          TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACTUAL_ACCOUNT_ID" != "$TEST_ACCOUNT_ID" ]; then
+            echo "Expected AWS account $TEST_ACCOUNT_ID but assumed into $ACTUAL_ACCOUNT_ID"
+            exit 1
+          fi
+          echo "Using AWS test account $ACTUAL_ACCOUNT_ID"
+      - name: Set up SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+      - name: Install Hatch
+        run: python -m pip install hatch==1.16.5
+      - name: Run Dash0 conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$PYTHON_TEST_TEMPLATE" \
+            --language python \
+            --region "$AWS_REGION" \
+            --suite otel \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-exporter community \
+            --otel-backend dash0 \
+            --otel-endpoint "${{ inputs.otlp_endpoint }}" \
+            --otel-backend-endpoint "${{ inputs.dash0_query_endpoint }}"
 
   collector:
     name: Community layer + test collector
+    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != '' && inputs.collector_query_endpoint != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          role-to-assume: ${{ inputs.aws_role_arn }}
-          aws-region: ${{ inputs.aws_region }}
-      - run: python -m pip install hatch==1.16.5
-      - run: hatch run validate --template "${{ inputs.template }}" --language "${{ inputs.language }}" --region "${{ inputs.aws_region }}" --suite otel --otel-exporter community --otel-backend collector --otel-endpoint "${{ inputs.otlp_endpoint }}" --otel-backend-endpoint "${{ inputs.collector_query_endpoint }}"
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          role-session-name: durableExecutionConformanceOtelCollector
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify AWS test account
+        env:
+          TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACTUAL_ACCOUNT_ID" != "$TEST_ACCOUNT_ID" ]; then
+            echo "Expected AWS account $TEST_ACCOUNT_ID but assumed into $ACTUAL_ACCOUNT_ID"
+            exit 1
+          fi
+          echo "Using AWS test account $ACTUAL_ACCOUNT_ID"
+      - name: Set up SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+      - name: Install Hatch
+        run: python -m pip install hatch==1.16.5
+      - name: Run collector conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$PYTHON_TEST_TEMPLATE" \
+            --language python \
+            --region "$AWS_REGION" \
+            --suite otel \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-exporter community \
+            --otel-backend collector \
+            --otel-endpoint "${{ inputs.otlp_endpoint }}" \
+            --otel-backend-endpoint "${{ inputs.collector_query_endpoint }}"

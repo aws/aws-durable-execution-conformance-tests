@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING
 
+import pytest
 from aws_durable_execution_conformance_tests.app import (
+    _find_not_implemented,
     _run_extension_validation,
     parse_args,
 )
@@ -95,6 +97,55 @@ def test_cleanup_explicit_enable() -> None:
     )
 
     assert args.cleanup is True
+
+
+def test_parameter_overrides_accept_repeated_key_value_pairs() -> None:
+    args = parse_args(
+        [
+            "--template",
+            "template.yaml",
+            "--language",
+            "python",
+            "--parameter-overrides",
+            "LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/lambda",
+            "OptionalValue=",
+        ]
+    )
+
+    assert args.parameter_overrides == [
+        ("LambdaExecutionRoleArn", "arn:aws:iam::123456789012:role/lambda"),
+        ("OptionalValue", ""),
+    ]
+
+
+def test_parameter_overrides_reject_invalid_values() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--template",
+                "template.yaml",
+                "--language",
+                "python",
+                "--parameter-overrides",
+                "MissingEquals",
+            ]
+        )
+
+
+def test_missing_function_mappings_are_not_implemented() -> None:
+    mappings = [
+        ("Otel1Success", "otel-1"),
+        ("Otel3Retry", "otel-3"),
+    ]
+
+    assert _find_not_implemented(["otel-3", "otel-2", "otel-1", "otel-4"], mappings) == [
+        "otel-2",
+        "otel-4",
+    ]
+    assert _find_not_implemented(["otel-1", "otel-2"], []) == [
+        "otel-1",
+        "otel-2",
+    ]
 
 
 def test_extension_hook_failure_uses_core_description_result(tmp_path: Path) -> None:

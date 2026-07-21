@@ -53,17 +53,17 @@ def test_console_includes_all_sections() -> None:
     assert "8-13" in text
     assert "8-9" in text
     assert "boom" in text  # failed errors shown
-    assert "pct rejected" in text  # not-implemented reason shown
+    assert "pct rejected" not in text  # reasons are ignored
     assert "Parallel basic (all succeed)" in text  # description shown
     assert "Exit code: 1" in text  # one FAILED blocks
 
 
 def test_console_shows_warnings() -> None:
     report = _report()
-    report.warnings.append("'8-13' is declared NotImplemented but is covered by an example")
+    report.warnings.append("legacy warning")
     text = render_console(report)
     assert "Warnings:" in text
-    assert "declared NotImplemented but is covered" in text
+    assert "legacy warning" in text
 
 
 def test_json_is_valid_and_schema_versioned() -> None:
@@ -79,7 +79,7 @@ def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:
     assert root.tag == "testsuite"
     assert root.attrib["tests"] == "4"
     assert root.attrib["failures"] == "1"
-    assert root.attrib["skipped"] == "2"  # not_implemented + uncovered
+    assert root.attrib["skipped"] == "2"
 
     by_name = {tc.attrib["name"]: tc for tc in root.findall("testcase")}
     assert by_name["8-1"].find("failure") is None
@@ -88,6 +88,7 @@ def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:
     ni_skip = by_name["8-13"].find("skipped")
     assert ni_skip is not None
     assert "NOT_IMPLEMENTED" in ni_skip.attrib["message"]
+    assert "pct rejected" not in ni_skip.attrib["message"]
     assert by_name["8-9"].find("skipped") is not None
 
 

@@ -14,7 +14,7 @@ handler: |
   default serializer and are not asserted here. The handler returns the ordered results ["X", "Y"].
   Note: JS and Python expose a distinct whole-result serdes (separate from the per-item serdes); the
   Java MapConfig has a single serDes applied to BOTH items and the result, so a whole-result-only
-  operation-level serde cannot be expressed and is uncovered for Java.
+  operation-level serde cannot be expressed and is not implemented for Java.
 invocations: |
   - Handler invokes map(name="op-serde", items=["x", "y"], mapFunc, operation-level serdes set,
     max-concurrency=1). The SDK checkpoints ContextStarted (SubType Map), runs both iterations

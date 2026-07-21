@@ -12,8 +12,8 @@ Status semantics:
 - ``PASSED``          -- history + result matched.
 - ``FAILED``          -- a real mismatch or error (blocking by default).
 - ``OPTIONAL_FAILED`` -- failed but the requirement is marked ``optional`` (non-blocking).
-- ``NOT_IMPLEMENTED`` -- a declared, intentional SDK gap with a reason (non-blocking).
-- ``UNCOVERED``       -- no example found and not declared (non-blocking by default; warn).
+- ``NOT_IMPLEMENTED`` -- no mapped handler was found (non-blocking).
+- ``UNCOVERED``       -- retained for report schema compatibility.
 
 Exit-code policy is controlled by ``fail_on``: by default only ``FAILED`` blocks;
 ``failed+uncovered`` additionally blocks on ``UNCOVERED``.
@@ -56,9 +56,9 @@ class ReportEntry:
         suite: Requirement suite (e.g. ``"parallel"``), or None if unknown.
         status: The terminal :class:`ReportStatus`.
         function: Logical SAM function name that satisfied the requirement, or
-            None (e.g. for NOT_IMPLEMENTED / UNCOVERED there is no function).
+            None when the requirement is not implemented.
         description: One-line requirement description (from the requirement YAML).
-        reason: Human-readable explanation (used for NOT_IMPLEMENTED).
+        reason: Optional human-readable explanation.
         errors: Assertion error messages (for FAILED / OPTIONAL_FAILED).
         duration_seconds: Wall-clock time spent validating this requirement.
     """

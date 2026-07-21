@@ -135,7 +135,7 @@ def test_warnings_serialized_in_to_dict() -> None:
     report = Report(
         run=run,
         entries=[_entry("1-1", ReportStatus.PASSED)],
-        warnings=["'8-13' is declared NotImplemented but is covered by an example"],
+        warnings=["legacy warning"],
     )
     data = report.to_dict()
-    assert data["warnings"] == ["'8-13' is declared NotImplemented but is covered by an example"]
+    assert data["warnings"] == ["legacy warning"]

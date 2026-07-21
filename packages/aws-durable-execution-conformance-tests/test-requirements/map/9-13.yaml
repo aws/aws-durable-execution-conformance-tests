@@ -10,7 +10,7 @@ handler: |
   replay determinism or results, so the history is asserted with wildcard iteration ids. The
   handler returns the ordered array of successful item results, in item index order.
   Note: the item namer is a JS/Python MapConfig option; the Java MapConfig has no item-namer field,
-  so this requirement is expected to be uncovered for the Java SDK rather than satisfied by a
+  so this requirement is reported as not implemented for the Java SDK rather than satisfied by a
   hand-rolled substitute.
 invocations: |
   - Handler invokes map(name="named-items", items=[1, 2], mapFunc, max-concurrency=1, itemNamer set)

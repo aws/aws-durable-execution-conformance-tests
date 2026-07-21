@@ -29,6 +29,10 @@ _OUTCOME_ATTRIBUTE_KEYS = (
     "durable.execution.outcome",
     "durable.execution.status",
 )
+_ATTEMPT_NUMBER_ATTRIBUTE_KEYS = (
+    "durable.attempt.number",
+    "durable.operation.attempt",
+)
 
 
 def _attribute_values(
@@ -36,6 +40,18 @@ def _attribute_values(
     keys: tuple[str, ...],
 ) -> list[str]:
     return [str(span.attributes[key]).lower() for span in trace.spans for key in keys if key in span.attributes]
+
+
+def _has_retry_attempt(trace: Trace) -> bool:
+    for span in trace.spans:
+        for key in _ATTEMPT_NUMBER_ATTRIBUTE_KEYS:
+            value = span.attributes.get(key)
+            try:
+                if value is not None and float(value) > 1:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
 
 
 def _is_sequence(value: Any) -> bool:
@@ -227,6 +243,8 @@ def validate_trace(
         actual_outcomes.update(
             "success" if span.status == "OK" else "failure" for span in trace.spans if span.status in {"OK", "ERROR"}
         )
+        if _has_retry_attempt(trace):
+            actual_outcomes.add("retry")
         missing = required_outcomes - actual_outcomes
         if missing:
             errors.append("Missing operation outcome(s): " + ", ".join(sorted(missing)))

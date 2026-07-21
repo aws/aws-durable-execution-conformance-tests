@@ -4,9 +4,9 @@
 """Report writers: render a :class:`Report` as console text, JSON, or JUnit XML.
 
 All writers are pure functions of a ``Report`` (plus, for the file variants, a
-path). Non-blocking statuses (OPTIONAL_FAILED / NOT_IMPLEMENTED / UNCOVERED) map
-to JUnit ``<skipped>`` so CI renders them yellow, not red; only FAILED maps to
-``<failure>``.
+path). Non-blocking statuses (OPTIONAL_FAILED / NOT_IMPLEMENTED / UNCOVERED)
+map to JUnit ``<skipped>`` so CI renders them yellow, not red; only FAILED maps
+to ``<failure>``.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def render_console(report: Report) -> str:
         lines.append("\nWarnings:")
         lines.extend(f"  ⚠️  {warning}" for warning in report.warnings)
 
-    def _section(title: str, status: ReportStatus, *, show_errors: bool = False, show_reason: bool = False) -> None:
+    def _section(title: str, status: ReportStatus, *, show_errors: bool = False) -> None:
         entries = report.entries_by_status(status)
         if not entries:
             return
@@ -54,16 +54,14 @@ def render_console(report: Report) -> str:
             lines.append(f"  {_GLYPH[status]} {entry.id}{fn}")
             if entry.description:
                 lines.append(f"       {entry.description}")
-            if show_reason and entry.reason:
-                lines.append(f"       {entry.reason}")
             if show_errors:
                 lines.extend(f"       {err}" for err in entry.errors)
 
     _section("Passed", ReportStatus.PASSED)
     _section("Failed", ReportStatus.FAILED, show_errors=True)
     _section("Optional (failed, non-blocking)", ReportStatus.OPTIONAL_FAILED, show_errors=True)
-    _section("Not implemented (declared SDK gap, non-blocking)", ReportStatus.NOT_IMPLEMENTED, show_reason=True)
-    _section("Uncovered (no example found)", ReportStatus.UNCOVERED)
+    _section("Not implemented (no handler found, non-blocking)", ReportStatus.NOT_IMPLEMENTED)
+    _section("Uncovered", ReportStatus.UNCOVERED)
 
     lines.append(f"\nExit code: {report.exit_code()} (fail-on: {report.fail_on})")
     return "\n".join(lines)
@@ -126,8 +124,7 @@ def render_junit(report: Report) -> str:
             failure = ET.SubElement(testcase, "failure", {"message": "; ".join(entry.errors) or "assertion failed"})
             failure.text = "\n".join(entry.errors)
         elif entry.status != ReportStatus.PASSED:
-            message = f"{entry.status.value}: {entry.reason}" if entry.reason else entry.status.value
-            skipped = ET.SubElement(testcase, "skipped", {"message": message})
+            skipped = ET.SubElement(testcase, "skipped", {"message": entry.status.value})
             if entry.errors:
                 skipped.text = "\n".join(entry.errors)
 

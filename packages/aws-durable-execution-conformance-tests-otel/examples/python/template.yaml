@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Python SDK examples for the durable execution OTel conformance suite
+
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Pre-created execution role for the test functions
+  OtelLayerArn:
+    Type: String
+    Description: Lambda layer used to export OpenTelemetry spans
+  OtelExecWrapper:
+    Type: String
+    Default: /opt/otel-instrument
+    Description: Lambda execution wrapper supplied by the exporter profile
+  OtelServiceName:
+    Type: String
+    Default: durable-execution-conformance
+    Description: OpenTelemetry service name used to find the exported trace
+  OtelTracesExporter:
+    Type: String
+    Default: otlp
+    Description: OpenTelemetry traces exporter selected by the runner
+  OtelExporterEndpoint:
+    Type: String
+    Default: ""
+    Description: Non-secret OTLP endpoint used by community exporters
+  OtelExporterHeaders:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Secret OTLP exporter headers supplied by the runner
+  OtelSecretEnvironmentNames:
+    Type: String
+    Default: ""
+    Description: Comma-separated secret environment variable names
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - x86_64
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Layers:
+      - !Ref OtelLayerArn
+    DurableConfig:
+      ExecutionTimeout: 300
+      RetentionPeriodInDays: 1
+    Environment:
+      Variables:
+        AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
+        OTEL_SERVICE_NAME: !Ref OtelServiceName
+        OTEL_TRACES_EXPORTER: !Ref OtelTracesExporter
+        OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
+        OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
+        OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+        OTEL_PROPAGATORS: xray
+        OTEL_TRACES_SAMPLER: always_on
+
+Resources:
+  Otel1Success:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_1_success.handler
+      FunctionName: !Sub "otel-1-${AWS::StackName}"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel2WaitResume:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_2_wait_resume.handler
+      FunctionName: !Sub "otel-2-${AWS::StackName}"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel3Retry:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_3_retry.handler
+      FunctionName: !Sub "otel-3-${AWS::StackName}"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel4TerminalFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_4_terminal_failure.handler
+      FunctionName: !Sub "otel-4-${AWS::StackName}"
+      Role: !Ref LambdaExecutionRoleArn

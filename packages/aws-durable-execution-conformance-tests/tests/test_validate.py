@@ -1,11 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the validate module.
-
-Covers ``discover_suites`` and ``parse_not_implemented``; additional
-pure-function tests for ``validate`` belong here too.
-"""
+"""Unit tests for pure functions in the validate module."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from aws_durable_execution_conformance_tests.validate import (
     discover_suites,
-    parse_not_implemented,
+    parse_function_descriptions,
 )
 
 if TYPE_CHECKING:
@@ -95,139 +91,99 @@ def test_accepts_string_path(tmp_path: Path) -> None:
     assert discover_suites(str(tmp_path)) == ["step"]
 
 
-# --- parse_not_implemented --------------------------------------------------
-
-
 def _write_template(tmp_path: Path, body: str) -> str:
     path = tmp_path / "template.yaml"
     path.write_text(body)
     return str(path)
 
 
-def test_not_implemented_top_level_block(tmp_path: Path) -> None:
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason: "toleratedFailurePercentage rejected at build()"
-    - id: "8-22"
-      reason: "same as 8-13"
-Resources:
-  ParallelBasic:
-    Type: AWS::Serverless::Function
-    TestingMetadata:
-      TestDescription: ["8-1"]
-""",
-    )
-    assert parse_not_implemented(template) == {
-        "8-13": "toleratedFailurePercentage rejected at build()",
-        "8-22": "same as 8-13",
-    }
+# --- parse_function_descriptions -------------------------------------------
 
 
-def test_not_implemented_on_resource(tmp_path: Path) -> None:
+def test_function_description_from_literal_numeric_prefix(tmp_path: Path) -> None:
     template = _write_template(
         tmp_path,
         """
 Resources:
-  MapItemNamer:
-    Type: AWS::Serverless::Function
-    TestingMetadata:
-      NotImplemented:
-        - id: "9-14"
-          reason: "MapConfig has no itemNamer field"
-""",
-    )
-    assert parse_not_implemented(template) == {"9-14": "MapConfig has no itemNamer field"}
-
-
-def test_not_implemented_first_reason_wins_on_duplicate(tmp_path: Path) -> None:
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason: "first"
-    - id: "8-13"
-      reason: "second"
-""",
-    )
-    assert parse_not_implemented(template) == {"8-13": "first"}
-
-
-def test_not_implemented_missing_reason_defaults_empty(tmp_path: Path) -> None:
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-""",
-    )
-    assert parse_not_implemented(template) == {"8-13": ""}
-
-
-def test_not_implemented_null_reason_defaults_empty(tmp_path: Path) -> None:
-    # Explicit null value (key present, no value) must not become the string "None".
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason:
-""",
-    )
-    assert parse_not_implemented(template) == {"8-13": ""}
-
-
-def test_not_implemented_absent_returns_empty(tmp_path: Path) -> None:
-    template = _write_template(
-        tmp_path,
-        """
-Resources:
-  ParallelBasic:
-    Type: AWS::Serverless::Function
-    TestingMetadata:
-      TestDescription: ["8-1"]
-""",
-    )
-    assert parse_not_implemented(template) == {}
-
-
-def test_not_implemented_ignores_entries_without_id(tmp_path: Path) -> None:
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - reason: "no id, ignored"
-    - id: "8-13"
-      reason: "kept"
-""",
-    )
-    assert parse_not_implemented(template) == {"8-13": "kept"}
-
-
-def test_not_implemented_tolerates_cfn_intrinsic_tags(tmp_path: Path) -> None:
-    # The template loader must handle !GetAtt etc. without choking.
-    template = _write_template(
-        tmp_path,
-        """
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason: "gap"
-Resources:
-  ParallelBasic:
+  StepBasic:
     Type: AWS::Serverless::Function
     Properties:
-      Role: !GetAtt DurableFunctionRole.Arn
-    TestingMetadata:
-      TestDescription: ["8-1"]
+      FunctionName: 1-1-step-basic
 """,
     )
-    assert parse_not_implemented(template) == {"8-13": "gap"}
+
+    assert parse_function_descriptions(template) == [("StepBasic", "1-1")]
+
+
+def test_function_description_from_tagged_sub_prefix(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  OtelWaitResume:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "otel-2-${AWS::StackName}"
+""",
+    )
+
+    assert parse_function_descriptions(template) == [("OtelWaitResume", "otel-2")]
+
+
+def test_function_description_from_long_form_sub_sequence(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  OtelRetry:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub:
+          - "OTEL-3-${Suffix}"
+          - Suffix: retry
+""",
+    )
+
+    assert parse_function_descriptions(template) == [("OtelRetry", "otel-3")]
+
+
+def test_function_description_from_long_form_sub_string(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  MapBasic:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: "9-1-${AWS::StackName}"
+""",
+    )
+
+    assert parse_function_descriptions(template) == [("MapBasic", "9-1")]
+
+
+def test_function_descriptions_ignore_unprefixed_and_missing_names(
+    tmp_path: Path,
+) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  UnprefixedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: step-basic
+  MissingFunctionName:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+  NotAFunction:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: 1-2-not-a-function
+""",
+    )
+
+    assert parse_function_descriptions(template) == []

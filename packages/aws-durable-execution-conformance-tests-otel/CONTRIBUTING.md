@@ -105,15 +105,15 @@ across the complete exporter/backend support matrix.
 The matching test handler and deployment template belong in each supported SDK
 repository. For Java, JavaScript/Node.js, and Python:
 
-1. Map a function to the new requirement ID using
-   `TestingMetadata.TestDescription`.
+1. Prefix the deployed `FunctionName` with the new requirement ID, followed by
+   a hyphen (for example, `otel-5-${AWS::StackName}`).
 2. Implement the `Input.scenario` contract with the SDK's public durable
    execution and OTel APIs.
 3. Accept the OTel template parameters documented in the package
    [README](README.md).
 4. Exercise the scenario with the test collector before using a hosted backend.
-5. Declare a genuine SDK gap as `NOT_IMPLEMENTED` with a reason instead of
-   omitting the requirement.
+5. Omit the function when the SDK does not implement the requirement; the
+   runner reports the missing mapping as `NOT_IMPLEMENTED`.
 
 Use the same scenario semantics in every SDK. Runtime setup can differ, but the
 observable execution and telemetry behavior must satisfy the same requirement.

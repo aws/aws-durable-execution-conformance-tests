@@ -64,6 +64,15 @@ durable-execution-otel-collector --host 0.0.0.0 --port 4318
 It accepts OTLP JSON or protobuf at `/v1/traces` and exposes its canonical,
 in-memory trace lookup API at `/api/traces`.
 
+## Python Examples
+
+The package includes a self-contained
+[Python SAM project](examples/python/README.md) that implements every OTel
+requirement with the Python SDK and its OTel plugin. Its runtime requirements
+track both packages directly from the SDK repository's `main` branch. The
+folder is structured to move into the Python SDK's OTel package when this suite
+stabilizes.
+
 ## Third-Party Plugins
 
 Additional profiles and backends register entry points in:
