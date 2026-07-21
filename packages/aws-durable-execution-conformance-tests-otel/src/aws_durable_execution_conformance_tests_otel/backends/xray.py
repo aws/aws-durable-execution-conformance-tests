@@ -106,23 +106,38 @@ class XRayBackend(PollingBackend):
             if query.trace_id:
                 trace_ids = [query.trace_id]
             else:
-                response = self._client.get_trace_summaries(
-                    StartTime=query.started_at,
-                    EndTime=query.ended_at,
-                    FilterExpression=f'service("{query.service_name}")',
-                )
-                trace_ids = [item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id")]
+                summary_request = {
+                    "StartTime": query.started_at,
+                    "EndTime": query.ended_at,
+                    "FilterExpression": f'service("{query.service_name}")',
+                }
+                while True:
+                    response = self._client.get_trace_summaries(**summary_request)
+                    trace_ids.extend(item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id"))
+                    next_token = response.get("NextToken")
+                    if not next_token:
+                        break
+                    summary_request["NextToken"] = next_token
             if not trace_ids:
                 return None
-            response = self._client.batch_get_traces(TraceIds=trace_ids[:5])
+
+            documents: list[str] = []
+            for offset in range(0, len(trace_ids), 5):
+                trace_request = {"TraceIds": trace_ids[offset : offset + 5]}
+                while True:
+                    response = self._client.batch_get_traces(**trace_request)
+                    documents.extend(
+                        segment["Document"]
+                        for trace in response.get("Traces", [])
+                        for segment in trace.get("Segments", [])
+                        if segment.get("Document")
+                    )
+                    next_token = response.get("NextToken")
+                    if not next_token:
+                        break
+                    trace_request["NextToken"] = next_token
         except (BotoCoreError, ClientError) as exc:
             raise BackendError(f"X-Ray telemetry query failed: {type(exc).__name__}") from exc
-        documents = [
-            segment["Document"]
-            for trace in response.get("Traces", [])
-            for segment in trace.get("Segments", [])
-            if segment.get("Document")
-        ]
         return matching_trace(normalize_xray(documents), query)
 
 
