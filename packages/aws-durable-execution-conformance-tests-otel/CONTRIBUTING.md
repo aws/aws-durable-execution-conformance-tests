@@ -78,7 +78,10 @@ TelemetryAssertions:
     expect:
       status: OK
       service_name: conformance
-      parent_span_id: "*"
+      parent:
+        name: durable execution
+        attributes:
+          durable.operation.type: execution
       attributes:
         durable.operation.outcome: success
 ```
@@ -89,6 +92,9 @@ Both `select` and `expect` can use any canonical span property: `trace_id`,
 attribute metadata without interpreting provider-specific keys. Use `"*"` when
 a property must exist but its value is intentionally dynamic. Sequence
 assertions, including `links`, compare length, order, and nested values.
+The optional `expect.parent` mapping resolves the selected span's
+`parent_span_id` within the same trace and applies the same partial matching
+constructs to that parent span.
 
 Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable

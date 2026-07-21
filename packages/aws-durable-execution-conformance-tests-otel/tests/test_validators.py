@@ -102,6 +102,15 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "trace_id": "1" * 32,
                     "span_id": "3" * 16,
                     "parent_span_id": "2" * 16,
+                    "parent": {
+                        "name": "root",
+                        "status": "OK",
+                        "parent_span_id": None,
+                        "attributes": {
+                            "faas.invocation_id": "invocation-1",
+                            "durable.operation.outcome": "retry",
+                        },
+                    },
                     "name": "child",
                     "start_time": "*",
                     "end_time": "*",
@@ -128,6 +137,65 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     )
 
     assert errors == []
+
+
+def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    external_child = Span(
+        trace_id=child.trace_id,
+        span_id=child.span_id,
+        parent_span_id="9" * 16,
+        name=child.name,
+        start_time=child.start_time,
+        end_time=child.end_time,
+        status=child.status,
+        service_name=child.service_name,
+        attributes=child.attributes,
+        links=child.links,
+    )
+
+    errors = validate_trace(
+        trace,
+        {
+            "span_assertions": [
+                {
+                    "select": {"name": "root"},
+                    "expect": {"parent": {"name": "root"}},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "parent": {
+                            "name": "not-root",
+                            "attributes": {"missing.key": "value"},
+                        }
+                    },
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {"parent": "root"},
+                },
+            ]
+        },
+        _query(),
+    )
+    external_errors = validate_trace(
+        Trace(trace_id=trace.trace_id, spans=(root, external_child)),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"parent": {"name": "root"}},
+            }
+        },
+        _query(),
+    )
+
+    assert "span_assertions[0].expect.parent: selected span has no parent" in errors
+    assert "span_assertions[1].expect.parent.name: expected 'not-root'" in errors
+    assert "span_assertions[1].expect.parent.attributes.missing.key: property is missing" in errors
+    assert "span_assertions[2].expect.parent must be a mapping" in errors
+    assert external_errors == ["span_assertions[0].expect.parent: parent span is not present in the trace"]
 
 
 def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:

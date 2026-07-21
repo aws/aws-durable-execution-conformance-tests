@@ -100,6 +100,29 @@ def _expectation_errors(
     return []
 
 
+def _parent_expectation_errors(
+    expected: Any,
+    span: Mapping[str, Any],
+    spans_by_id: Mapping[str, list[Mapping[str, Any]]],
+    *,
+    path: str,
+) -> list[str]:
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+
+    parent_span_id = span["parent_span_id"]
+    if parent_span_id is None:
+        return [f"{path}: selected span has no parent"]
+
+    parents = spans_by_id.get(parent_span_id, [])
+    if not parents:
+        return [f"{path}: parent span is not present in the trace"]
+    if len(parents) > 1:
+        return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
+
+    return _expectation_errors(expected, parents[0], path=path)
+
+
 def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
     if raw_assertions is None:
         return []
@@ -111,6 +134,10 @@ def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
         return ["span_assertions must be a mapping or sequence of mappings"]
 
     spans = [span_to_dict(span) for span in trace.spans]
+    spans_by_id: dict[str, list[Mapping[str, Any]]] = {}
+    for span in spans:
+        spans_by_id.setdefault(span["span_id"], []).append(span)
+
     errors: list[str] = []
     for index, assertion in enumerate(span_assertions):
         path = f"span_assertions[{index}]"
@@ -139,13 +166,23 @@ def _span_assertion_errors(trace: Trace, raw_assertions: Any) -> list[str]:
         if len(matches) > 1:
             errors.append(f"{path}.select matched {len(matches)} spans; it must select exactly one")
             continue
+        expected_properties = {key: value for key, value in expected.items() if key != "parent"}
         errors.extend(
             _expectation_errors(
-                expected,
+                expected_properties,
                 matches[0],
                 path=f"{path}.expect",
             )
         )
+        if "parent" in expected:
+            errors.extend(
+                _parent_expectation_errors(
+                    expected["parent"],
+                    matches[0],
+                    spans_by_id,
+                    path=f"{path}.expect.parent",
+                )
+            )
     return errors
 
 
