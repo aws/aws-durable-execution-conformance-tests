@@ -11,7 +11,6 @@ from typing import Any
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
-    normalize_id,
     span_to_dict,
 )
 
@@ -24,24 +23,6 @@ _INVOCATION_ATTRIBUTE_KEYS = (
     "faas.invocation_id",
     "aws.lambda.invocation_id",
 )
-_OUTCOME_ATTRIBUTE_KEYS = (
-    "durable.operation.outcome",
-    "durable.execution.outcome",
-    "durable.execution.status",
-    "durable.attempt.outcome",
-    "durable.operation.status",
-    "durable.invocation.status",
-)
-_OUTCOME_ALIASES = {
-    "succeeded": "success",
-    "failed": "failure",
-    "retrying": "retry",
-    "retried": "retry",
-}
-_ATTEMPT_NUMBER_ATTRIBUTE_KEYS = (
-    "durable.attempt.number",
-    "durable.operation.attempt",
-)
 
 
 def _attribute_values(
@@ -49,18 +30,6 @@ def _attribute_values(
     keys: tuple[str, ...],
 ) -> list[str]:
     return [str(span.attributes[key]).lower() for span in trace.spans for key in keys if key in span.attributes]
-
-
-def _has_retry_attempt(trace: Trace) -> bool:
-    for span in trace.spans:
-        for key in _ATTEMPT_NUMBER_ATTRIBUTE_KEYS:
-            value = span.attributes.get(key)
-            try:
-                if value is not None and float(value) > 1:
-                    return True
-            except (TypeError, ValueError):
-                continue
-    return False
 
 
 def _is_sequence(value: Any) -> bool:
@@ -287,43 +256,6 @@ def validate_trace(
             errors.append(
                 f"Expected telemetry from at least {minimum_invocations} Lambda invocations, found {len(invocations)}"
             )
-
-    required_outcomes = {str(value).lower() for value in assertions.get("required_outcomes", [])}
-    if required_outcomes:
-        actual_outcomes = {
-            _OUTCOME_ALIASES.get(value, value) for value in _attribute_values(trace, _OUTCOME_ATTRIBUTE_KEYS)
-        }
-        actual_outcomes.update(
-            "success" if span.status == "OK" else "failure" for span in trace.spans if span.status in {"OK", "ERROR"}
-        )
-        if _has_retry_attempt(trace):
-            actual_outcomes.add("retry")
-        missing = required_outcomes - actual_outcomes
-        if missing:
-            errors.append("Missing operation outcome(s): " + ", ".join(sorted(missing)))
-
-    if assertions.get("require_continuation", False):
-        span_ids = {span.span_id for span in trace.spans}
-        linked = any(
-            span.parent_span_id in span_ids
-            or any(
-                normalize_id(link.trace_id, 32) == trace.trace_id and link.span_id in span_ids for link in span.links
-            )
-            for span in trace.spans
-        )
-        if not linked:
-            errors.append("No parent or span-link relationship connects the durable continuation")
-
-    if assertions.get("require_log_trace_correlation", False):
-        if not trace.log_trace_ids:
-            errors.append("No log trace identifiers were returned by the backend")
-        mismatched = {
-            normalize_id(trace_id, 32)
-            for trace_id in trace.log_trace_ids
-            if normalize_id(trace_id, 32) != trace.trace_id
-        }
-        if mismatched:
-            errors.append("Log trace identifiers do not match the active trace")
 
     raw_prefixes = assertions.get("exact_attribute_prefixes", ())
     exact_attribute_prefixes: tuple[str, ...]

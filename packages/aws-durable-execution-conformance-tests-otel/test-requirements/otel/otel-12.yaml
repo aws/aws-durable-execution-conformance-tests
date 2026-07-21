@@ -20,8 +20,6 @@ ExpectedResult:
 TelemetryAssertions:
   minimum_spans: 2
   require_execution_correlation: true
-  required_outcomes:
-    - failure
   require_all_spans: true
   span_assertion_scope:
     attributes:

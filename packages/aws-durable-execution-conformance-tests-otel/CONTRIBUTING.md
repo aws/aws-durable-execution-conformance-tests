@@ -48,9 +48,6 @@ TelemetryAssertions:
   minimum_spans: 2
   minimum_invocations: 2
   require_execution_correlation: true
-  require_continuation: true
-  required_outcomes:
-    - success
 ```
 
 The currently supported telemetry assertions are:
@@ -60,9 +57,6 @@ The currently supported telemetry assertions are:
 | `minimum_spans` | Minimum number of normalized spans; defaults to `1`. |
 | `minimum_invocations` | Minimum distinct Lambda invocation IDs; defaults to `1`. |
 | `require_execution_correlation` | Require the durable execution ARN on the trace; defaults to `true`. |
-| `require_continuation` | Require an in-trace parent or span-link relationship. |
-| `require_log_trace_correlation` | Require backend-provided log trace IDs to match the active trace. |
-| `required_outcomes` | Require outcomes such as `retry`, `success`, or `failure`. |
 | `require_all_spans` | Require every normalized span to match at least one span assertion. |
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
 | `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |

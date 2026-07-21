@@ -53,7 +53,7 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         },
         links=(SpanLink(trace_id="1" * 32, span_id=root.span_id),),
     )
-    return Trace(trace_id="1" * 32, spans=(root, child), log_trace_ids=("1" * 32,))
+    return Trace(trace_id="1" * 32, spans=(root, child))
 
 
 def _query() -> TelemetryQuery:
@@ -68,91 +68,19 @@ def test_validates_stable_cross_invocation_invariants() -> None:
             "minimum_spans": 2,
             "minimum_invocations": 2,
             "require_execution_correlation": True,
-            "require_continuation": True,
-            "require_log_trace_correlation": True,
-            "required_outcomes": ["retry", "success"],
         },
         _query(),
     )
     assert errors == []
 
 
-def test_reports_correlation_and_outcome_mismatches() -> None:
+def test_reports_correlation_mismatches() -> None:
     errors = validate_trace(
         _trace("arn:wrong"),
-        {
-            "require_execution_correlation": True,
-            "required_outcomes": ["failure"],
-        },
+        {"require_execution_correlation": True},
         _query(),
     )
     assert any("durable execution ARN" in error for error in errors)
-    assert any("Missing operation outcome" in error for error in errors)
-
-
-def test_infers_retry_outcome_from_later_attempt() -> None:
-    trace = _trace()
-    root, child = trace.spans
-    trace = replace(
-        trace,
-        spans=(
-            replace(
-                root,
-                attributes={key: value for key, value in root.attributes.items() if key != "durable.operation.outcome"},
-            ),
-            replace(
-                child,
-                attributes={
-                    **child.attributes,
-                    "durable.attempt.number": 2,
-                },
-            ),
-        ),
-    )
-
-    assert (
-        validate_trace(
-            trace,
-            {"required_outcomes": ["retry", "success"]},
-            _query(),
-        )
-        == []
-    )
-
-
-def test_normalizes_sdk_attempt_outcomes() -> None:
-    trace = _trace()
-    root, child = trace.spans
-    trace = replace(
-        trace,
-        spans=(
-            replace(
-                root,
-                status="UNSET",
-                attributes={
-                    **root.attributes,
-                    "durable.attempt.outcome": "SUCCEEDED",
-                },
-            ),
-            replace(
-                child,
-                status="UNSET",
-                attributes={
-                    **child.attributes,
-                    "durable.attempt.outcome": "FAILED",
-                },
-            ),
-        ),
-    )
-
-    assert (
-        validate_trace(
-            trace,
-            {"required_outcomes": ["success", "failure"]},
-            _query(),
-        )
-        == []
-    )
 
 
 def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:

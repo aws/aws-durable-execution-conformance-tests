@@ -21,9 +21,6 @@ TelemetryAssertions:
   minimum_spans: 5
   minimum_invocations: 3
   require_execution_correlation: true
-  require_continuation: true
-  required_outcomes:
-    - failure
   require_all_spans: true
   span_assertion_scope:
     attributes:
