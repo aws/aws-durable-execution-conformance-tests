@@ -119,11 +119,14 @@ def test_dash0_queries_trace_api() -> None:
 
 def test_xray_queries_summaries_then_batch_get() -> None:
     class _XRay:
+        batch_get_calls = 0
+
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
             assert kwargs["FilterExpression"] == 'service("conformance")'
             return {"TraceSummaries": [{"Id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
+            self.batch_get_calls += 1
             assert kwargs["TraceIds"]
             document = {
                 "trace_id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb",
@@ -131,14 +134,16 @@ def test_xray_queries_summaries_then_batch_get() -> None:
                 "name": "conformance",
                 "start_time": 1,
                 "end_time": 2,
-                "metadata": {"durable.execution.arn": "arn:test"},
+                "metadata": {"durable.execution.arn": ("arn:stale" if self.batch_get_calls == 1 else "arn:test")},
             }
             return {"Traces": [{"Segments": [{"Document": json.dumps(document)}]}]}
 
-    backend = XRayBackend(_XRay(), sleep=lambda _seconds: None)
+    client = _XRay()
+    backend = XRayBackend(client, sleep=lambda _seconds: None)
     trace = backend.find_trace(
         _query(),
-        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=2),
     )
 
+    assert client.batch_get_calls == 2
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"

@@ -75,9 +75,4 @@ def matching_trace(traces: list[Trace], query: TelemetryQuery) -> Trace | None:
         for span in trace.spans:
             if query.execution_arn in {str(value) for value in span.attributes.values()}:
                 return trace
-    service_matches = [
-        trace for trace in traces if any(span.service_name == query.service_name for span in trace.spans)
-    ]
-    if len(service_matches) == 1:
-        return service_matches[0]
-    return traces[0] if len(traces) == 1 else None
+    return None
