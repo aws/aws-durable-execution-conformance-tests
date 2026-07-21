@@ -68,6 +68,32 @@ jobs:
         uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
       - name: Install Hatch
         run: python -m pip install hatch==1.16.5
+      - name: Resolve latest ADOT Python layer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ADOT_LAYER_ARN=$(
+            gh api repos/aws-observability/aws-otel-python-instrumentation/releases/latest \
+              --jq .body |
+              awk -F '|' -v region="$AWS_REGION" '
+                $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                  print $3
+                  exit
+                }
+              '
+          )
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            echo "Could not resolve the latest ADOT Python layer for $AWS_REGION"
+            exit 1
+          fi
+          aws lambda get-layer-version-by-arn \
+            --arn "$ADOT_LAYER_ARN" \
+            --region "$AWS_REGION" \
+            --query LayerVersionArn \
+            --output text > /dev/null
+          echo "Using ADOT Python layer $ADOT_LAYER_ARN"
+          echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
       - name: Run X-Ray conformance tests
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
@@ -79,6 +105,7 @@ jobs:
             --suite otel \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-backend xray
 
   datadog:
