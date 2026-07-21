@@ -70,6 +70,7 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
     document = {
         "trace_id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb",
         "id": "1" * 16,
+        "parent_id": "f" * 16,
         "name": "conformance",
         "start_time": 1,
         "end_time": 2,
@@ -83,23 +84,32 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
         "subsegments": [
             {
                 "id": "2" * 16,
-                "parent_id": "1" * 16,
                 "name": "child",
                 "start_time": 1.2,
                 "end_time": 1.8,
+                "subsegments": [
+                    {
+                        "id": "3" * 16,
+                        "name": "grandchild",
+                        "start_time": 1.3,
+                        "end_time": 1.7,
+                    }
+                ],
             }
         ],
     }
 
     trace = normalize_xray([json.dumps(document)])[0]
     assert trace.trace_id == "a" * 8 + "b" * 24
-    assert len(trace.spans) == 2
+    assert len(trace.spans) == 3
     assert trace.spans[0].attributes["indexed"] == "value"
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
     assert trace.spans[0].attributes["faas.invocation_id"] == "invocation-1"
     assert trace.spans[0].attributes["legacy.attribute"] == "legacy-value"
     assert trace.spans[0].attributes["xray.custom.tenant"] == "example"
+    assert trace.spans[0].parent_span_id == "f" * 16
     assert trace.spans[1].parent_span_id == "1" * 16
+    assert trace.spans[2].parent_span_id == "2" * 16
 
 
 def test_normalizes_datadog_decimal_identifiers() -> None:

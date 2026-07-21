@@ -52,10 +52,12 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
         segment: Mapping[str, Any],
         trace_id: str,
         service_name: str | None,
+        enclosing_span_id: str | None = None,
     ) -> None:
         span_id = normalize_id(segment.get("id"), 16)
         if span_id is None:
             return
+        parent_span_id = normalize_id(segment.get("parent_id"), 16) or enclosing_span_id
         start = parse_timestamp(segment.get("start_time", 0))
         end = parse_timestamp(segment.get("end_time", segment.get("start_time", 0)))
         attributes = {
@@ -67,7 +69,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
             Span(
                 trace_id=trace_id,
                 span_id=span_id,
-                parent_span_id=normalize_id(segment.get("parent_id"), 16),
+                parent_span_id=parent_span_id,
                 name=str(segment.get("name", "")),
                 start_time=start,
                 end_time=end,
@@ -77,7 +79,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
             )
         )
         for child in segment.get("subsegments", []):
-            ingest(child, trace_id, service_name)
+            ingest(child, trace_id, service_name, span_id)
 
     raw_documents = list(documents)
     for document in raw_documents:
