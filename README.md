@@ -111,8 +111,8 @@ Contrib `awss3exporter` configuration.
 
 The self-contained
 [Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
-map the four current OTel requirements to handlers built from the Python SDK
-and OTel plugin `main` branch.
+map the current OTel requirements to handlers built from the Python SDK and
+OTel plugin `main` branch.
 
 ## Extension API
 

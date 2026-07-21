@@ -22,6 +22,11 @@ the template and source tree.
 | `otel-2` | `otel_2_wait_resume.handler` | Waits, resumes in another invocation, then completes a step. |
 | `otel-3` | `otel_3_retry.handler` | Fails the first step attempt and succeeds on the retry. |
 | `otel-4` | `otel_4_terminal_failure.handler` | Fails a step without retrying and terminates the execution. |
+| `otel-5` | `otel_5_step_hierarchy.handler` | Verifies named logical-step and attempt-span parenting. |
+| `otel-6` | `otel_6_child_context.handler` | Verifies nested step parenting inside a child context. |
+| `otel-7` | `otel_7_parallel.handler` | Verifies parallel context, branch, and step hierarchy. |
+| `otel-8` | `otel_8_map.handler` | Verifies map context, iteration, and step hierarchy. |
+| `otel-9` | `otel_9_handled_failure.handler` | Records a handled step failure followed by recovery. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages directly from the SDK repository's `main` branch because the

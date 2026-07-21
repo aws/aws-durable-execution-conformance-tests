@@ -1,0 +1,42 @@
+description: OpenTelemetry represents a named step and its attempt as a parented span hierarchy
+Input:
+  scenario: step-hierarchy
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 3
+  require_execution_correlation: true
+  required_outcomes:
+    - success
+  span_assertions:
+    - select:
+        name: otel-basic-step
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-basic-step
+      expect:
+        attributes:
+          durable.execution.arn: "*"
+          durable.operation.id: "*"
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: "*"
+    - select:
+        name: otel-basic-step attempt 1
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-basic-step
+      expect:
+        attributes:
+          durable.execution.arn: "*"
+          durable.operation.id: "*"
+        parent:
+          name: otel-basic-step
+          attributes:
+            durable.operation.type: STEP
+            durable.operation.name: otel-basic-step

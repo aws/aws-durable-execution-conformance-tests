@@ -1,0 +1,33 @@
+description: OpenTelemetry records a handled step failure without failing the execution trace
+Input:
+  scenario: handled-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 5
+  require_execution_correlation: true
+  required_outcomes:
+    - failure
+    - success
+  span_assertions:
+    - select:
+        name: otel-handled-failure
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-handled-failure
+      expect:
+        status: ERROR
+        parent:
+          name: invocation
+    - select:
+        name: otel-recovery-step
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-recovery-step
+      expect:
+        parent:
+          name: invocation

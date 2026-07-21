@@ -120,6 +120,41 @@ def test_infers_retry_outcome_from_later_attempt() -> None:
     )
 
 
+def test_normalizes_sdk_attempt_outcomes() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    trace = replace(
+        trace,
+        spans=(
+            replace(
+                root,
+                status="UNSET",
+                attributes={
+                    **root.attributes,
+                    "durable.attempt.outcome": "SUCCEEDED",
+                },
+            ),
+            replace(
+                child,
+                status="UNSET",
+                attributes={
+                    **child.attributes,
+                    "durable.attempt.outcome": "FAILED",
+                },
+            ),
+        ),
+    )
+
+    assert (
+        validate_trace(
+            trace,
+            {"required_outcomes": ["success", "failure"]},
+            _query(),
+        )
+        == []
+    )
+
+
 def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     errors = validate_trace(
         _trace(),

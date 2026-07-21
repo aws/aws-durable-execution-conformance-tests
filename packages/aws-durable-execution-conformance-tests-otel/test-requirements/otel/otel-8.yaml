@@ -1,0 +1,46 @@
+description: OpenTelemetry preserves the hierarchy of map iterations and their operations
+Input:
+  scenario: map-hierarchy
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 8
+  require_execution_correlation: true
+  require_continuation: true
+  required_outcomes:
+    - success
+  span_assertions:
+    - select:
+        name: otel-map
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.name: otel-map
+      expect:
+        parent:
+          name: invocation
+    - select:
+        name: otel-map-item-0
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.name: otel-map-item-0
+      expect:
+        parent:
+          name: otel-map
+          attributes:
+            durable.operation.type: CONTEXT
+            durable.operation.name: otel-map
+    - select:
+        name: otel-map-step-0
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-map-step-0
+      expect:
+        parent:
+          name: otel-map-item-0
+          attributes:
+            durable.operation.type: CONTEXT
+            durable.operation.name: otel-map-item-0

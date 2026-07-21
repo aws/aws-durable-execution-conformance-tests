@@ -1,0 +1,46 @@
+description: OpenTelemetry preserves the hierarchy of parallel branches and their operations
+Input:
+  scenario: parallel-hierarchy
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 8
+  require_execution_correlation: true
+  require_continuation: true
+  required_outcomes:
+    - success
+  span_assertions:
+    - select:
+        name: otel-parallel
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.name: otel-parallel
+      expect:
+        parent:
+          name: invocation
+    - select:
+        name: otel-parallel-branch-a
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.name: otel-parallel-branch-a
+      expect:
+        parent:
+          name: otel-parallel
+          attributes:
+            durable.operation.type: CONTEXT
+            durable.operation.name: otel-parallel
+    - select:
+        name: otel-parallel-step-a
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-parallel-step-a
+      expect:
+        parent:
+          name: otel-parallel-branch-a
+          attributes:
+            durable.operation.type: CONTEXT
+            durable.operation.name: otel-parallel-branch-a

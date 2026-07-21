@@ -28,7 +28,16 @@ _OUTCOME_ATTRIBUTE_KEYS = (
     "durable.operation.outcome",
     "durable.execution.outcome",
     "durable.execution.status",
+    "durable.attempt.outcome",
+    "durable.operation.status",
+    "durable.invocation.status",
 )
+_OUTCOME_ALIASES = {
+    "succeeded": "success",
+    "failed": "failure",
+    "retrying": "retry",
+    "retried": "retry",
+}
 _ATTEMPT_NUMBER_ATTRIBUTE_KEYS = (
     "durable.attempt.number",
     "durable.operation.attempt",
@@ -239,7 +248,9 @@ def validate_trace(
 
     required_outcomes = {str(value).lower() for value in assertions.get("required_outcomes", [])}
     if required_outcomes:
-        actual_outcomes = set(_attribute_values(trace, _OUTCOME_ATTRIBUTE_KEYS))
+        actual_outcomes = {
+            _OUTCOME_ALIASES.get(value, value) for value in _attribute_values(trace, _OUTCOME_ATTRIBUTE_KEYS)
+        }
         actual_outcomes.update(
             "success" if span.status == "OK" else "failure" for span in trace.spans if span.status in {"OK", "ERROR"}
         )

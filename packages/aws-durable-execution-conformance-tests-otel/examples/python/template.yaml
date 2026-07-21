@@ -111,3 +111,68 @@ Resources:
       Handler: otel_4_terminal_failure.handler
       FunctionName: !Sub "${AWS::StackName}-otel-4"
       Role: !Ref LambdaExecutionRoleArn
+
+  Otel5StepHierarchy:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-5
+    Properties:
+      CodeUri: src/
+      Handler: otel_5_step_hierarchy.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-5"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel6ChildContext:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-6
+    Properties:
+      CodeUri: src/
+      Handler: otel_6_child_context.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-6"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel7Parallel:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-7
+    Properties:
+      CodeUri: src/
+      Handler: otel_7_parallel.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-7"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel8Map:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-8
+    Properties:
+      CodeUri: src/
+      Handler: otel_8_map.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-8"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel9HandledFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-9
+    Properties:
+      CodeUri: src/
+      Handler: otel_9_handled_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-9"
+      Role: !Ref LambdaExecutionRoleArn

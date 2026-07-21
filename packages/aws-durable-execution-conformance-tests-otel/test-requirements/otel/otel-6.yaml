@@ -1,0 +1,46 @@
+description: OpenTelemetry preserves parent relationships inside a child context
+Input:
+  scenario: child-context
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 4
+  require_execution_correlation: true
+  require_continuation: true
+  required_outcomes:
+    - success
+  span_assertions:
+    - select:
+        name: otel-child-context
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.name: otel-child-context
+      expect:
+        parent:
+          name: invocation
+    - select:
+        name: otel-child-step
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-child-step
+      expect:
+        parent:
+          name: otel-child-context
+          attributes:
+            durable.operation.type: CONTEXT
+            durable.operation.name: otel-child-context
+    - select:
+        name: otel-child-step attempt 1
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.name: otel-child-step
+      expect:
+        parent:
+          name: otel-child-step
+          attributes:
+            durable.operation.type: STEP
+            durable.operation.name: otel-child-step
