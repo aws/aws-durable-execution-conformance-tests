@@ -29,6 +29,14 @@ the template and source tree.
 | `otel-9` | `otel_9_wait_for_condition.handler` | Verifies every condition polling attempt and continuation. |
 | `otel-10` | `otel_10_wait_for_callback.handler` | Verifies callback context, callback, and submitter spans. |
 | `otel-11` | `otel_11_chained_invoke.handler` | Verifies chained-invoke continuation spans. |
+| `otel-12` | `otel_12_child_context_failure.handler` | Verifies a failed child-context span. |
+| `otel-13` | `otel_13_parallel_failure.handler` | Verifies failed parallel-branch telemetry. |
+| `otel-14` | `otel_14_map_failure.handler` | Verifies failed map-iteration telemetry. |
+| `otel-15` | `otel_15_wait_interrupted.handler` | Verifies an interrupted wait when execution times out. |
+| `otel-16` | `otel_16_wait_for_condition_failure.handler` | Verifies failed condition-check telemetry. |
+| `otel-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
+| `otel-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
+| `otel-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages directly from the SDK repository's `main` branch because the

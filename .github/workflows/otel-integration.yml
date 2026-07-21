@@ -118,7 +118,7 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..11}; do
+          for case_number in {1..19}; do
             log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
@@ -128,6 +128,22 @@ jobs:
           echo "::group::$target_log_group"
           aws logs tail "$target_log_group" --since 20m --format short || true
           echo "::endgroup::"
+          target_log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-18-target"
+          echo "::group::$target_log_group"
+          aws logs tail "$target_log_group" --since 20m --format short || true
+          echo "::endgroup::"
+      - name: Show execution history diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in packages/aws-durable-execution-conformance-tests/output/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
       - name: Show normalized X-Ray trace diagnostics
         if: failure()
         run: |

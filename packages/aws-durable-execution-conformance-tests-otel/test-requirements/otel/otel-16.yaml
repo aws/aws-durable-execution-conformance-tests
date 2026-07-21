@@ -1,0 +1,75 @@
+description: OpenTelemetry emits complete wait-for-condition failure spans
+Input:
+  scenario: wait-for-condition-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
+  - EventId: 3
+    EventType: StepFailed
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 3
+  require_execution_correlation: true
+  required_outcomes:
+    - failure
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-failed-condition
+        attributes:
+          durable.operation.status: FAILED
+      expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONDITION}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: FAILED
+          durable.operation.name: otel-failed-condition
+          durable.attempt.number: 1
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-failed-condition attempt 1
+        attributes:
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONDITION}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.status: STARTED
+          durable.operation.name: otel-failed-condition
+          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

@@ -18,14 +18,14 @@ def test_extension_exposes_packaged_otel_requirements() -> None:
     requirements = discover_test_files(suite.root, suite="all")
 
     assert suite.name == "otel"
-    assert set(requirements) == {f"otel-{case_number}" for case_number in range(1, 12)}
+    assert set(requirements) == {f"otel-{case_number}" for case_number in range(1, 20)}
 
 
 def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
     suite = OtelExtension().requirement_suites()[0]
     requirements = discover_test_files(suite.root, suite="all")
 
-    for case_number in range(1, 12):
+    for case_number in range(1, 20):
         requirement = load_yaml_file(requirements[f"otel-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
 
