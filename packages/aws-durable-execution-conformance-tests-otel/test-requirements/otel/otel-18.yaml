@@ -10,7 +10,7 @@ ExpectedExecutionHistory:
     SubType: ChainedInvoke
     Id: ${FAILED_INVOKE}
     Name: otel-failed-invoke
-  - EventId: 5
+  - EventId: 4
     EventType: ChainedInvokeFailed
     SubType: ChainedInvoke
     Id: ${FAILED_INVOKE}
