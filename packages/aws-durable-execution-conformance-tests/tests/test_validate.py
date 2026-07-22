@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aws_durable_execution_conformance_tests.callback import CallbackAction
 from aws_durable_execution_conformance_tests.validate import (
     discover_suites,
+    find_matching_action,
     parse_not_implemented,
 )
 
@@ -26,6 +28,19 @@ def _make_requirement(dir_path: Path, name: str) -> None:
     """Create a minimal requirement YAML file inside dir_path."""
     dir_path.mkdir(parents=True, exist_ok=True)
     (dir_path / name).write_text("---\ndescription: stub\n")
+
+
+def test_callback_action_name_accepts_regex_matcher() -> None:
+    action = CallbackAction(
+        callback_name="${/^otel-callback(?: create callback id|-callback)$/}",
+        operation="success",
+    )
+
+    assert find_matching_action(
+        {"Name": "otel-callback-callback"},
+        [action],
+        set(),
+    ) == (action, 0)
 
 
 def test_discovers_folders_with_yaml(tmp_path: Path) -> None:

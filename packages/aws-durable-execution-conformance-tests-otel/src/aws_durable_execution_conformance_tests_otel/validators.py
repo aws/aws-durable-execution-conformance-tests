@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
+from aws_durable_execution_conformance_tests.history import get_regex_pattern
+
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
@@ -42,6 +44,8 @@ def _is_sequence(value: Any) -> bool:
 def _matches(expected: Any, actual: Any) -> bool:
     if expected == "*":
         return True
+    if pattern := get_regex_pattern(expected):
+        return bool(pattern.search(str(actual)))
     if isinstance(expected, Mapping):
         return isinstance(actual, Mapping) and all(
             key in actual and _matches(value, actual[key]) for key, value in expected.items()
@@ -92,6 +96,10 @@ def _expectation_errors(
 ) -> list[str]:
     if expected == "*":
         return []
+    if pattern := get_regex_pattern(expected):
+        if pattern.search(str(actual)):
+            return []
+        return [f"{path}: value {actual!r} does not match regex pattern {pattern.pattern!r}"]
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
             return [f"{path}: expected a mapping"]

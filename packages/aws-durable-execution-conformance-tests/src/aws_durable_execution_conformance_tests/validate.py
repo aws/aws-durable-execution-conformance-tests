@@ -37,6 +37,7 @@ from aws_durable_execution_conformance_tests.config import (
 )
 from aws_durable_execution_conformance_tests.history import (
     EventHistoryMatcher,
+    get_regex_pattern,
     load_yaml_file,
 )
 from aws_durable_execution_conformance_tests.sam import (
@@ -555,7 +556,8 @@ def find_matching_action(
 ) -> tuple[CallbackAction | None, int | None]:
     """Find the first matching CallbackAction for a callback event.
 
-    Matching is done by callback name. Wildcard "*" matches any name.
+    Matching is done by callback name. Wildcard "*" matches any name and
+    ``${/pattern/}`` applies a regular expression.
     Each action is used at most once (tracked by used_indices).
     Placeholder references in action callback_name are resolved via context.
 
@@ -577,7 +579,10 @@ def find_matching_action(
         resolved_name: str = action.callback_name
         if context is not None:
             resolved_name = str(context.substitute(resolved_name))
-        if resolved_name in ("*", event_callback_name):
+        name_pattern = get_regex_pattern(resolved_name)
+        if resolved_name in ("*", event_callback_name) or (
+            name_pattern is not None and name_pattern.search(event_callback_name)
+        ):
             return action, i
     return None, None
 

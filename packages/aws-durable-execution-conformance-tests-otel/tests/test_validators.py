@@ -168,6 +168,24 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     assert errors == []
 
 
+def test_span_names_accept_regex_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "${/^chi(?:ld|rp)$/}"},
+                "expect": {
+                    "name": "${/^child$/}",
+                    "parent": {"name": "${/^root$/}"},
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
     errors = validate_trace(
         _trace(),

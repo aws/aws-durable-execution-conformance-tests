@@ -1,4 +1,4 @@
-description: OpenTelemetry emits failed parallel branches under the completed coordinator
+description: OpenTelemetry emits failed parallel branches with the parallel operation as parent
 Input:
   scenario: parallel-failure
 AsyncInvoke: true

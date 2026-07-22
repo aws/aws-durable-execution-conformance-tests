@@ -3,7 +3,7 @@ Input:
   scenario: wait-for-callback-failure
 AsyncInvoke: true
 CallbackActions:
-  - CallbackName: otel-failed-callback create callback id
+  - CallbackName: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
     Operation: failure
     Payload:
       ErrorType: RejectedError
@@ -22,19 +22,19 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${FAILED_CALLBACK}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: otel-failed-callback create callback id
+    Name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
   - EventId: 4
     EventType: StepStarted
     SubType: Step
     Id: ${CALLBACK_SUBMITTER}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: otel-failed-callback submitter
+    Name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
   - EventId: 5
     EventType: StepSucceeded
     SubType: Step
     Id: ${CALLBACK_SUBMITTER}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: otel-failed-callback submitter
+    Name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
   - EventId: 7
     EventType: CallbackFailed
     SubType: Callback
@@ -99,7 +99,7 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-failed-callback create callback id
+        name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         attributes:
           durable.operation.status: STARTED
       expect:
@@ -110,13 +110,13 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: otel-failed-callback create callback id
+          durable.operation.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-failed-callback
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
-        name: otel-failed-callback create callback id
+        name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         attributes:
           durable.operation.status: FAILED
       expect:
@@ -127,13 +127,13 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: FAILED
-          durable.operation.name: otel-failed-callback create callback id
+          durable.operation.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-failed-callback
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
-        name: otel-failed-callback submitter
+        name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
         attributes:
           durable.operation.status: SUCCEEDED
       count: 2
@@ -145,14 +145,14 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-failed-callback submitter
+          durable.operation.name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
           durable.attempt.number: 1
         parent:
           name: otel-failed-callback
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
-        name: otel-failed-callback submitter attempt 1
+        name: "${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}"
         attributes:
           durable.attempt.outcome: SUCCEEDED
       expect:
@@ -163,7 +163,7 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-failed-callback submitter
+          durable.operation.name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:

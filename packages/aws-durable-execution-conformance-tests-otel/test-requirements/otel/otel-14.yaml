@@ -1,4 +1,4 @@
-description: OpenTelemetry emits failed map iterations under the completed coordinator
+description: OpenTelemetry emits failed map iterations with the map operation as parent
 Input:
   scenario: map-failure
 AsyncInvoke: true
@@ -15,13 +15,13 @@ ExpectedExecutionHistory:
     SubType: MapIteration
     Id: ${FAILED_ITERATION}
     ParentId: ${MAP1}
-    Name: otel-failed-map-item-0
+    Name: otel-failed-map-iteration-0
   - EventId: 4
     EventType: ContextFailed
     SubType: MapIteration
     Id: ${FAILED_ITERATION}
     ParentId: ${MAP1}
-    Name: otel-failed-map-item-0
+    Name: otel-failed-map-iteration-0
   - EventId: 5
     EventType: ContextSucceeded
     SubType: Map
@@ -64,7 +64,7 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-failed-map-item-0
+        name: otel-failed-map-iteration-0
         attributes:
           durable.operation.id: ${FAILED_ITERATION}
       expect:
@@ -75,7 +75,7 @@ TelemetryAssertions:
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
           durable.operation.status: STARTED
-          durable.operation.name: otel-failed-map-item-0
+          durable.operation.name: otel-failed-map-iteration-0
         parent:
           name: otel-failed-map
           attributes:

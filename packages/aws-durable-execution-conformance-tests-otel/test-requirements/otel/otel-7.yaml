@@ -15,7 +15,7 @@ ExpectedExecutionHistory:
     SubType: MapIteration
     Id: ${ITERATION1}
     ParentId: ${MAP1}
-    Name: otel-map-item-0
+    Name: otel-map-iteration-0
   - EventId: 4
     EventType: StepStarted
     SubType: Step
@@ -27,7 +27,7 @@ ExpectedExecutionHistory:
     SubType: MapIteration
     Id: ${ITERATION2}
     ParentId: ${MAP1}
-    Name: otel-map-item-1
+    Name: otel-map-iteration-1
   - EventId: 8
     EventType: StepStarted
     SubType: Step
@@ -70,7 +70,7 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-map-item-0
+        name: otel-map-iteration-0
         attributes:
           durable.operation.subtype: MapIteration
       expect:
@@ -80,7 +80,7 @@ TelemetryAssertions:
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
           durable.operation.status: STARTED
-          durable.operation.name: otel-map-item-0
+          durable.operation.name: otel-map-iteration-0
         parent:
           name: otel-map
           attributes:
@@ -102,7 +102,7 @@ TelemetryAssertions:
           durable.operation.name: otel-map-step-0
           durable.attempt.number: 1
         parent:
-          name: otel-map-item-0
+          name: otel-map-iteration-0
           attributes:
             durable.operation.id: ${ITERATION1}
             durable.operation.type: CONTEXT
@@ -122,13 +122,13 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-map-item-0
+          name: otel-map-iteration-0
           attributes:
             durable.operation.id: ${ITERATION1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: MapIteration
     - select:
-        name: otel-map-item-1
+        name: otel-map-iteration-1
         attributes:
           durable.operation.subtype: MapIteration
       expect:
@@ -138,7 +138,7 @@ TelemetryAssertions:
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
           durable.operation.status: STARTED
-          durable.operation.name: otel-map-item-1
+          durable.operation.name: otel-map-iteration-1
         parent:
           name: otel-map
           attributes:
@@ -160,7 +160,7 @@ TelemetryAssertions:
           durable.operation.name: otel-map-step-1
           durable.attempt.number: 1
         parent:
-          name: otel-map-item-1
+          name: otel-map-iteration-1
           attributes:
             durable.operation.id: ${ITERATION2}
             durable.operation.type: CONTEXT
@@ -180,7 +180,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-map-item-1
+          name: otel-map-iteration-1
           attributes:
             durable.operation.id: ${ITERATION2}
             durable.operation.type: CONTEXT
