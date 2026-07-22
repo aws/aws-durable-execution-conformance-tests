@@ -9,6 +9,14 @@ permissions:
   contents: read
 
 jobs:
+  e2e:
+    name: Runner E2E gate
+    uses: ./.github/workflows/e2e.yml
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+
   release-build:
     name: Build selected distribution
     runs-on: ubuntu-latest
@@ -71,7 +79,7 @@ jobs:
   pypi-publish:
     name: Publish selected distribution
     runs-on: ubuntu-latest
-    needs: [release-build]
+    needs: [release-build, e2e]
     permissions:
       id-token: write
     environment:
