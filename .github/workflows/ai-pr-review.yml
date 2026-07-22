@@ -16,8 +16,7 @@ jobs:
     if: >-
       !github.event.pull_request.draft &&
       github.actor != 'dependabot[bot]' &&
-      github.event.pull_request.author_association != 'MEMBER' &&
-      github.event.pull_request.author_association != 'OWNER'
+      github.event.pull_request.author_association != 'MEMBER'
     runs-on: ubuntu-latest
     environment: ai-pr-review
     permissions: {}
@@ -34,7 +33,6 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (
         github.event.pull_request.author_association == 'MEMBER' ||
-        github.event.pull_request.author_association == 'OWNER' ||
         needs.approve_external.result == 'success'
       )
     runs-on: ubuntu-latest
@@ -65,21 +63,7 @@ jobs:
 
       - name: Prepare unprivileged Claude user
         run: |
-          sudo adduser \
-            --system \
-            --home /home/claude-review \
-            --shell /bin/bash \
-            --group claude-review
-          sudo install \
-            -d \
-            -m 700 \
-            -o claude-review \
-            -g claude-review \
-            /home/claude-review/.claude \
-            /home/claude-review/tmp
-          sudo chown -R runner:claude-review "$GITHUB_WORKSPACE"
-          sudo chmod -R g-w,o-rwx "$GITHUB_WORKSPACE"
-          sudo chmod -R g+rX "$GITHUB_WORKSPACE"
+          bash scripts/prepare_ai_review_user.sh claude-review
 
           # The Claude CLI runs through sudo. Preserve only its Bedrock
           # credentials and the action's subprocess-isolation controls.
@@ -200,7 +184,6 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (
         github.event.pull_request.author_association == 'MEMBER' ||
-        github.event.pull_request.author_association == 'OWNER' ||
         needs.approve_external.result == 'success'
       )
     runs-on: ubuntu-latest
@@ -231,20 +214,7 @@ jobs:
 
       - name: Prepare unprivileged Codex user
         run: |
-          sudo adduser \
-            --system \
-            --home /home/codex-review \
-            --shell /bin/bash \
-            --group codex-review
-          sudo install \
-            -d \
-            -m 700 \
-            -o codex-review \
-            -g codex-review \
-            /home/codex-review/.codex
-          sudo chown -R runner:codex-review "$GITHUB_WORKSPACE"
-          sudo chmod -R g-w,o-rwx "$GITHUB_WORKSPACE"
-          sudo chmod -R g+rX "$GITHUB_WORKSPACE"
+          bash scripts/prepare_ai_review_user.sh codex-review
 
           # Codex runs through sudo, so preserve its AWS SDK credential chain.
           sudo sh -c \
