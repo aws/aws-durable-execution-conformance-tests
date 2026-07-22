@@ -6,6 +6,7 @@ on:
     paths:
       - "packages/aws-durable-execution-conformance-tests/src/**"
       - "packages/aws-durable-execution-conformance-tests/test-requirements/**"
+      - "packages/aws-durable-execution-conformance-tests-otel/src/**"
       - "e2e-fixtures/**"
       - ".github/workflows/e2e.yml"
   workflow_dispatch:
@@ -34,7 +35,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@6044e13f5ca90a0ee6e7c04b0e2c1e3d4b9e6ec2 # v6.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
