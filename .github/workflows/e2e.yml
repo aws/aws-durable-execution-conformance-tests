@@ -1,0 +1,109 @@
+name: Runner E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/aws-durable-execution-conformance-tests/src/**"
+      - "packages/aws-durable-execution-conformance-tests/test-requirements/**"
+      - "e2e-fixtures/**"
+      - ".github/workflows/e2e.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: runner-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  e2e:
+    name: Deploy + validate fixtures
+    # Cloud credentials are unavailable to fork PRs; run for same-repo events only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@6044e13f5ca90a0ee6e7c04b0e2c1e3d4b9e6ec2 # v6.0.0
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@a159d7bb5354cf786f855f2f5d1d8d768d9a08d1 # v5.0.0
+        with:
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build fixture handlers
+        working-directory: e2e-fixtures
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install runner from local source
+        run: python -m pip install ./packages/aws-durable-execution-conformance-tests
+
+      - name: Install AWS SAM CLI
+        run: python -m pip install aws-sam-cli
+
+      - name: Run step suite (sync invoke path)
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          python -m aws_durable_execution_conformance_tests.app \
+            --template e2e-fixtures/template.yaml \
+            --language js \
+            --region "$AWS_REGION" \
+            --suite step \
+            --name "e2e-step-${{ github.run_id }}" \
+            --history-dir e2e-output/step-history \
+            --report json junit \
+            --report-file e2e-output/step-report \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+
+      - name: Run wait suite (async invoke path)
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          python -m aws_durable_execution_conformance_tests.app \
+            --template e2e-fixtures/template.yaml \
+            --language js \
+            --region "$AWS_REGION" \
+            --suite wait \
+            --name "e2e-wait-${{ github.run_id }}" \
+            --history-dir e2e-output/wait-history \
+            --report json junit \
+            --report-file e2e-output/wait-report \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-reports-${{ github.run_id }}
+          path: e2e-output/
+          if-no-files-found: ignore
+
+      - name: Clean up stacks on failure
+        if: failure()
+        run: |
+          for suite in step wait; do
+            aws cloudformation delete-stack \
+              --stack-name "durable-execution-conformance-tests-e2e-${suite}-${{ github.run_id }}" \
+              --region "$AWS_REGION" || true
+          done
