@@ -104,6 +104,7 @@ jobs:
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
+          set +e
           hatch run validate \
             --template "$PYTHON_TEST_TEMPLATE" \
             --language python \
@@ -111,10 +112,22 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite otel \
+            --report console json \
+            --report-file "$RUNNER_TEMP/otel-xray-report" \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-backend xray
+          validator_exit_code=$?
+          set -e
+
+          # Remove these strict exemptions once the SDK fix is available:
+          # https://github.com/aws/aws-durable-execution-sdk-python/pull/568
+          hatch run python -m aws_durable_execution_conformance_tests_otel.expected_failures \
+            "$RUNNER_TEMP/otel-xray-report.json" \
+            --validator-exit-code "$validator_exit_code" \
+            --expected-failure otel-3 \
+            --expected-failure otel-9
       - name: Show Lambda logs
         if: failure()
         run: |
