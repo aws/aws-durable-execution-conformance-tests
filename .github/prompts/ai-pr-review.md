@@ -16,6 +16,12 @@ Focus on:
 - Async invocation, callback, polling, and reporting lifecycles
 - Missing or inadequate tests for changed behavior
 
+Complete the entire review before returning your final response. That response
+will be posted verbatim as the completed PR review. Do not return progress
+updates, plans, tentative concerns, or statements that further validation is
+pending. Resolve each candidate finding as confirmed or discard it before
+responding.
+
 Report only actionable findings in severity order, with impact and a concrete
 fix. Every finding must identify the affected file and changed line. When an
 inline-comment tool is available, use it and set `commit_id` to the head SHA in
