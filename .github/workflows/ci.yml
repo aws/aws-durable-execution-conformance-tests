@@ -43,7 +43,9 @@ jobs:
       - name: Lint shell scripts
         run: |
           shellcheck scripts/*.sh
-          bash -n scripts/*.sh
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
 
       - name: Lint requirement YAML
         run: hatch run yaml:lint
