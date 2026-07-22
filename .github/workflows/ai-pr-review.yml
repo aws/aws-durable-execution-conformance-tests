@@ -420,7 +420,7 @@ jobs:
             --cd "$GITHUB_WORKSPACE" \
             --output-last-message "$output_file" \
             --model openai.gpt-5.6-sol \
-            --config 'model_reasoning_effort="medium"' \
+            --config 'model_reasoning_effort="xhigh"' \
             --config 'model_provider="amazon-bedrock"' \
             --config 'default_permissions=":read-only"' \
             --ephemeral <<'CODEX_PROMPT'
