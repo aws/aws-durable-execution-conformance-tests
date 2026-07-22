@@ -24,7 +24,7 @@ jobs:
       - name: Record approval
         run: echo "Approved review of ${{ github.event.pull_request.head.sha }}"
 
-  review:
+  claude-review:
     name: Claude review
     needs: approve_external
     if: >-
