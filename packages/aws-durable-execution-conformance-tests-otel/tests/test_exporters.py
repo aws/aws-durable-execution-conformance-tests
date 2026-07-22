@@ -134,6 +134,7 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
 def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
@@ -158,9 +159,10 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     backend = SimpleNamespace(
         feature_disparities=disparities,
         find_trace=find_trace,
+        name="xray",
     )
     factory = SimpleNamespace(create=lambda _options, *, region: backend)
-    monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"collector": factory}))
+    monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"xray": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
 
     errors = OtelExtension().validate_telemetry(
@@ -191,11 +193,12 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "EXECUTION_ARN": "arn:execution",
                 "STEP1": "step-id",
             },
-            options=vars(_args("community", "collector")),
+            options=vars(_args("adot", "xray")),
         )
     )
 
     assert errors == []
+    assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
     assert received["span_assertions"]["select"]["attributes"] == {
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",

@@ -186,6 +186,10 @@ class OtelExtension:
             factories = self._backends()
             backend_name = str(options["otel_backend"])
             backend = factories[backend_name].create(options, region=context.region)
+            feature_disparities = (
+                ", ".join(sorted(disparity.name for disparity in backend.feature_disparities)) or "none"
+            )
+            print(f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}")
             timeout = float(options["otel_poll_timeout"])
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
