@@ -41,16 +41,16 @@ Resources:
         RetentionPeriodInDays: 7
         ExecutionTimeout: 300
 
-  WaitBasic:
+  WaitDurationUnits:
     Type: AWS::Serverless::Function
     Metadata:
       SkipBuild: "True"
     TestingMetadata:
-      TestDescription: ["2-1"]
+      TestDescription: ["2-4"]
     Properties:
       CodeUri: ./dist
-      Handler: wait_basic.handler
-      Description: Wait basic (async invoke + polling)
+      Handler: wait_duration_units.handler
+      Description: Wait with different duration units (async invoke + polling)
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
         RetentionPeriodInDays: 7
