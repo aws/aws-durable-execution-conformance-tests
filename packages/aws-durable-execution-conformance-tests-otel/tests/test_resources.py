@@ -31,9 +31,21 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
 
         assert assertions["require_execution_correlation"] is True
         assert assertions["require_all_spans"] is True
-        assert assertions["span_assertion_scope"] == {
-            "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
-        }
+        expected_scopes = [
+            {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}},
+        ]
+        if case_number in {11, 18}:
+            expected_scopes.append(
+                {"attributes": {"durable.execution.arn": "${TARGET_EXECUTION_ARN}"}},
+            )
+            assert assertions["allowed_execution_arns"] == [
+                "${EXECUTION_ARN}",
+                "${TARGET_EXECUTION_ARN}",
+            ]
+        actual_scopes = assertions["span_assertion_scope"]
+        if isinstance(actual_scopes, dict):
+            actual_scopes = [actual_scopes]
+        assert actual_scopes == expected_scopes
         assert assertions["exact_attribute_prefixes"] == ["durable."]
         assert assertions["span_assertions"]
 

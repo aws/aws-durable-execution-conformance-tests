@@ -176,7 +176,7 @@ def _span_assertion_errors(
     raw_assertions: Any,
     *,
     require_all_spans: bool = False,
-    assertion_scope: Mapping[str, Any] | None = None,
+    assertion_scopes: Sequence[Mapping[str, Any]] = (),
     exact_attribute_prefixes: Sequence[str] = (),
     feature_disparities: Collection[BackendFeatureDisparity] = (),
 ) -> list[str]:
@@ -277,7 +277,7 @@ def _span_assertion_errors(
             f"{span['name']} ({span['span_id']})"
             for span_index, span in enumerate(spans)
             if span_index not in covered_span_indexes
-            and _matches_span(assertion_scope or {}, span, feature_disparities)
+            and any(_matches_span(scope, span, feature_disparities) for scope in (assertion_scopes or ({},)))
         ]
         if uncovered:
             errors.append("Span assertions did not cover: " + ", ".join(uncovered))
@@ -309,9 +309,23 @@ def validate_trace(
                 "No span carries the durable execution ARN in a supported "
                 f"correlation attribute ({', '.join(_EXECUTION_ATTRIBUTE_KEYS)})"
             )
-        wrong = {value for value in execution_values if value != query.execution_arn.lower()}
-        if wrong:
-            errors.append("Spans contain conflicting durable execution correlation values")
+
+        raw_allowed_execution_arns = assertions.get(
+            "allowed_execution_arns",
+            (query.execution_arn,),
+        )
+        if isinstance(raw_allowed_execution_arns, str):
+            allowed_execution_arns = {raw_allowed_execution_arns.lower()}
+        elif _is_sequence(raw_allowed_execution_arns) and all(
+            isinstance(value, str) for value in raw_allowed_execution_arns
+        ):
+            allowed_execution_arns = {value.lower() for value in raw_allowed_execution_arns}
+        else:
+            errors.append("allowed_execution_arns must be a string or sequence of strings")
+            allowed_execution_arns = {query.execution_arn.lower()}
+
+        if set(execution_values) - allowed_execution_arns:
+            errors.append("Spans contain durable execution correlation values outside allowed_execution_arns")
 
     minimum_invocations = int(assertions.get("minimum_invocations", 1))
     if minimum_invocations > 1:
@@ -331,17 +345,22 @@ def validate_trace(
         errors.append("exact_attribute_prefixes must be a string or sequence of strings")
         exact_attribute_prefixes = ()
 
-    assertion_scope = assertions.get("span_assertion_scope", {})
-    if not isinstance(assertion_scope, Mapping):
-        errors.append("span_assertion_scope must be a mapping")
-        assertion_scope = {}
+    raw_assertion_scope = assertions.get("span_assertion_scope", {})
+    assertion_scopes: tuple[Mapping[str, Any], ...]
+    if isinstance(raw_assertion_scope, Mapping):
+        assertion_scopes = (raw_assertion_scope,)
+    elif _is_sequence(raw_assertion_scope) and all(isinstance(scope, Mapping) for scope in raw_assertion_scope):
+        assertion_scopes = tuple(raw_assertion_scope)
+    else:
+        errors.append("span_assertion_scope must be a mapping or sequence of mappings")
+        assertion_scopes = ({},)
 
     errors.extend(
         _span_assertion_errors(
             trace,
             assertions.get("span_assertions"),
             require_all_spans=bool(assertions.get("require_all_spans", False)),
-            assertion_scope=assertion_scope,
+            assertion_scopes=assertion_scopes,
             exact_attribute_prefixes=exact_attribute_prefixes,
             feature_disparities=feature_disparities,
         )

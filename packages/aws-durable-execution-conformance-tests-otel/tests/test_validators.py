@@ -86,6 +86,38 @@ def test_reports_correlation_mismatches() -> None:
     assert any("durable execution ARN" in error for error in errors)
 
 
+def test_allows_declared_correlations_from_nested_durable_executions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    target = replace(
+        child,
+        span_id="4" * 16,
+        name="target",
+        attributes={
+            "durable.execution.arn": "arn:target",
+            "faas.invocation_id": "invocation-3",
+        },
+    )
+    distributed_trace = replace(trace, spans=(root, child, target))
+
+    assert validate_trace(
+        distributed_trace,
+        {"require_execution_correlation": True},
+        _query(),
+    ) == ["Spans contain durable execution correlation values outside allowed_execution_arns"]
+    assert (
+        validate_trace(
+            distributed_trace,
+            {
+                "require_execution_correlation": True,
+                "allowed_execution_arns": ["arn:test", "arn:target"],
+            },
+            _query(),
+        )
+        == []
+    )
+
+
 def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     errors = validate_trace(
         _trace(),
@@ -207,6 +239,49 @@ def test_reports_uncovered_spans_and_unasserted_plugin_attributes() -> None:
 
     assert any("durable.operation.outcome" in error for error in errors)
     assert any("Span assertions did not cover: child" in error for error in errors)
+    assert all("infrastructure" not in error for error in errors)
+
+
+def test_scopes_complete_span_coverage_to_multiple_executions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    target = replace(
+        child,
+        span_id="4" * 16,
+        name="target",
+        attributes={"durable.execution.arn": "arn:target"},
+    )
+    infrastructure = replace(
+        child,
+        span_id="5" * 16,
+        name="infrastructure",
+        attributes={"cloud.provider": "aws"},
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child, target, infrastructure)),
+        {
+            "require_execution_correlation": False,
+            "require_all_spans": True,
+            "span_assertion_scope": [
+                {"attributes": {"durable.execution.arn": "arn:test"}},
+                {"attributes": {"durable.execution.arn": "arn:target"}},
+            ],
+            "span_assertions": [
+                {
+                    "select": {"name": "root"},
+                    "expect": {},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {},
+                },
+            ],
+        },
+        _query(),
+    )
+
+    assert any("Span assertions did not cover: target" in error for error in errors)
     assert all("infrastructure" not in error for error in errors)
 
 
@@ -378,8 +453,9 @@ def test_reports_invalid_span_assertion_schema() -> None:
     count_errors = validate_trace(
         _trace(),
         {
+            "allowed_execution_arns": 1,
             "exact_attribute_prefixes": 1,
-            "span_assertion_scope": "plugin",
+            "span_assertion_scope": ["plugin"],
             "span_assertions": {
                 "select": {"name": "root"},
                 "count": 0,
@@ -389,8 +465,9 @@ def test_reports_invalid_span_assertion_schema() -> None:
         _query(),
     )
     assert count_errors == [
+        "allowed_execution_arns must be a string or sequence of strings",
         "exact_attribute_prefixes must be a string or sequence of strings",
-        "span_assertion_scope must be a mapping",
+        "span_assertion_scope must be a mapping or sequence of mappings",
         "span_assertions[0].count must be a positive integer",
     ]
 
