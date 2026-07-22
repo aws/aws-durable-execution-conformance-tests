@@ -22,6 +22,7 @@ inline-comment tool is available, use it and set `commit_id` to the head SHA in
 `.ai-review-context/pr.json`. Otherwise, include a `path:line` reference in the
 top-level summary. Do not comment on unchanged lines and do not repeat findings.
 
-Return a concise Markdown top-level summary. If structured output is required,
-place that Markdown in the required `summary` field. If there are no findings,
-say so and mention any residual test risk.
+Return a concise Markdown top-level summary beginning with `## Claude AI review`
+or `## Codex AI review`, matching your identity. If structured output is
+required, place that Markdown in the required `summary` field. If there are no
+findings, say so and mention any residual test risk.

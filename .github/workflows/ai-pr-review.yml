@@ -316,6 +316,6 @@ jobs:
 
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # shellcheck disable=SC2016 # Markdown backticks are intentionally literal.
-          printf -v body '## Codex AI review\n\n%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
+          printf -v body '%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
             "$CODEX_REVIEW" "$EXPECTED_HEAD_SHA" "$run_url"
           gh pr comment "$PR_NUMBER" --body "$body"
