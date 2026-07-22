@@ -10,6 +10,7 @@ deploying, and invoking Lambda functions via CloudFormation stacks.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -457,11 +458,22 @@ class SamExecutor:
         Returns:
             CompletedProcess with stdout and stderr captured as strings.
         """
+        # `sam remote invoke` calls GetFunctionConfiguration + Invoke on every
+        # invocation. Running a full suite back-to-back can exhaust Lambda's low
+        # control-plane rate limit (TooManyRequestsException on
+        # GetFunctionConfiguration, surfacing as InvalidParameterValueException on
+        # Invoke). Enable botocore's adaptive client-side rate limiting with a
+        # higher retry ceiling for the SAM subprocess. Values already set by the
+        # caller's environment are respected.
+        env = os.environ.copy()
+        env.setdefault("AWS_RETRY_MODE", "adaptive")
+        env.setdefault("AWS_MAX_ATTEMPTS", "10")
         return subprocess.run(
             command,
             check=False,
             capture_output=True,
             text=True,
+            env=env,
         )
 
 
