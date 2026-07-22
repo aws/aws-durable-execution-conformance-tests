@@ -1,0 +1,141 @@
+name: Runner E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/aws-durable-execution-conformance-tests/src/**"
+      - "packages/aws-durable-execution-conformance-tests/test-requirements/**"
+      - "packages/aws-durable-execution-conformance-tests-otel/src/**"
+      - "e2e-fixtures/**"
+      - ".github/workflows/e2e.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: runner-e2e-global
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  e2e:
+    name: Deploy + validate fixtures
+    # Cloud credentials are unavailable to fork PRs; run for same-repo events only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@a159d7bb5354cf786f855f2f5d1d8d768d9a08d1 # v5.0.0
+        with:
+          role-to-assume: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build fixture handlers
+        working-directory: e2e-fixtures
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install runner from local source
+        run: python -m pip install ./packages/aws-durable-execution-conformance-tests
+
+      - name: Install AWS SAM CLI
+        run: python -m pip install aws-sam-cli
+
+      - name: Run step suite (sync invoke path)
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          python -m aws_durable_execution_conformance_tests.app \
+            --template e2e-fixtures/template.yaml \
+            --language js \
+            --region "$AWS_REGION" \
+            --suite step \
+            --name e2e-step \
+            --no-cleanup \
+            --history-dir e2e-output/step-history \
+            --report json junit \
+            --report-file e2e-output/step-report \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+
+      - name: Run wait suite (async invoke path)
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          python -m aws_durable_execution_conformance_tests.app \
+            --template e2e-fixtures/template.yaml \
+            --language js \
+            --region "$AWS_REGION" \
+            --suite wait \
+            --name e2e-wait \
+            --no-cleanup \
+            --history-dir e2e-output/wait-history \
+            --report json junit \
+            --report-file e2e-output/wait-report \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+
+      - name: Verify report contents
+        run: |
+          python - <<'EOF'
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+
+          failures: list[str] = []
+
+          def check(report_path: str, expected: dict[str, str]) -> None:
+              with open(report_path) as f:
+                  report = json.load(f)
+              statuses = {e["id"]: e["status"] for e in report["results"]}
+              for req_id, want in expected.items():
+                  got = statuses.get(req_id)
+                  if got != want:
+                      failures.append(f"{report_path}: {req_id} expected {want}, got {got}")
+
+          check("e2e-output/step-report.json", {"1-1": "PASSED", "1-2": "NOT_IMPLEMENTED", "1-3": "UNCOVERED"})
+          check("e2e-output/wait-report.json", {"2-4": "PASSED"})
+
+          for junit in ("e2e-output/step-report.xml", "e2e-output/wait-report.xml"):
+              try:
+                  root = ET.parse(junit).getroot()
+              except (OSError, ET.ParseError) as e:
+                  failures.append(f"{junit}: not parseable JUnit XML ({e})")
+                  continue
+              if not any(True for _ in root.iter("testcase")):
+                  failures.append(f"{junit}: contains no testcase elements")
+
+          if failures:
+              print("Report verification FAILED:")
+              for f in failures:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print("Report verification passed.")
+          EOF
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-reports-${{ github.run_id }}
+          path: e2e-output/
+          if-no-files-found: ignore

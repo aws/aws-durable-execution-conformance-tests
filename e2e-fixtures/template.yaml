@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  End-to-end fixtures for the conformance runner's own CI. These minimal
+  handlers verify the runner works end to end (deploy, sync + async invoke,
+  history validation, reporting, cleanup). They are runner test fixtures, not
+  SDK conformance coverage -- SDK test handlers live in the SDK repositories.
+
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Pre-created execution role for the test functions
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 60
+    MemorySize: 128
+
+# The NotImplemented declaration under StepBasic's TestingMetadata marks a
+# requirement intentionally not covered by these fixtures so the runner's
+# NOT_IMPLEMENTED report status is exercised end to end. (The runner also
+# parses a top-level TestingMetadata block, but CloudFormation rejects unknown
+# top-level template properties, so the resource-level form is used here.)
+Resources:
+  StepBasic:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: "True"
+    TestingMetadata:
+      TestDescription: ["1-1"]
+      NotImplemented:
+        - id: "1-2"
+          reason: "e2e fixture set is intentionally minimal; declared to exercise the NOT_IMPLEMENTED report path"
+    Properties:
+      CodeUri: ./dist
+      Handler: step_basic.handler
+      Description: Step basic (succeeds on first attempt)
+      Role: !Ref LambdaExecutionRoleArn
+      DurableConfig:
+        RetentionPeriodInDays: 7
+        ExecutionTimeout: 300
+
+  WaitDurationUnits:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: "True"
+    TestingMetadata:
+      TestDescription: ["2-4"]
+    Properties:
+      CodeUri: ./dist
+      Handler: wait_duration_units.handler
+      Description: Wait with different duration units (async invoke + polling)
+      Role: !Ref LambdaExecutionRoleArn
+      DurableConfig:
+        RetentionPeriodInDays: 7
+        ExecutionTimeout: 300

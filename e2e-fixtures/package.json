@@ -1,0 +1,17 @@
+{
+  "name": "conformance-runner-e2e-fixtures",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal TypeScript Lambda handlers used to end-to-end test the conformance runner itself. Not SDK conformance coverage -- SDK test handlers live in their SDK repositories.",
+  "scripts": {
+    "build": "esbuild handlers/*.ts --bundle --platform=node --target=node22 --outdir=dist"
+  },
+  "dependencies": {
+    "@aws/durable-execution-sdk-js": "2.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.5",
+    "esbuild": "0.25.0",
+    "typescript": "5.8.2"
+  }
+}
