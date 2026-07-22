@@ -13,6 +13,14 @@ if [[ ! -x "${bun_dir}/bun" ]]; then
   echo "::error::The pinned Claude action did not expose its Bun executable."
   exit 1
 fi
+if ! sudo -H -u claude-review -- test -x "$claude_bin"; then
+  echo "::error::claude-review cannot execute the pinned Claude CLI."
+  exit 1
+fi
+if ! sudo -H -u claude-review -- test -x "${bun_dir}/bun"; then
+  echo "::error::claude-review cannot execute the pinned Bun runtime."
+  exit 1
+fi
 
 exec sudo -H -u claude-review -- env \
   PATH="${bun_dir}:/usr/local/bin:/usr/bin:/bin" \

@@ -40,6 +40,11 @@ jobs:
       - name: Check formatting and lint
         run: hatch fmt --check packages scripts
 
+      - name: Lint shell scripts
+        run: |
+          shellcheck scripts/*.sh
+          bash -n scripts/*.sh
+
       - name: Lint requirement YAML
         run: hatch run yaml:lint
 
