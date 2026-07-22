@@ -5,13 +5,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
     span_to_dict,
+)
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
 )
 
 _EXECUTION_ATTRIBUTE_KEYS = (
@@ -55,6 +58,32 @@ def _matches(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
+def _matches_span_status(
+    expected: Any,
+    actual: Any,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> bool:
+    return _matches(expected, actual) or (
+        BackendFeatureDisparity.UNSET_STATUS in feature_disparities and expected == "UNSET" and actual == "OK"
+    )
+
+
+def _matches_span(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> bool:
+    return all(
+        key in actual
+        and (
+            _matches_span_status(value, actual[key], feature_disparities)
+            if key == "status"
+            else _matches(value, actual[key])
+        )
+        for key, value in expected.items()
+    )
+
+
 def _expectation_errors(
     expected: Any,
     actual: Any,
@@ -94,12 +123,32 @@ def _expectation_errors(
     return []
 
 
+def _span_expectation_errors(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    path: str,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    errors: list[str] = []
+    for key, value in expected.items():
+        child_path = f"{path}.{key}"
+        if key not in actual:
+            errors.append(f"{child_path}: property is missing")
+            continue
+        if key == "status" and _matches_span_status(value, actual[key], feature_disparities):
+            continue
+        errors.extend(_expectation_errors(value, actual[key], path=child_path))
+    return errors
+
+
 def _parent_expectation_errors(
     expected: Any,
     span: Mapping[str, Any],
     spans_by_id: Mapping[str, list[Mapping[str, Any]]],
     *,
     path: str,
+    feature_disparities: Collection[BackendFeatureDisparity],
 ) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
@@ -114,7 +163,12 @@ def _parent_expectation_errors(
     if len(parents) > 1:
         return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
 
-    return _expectation_errors(expected, parents[0], path=path)
+    return _span_expectation_errors(
+        expected,
+        parents[0],
+        path=path,
+        feature_disparities=feature_disparities,
+    )
 
 
 def _span_assertion_errors(
@@ -124,6 +178,7 @@ def _span_assertion_errors(
     require_all_spans: bool = False,
     assertion_scope: Mapping[str, Any] | None = None,
     exact_attribute_prefixes: Sequence[str] = (),
+    feature_disparities: Collection[BackendFeatureDisparity] = (),
 ) -> list[str]:
     if raw_assertions is None:
         return []
@@ -165,7 +220,11 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer")
             continue
 
-        matches = [(span_index, span) for span_index, span in enumerate(spans) if _matches(selector, span)]
+        matches = [
+            (span_index, span)
+            for span_index, span in enumerate(spans)
+            if _matches_span(selector, span, feature_disparities)
+        ]
         covered_span_indexes.update(span_index for span_index, _span in matches)
         if not matches and expected_count == 1:
             errors.append(f"{path}.select matched no spans")
@@ -184,10 +243,11 @@ def _span_assertion_errors(
             if expected_count > 1:
                 expectation_path = f"{expectation_path}[{match_index}]"
             errors.extend(
-                _expectation_errors(
+                _span_expectation_errors(
                     expected_properties,
                     matched_span,
                     path=expectation_path,
+                    feature_disparities=feature_disparities,
                 )
             )
             if "parent" in expected:
@@ -197,6 +257,7 @@ def _span_assertion_errors(
                         matched_span,
                         spans_by_id,
                         path=f"{expectation_path}.parent",
+                        feature_disparities=feature_disparities,
                     )
                 )
 
@@ -215,7 +276,8 @@ def _span_assertion_errors(
         uncovered = [
             f"{span['name']} ({span['span_id']})"
             for span_index, span in enumerate(spans)
-            if span_index not in covered_span_indexes and _matches(assertion_scope or {}, span)
+            if span_index not in covered_span_indexes
+            and _matches_span(assertion_scope or {}, span, feature_disparities)
         ]
         if uncovered:
             errors.append("Span assertions did not cover: " + ", ".join(uncovered))
@@ -226,6 +288,8 @@ def validate_trace(
     trace: Trace,
     assertions: Mapping[str, Any],
     query: TelemetryQuery,
+    *,
+    feature_disparities: Collection[BackendFeatureDisparity] = (),
 ) -> list[str]:
     """Validate stable integration invariants without prescribing span schemas."""
 
@@ -279,6 +343,7 @@ def validate_trace(
             require_all_spans=bool(assertions.get("require_all_spans", False)),
             assertion_scope=assertion_scope,
             exact_attribute_prefixes=exact_attribute_prefixes,
+            feature_disparities=feature_disparities,
         )
     )
 

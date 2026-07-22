@@ -29,6 +29,7 @@ from aws_durable_execution_conformance_tests_otel.normalizers import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingBackend,
 )
 
@@ -70,6 +71,7 @@ def normalize_dash0(payload: Mapping[str, Any]) -> list[Trace]:
 
 class Dash0Backend(PollingBackend):
     name = "dash0"
+    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
 
     def __init__(
         self,

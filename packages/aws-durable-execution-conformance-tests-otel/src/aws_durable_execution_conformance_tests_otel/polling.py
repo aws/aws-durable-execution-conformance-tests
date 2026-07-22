@@ -9,6 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 
@@ -19,6 +20,12 @@ class BackendError(RuntimeError):
 
 class TelemetryTimeout(BackendError):
     """Raised when no matching trace arrives before the polling limit."""
+
+
+class BackendFeatureDisparity(StrEnum):
+    """Known fidelity gaps in a backend's normalized telemetry."""
+
+    UNSET_STATUS = "unset-status"
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,7 @@ class PollingBackend(ABC):
     """Backend base class implementing ingestion-latency retries."""
 
     name: str
+    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
 
     def __init__(
         self,

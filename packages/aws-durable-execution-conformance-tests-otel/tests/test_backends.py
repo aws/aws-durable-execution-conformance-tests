@@ -10,13 +10,21 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+from aws_durable_execution_conformance_tests_otel.backends.collector import (
+    CollectorBackend,
+)
 from aws_durable_execution_conformance_tests_otel.backends.dash0 import Dash0Backend
 from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DatadogBackend,
 )
 from aws_durable_execution_conformance_tests_otel.backends.xray import XRayBackend
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery
-from aws_durable_execution_conformance_tests_otel.polling import PollingPolicy
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+    PollingBackend,
+    PollingPolicy,
+)
 
 
 class _Http:
@@ -45,6 +53,25 @@ def _query() -> TelemetryQuery:
         started_at=now - timedelta(minutes=1),
         ended_at=now + timedelta(minutes=1),
     )
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "expected"),
+    [
+        (
+            XRayBackend,
+            frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        ),
+        (DatadogBackend, frozenset()),
+        (Dash0Backend, frozenset()),
+        (CollectorBackend, frozenset()),
+    ],
+)
+def test_backends_declare_feature_disparities(
+    backend_type: type[PollingBackend],
+    expected: frozenset[BackendFeatureDisparity],
+) -> None:
+    assert backend_type.feature_disparities == expected
 
 
 def test_datadog_queries_span_search_and_correlates_execution() -> None:

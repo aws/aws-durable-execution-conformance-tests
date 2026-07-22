@@ -215,9 +215,19 @@ class OtelExtension:
                     interval_seconds=float(options["otel_poll_interval"]),
                     max_attempts=int(options["otel_poll_attempts"]),
                 ),
-                accept=lambda candidate: not validate_trace(candidate, assertions, query),
+                accept=lambda candidate: not validate_trace(
+                    candidate,
+                    assertions,
+                    query,
+                    feature_disparities=backend.feature_disparities,
+                ),
             )
-            errors = validate_trace(trace, assertions, query)
+            errors = validate_trace(
+                trace,
+                assertions,
+                query,
+                feature_disparities=backend.feature_disparities,
+            )
             if errors:
                 self._write_artifact(context, trace_to_dict(trace))
             return [f"OpenTelemetry: {error}" for error in errors]

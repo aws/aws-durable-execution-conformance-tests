@@ -14,6 +14,9 @@ from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
 )
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+)
 from aws_durable_execution_conformance_tests_otel.redaction import REDACTED, redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
@@ -297,6 +300,52 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
     assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
     assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
     assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
+
+
+def test_unset_status_disparity_applies_to_span_and_parent_expectations() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "status": "UNSET",
+                "parent": {"status": "UNSET"},
+            },
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.status: expected 'UNSET'",
+        "span_assertions[0].expect.parent.status: expected 'UNSET'",
+    ]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_unset_status_disparity_applies_to_span_selectors() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "root", "status": "UNSET"},
+            "expect": {},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == ["span_assertions[0].select matched no spans"]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
 
 
 def test_reports_invalid_span_assertion_schema() -> None:

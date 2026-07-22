@@ -25,6 +25,7 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingBackend,
 )
 
@@ -95,6 +96,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
 
 class XRayBackend(PollingBackend):
     name = "xray"
+    feature_disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
 
     def __init__(self, client: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)

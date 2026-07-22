@@ -20,6 +20,9 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import Trace
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+)
 
 
 def _options(runtime: str = "python", *, layer_arn: str | None = None) -> ExporterOptions:
@@ -134,20 +137,28 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
 ) -> None:
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
+    received_disparities: list[object] = []
 
     def capture_assertions(
         _trace: Trace,
         assertions: dict[str, Any],
         _query: object,
+        *,
+        feature_disparities: object,
     ) -> list[str]:
         received.update(assertions)
+        received_disparities.append(feature_disparities)
         return []
 
     def find_trace(_query: object, _policy: object, *, accept: Any) -> Trace:
         assert accept(trace)
         return trace
 
-    backend = SimpleNamespace(find_trace=find_trace)
+    disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+    backend = SimpleNamespace(
+        feature_disparities=disparities,
+        find_trace=find_trace,
+    )
     factory = SimpleNamespace(create=lambda _options, *, region: backend)
     monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"collector": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
@@ -189,3 +200,4 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",
     }
+    assert received_disparities == [disparities, disparities]

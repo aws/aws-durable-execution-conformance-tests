@@ -25,6 +25,7 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingBackend,
 )
 
@@ -70,6 +71,7 @@ def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
 
 class DatadogBackend(PollingBackend):
     name = "datadog"
+    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
 
     def __init__(
         self,
