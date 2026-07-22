@@ -8,10 +8,9 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING
 
+from aws_durable_execution_conformance_tests import sam
 from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
 from botocore.exceptions import ClientError
-
-from aws_durable_execution_conformance_tests import sam
 
 if TYPE_CHECKING:
     from pathlib import Path
