@@ -8,7 +8,6 @@
 3. For each test description, invoke the function and validate execution history
 4. Print a summary of which test descriptions passed / failed
 """
-# ruff: noqa: T201
 
 import argparse
 import shutil
@@ -16,8 +15,10 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -27,6 +28,12 @@ from aws_durable_execution_conformance_tests.config import (
     OUTPUT_DIR,
     STACK_NAME_PREFIX,
     TESTS_DIR,
+)
+from aws_durable_execution_conformance_tests.extensions import (
+    ExtensionError,
+    ExtensionRegistry,
+    ValidationContext,
+    load_extensions,
 )
 from aws_durable_execution_conformance_tests.history import load_yaml_file
 from aws_durable_execution_conformance_tests.report import (
@@ -45,18 +52,32 @@ from aws_durable_execution_conformance_tests.sam import (
 )
 from aws_durable_execution_conformance_tests.validate import (
     DescriptionResult,
-    discover_suites,
-    discover_test_files,
     parse_function_descriptions,
     parse_not_implemented,
     validate_description,
 )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _parse_parameter_override(value: str) -> tuple[str, str]:
+    """Parse one ``KEY=VALUE`` SAM parameter override."""
+    key, separator, parameter_value = value.partition("=")
+    if not separator or not key:
+        raise argparse.ArgumentTypeError("parameter overrides must use KEY=VALUE")
+    return key, parameter_value
+
+
+def parse_args(
+    argv: list[str] | None = None,
+    *,
+    extension_registry: ExtensionRegistry | None = None,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate durable execution SDK test requirements against SDK test cases.",
     )
+    try:
+        registry = extension_registry or load_extensions(TESTS_DIR)
+    except ExtensionError as exc:
+        parser.error(f"Failed to load conformance extensions: {exc}")
     parser.add_argument(
         "--template",
         required=True,
@@ -81,7 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Discover suites from the requirements tree so accepted values track the
     # folders that actually exist without a hardcoded list. Suites may cover
     # operations, cross-cutting capabilities, or integrations.
-    discovered_suites: list[str] = discover_suites(TESTS_DIR)
+    discovered_suites: list[str] = sorted(registry.suites)
     valid_suites: list[str] = [*discovered_suites, "all"]
 
     parser.add_argument(
@@ -100,6 +121,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Pre-built container image URI (ECR). When provided, the URI is "
         "passed as an ImageUri parameter override during sam deploy.",
+    )
+    parser.add_argument(
+        "--parameter-overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        type=_parse_parameter_override,
+        metavar="KEY=VALUE",
+        help="Additional SAM template parameter overrides. Explicit values take "
+        "precedence over extension-provided parameters.",
     )
     parser.add_argument(
         "--cleanup",
@@ -138,7 +169,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "'failed' (default) blocks only on FAILED; 'failed+uncovered' also blocks "
         "on UNCOVERED. NOT_IMPLEMENTED and OPTIONAL_FAILED never block.",
     )
-    return parser.parse_args(argv)
+    try:
+        registry.add_arguments(parser)
+    except Exception as exc:
+        parser.error(f"Failed to configure conformance extensions: {exc}")
+    args = parser.parse_args(argv)
+    try:
+        registry.validate_configuration(args)
+    except (ExtensionError, ValueError) as exc:
+        parser.error(str(exc))
+    args._extension_registry = registry
+    return args
 
 
 def run(argv: list[str] | None = None) -> None:
@@ -196,11 +237,14 @@ def _deploy_validate_report(
     Calls ``sys.exit`` with the report's exit code (or 0/1 for early outcomes).
     """
     try:
-        parameter_overrides: dict[str, str] | None = None
+        registry: ExtensionRegistry = args._extension_registry
+        parameter_overrides: dict[str, str] = registry.deployment_parameters(args)
+        parameter_overrides.update(dict(args.parameter_overrides))
+        secret_parameter_overrides: dict[str, str] = registry.deployment_secrets(args)
         resolve_image_repos: bool = True
         image_repository: str | None = None
         if args.image_uri:
-            parameter_overrides = {"ImageUri": args.image_uri}
+            parameter_overrides["ImageUri"] = args.image_uri
             resolve_image_repos = False
             # Extract repo URI for SAM's --image-repository requirement.
             # Handles both tag format (repo:tag) and digest format (repo@sha256:...).
@@ -210,7 +254,8 @@ def _deploy_validate_report(
                 image_repository = args.image_uri.rsplit(":", 1)[0]
         deployer.deploy(
             stack_name=stack_name,
-            parameter_overrides=parameter_overrides,
+            parameter_overrides=parameter_overrides or None,
+            secret_parameter_overrides=secret_parameter_overrides or None,
             resolve_image_repos=resolve_image_repos,
             image_repository=image_repository,
         )
@@ -226,10 +271,14 @@ def _deploy_validate_report(
         sys.exit(0)
 
     # 3. Filter by suite if specified
-    test_files = discover_test_files(TESTS_DIR, suite=args.suite)
+    try:
+        requirements = registry.discover_requirements(args.suite)
+    except ExtensionError as exc:
+        print(f"Could not discover test requirements: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if "all" not in args.suite:
-        function_descriptions = [(fn, did) for fn, did in function_descriptions if did in test_files]
+        function_descriptions = [(fn, did) for fn, did in function_descriptions if did in requirements]
         if not function_descriptions:
             print(f"No test descriptions match suite(s) {args.suite!r} in the template.")
             sys.exit(0)
@@ -246,8 +295,8 @@ def _deploy_validate_report(
     try:
         for function_name, description_id in function_descriptions:
             print(f"\n--- Validating test description {description_id} ({function_name}) ---")
-            test_file = test_files.get(description_id)
-            if not test_file:
+            requirement = requirements.get(description_id)
+            if not requirement:
                 results.append(
                     DescriptionResult(
                         description_id=description_id,
@@ -262,12 +311,19 @@ def _deploy_validate_report(
             result = validate_description(
                 function_name,
                 description_id,
-                test_file,
+                str(requirement.path),
                 invoker,
                 tmp_dir,
                 output_dir=args.history_dir,
                 region=args.region,
             )
+            if result.passed and requirement.suite.validation_hook is not None:
+                result = _run_extension_validation(
+                    result=result,
+                    hook=requirement.suite.validation_hook,
+                    requirement_path=requirement.path,
+                    args=args,
+                )
             results.append(result)
 
             if result.passed:
@@ -287,7 +343,7 @@ def _deploy_validate_report(
 
     # 5. Build the report model from results + coverage.
     # Coverage check -- descriptions in tests/ with no example in template.
-    all_description_ids = sorted(test_files.keys())
+    all_description_ids = sorted(requirements)
     referenced_description_ids = {did for _, did in function_descriptions}
     uncovered = [did for did in all_description_ids if did not in referenced_description_ids]
 
@@ -308,8 +364,8 @@ def _deploy_validate_report(
         print(f"  WARNING: {message}", file=sys.stderr)
 
     def _suite_for(description_id: str) -> str | None:
-        path = test_files.get(description_id)
-        return Path(path).parent.name if path else None
+        requirement = requirements.get(description_id)
+        return requirement.suite.name if requirement else None
 
     _description_cache: dict[str, str | None] = {}
 
@@ -317,10 +373,10 @@ def _deploy_validate_report(
         if description_id in _description_cache:
             return _description_cache[description_id]
         description: str | None = None
-        path = test_files.get(description_id)
-        if path:
+        requirement = requirements.get(description_id)
+        if requirement:
             try:
-                data = load_yaml_file(path)
+                data = load_yaml_file(str(requirement.path))
                 if isinstance(data, dict):
                     description = data.get("description")
             except (OSError, ValueError, yaml.YAMLError):
@@ -394,6 +450,52 @@ def _deploy_validate_report(
             print(f"  Wrote {fmt} report to {path}")
 
     sys.exit(report.exit_code())
+
+
+def _run_extension_validation(
+    *,
+    result: DescriptionResult,
+    hook: Any,
+    requirement_path: Path,
+    args: argparse.Namespace,
+) -> DescriptionResult:
+    """Run an extension hook and preserve the core result/report model."""
+
+    if (
+        result.execution_arn is None
+        or result.invocation_started_at_ms is None
+        or result.invocation_finished_at_ms is None
+    ):
+        return replace(
+            result,
+            passed=False,
+            errors=["Extension validation could not run because execution metadata is missing"],
+        )
+
+    try:
+        requirement = load_yaml_file(str(requirement_path))
+        if not isinstance(requirement, dict):
+            raise ValueError("requirement YAML must contain a mapping")
+        context = ValidationContext(
+            description_id=result.description_id,
+            function_name=result.function_name,
+            execution_arn=result.execution_arn,
+            invocation_started_at_ms=result.invocation_started_at_ms,
+            invocation_finished_at_ms=result.invocation_finished_at_ms,
+            region=args.region,
+            language=args.language,
+            requirement=requirement,
+            execution_history=result.execution_history,
+            output_dir=Path(args.history_dir),
+            options={key: value for key, value in vars(args).items() if not key.startswith("_")},
+        )
+        errors = list(hook(context))
+    except Exception as exc:
+        errors = [f"Extension validation failed to run: {exc}"]
+
+    if not errors:
+        return result
+    return replace(result, passed=False, errors=errors)
 
 
 if __name__ == "__main__":

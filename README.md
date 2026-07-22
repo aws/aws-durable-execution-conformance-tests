@@ -1,71 +1,63 @@
-# aws-durable-execution-conformance-tests
+# AWS Durable Execution Conformance Tests
 
-Conformance test suite for the AWS Durable Execution SDK. Validates SDK test requirements against test cases by deploying Lambda functions, invoking them, and asserting execution history matches expected results.
+Language-neutral conformance requirements and a Python runner for AWS Durable
+Execution SDKs.
 
-This repository contains the test runner and language-neutral requirements.
+## Workspace
 
------
+This repository is a Hatch workspace containing two independently versioned
+distributions:
 
-## Prerequisites
+```text
+packages/
+  aws-durable-execution-conformance-tests/
+  aws-durable-execution-conformance-tests-otel/
+```
 
-- Python 3.14+
-- [Hatch](https://hatch.pypa.io/dev/install/) (build system and environment manager)
-- SAM CLI configured with appropriate credentials
+The core distribution contains the runner, reports, and generic requirements.
+The optional OTel distribution contributes the `otel` suite through the core
+entry-point API and owns its protocol dependencies, exporter profiles, backend
+adapters, models, parsers, validators, and requirement resources.
 
-## Setup
+Installing only the core package does not install OpenTelemetry dependencies:
 
 ```bash
-cd aws-durable-execution-conformance-tests
-hatch env create
+pip install aws-durable-execution-conformance-tests
 ```
 
------
+Install the optional suite to make `--suite otel` available through the same
+CLI:
 
-## Test Requirements
-
-Test requirements are language-agnostic YAML specifications that define the **expected behavior** of durable execution SDKs. They live in the `test-requirements/` directory, organized into suites. A suite is a related group of requirements and is not limited to an SDK operation: suites may cover durable operations, cross-cutting capabilities such as serialization and deserialization, or integrations such as an OpenTelemetry plugin.
-
-```
-test-requirements/
-├── step/                # 1-N: Step operation suite
-├── wait/                # 2-N: Wait operation suite
-├── child/               # 3-N: Child context suite
-├── callback/            # 4-N: Callback suite
-├── invoke/              # 5-N: Invoke (chained) suite
-├── wait_for_condition/  # 6-N: Wait-for-condition suite
-├── wait_for_callback/   # 7-N: Wait-for-callback suite
-├── parallel/            # 8-N: Parallel operation suite
-└── map/                 # 9-N: Map operation suite
+```bash
+pip install aws-durable-execution-conformance-tests-otel
 ```
 
-Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).
+The OTel `0.1.x` line requires core `>=0.2,<0.3`.
 
-### Placeholders and Wildcards
+## Development
 
-Test requirements use placeholders to handle values that vary between executions:
+Install Hatch and run all commands from the repository root:
 
-- **`'*'` (wildcard):** Matches any value. Used for timestamps and other non-deterministic fields.
-- **`${ID1}`, `${ID2}`, ...:** Auto-bound ID placeholders. The validator binds these on first encounter and asserts consistency across subsequent references. For example, if `${ID1}` first matches `"abc-123"`, all later `${ID1}` references must also equal `"abc-123"`.
-- **`${GEN_STR:N}`:** Generates a random alphanumeric string of length N. Used in the `Variables` section to create unique test inputs.
-- **Named variables (`${VAR_NAME}`):** Defined in the `Variables` section, substituted into `Input`, `ExpectedResult`, `CallbackActions`, and `ExpectedExecutionHistory` before validation.
-
-### Async Test Requirements
-
-Tests for operations that suspend execution (wait, callback, invoke) include additional fields:
-
-```yaml
-AsyncInvoke: true
+```bash
+hatch run test:all
+hatch run test:cov
+hatch run types:check
+hatch fmt --check packages
+hatch run yaml:lint
+hatch run dist:build
+hatch run dist:check
 ```
 
-The validator handles the full lifecycle: invoke the function, wait for suspension, perform callback actions (if any), wait for completion, then assert the final execution history.
+Package-specific test commands are `hatch run test:core` and
+`hatch run test:otel`. Each child package can also be built independently:
 
------
+Run `hatch build` from either child package directory to build just that
+distribution.
 
-## Running the Validator
+## Running Conformance
 
-The runner accepts a SAM template whose functions map to requirement IDs through
-`TestingMetadata.TestDescription`. Configure AWS credentials for an account with
-permission to deploy and invoke the test resources, then run:
+The runner accepts a SAM template whose functions map to requirement IDs with
+`TestingMetadata.TestDescription`:
 
 ```bash
 hatch run validate \
@@ -73,109 +65,77 @@ hatch run validate \
   --language python \
   --region us-west-2 \
   --suite step \
-  --report console
+  --report console json
 ```
 
-The validator will:
+It builds and deploys the template, invokes each mapped function, validates the
+execution result and history, and emits console, JSON, or JUnit reports.
 
-1. Parse `TestingMetadata.TestDescription` from the supplied template
-2. Load the corresponding requirement YAML for each ID
-3. Deploy and invoke the mapped Lambda functions
-4. Retrieve each durable execution's result and event history
-5. Validate the result and history against the requirement
-6. Report the status of every selected requirement
+## OpenTelemetry
 
------
+The OTel package supports these v1 combinations:
 
-## Test Reports
+| Exporter profile | Backend adapter |
+|---|---|
+| ADOT | X-Ray |
+| OpenTelemetry community layer | Datadog |
+| OpenTelemetry community layer | Dash0 |
+| OpenTelemetry community layer | AWS S3 collector |
 
-The validator can emit reports in three formats via `--report` (repeatable;
-defaults to `console`). Machine formats are written next to `--report-file`
-(default `<history-dir>/report`), with the extension appended per format:
-
-| Format | `--report` value | Audience | Output |
-|---|---|---|---|
-| Console | `console` | Human | Grouped summary printed to stdout |
-| JSON | `json` | Machine | `<report-file>.json` (schema-versioned) |
-| JUnit XML | `junit` | Machine → CI viewers | `<report-file>.xml` |
+Java, JavaScript/Node.js, and Python profiles are included. Unsupported
+combinations fail during argument validation, before SAM build or deployment.
 
 ```bash
-hatch run validate --template path/to/template.yaml \
-                   --language python --suite step \
-                   --report console json junit --report-file build/report
+hatch run validate \
+  --template path/to/template.yaml \
+  --language python \
+  --suite otel \
+  --otel-exporter community \
+  --otel-backend collector \
+  --otel-endpoint https://otel-collector.example/v1/traces \
+  --otel-backend-endpoint s3://example-telemetry/durable-execution
 ```
 
-### Result statuses
+Credentials are read only from the environment:
 
-Every requirement resolves to one status:
+- Datadog: `DD_API_KEY`, `DD_APPLICATION_KEY`
+- Dash0: `DASH0_AUTH_TOKEN`
+- OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
+- S3 collector: the AWS credential chain
+- X-Ray: the AWS credential chain
 
-| Status | Meaning | Blocks the run? |
-|---|---|---|
-| `PASSED` | History + result matched | no |
-| `FAILED` | Real mismatch or error | **yes** |
-| `OPTIONAL_FAILED` | Failed, but requirement marked `optional: true` | no |
-| `NOT_IMPLEMENTED` | Declared intentional SDK gap (see below) | no |
-| `UNCOVERED` | No mapped test case in the template, and not declared | no (see `--fail-on`) |
+Secret values are redacted from diagnostics and artifacts. See the
+[OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
+for the template parameter contract and the prototype OpenTelemetry Collector
+Contrib `awss3exporter` configuration.
 
-**Exit code** follows `--fail-on`: `failed` (default) exits non-zero only on
-`FAILED`; `failed+uncovered` also treats `UNCOVERED` as blocking.
-`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` never block — intentional gaps stay
-visible without failing the run.
+The self-contained
+[Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
+map the four current OTel requirements to handlers built from the Python SDK
+and OTel plugin `main` branch.
 
-### Declaring an intentional gap (`NOT_IMPLEMENTED`)
+## Extension API
 
-When an SDK genuinely cannot satisfy a requirement, declare it in that SDK's
-SAM template under a `TestingMetadata.NotImplemented` list instead of silently
-omitting it. The runner reports it as `NOT_IMPLEMENTED` (non-blocking) with the
-reason, so the gap is tracked rather than hidden:
+Core extensions register the
+`aws_durable_execution_conformance_tests.extensions` entry-point group. An
+extension declares a compatible core version range and contributes named
+requirement resource roots, CLI configuration, non-secret deployment
+parameters, and post-execution validation hooks. Suite names and requirement
+IDs must be globally unique.
 
-```yaml
-TestingMetadata:
-  NotImplemented:
-    - id: "8-13"
-      reason: "toleratedFailurePercentage is rejected at build() in this SDK"
-```
+Future OTel exporter profiles and backends register:
 
-### JUnit details (CI correlation)
+- `aws_durable_execution_conformance_tests_otel.exporters`
+- `aws_durable_execution_conformance_tests_otel.backends`
 
-Each `<testcase>` uses `classname="{language}.{suite}"` and `name="{id}"`
-(the stable key). `FAILED` maps to `<failure>`; every other non-passing status
-maps to `<skipped>` so CI viewers render gaps as skipped, not failed. A
-`<properties>` block plus `<system-out>` carry the correlation metadata:
-
-```xml
-<testcase classname="python.step" name="1-6" time="0.000">
-  <properties>
-    <property name="requirement_id" value="1-6"/>
-    <property name="description"    value="Custom serdes (per-step)"/>
-    <property name="language"       value="python"/>
-    <property name="example"        value="StepCustomSerdes"/>
-  </properties>
-  <failure message="Expected Result='HELLO WORLD', got 'hello world'"/>
-  <system-out>Custom serdes (per-step)</system-out>
-</testcase>
-```
-
-Because `name` is the bare requirement id, JUnit files from all three SDKs can
-be merged and lined up per requirement, with `classname` telling them apart.
+Load failures, incompatible versions, unknown plugins, and collisions are
+reported as actionable CLI errors.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development commands, pull-request
-guidance, and rules for adding language-neutral requirement suites.
-
-## Security
-
-Report potential security issues through the
-[AWS vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/).
-Do not create a public GitHub issue for a security vulnerability.
-
-## Code of Conduct
-
-This project follows the [Amazon Open Source Code of Conduct](CODE_OF_CONDUCT.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should be reported
+through the [AWS vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/).
 
 ## License
 
-`aws-durable-execution-conformance-tests` is distributed under the terms of the
-[Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) license. See
-[NOTICE](NOTICE) for additional attribution information.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

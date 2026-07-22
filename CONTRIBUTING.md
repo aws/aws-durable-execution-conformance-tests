@@ -33,9 +33,9 @@ For bugs, include:
 
 ## Repository structure
 
-- `src/aws_durable_execution_conformance_tests/`: validator and report implementation
-- `test-requirements/`: language-neutral requirement suites
-- `tests/`: unit tests for the Python runner
+- `packages/aws-durable-execution-conformance-tests/`: core runner, generic requirements, and tests
+- `packages/aws-durable-execution-conformance-tests-otel/`: optional OTel extension, requirements, and tests
+- `scripts/`: workspace and distribution verification
 
 SDK-specific test handlers and deployment templates live in their respective SDK
 repositories and are not released as part of this repository.
@@ -47,11 +47,12 @@ repository root:
 
 ```bash
 hatch env create
-hatch run test:run
+hatch run test:all
 hatch run test:cov
 hatch run types:check
-hatch fmt --check src/aws_durable_execution_conformance_tests
-hatch build -c
+hatch fmt --check packages
+hatch run dist:build
+hatch run dist:check
 ```
 
 To validate requirement YAML files:
@@ -68,7 +69,7 @@ against an SDK implementation.
 A suite is a related group of requirements. It may cover an SDK operation, a
 cross-cutting capability such as serialization and deserialization, or an
 integration such as an OpenTelemetry plugin. Each new suite must have its own
-dedicated `test-requirements/<suite>/` directory. Matching test handlers and
+dedicated requirement directory in its owning package. Matching test handlers and
 deployment templates must be added to each applicable SDK repository through
 that repository's contribution process.
 
@@ -77,8 +78,12 @@ real public API. Do not replace a missing or defective SDK capability with
 hand-written logic that forces a test to pass. A failing test that exposes an
 SDK incompatibility is useful evidence and should remain visible in the report.
 
-Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED` with a clear
-reason rather than silently excluding the requirement.
+Declare genuinely missing SDK capabilities as `NOT_IMPLEMENTED`; the reason may
+be left empty when the missing handler is self-explanatory.
+
+For the OpenTelemetry suite, see the
+[OTel test-case contribution guide](packages/aws-durable-execution-conformance-tests-otel/CONTRIBUTING.md)
+for its requirement schema, SDK handler expectations, and validation guidance.
 
 ## Contributing through pull requests
 

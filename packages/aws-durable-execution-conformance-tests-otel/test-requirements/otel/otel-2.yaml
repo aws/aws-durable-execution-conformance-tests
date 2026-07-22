@@ -1,0 +1,16 @@
+description: OpenTelemetry preserves correlation across wait and resume invocations
+Input:
+  scenario: wait-resume
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 2
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_continuation: true
+  required_outcomes:
+    - success
