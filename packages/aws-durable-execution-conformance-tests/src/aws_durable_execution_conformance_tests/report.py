@@ -9,14 +9,17 @@ I/O or AWS calls, so it is cheap to unit-test.
 
 Status semantics:
 
-- ``PASSED``          -- history + result matched.
-- ``FAILED``          -- a real mismatch or error (blocking by default).
-- ``OPTIONAL_FAILED`` -- failed but the requirement is marked ``optional`` (non-blocking).
-- ``NOT_IMPLEMENTED`` -- a declared, intentional SDK gap with a reason (non-blocking).
-- ``UNCOVERED``       -- no example found and not declared (non-blocking by default; warn).
+- ``PASSED``            -- history + result matched.
+- ``FAILED``            -- a real mismatch or error (blocking by default).
+- ``EXPECTED_FAILED``   -- matched a declared failure and error signature (non-blocking).
+- ``UNEXPECTED_PASSED`` -- a declared failure passed and its declaration is stale (blocking).
+- ``OPTIONAL_FAILED``   -- failed but the requirement is marked ``optional`` (non-blocking).
+- ``NOT_IMPLEMENTED``   -- a declared, intentional SDK gap with a reason (non-blocking).
+- ``UNCOVERED``         -- no example found and not declared (non-blocking by default; warn).
 
-Exit-code policy is controlled by ``fail_on``: by default only ``FAILED`` blocks;
-``failed+uncovered`` additionally blocks on ``UNCOVERED``.
+Exit-code policy is controlled by ``fail_on``: ``FAILED`` and
+``UNEXPECTED_PASSED`` always block, and ``failed+uncovered`` additionally blocks
+on ``UNCOVERED``.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ class ReportStatus(str, Enum):
 
     PASSED = "PASSED"
     FAILED = "FAILED"
+    EXPECTED_FAILED = "EXPECTED_FAILED"
+    UNEXPECTED_PASSED = "UNEXPECTED_PASSED"
     OPTIONAL_FAILED = "OPTIONAL_FAILED"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     UNCOVERED = "UNCOVERED"
@@ -42,8 +47,19 @@ FAIL_ON_FAILED = "failed"
 FAIL_ON_FAILED_UNCOVERED = "failed+uncovered"
 
 _BLOCKING_BY_POLICY: dict[str, frozenset[ReportStatus]] = {
-    FAIL_ON_FAILED: frozenset({ReportStatus.FAILED}),
-    FAIL_ON_FAILED_UNCOVERED: frozenset({ReportStatus.FAILED, ReportStatus.UNCOVERED}),
+    FAIL_ON_FAILED: frozenset(
+        {
+            ReportStatus.FAILED,
+            ReportStatus.UNEXPECTED_PASSED,
+        }
+    ),
+    FAIL_ON_FAILED_UNCOVERED: frozenset(
+        {
+            ReportStatus.FAILED,
+            ReportStatus.UNEXPECTED_PASSED,
+            ReportStatus.UNCOVERED,
+        }
+    ),
 }
 
 
@@ -58,8 +74,8 @@ class ReportEntry:
         function: Logical SAM function name that satisfied the requirement, or
             None (e.g. for NOT_IMPLEMENTED / UNCOVERED there is no function).
         description: One-line requirement description (from the requirement YAML).
-        reason: Human-readable explanation (used for NOT_IMPLEMENTED).
-        errors: Assertion error messages (for FAILED / OPTIONAL_FAILED).
+        reason: Human-readable explanation for declared non-passing outcomes.
+        errors: Assertion error messages for failing outcomes.
         duration_seconds: Wall-clock time spent validating this requirement.
     """
 
@@ -133,7 +149,7 @@ class Report:
     run: RunMetadata
     entries: list[ReportEntry] = field(default_factory=list)
     fail_on: str = FAIL_ON_FAILED
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     warnings: list[str] = field(default_factory=list)
 
     def add(self, entry: ReportEntry) -> None:
@@ -154,6 +170,8 @@ class Report:
             "total": len(self.entries),
             "passed": counts[ReportStatus.PASSED],
             "failed": counts[ReportStatus.FAILED],
+            "expected_failed": counts[ReportStatus.EXPECTED_FAILED],
+            "unexpected_passed": counts[ReportStatus.UNEXPECTED_PASSED],
             "optional_failed": counts[ReportStatus.OPTIONAL_FAILED],
             "not_implemented": counts[ReportStatus.NOT_IMPLEMENTED],
             "uncovered": counts[ReportStatus.UNCOVERED],
@@ -161,7 +179,15 @@ class Report:
 
     def blocking_statuses(self) -> frozenset[ReportStatus]:
         """Statuses that block CI under the current ``fail_on`` policy."""
-        return _BLOCKING_BY_POLICY.get(self.fail_on, frozenset({ReportStatus.FAILED}))
+        return _BLOCKING_BY_POLICY.get(
+            self.fail_on,
+            frozenset(
+                {
+                    ReportStatus.FAILED,
+                    ReportStatus.UNEXPECTED_PASSED,
+                }
+            ),
+        )
 
     def blocking_count(self) -> int:
         """Number of entries whose status blocks CI."""
@@ -177,7 +203,7 @@ class Report:
         return [entry for entry in self.entries if entry.status == status]
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the whole report to a JSON-friendly dict (schema 1.0)."""
+        """Serialize the whole report to a JSON-friendly dict (schema 1.1)."""
         return {
             "schema_version": self.schema_version,
             "run": self.run.to_dict(),

@@ -9,6 +9,8 @@ import ast
 from pathlib import Path
 
 from aws_durable_execution_conformance_tests.validate import (
+    ExpectedFailure,
+    parse_expected_failures,
     parse_function_descriptions,
 )
 
@@ -51,6 +53,26 @@ def test_python_example_template_maps_every_otel_requirement() -> None:
     mappings = parse_function_descriptions(str(template_path))
 
     assert mappings == EXPECTED_MAPPINGS
+
+
+def test_python_example_template_declares_only_known_sdk_failures() -> None:
+    template_path = EXAMPLES_DIR / "template.yaml"
+
+    assert parse_expected_failures(str(template_path)) == {
+        "otel-3": ExpectedFailure(
+            reason=(
+                "Waiting for the retry span fix in https://github.com/aws/aws-durable-execution-sdk-python/pull/568"
+            ),
+            errors=("OpenTelemetry: span_assertions[1].select matched no spans",),
+        ),
+        "otel-9": ExpectedFailure(
+            reason=(
+                "Waiting for the wait-for-condition span fix in "
+                "https://github.com/aws/aws-durable-execution-sdk-python/pull/568"
+            ),
+            errors=("OpenTelemetry: span_assertions[1].select matched no spans",),
+        ),
+    }
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:

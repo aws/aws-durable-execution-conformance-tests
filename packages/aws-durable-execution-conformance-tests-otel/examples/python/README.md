@@ -43,11 +43,13 @@ both packages directly from the SDK repository's `main` branch because the
 OpenTelemetry plugin is evolving quickly. Pin the two Git requirements to the
 same commit when a reproducible build is needed.
 
-The hosted X-Ray run currently treats `otel-3` and `otel-9` as strict expected
-failures while [SDK PR #568](https://github.com/aws/aws-durable-execution-sdk-python/pull/568)
-is pending. Both cases still run every assertion. Any other failure, or an
-unexpected pass from either exempted case, fails the workflow so the exemption
-cannot silently outlive the SDK defect.
+The template declares `otel-3` and `otel-9` as native expected failures while
+[SDK PR #568](https://github.com/aws/aws-durable-execution-sdk-python/pull/568)
+is pending. Both cases still run every assertion and become `EXPECTED_FAILED`
+only when their exact known error is observed. Any other error remains
+`FAILED`, while a passing case becomes `UNEXPECTED_PASSED`; either outcome
+fails the workflow so the declaration cannot hide a regression or silently
+outlive the SDK defect.
 
 ## Run Against X-Ray
 

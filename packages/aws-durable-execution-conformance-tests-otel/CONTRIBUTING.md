@@ -133,6 +133,9 @@ repository. For Java, JavaScript/Node.js, and Python:
 5. Exercise the scenario with the S3 collector before using a hosted backend.
 6. Declare a missing handler under `TestingMetadata.NotImplemented`; its
    `reason` may be empty.
+7. For a temporary defect in an implemented handler, use
+   `TestingMetadata.ExpectedFailures` with a tracking URL and the exact
+   validation errors. Do not weaken or remove the requirement assertions.
 
 Use the same scenario semantics in every SDK. Runtime setup can differ, but the
 observable execution and telemetry behavior must satisfy the same requirement.

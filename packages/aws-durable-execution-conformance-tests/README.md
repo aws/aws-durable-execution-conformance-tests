@@ -117,14 +117,39 @@ Every requirement resolves to one status:
 |---|---|---|
 | `PASSED` | History + result matched | no |
 | `FAILED` | Real mismatch or error | **yes** |
+| `EXPECTED_FAILED` | Failure exactly matched a declared known defect | no |
+| `UNEXPECTED_PASSED` | A declared known defect no longer reproduces | **yes** |
 | `OPTIONAL_FAILED` | Failed, but requirement marked `optional: true` | no |
 | `NOT_IMPLEMENTED` | Declared intentional SDK gap (see below) | no |
 | `UNCOVERED` | No mapped test case in the template, and not declared | no (see `--fail-on`) |
 
-**Exit code** follows `--fail-on`: `failed` (default) exits non-zero only on
-`FAILED`; `failed+uncovered` also treats `UNCOVERED` as blocking.
-`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` never block — intentional gaps stay
-visible without failing the run.
+**Exit code** follows `--fail-on`: `failed` (default) exits non-zero on
+`FAILED` or `UNEXPECTED_PASSED`; `failed+uncovered` also treats `UNCOVERED` as
+blocking. `EXPECTED_FAILED`, `NOT_IMPLEMENTED`, and `OPTIONAL_FAILED` never
+block, so known outcomes stay visible without hiding regressions.
+
+### Declaring a known defect (`EXPECTED_FAILED`)
+
+Use `TestingMetadata.ExpectedFailures` when a mapped test handler must continue
+running while a tracked SDK defect is being fixed. Each declaration includes
+the exact ordered validation errors that are allowed:
+
+```yaml
+TestingMetadata:
+  TestDescription:
+    - otel-3
+  ExpectedFailures:
+    - id: otel-3
+      reason: "Waiting for https://github.com/example/sdk/pull/123"
+      errors:
+        - "OpenTelemetry: retry span was not found"
+```
+
+The case is still invoked and every assertion still runs. It becomes
+`EXPECTED_FAILED` only when all errors match the declaration exactly. A
+different failure remains `FAILED`, and a passing case becomes
+`UNEXPECTED_PASSED`; both block the run. Remove the declaration when the
+tracked defect is fixed.
 
 ### Declaring an intentional gap (`NOT_IMPLEMENTED`)
 
@@ -143,8 +168,8 @@ TestingMetadata:
 ### JUnit details (CI correlation)
 
 Each `<testcase>` uses `classname="{language}.{suite}"` and `name="{id}"`
-(the stable key). `FAILED` maps to `<failure>`; every other non-passing status
-maps to `<skipped>` so CI viewers render gaps as skipped, not failed. A
+(the stable key). `FAILED` and `UNEXPECTED_PASSED` map to `<failure>`;
+non-blocking statuses, including `EXPECTED_FAILED`, map to `<skipped>`. A
 `<properties>` block plus `<system-out>` carry the correlation metadata:
 
 ```xml

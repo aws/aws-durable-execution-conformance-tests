@@ -13,6 +13,7 @@ import contextlib
 import json
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,14 @@ class DescriptionResult:
     invocation_started_at_ms: int | None = None
     invocation_finished_at_ms: int | None = None
     execution_history: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExpectedFailure:
+    """A template-scoped failure declaration with an exact error signature."""
+
+    reason: str
+    errors: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -163,6 +172,10 @@ class _CfnSafeLoader(yaml.SafeLoader):
 _CfnSafeLoader.add_multi_constructor("!", _cfn_tag_constructor)
 
 
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
 def parse_function_descriptions(template_path: str) -> list[tuple[str, str]]:
     """Parse template.yaml and return (function_name, description_id) pairs.
 
@@ -238,6 +251,78 @@ def parse_not_implemented(template_path: str) -> dict[str, str]:
     _ingest(template.get("TestingMetadata", {}))
 
     # Per-resource TestingMetadata blocks.
+    for resource in template.get("Resources", {}).values():
+        if isinstance(resource, dict):
+            _ingest(resource.get("TestingMetadata", {}))
+
+    return result
+
+
+def parse_expected_failures(template_path: str) -> dict[str, ExpectedFailure]:
+    """Parse strict expected-failure declarations from a SAM template.
+
+    Declarations may appear in top-level or per-resource ``TestingMetadata``::
+
+        TestingMetadata:
+          ExpectedFailures:
+            - id: "otel-3"
+              reason: "Tracked by SDK issue 123"
+              errors:
+                - "OpenTelemetry: expected span was not found"
+
+    Each declaration must include a unique requirement ID, a non-empty reason,
+    and a non-empty exact list of expected validation errors.
+    """
+
+    with open(template_path, encoding="utf-8") as f:
+        loader: _CfnSafeLoader = _CfnSafeLoader(f)
+        try:
+            template = loader.get_single_data()
+        finally:
+            loader.dispose()
+
+    if not isinstance(template, dict):
+        return {}
+
+    result: dict[str, ExpectedFailure] = {}
+
+    def _ingest(metadata: Any) -> None:
+        if not isinstance(metadata, dict):
+            return
+        if "ExpectedFailures" not in metadata:
+            return
+        entries = metadata["ExpectedFailures"]
+        if not _is_sequence(entries):
+            raise ValueError("TestingMetadata.ExpectedFailures must be a sequence")
+        for index, entry in enumerate(entries):
+            path = f"TestingMetadata.ExpectedFailures[{index}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{path} must be a mapping")
+            unknown = sorted(set(entry) - {"id", "reason", "errors"}, key=str)
+            if unknown:
+                raise ValueError(f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}")
+
+            description_id = entry.get("id")
+            reason = entry.get("reason")
+            errors = entry.get("errors")
+            if not isinstance(description_id, str) or not description_id.strip():
+                raise ValueError(f"{path}.id must be a non-empty string")
+            if description_id in result:
+                raise ValueError(f"Expected failure {description_id!r} is declared more than once")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError(f"{path}.reason must be a non-empty string")
+            if (
+                not _is_sequence(errors)
+                or not errors
+                or not all(isinstance(error, str) and error.strip() for error in errors)
+            ):
+                raise ValueError(f"{path}.errors must be a non-empty sequence of non-empty strings")
+            result[description_id] = ExpectedFailure(
+                reason=reason,
+                errors=tuple(errors),
+            )
+
+    _ingest(template.get("TestingMetadata", {}))
     for resource in template.get("Resources", {}).values():
         if isinstance(resource, dict):
             _ingest(resource.get("TestingMetadata", {}))

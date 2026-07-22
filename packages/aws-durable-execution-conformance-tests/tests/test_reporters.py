@@ -39,6 +39,22 @@ def _report() -> Report:
             ReportEntry(
                 id="8-2", suite="parallel", status=ReportStatus.FAILED, function="ParallelFail", errors=["boom"]
             ),
+            ReportEntry(
+                id="8-3",
+                suite="parallel",
+                status=ReportStatus.EXPECTED_FAILED,
+                function="ParallelKnownFailure",
+                reason="known SDK defect",
+                errors=["expected boom"],
+            ),
+            ReportEntry(
+                id="8-4",
+                suite="parallel",
+                status=ReportStatus.UNEXPECTED_PASSED,
+                function="ParallelFixed",
+                reason="fixed SDK defect",
+                errors=["expected failure unexpectedly passed"],
+            ),
             ReportEntry(id="8-13", suite="parallel", status=ReportStatus.NOT_IMPLEMENTED, reason="pct rejected"),
             ReportEntry(id="8-9", suite="parallel", status=ReportStatus.UNCOVERED),
         ],
@@ -53,6 +69,9 @@ def test_console_includes_all_sections() -> None:
     assert "8-13" in text
     assert "8-9" in text
     assert "boom" in text  # failed errors shown
+    assert "expected boom" in text
+    assert "expected failure unexpectedly passed" in text
+    assert "known SDK defect" in text
     assert "pct rejected" in text  # not-implemented reason shown
     assert "Parallel basic (all succeed)" in text  # description shown
     assert "Exit code: 1" in text  # one FAILED blocks
@@ -68,23 +87,30 @@ def test_console_shows_warnings() -> None:
 
 def test_json_is_valid_and_schema_versioned() -> None:
     data = json.loads(render_json(_report()))
-    assert data["schema_version"] == "1.0"
+    assert data["schema_version"] == "1.1"
     assert data["summary"]["failed"] == 1
+    assert data["summary"]["expected_failed"] == 1
+    assert data["summary"]["unexpected_passed"] == 1
     assert data["ci"]["exit_code"] == 1
-    assert {r["id"] for r in data["results"]} == {"8-1", "8-2", "8-13", "8-9"}
+    assert {r["id"] for r in data["results"]} == {"8-1", "8-2", "8-3", "8-4", "8-13", "8-9"}
 
 
 def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:
     root = ET.fromstring(render_junit(_report()))
     assert root.tag == "testsuite"
-    assert root.attrib["tests"] == "4"
-    assert root.attrib["failures"] == "1"
-    assert root.attrib["skipped"] == "2"  # not_implemented + uncovered
+    assert root.attrib["tests"] == "6"
+    assert root.attrib["failures"] == "2"  # failed + unexpected_passed
+    assert root.attrib["skipped"] == "3"  # expected_failed + not_implemented + uncovered
 
     by_name = {tc.attrib["name"]: tc for tc in root.findall("testcase")}
     assert by_name["8-1"].find("failure") is None
     assert by_name["8-1"].find("skipped") is None
     assert by_name["8-2"].find("failure") is not None
+    expected_skip = by_name["8-3"].find("skipped")
+    assert expected_skip is not None
+    assert "EXPECTED_FAILED: known SDK defect" in expected_skip.attrib["message"]
+    assert expected_skip.text == "expected boom"
+    assert by_name["8-4"].find("failure") is not None
     ni_skip = by_name["8-13"].find("skipped")
     assert ni_skip is not None
     assert "NOT_IMPLEMENTED" in ni_skip.attrib["message"]

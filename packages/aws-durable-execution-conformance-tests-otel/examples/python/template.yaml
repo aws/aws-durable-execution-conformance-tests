@@ -93,6 +93,13 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-3
+      ExpectedFailures:
+        - id: otel-3
+          reason: >-
+            Waiting for the retry span fix in
+            https://github.com/aws/aws-durable-execution-sdk-python/pull/568
+          errors:
+            - "OpenTelemetry: span_assertions[1].select matched no spans"
     Properties:
       CodeUri: src/
       Handler: otel_3_retry.handler
@@ -171,6 +178,13 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-9
+      ExpectedFailures:
+        - id: otel-9
+          reason: >-
+            Waiting for the wait-for-condition span fix in
+            https://github.com/aws/aws-durable-execution-sdk-python/pull/568
+          errors:
+            - "OpenTelemetry: span_assertions[1].select matched no spans"
     Properties:
       CodeUri: src/
       Handler: otel_9_wait_for_condition.handler

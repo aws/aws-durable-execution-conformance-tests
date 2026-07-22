@@ -52,6 +52,8 @@ from aws_durable_execution_conformance_tests.sam import (
 )
 from aws_durable_execution_conformance_tests.validate import (
     DescriptionResult,
+    ExpectedFailure,
+    parse_expected_failures,
     parse_function_descriptions,
     parse_not_implemented,
     validate_description,
@@ -166,8 +168,9 @@ def parse_args(
         default="failed",
         choices=["failed", "failed+uncovered"],
         help="Exit-code policy: which statuses cause a non-zero exit. "
-        "'failed' (default) blocks only on FAILED; 'failed+uncovered' also blocks "
-        "on UNCOVERED. NOT_IMPLEMENTED and OPTIONAL_FAILED never block.",
+        "'failed' (default) blocks on FAILED and UNEXPECTED_PASSED; "
+        "'failed+uncovered' also blocks on UNCOVERED. EXPECTED_FAILED, "
+        "NOT_IMPLEMENTED, and OPTIONAL_FAILED never block.",
     )
     try:
         registry.add_arguments(parser)
@@ -269,6 +272,21 @@ def _deploy_validate_report(
     if not function_descriptions:
         print("No functions with TestingMetadata.TestDescription found in template.")
         sys.exit(0)
+    try:
+        expected_failures = parse_expected_failures(template_path)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"Invalid expected-failure declaration: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    mapped_description_ids = {description_id for _function_name, description_id in function_descriptions}
+    stale_expected_failures = sorted(set(expected_failures) - mapped_description_ids)
+    if stale_expected_failures:
+        joined = ", ".join(stale_expected_failures)
+        print(
+            f"Expected failure declarations have no mapped test function: {joined}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # 3. Filter by suite if specified
     try:
@@ -297,46 +315,54 @@ def _deploy_validate_report(
             print(f"\n--- Validating test description {description_id} ({function_name}) ---")
             requirement = requirements.get(description_id)
             if not requirement:
-                results.append(
-                    DescriptionResult(
-                        description_id=description_id,
-                        function_name=function_name,
-                        passed=False,
-                        errors=[f"Test file not found for description: {description_id}"],
+                result = DescriptionResult(
+                    description_id=description_id,
+                    function_name=function_name,
+                    passed=False,
+                    errors=[f"Test file not found for description: {description_id}"],
+                )
+            else:
+                result = validate_description(
+                    function_name,
+                    description_id,
+                    str(requirement.path),
+                    invoker,
+                    tmp_dir,
+                    output_dir=args.history_dir,
+                    region=args.region,
+                )
+                if result.passed and requirement.suite.validation_hook is not None:
+                    result = _run_extension_validation(
+                        result=result,
+                        hook=requirement.suite.validation_hook,
+                        requirement_path=requirement.path,
+                        args=args,
                     )
-                )
-                print("  ❌ FAILED")
-                print(f"     Test file not found for description: {description_id}")
-                continue
-            result = validate_description(
-                function_name,
-                description_id,
-                str(requirement.path),
-                invoker,
-                tmp_dir,
-                output_dir=args.history_dir,
-                region=args.region,
-            )
-            if result.passed and requirement.suite.validation_hook is not None:
-                result = _run_extension_validation(
-                    result=result,
-                    hook=requirement.suite.validation_hook,
-                    requirement_path=requirement.path,
-                    args=args,
-                )
             results.append(result)
 
-            if result.passed:
+            expected_failure = expected_failures.get(description_id)
+            status, classified_errors = _classify_result(result, expected_failure)
+            if status == ReportStatus.PASSED:
                 print("  ✅ PASSED")
                 if result.placeholders:
                     print(f"     Placeholders: {result.placeholders}")
-            elif result.optional:
+            elif status == ReportStatus.EXPECTED_FAILED:
+                assert expected_failure is not None
+                print("  ⚠️  EXPECTED FAILURE")
+                print(f"     {expected_failure.reason}")
+                for err in classified_errors:
+                    print(f"     {err}")
+            elif status == ReportStatus.UNEXPECTED_PASSED:
+                print("  ❌ UNEXPECTED PASS")
+                for err in classified_errors:
+                    print(f"     {err}")
+            elif status == ReportStatus.OPTIONAL_FAILED:
                 print("  ⚠️  FAILED (optional)")
-                for err in result.errors:
+                for err in classified_errors:
                     print(f"     {err}")
             else:
                 print("  ❌ FAILED")
-                for err in result.errors:
+                for err in classified_errors:
                     print(f"     {err}")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -400,12 +426,8 @@ def _deploy_validate_report(
     )
 
     for r in results:
-        if r.passed:
-            status = ReportStatus.PASSED
-        elif r.optional:
-            status = ReportStatus.OPTIONAL_FAILED
-        else:
-            status = ReportStatus.FAILED
+        expected_failure = expected_failures.get(r.description_id)
+        status, classified_errors = _classify_result(r, expected_failure)
         report.add(
             ReportEntry(
                 id=r.description_id,
@@ -413,7 +435,8 @@ def _deploy_validate_report(
                 status=status,
                 function=r.function_name,
                 description=_description_for(r.description_id),
-                errors=list(r.errors),
+                reason=expected_failure.reason if expected_failure else None,
+                errors=classified_errors,
             )
         )
 
@@ -450,6 +473,36 @@ def _deploy_validate_report(
             print(f"  Wrote {fmt} report to {path}")
 
     sys.exit(report.exit_code())
+
+
+def _classify_result(
+    result: DescriptionResult,
+    expected_failure: ExpectedFailure | None,
+) -> tuple[ReportStatus, list[str]]:
+    """Classify one validation result, including strict expected failures."""
+
+    if expected_failure is None:
+        if result.passed:
+            return ReportStatus.PASSED, []
+        if result.optional:
+            return ReportStatus.OPTIONAL_FAILED, list(result.errors)
+        return ReportStatus.FAILED, list(result.errors)
+
+    if result.passed:
+        return (
+            ReportStatus.UNEXPECTED_PASSED,
+            [f"Expected failure unexpectedly passed: {expected_failure.reason}"],
+        )
+    if tuple(result.errors) == expected_failure.errors:
+        return ReportStatus.EXPECTED_FAILED, list(result.errors)
+    return (
+        ReportStatus.FAILED,
+        [
+            *result.errors,
+            "Expected failure signature did not match; "
+            f"expected {list(expected_failure.errors)!r}, got {list(result.errors)!r}",
+        ],
+    )
 
 
 def _run_extension_validation(

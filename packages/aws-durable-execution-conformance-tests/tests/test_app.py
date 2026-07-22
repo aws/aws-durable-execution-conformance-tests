@@ -10,11 +10,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 from aws_durable_execution_conformance_tests.app import (
+    _classify_result,
     _run_extension_validation,
     parse_args,
 )
 from aws_durable_execution_conformance_tests.config import DEFAULT_REGION
-from aws_durable_execution_conformance_tests.validate import DescriptionResult
+from aws_durable_execution_conformance_tests.report import ReportStatus
+from aws_durable_execution_conformance_tests.validate import (
+    DescriptionResult,
+    ExpectedFailure,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -167,3 +172,59 @@ def test_extension_hook_failure_uses_core_description_result(tmp_path: Path) -> 
         "STEP1": "step-id",
         "EXECUTION_ARN": "arn:test",
     }
+
+
+def test_classify_result_accepts_exact_expected_failure() -> None:
+    result = DescriptionResult(
+        description_id="otel-3",
+        function_name="Otel3Retry",
+        passed=False,
+        errors=["first error", "second error"],
+    )
+    expected_failure = ExpectedFailure(
+        reason="Known SDK defect",
+        errors=("first error", "second error"),
+    )
+
+    assert _classify_result(result, expected_failure) == (
+        ReportStatus.EXPECTED_FAILED,
+        ["first error", "second error"],
+    )
+
+
+def test_classify_result_rejects_wrong_expected_failure_signature() -> None:
+    result = DescriptionResult(
+        description_id="otel-3",
+        function_name="Otel3Retry",
+        passed=False,
+        errors=["different error"],
+    )
+    expected_failure = ExpectedFailure(
+        reason="Known SDK defect",
+        errors=("known error",),
+    )
+
+    status, errors = _classify_result(result, expected_failure)
+
+    assert status == ReportStatus.FAILED
+    assert errors == [
+        "different error",
+        "Expected failure signature did not match; expected ['known error'], got ['different error']",
+    ]
+
+
+def test_classify_result_rejects_unexpected_pass() -> None:
+    result = DescriptionResult(
+        description_id="otel-3",
+        function_name="Otel3Retry",
+        passed=True,
+    )
+    expected_failure = ExpectedFailure(
+        reason="Known SDK defect",
+        errors=("known error",),
+    )
+
+    assert _classify_result(result, expected_failure) == (
+        ReportStatus.UNEXPECTED_PASSED,
+        ["Expected failure unexpectedly passed: Known SDK defect"],
+    )

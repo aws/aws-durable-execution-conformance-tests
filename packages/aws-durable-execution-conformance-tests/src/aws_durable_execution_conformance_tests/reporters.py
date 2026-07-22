@@ -4,9 +4,8 @@
 """Report writers: render a :class:`Report` as console text, JSON, or JUnit XML.
 
 All writers are pure functions of a ``Report`` (plus, for the file variants, a
-path). Non-blocking statuses (OPTIONAL_FAILED / NOT_IMPLEMENTED / UNCOVERED) map
-to JUnit ``<skipped>`` so CI renders them yellow, not red; only FAILED maps to
-``<failure>``.
+path). Non-blocking statuses map to JUnit ``<skipped>`` so CI renders them
+yellow, not red; ``FAILED`` and ``UNEXPECTED_PASSED`` map to ``<failure>``.
 """
 
 from __future__ import annotations
@@ -21,6 +20,8 @@ from aws_durable_execution_conformance_tests.report import Report, ReportStatus
 _GLYPH: dict[ReportStatus, str] = {
     ReportStatus.PASSED: "✅",
     ReportStatus.FAILED: "❌",
+    ReportStatus.EXPECTED_FAILED: "⚠️ ",
+    ReportStatus.UNEXPECTED_PASSED: "❌",
     ReportStatus.OPTIONAL_FAILED: "⚠️ ",
     ReportStatus.NOT_IMPLEMENTED: "🚧",
     ReportStatus.UNCOVERED: "◻️ ",
@@ -34,6 +35,8 @@ def render_console(report: Report) -> str:
     lines.append("=" * 50)
     lines.append(
         f"RESULTS: {summary['passed']} passed, {summary['failed']} failed, "
+        f"{summary['expected_failed']} expected failed, "
+        f"{summary['unexpected_passed']} unexpected passed, "
         f"{summary['optional_failed']} optional failed, "
         f"{summary['not_implemented']} not implemented, "
         f"{summary['uncovered']} uncovered, {summary['total']} total"
@@ -60,6 +63,18 @@ def render_console(report: Report) -> str:
                 lines.extend(f"       {err}" for err in entry.errors)
 
     _section("Passed", ReportStatus.PASSED)
+    _section(
+        "Expected failures (non-blocking)",
+        ReportStatus.EXPECTED_FAILED,
+        show_errors=True,
+        show_reason=True,
+    )
+    _section(
+        "Unexpected passes (blocking)",
+        ReportStatus.UNEXPECTED_PASSED,
+        show_errors=True,
+        show_reason=True,
+    )
     _section("Failed", ReportStatus.FAILED, show_errors=True)
     _section("Optional (failed, non-blocking)", ReportStatus.OPTIONAL_FAILED, show_errors=True)
     _section("Not implemented (declared SDK gap, non-blocking)", ReportStatus.NOT_IMPLEMENTED, show_reason=True)
@@ -70,7 +85,7 @@ def render_console(report: Report) -> str:
 
 
 def render_json(report: Report) -> str:
-    """Render the report as a pretty-printed JSON string (schema 1.0)."""
+    """Render the report as a pretty-printed JSON string (schema 1.1)."""
     return json.dumps(report.to_dict(), indent=2)
 
 
@@ -78,8 +93,8 @@ def render_junit(report: Report) -> str:
     """Render the report as JUnit XML.
 
     One ``<testcase>`` per requirement (``classname`` = suite, ``name`` = id).
-    FAILED -> ``<failure>``; every other non-passing status -> ``<skipped>`` with
-    a reason/message so CI shows it as skipped rather than failed.
+    FAILED and UNEXPECTED_PASSED -> ``<failure>``; every other non-passing
+    status -> ``<skipped>`` with a reason/message.
     """
     summary = report.summary()
     testsuite = ET.Element(
@@ -87,8 +102,13 @@ def render_junit(report: Report) -> str:
         {
             "name": report.run.name,
             "tests": str(summary["total"]),
-            "failures": str(summary["failed"]),
-            "skipped": str(summary["optional_failed"] + summary["not_implemented"] + summary["uncovered"]),
+            "failures": str(summary["failed"] + summary["unexpected_passed"]),
+            "skipped": str(
+                summary["expected_failed"]
+                + summary["optional_failed"]
+                + summary["not_implemented"]
+                + summary["uncovered"]
+            ),
             "time": f"{report.run.duration_seconds:.3f}",
         },
     )
@@ -122,7 +142,7 @@ def render_junit(report: Report) -> str:
             if prop_value:
                 ET.SubElement(properties, "property", {"name": prop_name, "value": prop_value})
 
-        if entry.status == ReportStatus.FAILED:
+        if entry.status in {ReportStatus.FAILED, ReportStatus.UNEXPECTED_PASSED}:
             failure = ET.SubElement(testcase, "failure", {"message": "; ".join(entry.errors) or "assertion failed"})
             failure.text = "\n".join(entry.errors)
         elif entry.status != ReportStatus.PASSED:

@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from aws_durable_execution_conformance_tests.validate import (
+    ExpectedFailure,
     discover_suites,
+    parse_expected_failures,
     parse_not_implemented,
 )
 
@@ -231,3 +234,116 @@ Resources:
 """,
     )
     assert parse_not_implemented(template) == {"8-13": "gap"}
+
+
+# --- parse_expected_failures -----------------------------------------------
+
+
+def test_expected_failures_parse_top_level_and_resource_blocks(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+TestingMetadata:
+  ExpectedFailures:
+    - id: otel-3
+      reason: "Known retry telemetry defect"
+      errors:
+        - "OpenTelemetry: retry span missing"
+Resources:
+  WaitForCondition:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      ExpectedFailures:
+        - id: otel-9
+          reason: "Known polling telemetry defect"
+          errors:
+            - "OpenTelemetry: polling span missing"
+            - "OpenTelemetry: continuation span missing"
+""",
+    )
+
+    assert parse_expected_failures(template) == {
+        "otel-3": ExpectedFailure(
+            reason="Known retry telemetry defect",
+            errors=("OpenTelemetry: retry span missing",),
+        ),
+        "otel-9": ExpectedFailure(
+            reason="Known polling telemetry defect",
+            errors=(
+                "OpenTelemetry: polling span missing",
+                "OpenTelemetry: continuation span missing",
+            ),
+        ),
+    }
+
+
+def test_expected_failures_absent_returns_empty(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  Success:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription: [otel-1]
+""",
+    )
+
+    assert parse_expected_failures(template) == {}
+
+
+def test_expected_failures_reject_duplicate_ids_across_blocks(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+TestingMetadata:
+  ExpectedFailures:
+    - id: otel-3
+      reason: "first"
+      errors: ["first error"]
+Resources:
+  Retry:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      ExpectedFailures:
+        - id: otel-3
+          reason: "second"
+          errors: ["second error"]
+""",
+    )
+
+    with pytest.raises(ValueError, match="'otel-3' is declared more than once"):
+        parse_expected_failures(template)
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        ("{}", "ExpectedFailures must be a sequence"),
+        ("null", "ExpectedFailures must be a sequence"),
+        ("[not-a-mapping]", r"ExpectedFailures\[0\] must be a mapping"),
+        (
+            "[{id: otel-3, reason: known, errors: [error], extra: value}]",
+            r"unknown field\(s\): extra",
+        ),
+        ("[{reason: known, errors: [error]}]", r"\.id must be a non-empty string"),
+        ("[{id: otel-3, reason: '  ', errors: [error]}]", r"\.reason must be a non-empty string"),
+        ("[{id: otel-3, reason: known, errors: []}]", r"\.errors must be a non-empty sequence"),
+        ("[{id: otel-3, reason: known, errors: ['']}]", r"\.errors must be a non-empty sequence"),
+    ],
+)
+def test_expected_failures_reject_malformed_declarations(
+    tmp_path: Path,
+    declaration: str,
+    message: str,
+) -> None:
+    template = _write_template(
+        tmp_path,
+        f"""
+TestingMetadata:
+  ExpectedFailures: {declaration}
+""",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        parse_expected_failures(template)
