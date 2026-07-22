@@ -288,7 +288,7 @@ def _deploy_validate_report(
         print(f"  {fn} -> {did}")
 
     # 4 & 5. Invoke and assert each test description
-    invoker = Invoker(stack_name=stack_name, region=args.region, output_format="json")
+    invoker = Invoker(stack_name=stack_name, region=args.region)
     results: list[DescriptionResult] = []
 
     tmp_dir = tempfile.mkdtemp(prefix="sdk-test-events-")

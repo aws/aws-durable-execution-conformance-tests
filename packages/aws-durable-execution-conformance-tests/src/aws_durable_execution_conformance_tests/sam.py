@@ -601,7 +601,6 @@ class Invoker:
     Args:
         stack_name: CloudFormation stack name containing the Lambda function (for remote invoke).
         region: Optional AWS region.
-        output_format: Optional output format ("json" or "text") for remote invoke.
         template_file: Optional path to SAM template file (for local invoke).
     """
 
@@ -609,14 +608,12 @@ class Invoker:
         self,
         stack_name: str,
         region: str | None = None,
-        output_format: str | None = None,
         template_file: str | None = None,
         lambda_client: Any | None = None,
         cfn_client: Any | None = None,
     ):
         self._stack_name = stack_name
         self._region = region
-        self._output_format = output_format
         self._template_file = template_file
         boto_config = Config(retries={"mode": "adaptive", "max_attempts": 10})
         self._lambda_client = lambda_client or boto3.client("lambda", region_name=region, config=boto_config)
@@ -745,6 +742,11 @@ class Invoker:
             key, _, value = param.partition("=")
             if key == "InvocationType" and value:
                 invocation_type = value
+            else:
+                raise InvokeError(
+                    function_name,
+                    f"unsupported invoke parameter '{param}'; only 'InvocationType=<type>' is supported",
+                )
         return self._invoke_boto3(function_name, event_file_path, invocation_type)
 
     def invoke_async(

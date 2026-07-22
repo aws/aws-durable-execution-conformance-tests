@@ -235,4 +235,36 @@ def test_invoke_client_error_wrapped_as_invoke_error() -> None:
         invoker.invoke("StepBasic")
 
 
+def test_invoke_function_error_surfaces_in_output() -> None:
+    import json as _json
+
+    response = {
+        "StatusCode": 200,
+        "FunctionError": "Unhandled",
+        "Payload": _FakePayload(b'{"errorMessage": "boom", "errorType": "TypeError"}'),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke("StepBasic")
+
+    # Parity with `sam remote invoke`: a handler-side error is not an invoke
+    # failure -- the error payload and FunctionError marker pass through for
+    # the validator/diagnostics to interpret.
+    assert result.success is True
+    output = _json.loads(result.output)
+    assert output["FunctionError"] == "Unhandled"
+    assert "boom" in output["Payload"]
+
+
+def test_invoke_rejects_unsupported_parameters() -> None:
+    import pytest as _pytest
+
+    response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    with _pytest.raises(sam.InvokeError, match="unsupported invoke parameter"):
+        invoker.invoke("StepBasic", parameters=["ClientContext=abc"])
+
+
 # endregion
