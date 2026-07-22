@@ -145,9 +145,20 @@ jobs:
           fi
 
           summary="$(jq -er '.summary | select(length > 0)' <<< "$REVIEW_OUTPUT")"
+          summary="$(
+            sed -E \
+              -e '1{/^## (Claude|Codex) AI review$/d;}' \
+              -e '/[^[:space:]]/,$!d' \
+              <<< "$summary"
+          )"
+          if [[ -z "${summary//[[:space:]]/}" ]]; then
+            echo "::error::Claude returned an empty review body."
+            exit 1
+          fi
+
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # shellcheck disable=SC2016 # Markdown backticks are intentionally literal.
-          printf -v body '%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
+          printf -v body '## Claude AI review\n\n%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
             "$summary" "$EXPECTED_HEAD_SHA" "$run_url"
           gh pr comment "$PR_NUMBER" --body "$body"
 
@@ -302,6 +313,12 @@ jobs:
           set -euo pipefail
 
           CODEX_REVIEW="$(cat "$CODEX_REVIEW_FILE")"
+          CODEX_REVIEW="$(
+            sed -E \
+              -e '1{/^## (Claude|Codex) AI review$/d;}' \
+              -e '/[^[:space:]]/,$!d' \
+              <<< "$CODEX_REVIEW"
+          )"
           current_head_sha="$(
             gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha
           )"
@@ -316,6 +333,6 @@ jobs:
 
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # shellcheck disable=SC2016 # Markdown backticks are intentionally literal.
-          printf -v body '%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
+          printf -v body '## Codex AI review\n\n%s\n\nReviewed commit `%s`. [Workflow run](%s)' \
             "$CODEX_REVIEW" "$EXPECTED_HEAD_SHA" "$run_url"
           gh pr comment "$PR_NUMBER" --body "$body"
