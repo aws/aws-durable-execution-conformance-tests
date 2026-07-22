@@ -1,35 +1,31 @@
-description: OpenTelemetry emits every wait, resume, and post-resume step span
+description: OpenTelemetry emits the complete child-context and nested-step hierarchy
 Input:
-  scenario: wait-resume
+  scenario: child-context
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
   - EventId: 2
-    EventType: WaitStarted
-    SubType: Wait
-    Id: ${WAIT1}
-    Name: otel-wait
-  - EventId: 4
-    EventType: WaitSucceeded
-    SubType: Wait
-    Id: ${WAIT1}
-    Name: otel-wait
-  - EventId: 5
+    EventType: ContextStarted
+    SubType: RunInChildContext
+    Id: ${CTX1}
+    Name: otel-child-context
+  - EventId: 3
     EventType: StepStarted
     SubType: Step
     Id: ${STEP1}
-    Name: otel-after-resume
-  - EventId: 6
+    ParentId: ${CTX1}
+    Name: otel-child-step
+  - EventId: 4
     EventType: StepSucceeded
     SubType: Step
     Id: ${STEP1}
-    Name: otel-after-resume
+    ParentId: ${CTX1}
+    Name: otel-child-step
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 7
-  minimum_invocations: 2
+  minimum_spans: 4
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:
@@ -42,78 +38,64 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
       expect:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-wait
+        name: otel-child-context
         attributes:
-          durable.operation.status: STARTED
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
       expect:
-        status: UNSET
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${WAIT1}
-          durable.operation.type: WAIT
-          durable.operation.subtype: Wait
+          durable.operation.id: ${CTX1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
           durable.operation.status: STARTED
-          durable.operation.name: otel-wait
+          durable.operation.name: otel-child-context
         parent:
           name: invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-wait
+        name: otel-child-step
         attributes:
+          durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
-        status: OK
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${WAIT1}
-          durable.operation.type: WAIT
-          durable.operation.subtype: Wait
-          durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-wait
-        parent:
-          name: invocation
-          attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
-    - select:
-        name: otel-after-resume
-        attributes:
-          durable.operation.status: SUCCEEDED
-      expect:
-        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-after-resume
+          durable.operation.name: otel-child-step
           durable.attempt.number: 1
         parent:
-          name: invocation
+          name: otel-child-context
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${CTX1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: RunInChildContext
     - select:
-        name: otel-after-resume attempt 1
+        name: otel-child-step attempt 1
         attributes:
+          durable.operation.type: STEP
           durable.attempt.number: 1
       expect:
-        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-after-resume
+          durable.operation.name: otel-child-step
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: invocation
+          name: otel-child-context
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${CTX1}
+            durable.operation.type: CONTEXT
+            durable.operation.subtype: RunInChildContext

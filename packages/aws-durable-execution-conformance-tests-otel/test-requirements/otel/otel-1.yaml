@@ -1,14 +1,73 @@
-description: OpenTelemetry emits a correlated trace for a successful execution
+description: OpenTelemetry emits the complete successful step and attempt hierarchy
 Input:
   scenario: success
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-success
+  - EventId: 3
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-success
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 1
+  minimum_spans: 3
   require_execution_correlation: true
-  required_outcomes:
-    - success
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-success
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-success
+          durable.attempt.number: 1
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-success attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-success
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

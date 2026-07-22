@@ -1,0 +1,50 @@
+description: OpenTelemetry preserves an interrupted wait when the execution times out
+Input:
+  scenario: wait-interrupted
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: WaitStarted
+    SubType: Wait
+    Id: ${INTERRUPTED_WAIT}
+    Name: otel-interrupted-wait
+  - EventId: 4
+    EventType: ExecutionTimedOut
+ExpectedResult:
+  ExecutionStatus: TIMED_OUT
+TelemetryAssertions:
+  minimum_spans: 2
+  require_execution_correlation: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-interrupted-wait
+        attributes:
+          durable.operation.id: ${INTERRUPTED_WAIT}
+      expect:
+        status: UNSET
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INTERRUPTED_WAIT}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: STARTED
+          durable.operation.name: otel-interrupted-wait
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

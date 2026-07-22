@@ -6,14 +6,23 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from aws_durable_execution_conformance_tests.extensions import ValidationContext
+from aws_durable_execution_conformance_tests_otel import extension as extension_module
 from aws_durable_execution_conformance_tests_otel.exporters import (
     AdotExporterProfile,
     CommunityExporterProfile,
     ExporterOptions,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.model import Trace
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+)
 
 
 def _options(runtime: str = "python", *, layer_arn: str | None = None) -> ExporterOptions:
@@ -120,3 +129,78 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     secrets = OtelExtension().deployment_secrets(_args("community", "collector"))
 
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
+
+
+def test_telemetry_assertions_resolve_history_and_execution_variables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    trace = Trace(trace_id="1" * 32, spans=())
+    received: dict[str, Any] = {}
+    received_disparities: list[object] = []
+
+    def capture_assertions(
+        _trace: Trace,
+        assertions: dict[str, Any],
+        _query: object,
+        *,
+        feature_disparities: object,
+    ) -> list[str]:
+        received.update(assertions)
+        received_disparities.append(feature_disparities)
+        return []
+
+    def find_trace(_query: object, _policy: object, *, accept: Any) -> Trace:
+        assert accept(trace)
+        return trace
+
+    disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+    backend = SimpleNamespace(
+        feature_disparities=disparities,
+        find_trace=find_trace,
+        name="xray",
+    )
+    factory = SimpleNamespace(create=lambda _options, *, region: backend)
+    monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"xray": factory}))
+    monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
+
+    errors = OtelExtension().validate_telemetry(
+        ValidationContext(
+            description_id="otel-5",
+            function_name="function",
+            execution_arn="arn:execution",
+            invocation_started_at_ms=1,
+            invocation_finished_at_ms=2,
+            region="us-west-2",
+            language="python",
+            requirement={
+                "TelemetryAssertions": {
+                    "span_assertions": {
+                        "select": {
+                            "attributes": {
+                                "durable.execution.arn": "${EXECUTION_ARN}",
+                                "durable.operation.id": "${STEP1}",
+                            },
+                        },
+                        "expect": {},
+                    },
+                },
+            },
+            execution_history={},
+            output_dir=tmp_path,
+            placeholders={
+                "EXECUTION_ARN": "arn:execution",
+                "STEP1": "step-id",
+            },
+            options=vars(_args("adot", "xray")),
+        )
+    )
+
+    assert errors == []
+    assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
+    assert received["span_assertions"]["select"]["attributes"] == {
+        "durable.execution.arn": "arn:execution",
+        "durable.operation.id": "step-id",
+    }
+    assert received_disparities == [disparities, disparities]

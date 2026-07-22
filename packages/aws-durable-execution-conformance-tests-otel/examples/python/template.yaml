@@ -111,3 +111,227 @@ Resources:
       Handler: otel_4_terminal_failure.handler
       FunctionName: !Sub "${AWS::StackName}-otel-4"
       Role: !Ref LambdaExecutionRoleArn
+
+  Otel5ChildContext:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-5
+    Properties:
+      CodeUri: src/
+      Handler: otel_5_child_context.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-5"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel6Parallel:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-6
+    Properties:
+      CodeUri: src/
+      Handler: otel_6_parallel.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-6"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel7Map:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-7
+    Properties:
+      CodeUri: src/
+      Handler: otel_7_map.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-7"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel8HandledFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-8
+    Properties:
+      CodeUri: src/
+      Handler: otel_8_handled_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-8"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel9WaitForCondition:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-9
+    Properties:
+      CodeUri: src/
+      Handler: otel_9_wait_for_condition.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-9"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel10WaitForCallback:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-10
+    Properties:
+      CodeUri: src/
+      Handler: otel_10_wait_for_callback.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-10"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel11ChainedInvoke:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-11
+    Properties:
+      CodeUri: src/
+      Handler: otel_11_chained_invoke.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-11"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"
+
+  Otel11InvokeTarget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_11_chained_invoke.target_handler
+      FunctionName: !Sub "${AWS::StackName}-otel-11-target"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel12ChildContextFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-12
+    Properties:
+      CodeUri: src/
+      Handler: otel_12_child_context_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-12"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel13ParallelFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-13
+    Properties:
+      CodeUri: src/
+      Handler: otel_13_parallel_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-13"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel14MapFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-14
+    Properties:
+      CodeUri: src/
+      Handler: otel_14_map_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-14"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel15WaitInterrupted:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-15
+    Properties:
+      CodeUri: src/
+      Handler: otel_15_wait_interrupted.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-15"
+      Role: !Ref LambdaExecutionRoleArn
+      DurableConfig:
+        ExecutionTimeout: 5
+        RetentionPeriodInDays: 1
+
+  Otel16WaitForConditionFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-16
+    Properties:
+      CodeUri: src/
+      Handler: otel_16_wait_for_condition_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-16"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel17WaitForCallbackFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-17
+    Properties:
+      CodeUri: src/
+      Handler: otel_17_wait_for_callback_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-17"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel18ChainedInvokeFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-18
+    Properties:
+      CodeUri: src/
+      Handler: otel_18_chained_invoke_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-18"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"
+
+  Otel18InvokeTarget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_18_chained_invoke_failure.target_handler
+      FunctionName: !Sub "${AWS::StackName}-otel-18-target"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel19ExecutionFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-19
+    Properties:
+      CodeUri: src/
+      Handler: otel_19_execution_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-19"
+      Role: !Ref LambdaExecutionRoleArn

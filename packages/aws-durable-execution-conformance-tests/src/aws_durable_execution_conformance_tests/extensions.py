@@ -51,6 +51,7 @@ class ValidationContext:
     requirement: Mapping[str, Any]
     execution_history: Mapping[str, Any]
     output_dir: Path
+    placeholders: Mapping[str, Any] = field(default_factory=dict)
     options: Mapping[str, Any] = field(default_factory=dict)
 
 

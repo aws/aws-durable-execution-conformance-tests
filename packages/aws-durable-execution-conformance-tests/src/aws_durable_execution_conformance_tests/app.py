@@ -487,6 +487,10 @@ def _run_extension_validation(
             requirement=requirement,
             execution_history=result.execution_history,
             output_dir=Path(args.history_dir),
+            placeholders={
+                **result.placeholders,
+                "EXECUTION_ARN": result.execution_arn,
+            },
             options={key: value for key, value in vars(args).items() if not key.startswith("_")},
         )
         errors = list(hook(context))

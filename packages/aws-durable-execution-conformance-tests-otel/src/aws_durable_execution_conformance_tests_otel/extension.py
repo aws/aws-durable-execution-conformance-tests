@@ -18,6 +18,7 @@ from aws_durable_execution_conformance_tests.extensions import (
     RequirementSuite,
     ValidationContext,
 )
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 from aws_durable_execution_conformance_tests_otel.backends import BUILTIN_BACKENDS
 from aws_durable_execution_conformance_tests_otel.discovery import (
@@ -185,6 +186,10 @@ class OtelExtension:
             factories = self._backends()
             backend_name = str(options["otel_backend"])
             backend = factories[backend_name].create(options, region=context.region)
+            feature_disparities = (
+                ", ".join(sorted(disparity.name for disparity in backend.feature_disparities)) or "none"
+            )
+            print(f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}")
             timeout = float(options["otel_poll_timeout"])
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
@@ -200,6 +205,13 @@ class OtelExtension:
                 )
                 + timedelta(seconds=timeout),
             )
+            raw_assertions = context.requirement.get("TelemetryAssertions", {})
+            if not isinstance(raw_assertions, Mapping):
+                return ["TelemetryAssertions must be a mapping"]
+            placeholders = PlaceholderContext()
+            for name, value in context.placeholders.items():
+                placeholders.bind(name, value)
+            assertions = placeholders.substitute(raw_assertions)
             trace = backend.find_trace(
                 query,
                 PollingPolicy(
@@ -207,11 +219,19 @@ class OtelExtension:
                     interval_seconds=float(options["otel_poll_interval"]),
                     max_attempts=int(options["otel_poll_attempts"]),
                 ),
+                accept=lambda candidate: not validate_trace(
+                    candidate,
+                    assertions,
+                    query,
+                    feature_disparities=backend.feature_disparities,
+                ),
             )
-            assertions = context.requirement.get("TelemetryAssertions", {})
-            if not isinstance(assertions, Mapping):
-                return ["TelemetryAssertions must be a mapping"]
-            errors = validate_trace(trace, assertions, query)
+            errors = validate_trace(
+                trace,
+                assertions,
+                query,
+                feature_disparities=backend.feature_disparities,
+            )
             if errors:
                 self._write_artifact(context, trace_to_dict(trace))
             return [f"OpenTelemetry: {error}" for error in errors]

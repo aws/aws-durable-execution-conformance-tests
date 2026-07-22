@@ -1,6 +1,6 @@
-description: OpenTelemetry emits every failed and successful retry attempt across invocations
+description: OpenTelemetry emits every failed and recovery step span with complete attributes
 Input:
-  scenario: retry
+  scenario: handled-failure
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
@@ -8,28 +8,27 @@ ExpectedExecutionHistory:
   - EventId: 2
     EventType: StepStarted
     SubType: Step
-    Id: ${RETRY_STEP}
-    Name: otel-retry
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
   - EventId: 3
     EventType: StepFailed
     SubType: Step
-    Id: ${RETRY_STEP}
-    Name: otel-retry
-  - EventId: 5
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
+  - EventId: 4
     EventType: StepStarted
     SubType: Step
-    Id: ${RETRY_STEP}
-    Name: otel-retry
-  - EventId: 6
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
+  - EventId: 5
     EventType: StepSucceeded
     SubType: Step
-    Id: ${RETRY_STEP}
-    Name: otel-retry
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 6
-  minimum_invocations: 2
+  minimum_spans: 5
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:
@@ -42,40 +41,41 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
       expect:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-retry
+        name: otel-handled-failure
         attributes:
-          durable.operation.status: STARTED
+          durable.operation.type: STEP
+          durable.operation.status: FAILED
       expect:
-        status: UNSET
+        status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${RETRY_STEP}
+          durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
-          durable.operation.name: otel-retry
+          durable.operation.status: FAILED
+          durable.operation.name: otel-handled-failure
+          durable.attempt.number: 1
         parent:
           name: invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-retry attempt 1
+        name: otel-handled-failure attempt 1
         attributes:
-          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
       expect:
         status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${RETRY_STEP}
+          durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-retry
+          durable.operation.name: otel-handled-failure
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
         parent:
@@ -83,37 +83,36 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-retry
+        name: otel-recovery-step
         attributes:
+          durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
-        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${RETRY_STEP}
+          durable.operation.id: ${RECOVERY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-retry
-          durable.attempt.number: 2
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
         parent:
           name: invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-retry attempt 2
+        name: otel-recovery-step attempt 1
         attributes:
-          durable.attempt.number: 2
+          durable.attempt.outcome: SUCCEEDED
       expect:
-        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${RETRY_STEP}
+          durable.operation.id: ${RECOVERY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-retry
-          durable.attempt.number: 2
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: invocation

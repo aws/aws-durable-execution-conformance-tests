@@ -49,6 +49,36 @@ def test_polling_returns_after_ingestion() -> None:
     assert backend.attempts == 2
 
 
+def test_polling_waits_for_an_acceptable_trace() -> None:
+    incomplete = Trace(trace_id="1" * 32, spans=())
+    complete = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend([incomplete, complete])
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=0, max_attempts=3),
+        accept=lambda trace: trace is complete,
+    )
+
+    assert actual is complete
+    assert backend.attempts == 2
+
+
+def test_polling_returns_latest_trace_when_none_are_acceptable() -> None:
+    first = Trace(trace_id="1" * 32, spans=())
+    latest = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend([first, latest])
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=0, max_attempts=2),
+        accept=lambda _trace: False,
+    )
+
+    assert actual is latest
+    assert backend.attempts == 2
+
+
 def test_polling_timeout_has_provider_neutral_context() -> None:
     backend = _Backend([None, None, None])
     with pytest.raises(TelemetryTimeout, match="execution='arn:test'"):

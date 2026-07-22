@@ -25,6 +25,7 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingBackend,
 )
 
@@ -52,10 +53,12 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
         segment: Mapping[str, Any],
         trace_id: str,
         service_name: str | None,
+        enclosing_span_id: str | None = None,
     ) -> None:
         span_id = normalize_id(segment.get("id"), 16)
         if span_id is None:
             return
+        parent_span_id = normalize_id(segment.get("parent_id"), 16) or enclosing_span_id
         start = parse_timestamp(segment.get("start_time", 0))
         end = parse_timestamp(segment.get("end_time", segment.get("start_time", 0)))
         attributes = {
@@ -67,7 +70,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
             Span(
                 trace_id=trace_id,
                 span_id=span_id,
-                parent_span_id=normalize_id(segment.get("parent_id"), 16),
+                parent_span_id=parent_span_id,
                 name=str(segment.get("name", "")),
                 start_time=start,
                 end_time=end,
@@ -77,7 +80,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
             )
         )
         for child in segment.get("subsegments", []):
-            ingest(child, trace_id, service_name)
+            ingest(child, trace_id, service_name, span_id)
 
     raw_documents = list(documents)
     for document in raw_documents:
@@ -93,6 +96,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
 
 class XRayBackend(PollingBackend):
     name = "xray"
+    feature_disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
 
     def __init__(self, client: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -104,23 +108,38 @@ class XRayBackend(PollingBackend):
             if query.trace_id:
                 trace_ids = [query.trace_id]
             else:
-                response = self._client.get_trace_summaries(
-                    StartTime=query.started_at,
-                    EndTime=query.ended_at,
-                    FilterExpression=f'service("{query.service_name}")',
-                )
-                trace_ids = [item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id")]
+                summary_request = {
+                    "StartTime": query.started_at,
+                    "EndTime": query.ended_at,
+                    "FilterExpression": f'service("{query.service_name}")',
+                }
+                while True:
+                    response = self._client.get_trace_summaries(**summary_request)
+                    trace_ids.extend(item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id"))
+                    next_token = response.get("NextToken")
+                    if not next_token:
+                        break
+                    summary_request["NextToken"] = next_token
             if not trace_ids:
                 return None
-            response = self._client.batch_get_traces(TraceIds=trace_ids[:5])
+
+            documents: list[str] = []
+            for offset in range(0, len(trace_ids), 5):
+                trace_request = {"TraceIds": trace_ids[offset : offset + 5]}
+                while True:
+                    response = self._client.batch_get_traces(**trace_request)
+                    documents.extend(
+                        segment["Document"]
+                        for trace in response.get("Traces", [])
+                        for segment in trace.get("Segments", [])
+                        if segment.get("Document")
+                    )
+                    next_token = response.get("NextToken")
+                    if not next_token:
+                        break
+                    trace_request["NextToken"] = next_token
         except (BotoCoreError, ClientError) as exc:
             raise BackendError(f"X-Ray telemetry query failed: {type(exc).__name__}") from exc
-        documents = [
-            segment["Document"]
-            for trace in response.get("Traces", [])
-            for segment in trace.get("Segments", [])
-            if segment.get("Document")
-        ]
         return matching_trace(normalize_xray(documents), query)
 
 

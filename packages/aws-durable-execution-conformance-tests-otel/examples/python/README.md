@@ -18,15 +18,36 @@ the template and source tree.
 
 | Requirement | Handler | Behavior |
 |---|---|---|
-| `otel-1` | `otel_1_success.handler` | Completes a successful durable step. |
-| `otel-2` | `otel_2_wait_resume.handler` | Waits, resumes in another invocation, then completes a step. |
-| `otel-3` | `otel_3_retry.handler` | Fails the first step attempt and succeeds on the retry. |
-| `otel-4` | `otel_4_terminal_failure.handler` | Fails a step without retrying and terminates the execution. |
+| `otel-1` | `otel_1_success.handler` | Verifies every successful step and attempt span. |
+| `otel-2` | `otel_2_wait_resume.handler` | Verifies every wait, resume, and post-resume step span. |
+| `otel-3` | `otel_3_retry.handler` | Verifies failed and successful retry attempts across invocations. |
+| `otel-4` | `otel_4_terminal_failure.handler` | Verifies complete telemetry for a terminal execution failure. |
+| `otel-5` | `otel_5_child_context.handler` | Verifies every child-context and nested-step span. |
+| `otel-6` | `otel_6_parallel.handler` | Verifies every parallel context, branch, step, and attempt span. |
+| `otel-7` | `otel_7_map.handler` | Verifies every map context, iteration, step, and attempt span. |
+| `otel-8` | `otel_8_handled_failure.handler` | Verifies complete failed-step and recovery telemetry. |
+| `otel-9` | `otel_9_wait_for_condition.handler` | Verifies every condition polling attempt and continuation. |
+| `otel-10` | `otel_10_wait_for_callback.handler` | Verifies callback context, callback, and submitter spans. |
+| `otel-11` | `otel_11_chained_invoke.handler` | Verifies chained-invoke continuation spans. |
+| `otel-12` | `otel_12_child_context_failure.handler` | Verifies a failed child-context span. |
+| `otel-13` | `otel_13_parallel_failure.handler` | Verifies failed parallel-branch telemetry. |
+| `otel-14` | `otel_14_map_failure.handler` | Verifies failed map-iteration telemetry. |
+| `otel-15` | `otel_15_wait_interrupted.handler` | Verifies an interrupted wait when execution times out. |
+| `otel-16` | `otel_16_wait_for_condition_failure.handler` | Verifies failed condition-check telemetry. |
+| `otel-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
+| `otel-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
+| `otel-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages directly from the SDK repository's `main` branch because the
 OpenTelemetry plugin is evolving quickly. Pin the two Git requirements to the
 same commit when a reproducible build is needed.
+
+The hosted X-Ray run currently treats `otel-3` and `otel-9` as strict expected
+failures while [SDK PR #568](https://github.com/aws/aws-durable-execution-sdk-python/pull/568)
+is pending. Both cases still run every assertion. Any other failure, or an
+unexpected pass from either exempted case, fails the workflow so the exemption
+cannot silently outlive the SDK defect.
 
 ## Run Against X-Ray
 

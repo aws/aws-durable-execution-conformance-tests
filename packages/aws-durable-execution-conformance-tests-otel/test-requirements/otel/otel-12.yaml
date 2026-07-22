@@ -1,0 +1,53 @@
+description: OpenTelemetry emits the complete failed child-context hierarchy
+Input:
+  scenario: child-context-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: RunInChildContext
+    Id: ${FAILED_CONTEXT}
+    Name: otel-failed-child-context
+  - EventId: 3
+    EventType: ContextFailed
+    SubType: RunInChildContext
+    Id: ${FAILED_CONTEXT}
+    Name: otel-failed-child-context
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 2
+  require_execution_correlation: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-failed-child-context
+        attributes:
+          durable.operation.id: ${FAILED_CONTEXT}
+      expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONTEXT}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
+          durable.operation.status: STARTED
+          durable.operation.name: otel-failed-child-context
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

@@ -28,6 +28,7 @@ from aws_durable_execution_conformance_tests_otel.normalizers import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingBackend,
 )
 
@@ -116,6 +117,7 @@ class CollectorBackend(PollingBackend):
     """Query AWS S3 exporter trace objects stored under an S3 prefix."""
 
     name = "collector"
+    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
 
     def __init__(
         self,

@@ -1,0 +1,85 @@
+description: OpenTelemetry emits complete chained-invoke failure telemetry
+Input:
+  scenario: chained-invoke-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ChainedInvokeStarted
+    SubType: ChainedInvoke
+    Id: ${FAILED_INVOKE}
+    Name: otel-failed-invoke
+    ChainedInvokeStartedDetails:
+      DurableExecutionArn: ${TARGET_EXECUTION_ARN}
+  - EventId: 4
+    EventType: ChainedInvokeFailed
+    SubType: ChainedInvoke
+    Id: ${FAILED_INVOKE}
+    Name: otel-failed-invoke
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 5
+  minimum_invocations: 3
+  require_execution_correlation: true
+  allowed_execution_arns:
+    - ${EXECUTION_ARN}
+    - ${TARGET_EXECUTION_ARN}
+  require_all_spans: true
+  span_assertion_scope:
+    - attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - attributes:
+        durable.execution.arn: ${TARGET_EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      count: 2
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+    - select:
+        name: otel-failed-invoke
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_INVOKE}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.status: STARTED
+          durable.operation.name: otel-failed-invoke
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-failed-invoke
+        attributes:
+          durable.operation.status: FAILED
+      expect:
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_INVOKE}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.status: FAILED
+          durable.operation.name: otel-failed-invoke
+        parent:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

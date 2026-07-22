@@ -9,6 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 
@@ -19,6 +20,12 @@ class BackendError(RuntimeError):
 
 class TelemetryTimeout(BackendError):
     """Raised when no matching trace arrives before the polling limit."""
+
+
+class BackendFeatureDisparity(StrEnum):
+    """Known fidelity gaps in a backend's normalized telemetry."""
+
+    UNSET_STATUS = "unset-status"
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,7 @@ class PollingBackend(ABC):
     """Backend base class implementing ingestion-latency retries."""
 
     name: str
+    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
 
     def __init__(
         self,
@@ -50,18 +58,30 @@ class PollingBackend(ABC):
         self._monotonic = monotonic
         self._sleep = sleep
 
-    def find_trace(self, query: TelemetryQuery, policy: PollingPolicy) -> Trace:
+    def find_trace(
+        self,
+        query: TelemetryQuery,
+        policy: PollingPolicy,
+        *,
+        accept: Callable[[Trace], bool] | None = None,
+    ) -> Trace:
         started = self._monotonic()
         attempts = 0
+        latest_trace: Trace | None = None
         while attempts < policy.max_attempts:
             attempts += 1
             trace = self._lookup(query)
             if trace is not None:
-                return trace
+                latest_trace = trace
+                if accept is None or accept(trace):
+                    return trace
             elapsed = self._monotonic() - started
             if elapsed >= policy.timeout_seconds:
                 break
             self._sleep(min(policy.interval_seconds, policy.timeout_seconds - elapsed))
+
+        if latest_trace is not None:
+            return latest_trace
 
         raise TelemetryTimeout(
             f"No correlated trace was found in backend {self.name!r} after "

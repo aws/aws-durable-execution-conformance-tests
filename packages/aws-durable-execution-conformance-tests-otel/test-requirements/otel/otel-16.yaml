@@ -1,20 +1,20 @@
-description: OpenTelemetry emits the complete terminal failure hierarchy
+description: OpenTelemetry emits complete wait-for-condition failure spans
 Input:
-  scenario: terminal-failure
+  scenario: wait-for-condition-failure
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
   - EventId: 2
     EventType: StepStarted
-    SubType: Step
-    Id: ${FAILED_STEP}
-    Name: otel-terminal-failure
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
   - EventId: 3
     EventType: StepFailed
-    SubType: Step
-    Id: ${FAILED_STEP}
-    Name: otel-terminal-failure
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
@@ -35,36 +35,36 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-terminal-failure
+        name: otel-failed-condition
         attributes:
           durable.operation.status: FAILED
       expect:
         status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${FAILED_STEP}
+          durable.operation.id: ${FAILED_CONDITION}
           durable.operation.type: STEP
-          durable.operation.subtype: Step
+          durable.operation.subtype: WaitForCondition
           durable.operation.status: FAILED
-          durable.operation.name: otel-terminal-failure
+          durable.operation.name: otel-failed-condition
           durable.attempt.number: 1
         parent:
           name: invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-terminal-failure attempt 1
+        name: otel-failed-condition attempt 1
         attributes:
-          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
       expect:
         status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${FAILED_STEP}
+          durable.operation.id: ${FAILED_CONDITION}
           durable.operation.type: STEP
-          durable.operation.subtype: Step
+          durable.operation.subtype: WaitForCondition
           durable.operation.status: STARTED
-          durable.operation.name: otel-terminal-failure
+          durable.operation.name: otel-failed-condition
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
         parent:

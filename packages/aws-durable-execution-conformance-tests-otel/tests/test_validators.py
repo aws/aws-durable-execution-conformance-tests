@@ -14,6 +14,9 @@ from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
 )
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+)
 from aws_durable_execution_conformance_tests_otel.redaction import REDACTED, redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
@@ -53,7 +56,7 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         },
         links=(SpanLink(trace_id="1" * 32, span_id=root.span_id),),
     )
-    return Trace(trace_id="1" * 32, spans=(root, child), log_trace_ids=("1" * 32,))
+    return Trace(trace_id="1" * 32, spans=(root, child))
 
 
 def _query() -> TelemetryQuery:
@@ -68,52 +71,47 @@ def test_validates_stable_cross_invocation_invariants() -> None:
             "minimum_spans": 2,
             "minimum_invocations": 2,
             "require_execution_correlation": True,
-            "require_continuation": True,
-            "require_log_trace_correlation": True,
-            "required_outcomes": ["retry", "success"],
         },
         _query(),
     )
     assert errors == []
 
 
-def test_reports_correlation_and_outcome_mismatches() -> None:
+def test_reports_correlation_mismatches() -> None:
     errors = validate_trace(
         _trace("arn:wrong"),
-        {
-            "require_execution_correlation": True,
-            "required_outcomes": ["failure"],
-        },
+        {"require_execution_correlation": True},
         _query(),
     )
     assert any("durable execution ARN" in error for error in errors)
-    assert any("Missing operation outcome" in error for error in errors)
 
 
-def test_infers_retry_outcome_from_later_attempt() -> None:
+def test_allows_declared_correlations_from_nested_durable_executions() -> None:
     trace = _trace()
     root, child = trace.spans
-    trace = replace(
-        trace,
-        spans=(
-            replace(
-                root,
-                attributes={key: value for key, value in root.attributes.items() if key != "durable.operation.outcome"},
-            ),
-            replace(
-                child,
-                attributes={
-                    **child.attributes,
-                    "durable.attempt.number": 2,
-                },
-            ),
-        ),
+    target = replace(
+        child,
+        span_id="4" * 16,
+        name="target",
+        attributes={
+            "durable.execution.arn": "arn:target",
+            "faas.invocation_id": "invocation-3",
+        },
     )
+    distributed_trace = replace(trace, spans=(root, child, target))
 
+    assert validate_trace(
+        distributed_trace,
+        {"require_execution_correlation": True},
+        _query(),
+    ) == ["Spans contain durable execution correlation values outside allowed_execution_arns"]
     assert (
         validate_trace(
-            trace,
-            {"required_outcomes": ["retry", "success"]},
+            distributed_trace,
+            {
+                "require_execution_correlation": True,
+                "allowed_execution_arns": ["arn:test", "arn:target"],
+            },
             _query(),
         )
         == []
@@ -168,6 +166,123 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     )
 
     assert errors == []
+
+
+def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "require_all_spans": True,
+            "exact_attribute_prefixes": ["durable."],
+            "span_assertions": [
+                {
+                    "select": {"status": "OK"},
+                    "count": 2,
+                    "expect": {
+                        "service_name": "service",
+                    },
+                },
+                {
+                    "select": {"name": "root"},
+                    "expect": {
+                        "attributes": {
+                            "durable.execution.arn": "arn:test",
+                            "durable.operation.outcome": "retry",
+                        },
+                    },
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "attributes": {
+                            "durable.execution.arn": "arn:test",
+                        },
+                        "parent": {"name": "root"},
+                    },
+                },
+            ],
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_reports_uncovered_spans_and_unasserted_plugin_attributes() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    infrastructure = replace(
+        child,
+        span_id="4" * 16,
+        name="infrastructure",
+        attributes={"cloud.provider": "aws"},
+    )
+    errors = validate_trace(
+        replace(trace, spans=(root, child, infrastructure)),
+        {
+            "require_all_spans": True,
+            "span_assertion_scope": {
+                "attributes": {"durable.execution.arn": "*"},
+            },
+            "exact_attribute_prefixes": "durable.",
+            "span_assertions": {
+                "select": {"name": "root"},
+                "expect": {
+                    "attributes": {
+                        "durable.execution.arn": "arn:test",
+                    },
+                },
+            },
+        },
+        _query(),
+    )
+
+    assert any("durable.operation.outcome" in error for error in errors)
+    assert any("Span assertions did not cover: child" in error for error in errors)
+    assert all("infrastructure" not in error for error in errors)
+
+
+def test_scopes_complete_span_coverage_to_multiple_executions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    target = replace(
+        child,
+        span_id="4" * 16,
+        name="target",
+        attributes={"durable.execution.arn": "arn:target"},
+    )
+    infrastructure = replace(
+        child,
+        span_id="5" * 16,
+        name="infrastructure",
+        attributes={"cloud.provider": "aws"},
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child, target, infrastructure)),
+        {
+            "require_execution_correlation": False,
+            "require_all_spans": True,
+            "span_assertion_scope": [
+                {"attributes": {"durable.execution.arn": "arn:test"}},
+                {"attributes": {"durable.execution.arn": "arn:target"}},
+            ],
+            "span_assertions": [
+                {
+                    "select": {"name": "root"},
+                    "expect": {},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {},
+                },
+            ],
+        },
+        _query(),
+    )
+
+    assert any("Span assertions did not cover: target" in error for error in errors)
+    assert all("infrastructure" not in error for error in errors)
 
 
 def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
@@ -262,6 +377,52 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
     assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
 
 
+def test_unset_status_disparity_applies_to_span_and_parent_expectations() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "status": "UNSET",
+                "parent": {"status": "UNSET"},
+            },
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.status: expected 'UNSET'",
+        "span_assertions[0].expect.parent.status: expected 'UNSET'",
+    ]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_unset_status_disparity_applies_to_span_selectors() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "root", "status": "UNSET"},
+            "expect": {},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == ["span_assertions[0].select matched no spans"]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
 def test_reports_invalid_span_assertion_schema() -> None:
     assert validate_trace(
         _trace(),
@@ -287,6 +448,27 @@ def test_reports_invalid_span_assertion_schema() -> None:
         "span_assertions[1].select must be a mapping",
         "span_assertions[2].expect must be a mapping",
         "span_assertions[3] has unknown field(s): unknown",
+    ]
+
+    count_errors = validate_trace(
+        _trace(),
+        {
+            "allowed_execution_arns": 1,
+            "exact_attribute_prefixes": 1,
+            "span_assertion_scope": ["plugin"],
+            "span_assertions": {
+                "select": {"name": "root"},
+                "count": 0,
+                "expect": {},
+            },
+        },
+        _query(),
+    )
+    assert count_errors == [
+        "allowed_execution_arns must be a string or sequence of strings",
+        "exact_attribute_prefixes must be a string or sequence of strings",
+        "span_assertion_scope must be a mapping or sequence of mappings",
+        "span_assertions[0].count must be a positive integer",
     ]
 
 

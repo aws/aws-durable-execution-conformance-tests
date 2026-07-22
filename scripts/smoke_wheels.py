@@ -45,7 +45,7 @@ def main() -> None:
         requirements = registry.discover_requirements(["otel"])
 
         assert "otel" in registry.suites
-        assert set(requirements) == {"otel-1", "otel-2", "otel-3", "otel-4"}
+        assert set(requirements) == {f"otel-{case_number}" for case_number in range(1, 20)}
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 
     print("Verified wheel-only extension discovery and OTel requirement loading.")
