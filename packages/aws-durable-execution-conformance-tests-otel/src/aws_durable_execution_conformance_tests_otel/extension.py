@@ -62,6 +62,9 @@ class OtelExtension:
     name = "otel"
     requires_core = ">=0.2.0,<0.3.0"
 
+    def __init__(self) -> None:
+        self._reported_disparity_backends: set[str] = set()
+
     def requirement_suites(self) -> tuple[RequirementSuite, ...]:
         project_root = Path(__file__).resolve().parent.parent.parent
         source_root = project_root / "test-requirements" / "otel"
@@ -189,7 +192,11 @@ class OtelExtension:
             feature_disparities = (
                 ", ".join(sorted(disparity.name for disparity in backend.feature_disparities)) or "none"
             )
-            print(f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}")
+            if backend.name not in self._reported_disparity_backends:
+                print(
+                    f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}"
+                )
+                self._reported_disparity_backends.add(backend.name)
             timeout = float(options["otel_poll_timeout"])
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,

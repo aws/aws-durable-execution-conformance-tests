@@ -131,7 +131,7 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
 
 
-def test_telemetry_assertions_resolve_history_and_execution_variables(
+def test_telemetry_assertions_resolve_variables_and_report_disparities_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -165,42 +165,43 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"xray": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
 
-    errors = OtelExtension().validate_telemetry(
-        ValidationContext(
-            description_id="otel-5",
-            function_name="function",
-            execution_arn="arn:execution",
-            invocation_started_at_ms=1,
-            invocation_finished_at_ms=2,
-            region="us-west-2",
-            language="python",
-            requirement={
-                "TelemetryAssertions": {
-                    "span_assertions": {
-                        "select": {
-                            "attributes": {
-                                "durable.execution.arn": "${EXECUTION_ARN}",
-                                "durable.operation.id": "${STEP1}",
-                            },
+    context = ValidationContext(
+        description_id="otel-5",
+        function_name="function",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1,
+        invocation_finished_at_ms=2,
+        region="us-west-2",
+        language="python",
+        requirement={
+            "TelemetryAssertions": {
+                "span_assertions": {
+                    "select": {
+                        "attributes": {
+                            "durable.execution.arn": "${EXECUTION_ARN}",
+                            "durable.operation.id": "${STEP1}",
                         },
-                        "expect": {},
                     },
+                    "expect": {},
                 },
             },
-            execution_history={},
-            output_dir=tmp_path,
-            placeholders={
-                "EXECUTION_ARN": "arn:execution",
-                "STEP1": "step-id",
-            },
-            options=vars(_args("adot", "xray")),
-        )
+        },
+        execution_history={},
+        output_dir=tmp_path,
+        placeholders={
+            "EXECUTION_ARN": "arn:execution",
+            "STEP1": "step-id",
+        },
+        options=vars(_args("adot", "xray")),
     )
+    extension = OtelExtension()
 
-    assert errors == []
+    assert extension.validate_telemetry(context) == []
     assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
+    assert extension.validate_telemetry(context) == []
+    assert capsys.readouterr().out == ""
     assert received["span_assertions"]["select"]["attributes"] == {
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",
     }
-    assert received_disparities == [disparities, disparities]
+    assert received_disparities == [disparities] * 4
