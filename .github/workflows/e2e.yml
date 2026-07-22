@@ -17,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: runner-e2e-${{ github.ref }}
+  group: runner-e2e-global
   cancel-in-progress: false
 
 env:
@@ -71,7 +71,8 @@ jobs:
             --language js \
             --region "$AWS_REGION" \
             --suite step \
-            --name "e2e-step-${{ github.run_id }}" \
+            --name e2e-step \
+            --no-cleanup \
             --history-dir e2e-output/step-history \
             --report json junit \
             --report-file e2e-output/step-report \
@@ -86,7 +87,8 @@ jobs:
             --language js \
             --region "$AWS_REGION" \
             --suite wait \
-            --name "e2e-wait-${{ github.run_id }}" \
+            --name e2e-wait \
+            --no-cleanup \
             --history-dir e2e-output/wait-history \
             --report json junit \
             --report-file e2e-output/wait-report \
@@ -99,12 +101,3 @@ jobs:
           name: e2e-reports-${{ github.run_id }}
           path: e2e-output/
           if-no-files-found: ignore
-
-      - name: Clean up stacks on failure
-        if: failure()
-        run: |
-          for suite in step wait; do
-            aws cloudformation delete-stack \
-              --stack-name "durable-execution-conformance-tests-e2e-${suite}-${{ github.run_id }}" \
-              --region "$AWS_REGION" || true
-          done
