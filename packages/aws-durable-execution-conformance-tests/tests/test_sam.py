@@ -8,9 +8,10 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING
 
-from aws_durable_execution_conformance_tests import sam
 from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
 from botocore.exceptions import ClientError
+
+from aws_durable_execution_conformance_tests import sam
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -76,3 +77,163 @@ def test_deploy_passes_but_redacts_secret_parameters(
     assert "header-secret" not in result.output
     assert "[REDACTED]" in result.command
     assert "[REDACTED]" in result.output
+
+
+# region Invoker (direct boto3 invocation)
+
+
+class _FakePayload:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeCfnClient:
+    """Fake CloudFormation client returning one Lambda resource page."""
+
+    def __init__(self, resources: dict[str, str]):
+        self._resources = resources
+        self.list_calls = 0
+
+    def get_paginator(self, name: str) -> object:
+        assert name == "list_stack_resources"
+        outer = self
+
+        class _Paginator:
+            def paginate(self, **_kwargs: object) -> list[dict]:
+                outer.list_calls += 1
+                return [
+                    {
+                        "StackResourceSummaries": [
+                            {
+                                "ResourceType": "AWS::Lambda::Function",
+                                "LogicalResourceId": logical,
+                                "PhysicalResourceId": physical,
+                            }
+                            for logical, physical in outer._resources.items()
+                        ]
+                    }
+                ]
+
+        return _Paginator()
+
+
+class _FakeLambdaClient:
+    def __init__(self, response: dict):
+        self._response = response
+        self.invocations: list[dict] = []
+
+    def invoke(self, **kwargs: object) -> dict:
+        self.invocations.append(kwargs)
+        return self._response
+
+
+def _make_invoker(response: dict, resources: dict[str, str] | None = None) -> tuple:
+    cfn = _FakeCfnClient(resources or {"StepBasic": "physical-step-basic"})
+    lam = _FakeLambdaClient(response)
+    invoker = sam.Invoker(stack_name="my-stack", region="us-west-2", lambda_client=lam, cfn_client=cfn)
+    return invoker, lam, cfn
+
+
+def test_invoke_output_is_sam_compatible_json_with_arn() -> None:
+    import json as _json
+
+    response = {
+        "StatusCode": 200,
+        "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/a/b",
+        "ExecutedVersion": "$LATEST",
+        "Payload": _FakePayload(b'"Hello, World!"'),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke("StepBasic")
+
+    assert result.success is True
+    assert lam.invocations[0]["FunctionName"] == "physical-step-basic"
+    assert lam.invocations[0]["Qualifier"] == "$LATEST"
+    assert lam.invocations[0]["InvocationType"] == "RequestResponse"
+    output = _json.loads(result.output)
+    assert output["DurableExecutionArn"].endswith("/durable-execution/a/b")
+    assert output["StatusCode"] == 200
+    assert output["Payload"] == '"Hello, World!"'
+
+
+def test_invoke_async_uses_event_type_and_returns_arn() -> None:
+    import json as _json
+
+    response = {
+        "StatusCode": 202,
+        "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/c/d",
+        "Payload": _FakePayload(b""),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke_async("StepBasic")
+
+    assert lam.invocations[0]["InvocationType"] == "Event"
+    output = _json.loads(result.output)
+    assert output["DurableExecutionArn"].endswith("/durable-execution/c/d")
+    assert output["Payload"] == ""
+
+
+def test_invoke_falls_back_to_arn_header_when_field_missing() -> None:
+    import json as _json
+
+    response = {
+        "StatusCode": 200,
+        "Payload": _FakePayload(b"{}"),
+        "ResponseMetadata": {"HTTPHeaders": {"x-amz-durable-execution-arn": "arn:from-header"}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    output = _json.loads(invoker.invoke("StepBasic").output)
+
+    assert output["DurableExecutionArn"] == "arn:from-header"
+
+
+def test_invoke_resolves_stack_once_and_caches() -> None:
+    response = {
+        "StatusCode": 200,
+        "Payload": _FakePayload(b"{}"),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, cfn = _make_invoker(response)
+
+    invoker.invoke("StepBasic")
+    invoker.invoke("StepBasic")
+
+    assert cfn.list_calls == 1
+
+
+def test_invoke_unknown_logical_id_raises_invoke_error() -> None:
+    import pytest as _pytest
+
+    response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    with _pytest.raises(sam.InvokeError, match="no Lambda function"):
+        invoker.invoke("DoesNotExist")
+
+
+def test_invoke_client_error_wrapped_as_invoke_error() -> None:
+    import pytest as _pytest
+
+    class _ErrLambdaClient:
+        def invoke(self, **_kwargs: object) -> dict:
+            raise ClientError(
+                {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}},
+                "Invoke",
+            )
+
+    cfn = _FakeCfnClient({"StepBasic": "physical-step-basic"})
+    invoker = sam.Invoker(stack_name="my-stack", region="us-west-2", lambda_client=_ErrLambdaClient(), cfn_client=cfn)
+
+    with _pytest.raises(sam.InvokeError, match="Rate exceeded"):
+        invoker.invoke("StepBasic")
+
+
+# endregion
