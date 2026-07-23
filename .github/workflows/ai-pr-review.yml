@@ -113,6 +113,29 @@ jobs:
 
       - name: Review pull request with Claude on Amazon Bedrock
         id: review
+        continue-on-error: true
+        uses: anthropics/claude-code-action@fa7e2f0a29a126f0b81cdcf360561b36e44cf608 # v1.0.180
+        env:
+          AWS_REGION: us-east-1
+          CLAUDE_CODE_ATTRIBUTION_HEADER: "0"
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_bedrock: "true"
+          path_to_claude_code_executable: ${{ github.workspace }}/scripts/run_claude_isolated.sh
+          # This also keeps the token out of the git remote configured by the action.
+          allowed_non_write_users: ${{ github.actor }}
+          classify_inline_comments: "false"
+          prompt: ${{ steps.review-inputs.outputs.prompt }}
+          claude_args: |
+            --model us.anthropic.claude-opus-4-8
+            --max-turns 20
+            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
+            --disallowedTools "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch"
+            --json-schema '${{ steps.review-inputs.outputs.schema }}'
+
+      - name: Retry pull request review with Claude on Amazon Bedrock
+        id: review-retry
+        if: steps.review.outcome == 'failure'
         uses: anthropics/claude-code-action@fa7e2f0a29a126f0b81cdcf360561b36e44cf608 # v1.0.180
         env:
           AWS_REGION: us-east-1
@@ -137,7 +160,12 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REVIEW_OUTPUT: ${{ steps.review.outputs.structured_output }}
+          REVIEW_OUTPUT: >-
+            ${{
+              steps.review.outcome == 'success' &&
+              steps.review.outputs.structured_output ||
+              steps.review-retry.outputs.structured_output
+            }}
         run: |
           set -euo pipefail
 
