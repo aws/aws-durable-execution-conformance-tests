@@ -8,7 +8,6 @@ Parameters:
     Description: Pre-created execution role for the test functions
   OtelLayerArn:
     Type: String
-    Default: ""
     Description: AWSOpenTelemetryDistroJava Lambda layer attached with its Java agent disabled
   OtelCollectorLayerArn:
     Type: String
@@ -49,7 +48,6 @@ Parameters:
     Description: Comma-separated secret environment variable names
 
 Conditions:
-  HasOtelLayer: !Not [!Equals [!Ref OtelLayerArn, ""]]
   HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
 
 Globals:
@@ -60,9 +58,10 @@ Globals:
     Timeout: 60
     MemorySize: 1024
     Tracing: Active
-    Layers:
-      - !If [HasOtelLayer, !Ref OtelLayerArn, !Ref "AWS::NoValue"]
-      - !If [HasOtelCollectorLayer, !Ref OtelCollectorLayerArn, !Ref "AWS::NoValue"]
+    Layers: !If
+      - HasOtelCollectorLayer
+      - [!Ref OtelLayerArn, !Ref OtelCollectorLayerArn]
+      - [!Ref OtelLayerArn]
     DurableConfig:
       ExecutionTimeout: 300
       RetentionPeriodInDays: 1

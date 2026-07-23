@@ -92,6 +92,12 @@ def test_community_configures_each_supported_runtime(runtime: str) -> None:
     assert "OtelSecretEnvironmentNames" in config.parameter_overrides
 
 
+def test_community_java_uses_the_versioned_public_layer() -> None:
+    config = CommunityExporterProfile().configure(_options("java"))
+
+    assert config.layer_arns == ("arn:aws:lambda:us-west-2:184161586896:layer:opentelemetry-javaagent-0_20_0:1",)
+
+
 def test_community_requires_endpoint() -> None:
     options = ExporterOptions(
         runtime="python",
