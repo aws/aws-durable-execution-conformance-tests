@@ -8,11 +8,11 @@ Parameters:
     Description: Pre-created execution role for the test functions
   OtelLayerArn:
     Type: String
-    Description: Legacy ADOT Java Lambda layer used to export OpenTelemetry spans
+    Description: AWSOpenTelemetryDistroJava Lambda layer attached with its Java agent disabled
   OtelExecWrapper:
     Type: String
-    Default: /opt/otel-handler
-    Description: Exporter profile wrapper; accepted for runner compatibility and intentionally unused
+    Default: /opt/otel-instrument
+    Description: Exporter profile wrapper accepted for compatibility and intentionally unused
   OtelServiceName:
     Type: String
     Default: invocation

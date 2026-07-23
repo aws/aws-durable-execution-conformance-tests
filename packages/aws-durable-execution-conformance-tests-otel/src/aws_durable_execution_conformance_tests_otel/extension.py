@@ -122,11 +122,6 @@ class OtelExtension:
             help="Lambda layer ARN override for the selected runtime.",
         )
         group.add_argument(
-            "--otel-allow-missing-span-identity-attributes",
-            action="store_true",
-            help="Allow span.name and span.kind to be absent for legacy ADOT layer compatibility.",
-        )
-        group.add_argument(
             "--otel-poll-timeout",
             type=float,
             default=60.0,
@@ -210,15 +205,6 @@ class OtelExtension:
                 ", ".join(sorted(disparity.name for disparity in backend.feature_disparities)) or "none"
             )
             print(f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}")
-            optional_missing_attributes: frozenset[str] = (
-                frozenset({"span.kind", "span.name"})
-                if options.get("otel_allow_missing_span_identity_attributes")
-                else frozenset()
-            )
-            if optional_missing_attributes:
-                print(
-                    "  OpenTelemetry attributes allowed to be absent: " + ", ".join(sorted(optional_missing_attributes))
-                )
             timeout = float(options["otel_poll_timeout"])
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
@@ -253,7 +239,6 @@ class OtelExtension:
                     assertions,
                     query,
                     feature_disparities=backend.feature_disparities,
-                    optional_missing_attributes=optional_missing_attributes,
                 ),
             )
             errors = validate_trace(
@@ -261,7 +246,6 @@ class OtelExtension:
                 assertions,
                 query,
                 feature_disparities=backend.feature_disparities,
-                optional_missing_attributes=optional_missing_attributes,
             )
             if errors:
                 self._write_artifact(context, trace_to_dict(trace))

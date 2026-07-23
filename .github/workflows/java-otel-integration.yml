@@ -76,16 +76,31 @@ jobs:
       - name: Install Hatch
         run: python -m pip install hatch==1.16.5
 
-      - name: Verify legacy ADOT Java collector layer
+      - name: Resolve latest AWS Distro for OpenTelemetry Java layer
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Keep the collector-only layer until https://github.com/aws/aws-durable-execution-sdk-java/pull/540 lands.
-          ADOT_LAYER_ARN="arn:aws:lambda:${AWS_REGION}:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6"
+          ADOT_LAYER_ARN=$(
+            gh api repos/aws-observability/aws-otel-java-instrumentation/releases/latest \
+              --jq .body |
+              awk -F '|' -v region="$AWS_REGION" '
+                $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                  print $3
+                  exit
+                }
+              '
+          )
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            echo "Could not resolve AWSOpenTelemetryDistroJava for $AWS_REGION"
+            exit 1
+          fi
           aws lambda get-layer-version-by-arn \
             --arn "$ADOT_LAYER_ARN" \
             --region "$AWS_REGION" \
             --query LayerVersionArn \
             --output text > /dev/null
-          echo "Using legacy ADOT Java layer $ADOT_LAYER_ARN"
+          echo "Using AWSOpenTelemetryDistroJava layer $ADOT_LAYER_ARN with its Java agent disabled"
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
       - name: Compile Java handlers
@@ -111,7 +126,6 @@ jobs:
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-allow-missing-span-identity-attributes \
             --otel-service-name invocation \
             --otel-backend xray
 

@@ -39,7 +39,7 @@ def _options(runtime: str = "python", *, layer_arn: str | None = None) -> Export
 @pytest.mark.parametrize(
     ("runtime", "expected_layer"),
     [
-        ("java", "arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6"),
+        ("java", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16"),
         ("javascript", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJs:15"),
         ("python", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroPython:33"),
     ],
@@ -54,16 +54,16 @@ def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: st
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
-def test_adot_java_uses_legacy_layer_wrapper() -> None:
+def test_adot_java_uses_current_distro_wrapper_parameter() -> None:
     config = AdotExporterProfile().configure(
         _options(
             "java",
-            layer_arn="arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6",
+            layer_arn="arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16",
         )
     )
 
-    assert config.environment["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/otel-handler"
-    assert config.parameter_overrides["OtelExecWrapper"] == "/opt/otel-handler"
+    assert config.environment["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/otel-instrument"
+    assert config.parameter_overrides["OtelExecWrapper"] == "/opt/otel-instrument"
 
 
 def test_adot_requires_explicit_layer_arn() -> None:
@@ -107,7 +107,6 @@ def _args(exporter: str, backend: str) -> argparse.Namespace:
         otel_backend_endpoint=None,
         otel_service_name="test",
         otel_layer_arn="arn:aws:lambda:us-west-2:123456789012:layer:adot:1" if exporter == "adot" else None,
-        otel_allow_missing_span_identity_attributes=False,
         otel_poll_timeout=10.0,
         otel_poll_interval=0.0,
         otel_poll_attempts=3,
@@ -153,7 +152,6 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
     received_disparities: list[object] = []
-    received_optional_attributes: list[object] = []
 
     def capture_assertions(
         _trace: Trace,
@@ -161,11 +159,9 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         _query: object,
         *,
         feature_disparities: object,
-        optional_missing_attributes: object,
     ) -> list[str]:
         received.update(assertions)
         received_disparities.append(feature_disparities)
-        received_optional_attributes.append(optional_missing_attributes)
         return []
 
     def find_trace(_query: object, _policy: object, *, accept: Any) -> Trace:
@@ -194,8 +190,6 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"xray": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
 
-    options = vars(_args("adot", "xray"))
-    options["otel_allow_missing_span_identity_attributes"] = True
     errors = OtelExtension().validate_telemetry(
         ValidationContext(
             description_id="otel-5",
@@ -224,23 +218,16 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "EXECUTION_ARN": "arn:execution",
                 "STEP1": "step-id",
             },
-            options=options,
+            options=vars(_args("adot", "xray")),
             aws_clients={"xray": object()},
         )
     )
 
     assert errors == []
-    assert capsys.readouterr().out == (
-        "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
-        "  OpenTelemetry attributes allowed to be absent: span.kind, span.name\n"
-    )
+    assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
     assert received["span_assertions"]["select"]["attributes"] == {
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",
     }
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
-    assert received_optional_attributes == [
-        frozenset({"span.kind", "span.name"}),
-        frozenset({"span.kind", "span.name"}),
-    ]

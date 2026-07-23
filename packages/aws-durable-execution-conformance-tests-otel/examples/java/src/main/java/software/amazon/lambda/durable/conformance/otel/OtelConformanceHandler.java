@@ -5,11 +5,11 @@ package software.amazon.lambda.durable.conformance.otel;
 
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
-import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import java.util.Map;
+import software.amazon.distro.opentelemetry.exporter.xray.udp.trace.AwsXrayUdpSpanExporterBuilder;
 import software.amazon.lambda.durable.DurableConfig;
 import software.amazon.lambda.durable.DurableHandler;
 import software.amazon.lambda.durable.TypeToken;
@@ -23,7 +23,12 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
 
     @Override
     protected final DurableConfig createConfiguration() {
-        var exporter = OtlpGrpcSpanExporter.getDefault();
+        var exporter =
+                new AwsXrayUdpSpanExporterBuilder()
+                        .setEndpoint(
+                                System.getenv()
+                                        .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
+                        .build();
         var resource =
                 Resource.getDefault()
                         .merge(

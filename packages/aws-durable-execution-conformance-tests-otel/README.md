@@ -97,11 +97,10 @@ stabilizes.
 
 The self-contained [Java SAM project](examples/java/README.md) implements the
 same OTel requirements with the Java SDK and its OTel plugin. It builds one
-shaded JAR containing all handlers and uses the legacy ADOT Java layer as a
-collector-only extension so the plugin remains the sole tracer provider. The
-current Java agent path is deferred until the
-[SDK compatibility fix](https://github.com/aws/aws-durable-execution-sdk-java/pull/540)
-is available in a release.
+shaded JAR containing all handlers and attaches the
+`AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
+remains the sole tracer provider and sends durable spans directly to Lambda's
+X-Ray daemon with ADOT's X-Ray UDP exporter.
 
 ## Third-Party Plugins
 
