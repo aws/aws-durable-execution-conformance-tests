@@ -31,6 +31,8 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
       expect:
         status: ERROR
         service_name: invocation
@@ -39,6 +41,8 @@ TelemetryAssertions:
           span.name: invocation
           span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
     - select:
         name: otel-failed-condition
         attributes:

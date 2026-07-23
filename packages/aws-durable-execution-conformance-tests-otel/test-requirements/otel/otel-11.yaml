@@ -39,7 +39,8 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
         status: UNSET
         service_name: invocation
@@ -48,10 +49,30 @@ TelemetryAssertions:
           span.name: invocation
           span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        attributes:
+          span.name: invocation
+          span.kind: INTERNAL
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
       expect:
         status: UNSET
         service_name: invocation
@@ -60,6 +81,8 @@ TelemetryAssertions:
           span.name: invocation
           span.kind: INTERNAL
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
     - select:
         name: otel-invoke
         attributes:
