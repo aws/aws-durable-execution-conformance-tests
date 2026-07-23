@@ -41,12 +41,17 @@ class CloudWatchLogError(Exception):
 class LogExpectation:
     """A single expected log entry from the YAML spec.
 
+    Entries in ``ExpectedLogs`` are matched **in list order by default**
+    (see CloudWatchLogValidator for the sequential-scan semantics).
+
     Attributes:
         pattern: The string or regex pattern to search for.
         match: Matching mode — "contains" (default), "exact", or "regex".
         count: If set, the exact number of matching log lines expected.
         min_count: If set, the minimum number of matches required.
         max_count: If set, the maximum number of matches allowed.
+        unordered: If True, this entry is counted over the whole log stream
+            and neither anchors nor advances the ordered scan position.
     """
 
     pattern: str
@@ -54,6 +59,7 @@ class LogExpectation:
     count: int | None = None
     min_count: int | None = None
     max_count: int | None = None
+    unordered: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LogExpectation:
@@ -64,7 +70,23 @@ class LogExpectation:
             count=data.get("count"),
             min_count=data.get("min_count"),
             max_count=data.get("max_count"),
+            unordered=bool(data.get("unordered", False)),
         )
+
+    @property
+    def is_absence(self) -> bool:
+        """True when the entry asserts the pattern does NOT appear.
+
+        Absence entries (``count: 0`` or ``max_count: 0``) are checked over
+        the whole log stream and are exempt from ordering — a pattern that
+        never appears cannot anchor a position.
+        """
+        return self.count == 0 or self.max_count == 0
+
+    @property
+    def is_ordered(self) -> bool:
+        """True when the entry participates in the ordered sequential scan."""
+        return not (self.unordered or self.is_absence)
 
 
 @dataclass(frozen=True)
@@ -307,8 +329,21 @@ class CloudWatchLogRetriever:
 class CloudWatchLogValidator:
     """Matches expected log patterns against actual CloudWatch log events.
 
-    For each LogExpectation, counts how many log messages match the pattern
-    and asserts the count satisfies the specified constraints.
+    Entries in ``ExpectedLogs`` are matched **in list order by default**
+    (sequential scan):
+
+    - Log events are sorted by ``(timestamp, ingestionTime)`` before matching.
+    - Each *ordered* entry starts scanning after the previous ordered entry's
+      last consumed match; its count constraints are evaluated over the
+      remainder of the stream from that position onward. After a successful
+      match, the scan position advances past the match that satisfied the
+      entry's minimum requirement (``count``, else ``min_count``, else 1).
+    - *Absence* entries (``count: 0`` / ``max_count: 0``) and entries marked
+      ``unordered: true`` are counted over the whole stream and do not
+      affect the scan position.
+
+    With a single positive entry this degenerates to a global count, so
+    specs written against the previous (unordered) semantics keep working.
     """
 
     def validate(
@@ -329,7 +364,9 @@ class CloudWatchLogValidator:
             LogMatchResult with success flag and any errors.
         """
         errors: list[str] = []
-        messages = [evt.get("message", "") for evt in actual_events]
+        sorted_events = sorted(actual_events, key=self._event_sort_key)
+        messages = [evt.get("message", "") for evt in sorted_events]
+        scan_pos = 0
 
         for i, raw in enumerate(expected_logs):
             # Substitute placeholders in the pattern before building expectation
@@ -343,9 +380,20 @@ class CloudWatchLogValidator:
                 errors.append(f"ExpectedLogs[{i}]: invalid entry — {e}")
                 continue
 
-            matched = self._count_matches(expectation, messages)
-            entry_errors = self._check_count(expectation, matched, index=i)
-            errors.extend(entry_errors)
+            if expectation.is_ordered:
+                match_indices = self._match_indices(expectation, messages, start=scan_pos)
+                entry_errors = self._check_count(
+                    expectation, len(match_indices), index=i, scan_pos=scan_pos
+                )
+                errors.extend(entry_errors)
+                if match_indices:
+                    required = expectation.count or expectation.min_count or 1
+                    consumed = min(required, len(match_indices))
+                    scan_pos = match_indices[consumed - 1] + 1
+            else:
+                match_indices = self._match_indices(expectation, messages, start=0)
+                entry_errors = self._check_count(expectation, len(match_indices), index=i)
+                errors.extend(entry_errors)
 
         return LogMatchResult(
             success=len(errors) == 0,
@@ -353,19 +401,42 @@ class CloudWatchLogValidator:
         )
 
     @staticmethod
-    def _count_matches(expectation: LogExpectation, messages: list[str]) -> int:
-        """Count how many messages match the expectation's pattern."""
-        count = 0
-        for msg in messages:
-            if _matches(expectation.pattern, msg, expectation.match):
-                count += 1
-        return count
+    def _event_sort_key(evt: dict) -> tuple:
+        """Type-stable ordering key for log events.
+
+        Events from ``filter_log_events`` carry an epoch-ms int ``timestamp``
+        plus ``ingestionTime``; events from the Logs Insights path carry a
+        string ``@timestamp`` (already ISO-ish sortable) and no ingestion
+        time. Any one retrieval yields a homogeneous shape — the typed tuple
+        merely prevents TypeError if shapes are ever mixed.
+        """
+        ts = evt.get("timestamp", 0)
+        if isinstance(ts, (int, float)):
+            ts_key: tuple = (0, float(ts), "")
+        else:
+            ts_key = (1, 0.0, str(ts))
+        return (ts_key, evt.get("ingestionTime", 0))
 
     @staticmethod
-    def _check_count(expectation: LogExpectation, actual_count: int, index: int) -> list[str]:
+    def _match_indices(expectation: LogExpectation, messages: list[str], start: int) -> list[int]:
+        """Return indices (>= start) of messages matching the expectation's pattern."""
+        return [
+            idx
+            for idx in range(start, len(messages))
+            if _matches(expectation.pattern, messages[idx], expectation.match)
+        ]
+
+    @staticmethod
+    def _check_count(
+        expectation: LogExpectation,
+        actual_count: int,
+        index: int,
+        scan_pos: int | None = None,
+    ) -> list[str]:
         """Check whether actual_count satisfies the expectation's count constraints."""
         errors: list[str] = []
         label = f"ExpectedLogs[{index}] pattern={expectation.pattern!r}"
+        where = f" at/after ordered position {scan_pos}" if scan_pos else ""
 
         has_constraint = (
             expectation.count is not None or expectation.min_count is not None or expectation.max_count is not None
@@ -373,7 +444,7 @@ class CloudWatchLogValidator:
 
         if expectation.count is not None:
             if actual_count != expectation.count:
-                errors.append(f"{label}: expected exactly {expectation.count} match(es), got {actual_count}")
+                errors.append(f"{label}: expected exactly {expectation.count} match(es){where}, got {actual_count}")
         else:
             min_c = expectation.min_count
             max_c = expectation.max_count
@@ -383,9 +454,9 @@ class CloudWatchLogValidator:
                 min_c = 1
 
             if min_c is not None and actual_count < min_c:
-                errors.append(f"{label}: expected at least {min_c} match(es), got {actual_count}")
+                errors.append(f"{label}: expected at least {min_c} match(es){where}, got {actual_count}")
             if max_c is not None and actual_count > max_c:
-                errors.append(f"{label}: expected at most {max_c} match(es), got {actual_count}")
+                errors.append(f"{label}: expected at most {max_c} match(es){where}, got {actual_count}")
 
         return errors
 

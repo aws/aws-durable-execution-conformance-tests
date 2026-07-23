@@ -1,0 +1,49 @@
+---
+# 10.7: Plugin sees terminal failure
+description: Plugin invocation-end hook receives FAILED status when execution fails
+optional: true
+handler: |
+  A handler with a single step that always throws, configured with no retries
+  (max attempts 1) and an instrumentation plugin. The plugin logs
+  `CONFPLUGIN invocation-start first=<is_first_invocation>` from its
+  invocation-start hook and `CONFPLUGIN invocation-end status=<status>` from its
+  invocation-end hook (boolean lowercase, status as the enum token).
+invocations: |
+  - Handler invokes `context.step(failing_func, config=no-retry strategy)`, the
+    plugin logs `invocation-start first=true`, the step throws, no retry is
+    attempted, the step is checkpointed as failed and the execution fails. The
+    plugin's invocation-end hook fires with the FAILED status.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: '*'
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Invocation starts normally
+  - pattern: CONFPLUGIN invocation-start first=true
+    count: 1
+  # Invocation-end hook fires with the FAILED terminal status
+  - pattern: CONFPLUGIN invocation-end status=FAILED
+    count: 1
+  # The invocation never reports success
+  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+    count: 0
