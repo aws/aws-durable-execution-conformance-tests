@@ -382,9 +382,7 @@ class CloudWatchLogValidator:
 
             if expectation.is_ordered:
                 match_indices = self._match_indices(expectation, messages, start=scan_pos)
-                entry_errors = self._check_count(
-                    expectation, len(match_indices), index=i, scan_pos=scan_pos
-                )
+                entry_errors = self._check_count(expectation, len(match_indices), index=i, scan_pos=scan_pos)
                 errors.extend(entry_errors)
                 if match_indices:
                     required = expectation.count or expectation.min_count or 1
