@@ -19,7 +19,6 @@ from aws_durable_execution_conformance_tests.extensions import (
     ValidationContext,
 )
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
-
 from aws_durable_execution_conformance_tests_otel.backends import BUILTIN_BACKENDS
 from aws_durable_execution_conformance_tests_otel.discovery import (
     BACKEND_ENTRY_POINT_GROUP,

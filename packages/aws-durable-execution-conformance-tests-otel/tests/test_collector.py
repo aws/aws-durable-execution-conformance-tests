@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
+
 from aws_durable_execution_conformance_tests_otel.backends.collector import (
     CollectorBackend,
     CollectorBackendFactory,
@@ -20,9 +24,6 @@ from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingPolicy,
-)
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
-    ExportTraceServiceRequest,
 )
 
 

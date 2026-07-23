@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.polling import (
     PollingBackend,

@@ -9,6 +9,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 import pytest
+
 from aws_durable_execution_conformance_tests.app import (
     _run_extension_validation,
     parse_args,

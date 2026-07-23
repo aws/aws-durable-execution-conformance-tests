@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from aws_durable_execution_conformance_tests.extensions import ValidationContext
 from aws_durable_execution_conformance_tests_otel import extension as extension_module
 from aws_durable_execution_conformance_tests_otel.exporters import (
