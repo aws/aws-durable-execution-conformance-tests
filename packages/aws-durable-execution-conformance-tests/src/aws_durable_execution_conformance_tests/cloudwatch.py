@@ -89,6 +89,10 @@ class CloudWatchLogRetriever:
 
     # Default wait before querying logs to allow propagation
     DEFAULT_WAIT_SECONDS = 5
+    QUERY_POLL_INTERVAL_SECONDS = 0.5
+    QUERY_TIMEOUT_SECONDS = 30.0
+    QUERY_RESULT_LIMIT = 10_000
+    _QUERY_FAILURE_STATUSES = frozenset({"Failed", "Cancelled", "Timeout", "Unknown"})
 
     def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
         self._cfn_client = cloudformation_client
@@ -195,6 +199,103 @@ class CloudWatchLogRetriever:
             ) from e
 
         return all_events
+
+    def get_execution_log_events(
+        self,
+        log_group_name: str,
+        execution_arn: str,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+        wait_seconds: int | None = None,
+    ) -> list[dict]:
+        """Fetch log events associated with one durable execution.
+
+        CloudWatch Logs Insights discovers ``durableExecutionArn`` or
+        ``executionArn`` on structured Lambda log records. Filtering on both
+        field names keeps concurrent executions of the same function isolated.
+
+        Args:
+            log_group_name: The full log group name.
+            execution_arn: Durable execution ARN to filter on.
+            start_time_ms: Start of the time range in epoch milliseconds.
+            end_time_ms: End of the time range in epoch milliseconds.
+                         Defaults to current time if not provided.
+            wait_seconds: Seconds to wait before querying for log propagation.
+
+        Returns:
+            A list of log event dicts, each with at least a "message" key.
+
+        Raises:
+            CloudWatchLogError: If the query cannot be started or completed.
+        """
+        if wait_seconds is None:
+            wait_seconds = self.DEFAULT_WAIT_SECONDS
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+        if end_time_ms is None:
+            end_time_ms = int(time.time() * 1000)
+
+        start_time_seconds = start_time_ms // 1000
+        end_time_seconds = max(start_time_seconds + 1, (end_time_ms + 999) // 1000)
+        escaped_execution_arn = execution_arn.replace("\\", "\\\\").replace('"', '\\"')
+        query_string = (
+            "fields @timestamp, @message\n"
+            f'| filter coalesce(durableExecutionArn, executionArn) like "{escaped_execution_arn}"\n'
+            "| sort @timestamp asc"
+        )
+
+        try:
+            response: dict[str, Any] = self._logs_client.start_query(
+                queryLanguage="CWLI",
+                logGroupName=log_group_name,
+                startTime=start_time_seconds,
+                endTime=end_time_seconds,
+                queryString=query_string,
+                limit=self.QUERY_RESULT_LIMIT,
+            )
+            query_id: str | None = response.get("queryId")
+            if not query_id:
+                raise CloudWatchLogError(
+                    log_group=log_group_name,
+                    reason="start-query returned no query ID",
+                )
+
+            deadline = time.monotonic() + self.QUERY_TIMEOUT_SECONDS
+            while True:
+                response = self._logs_client.get_query_results(queryId=query_id)
+                status: str = response.get("status", "Unknown")
+                if status == "Complete":
+                    return self._query_results_to_events(response.get("results", []))
+                if status in self._QUERY_FAILURE_STATUSES:
+                    raise CloudWatchLogError(
+                        log_group=log_group_name,
+                        reason=f"logs-insights query ended with status {status}",
+                    )
+                if time.monotonic() >= deadline:
+                    raise CloudWatchLogError(
+                        log_group=log_group_name,
+                        reason=f"logs-insights query did not complete within {self.QUERY_TIMEOUT_SECONDS:g} seconds",
+                    )
+                time.sleep(self.QUERY_POLL_INTERVAL_SECONDS)
+        except (ClientError, BotoCoreError) as e:
+            raise CloudWatchLogError(
+                log_group=log_group_name,
+                reason=f"logs-insights query failed: {e}",
+            ) from e
+
+    @staticmethod
+    def _query_results_to_events(results: list[list[dict[str, str]]]) -> list[dict]:
+        """Normalize Logs Insights rows for ``CloudWatchLogValidator``."""
+        events: list[dict] = []
+        for row in results:
+            fields = {entry.get("field", ""): entry.get("value", "") for entry in row}
+            event = {"message": fields.get("@message", fields.get("message", ""))}
+            timestamp = fields.get("@timestamp", fields.get("timestamp"))
+            if timestamp is not None:
+                event["timestamp"] = timestamp
+            events.append(event)
+        return events
 
 
 # endregion

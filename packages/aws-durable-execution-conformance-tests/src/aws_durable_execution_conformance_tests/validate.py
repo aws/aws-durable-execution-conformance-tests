@@ -784,6 +784,7 @@ def _validate_expected_logs(
     description_data: dict[str, Any],
     stack_name: str,
     function_name: str,
+    execution_arn: str,
     start_time_ms: int,
     aws_clients: AwsClients,
     context: PlaceholderContext | None = None,
@@ -794,6 +795,7 @@ def _validate_expected_logs(
         description_data: Parsed YAML test description.
         stack_name: CloudFormation stack name for resolving the log group.
         function_name: Logical resource ID of the Lambda function.
+        execution_arn: Durable execution ARN used to isolate its log events.
         start_time_ms: Epoch milliseconds marking the start of the invocation.
         context: Optional PlaceholderContext for substituting placeholders.
         aws_clients: Pre-created AWS clients.
@@ -813,8 +815,9 @@ def _validate_expected_logs(
 
     log_group: str = log_retriever.get_log_group_name(stack_name, function_name)
 
-    log_events: list[dict] = log_retriever.get_log_events(
+    log_events: list[dict] = log_retriever.get_execution_log_events(
         log_group_name=log_group,
+        execution_arn=execution_arn,
         start_time_ms=start_time_ms,
         wait_seconds=10,
     )
@@ -980,6 +983,7 @@ def validate_description(
         description_data=description_data,
         stack_name=invoker.stack_name,
         function_name=function_name,
+        execution_arn=execution_arn,
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
@@ -1145,6 +1149,7 @@ def _validate_description_async(
         description_data=description_data,
         stack_name=invoker.stack_name,
         function_name=function_name,
+        execution_arn=execution_arn,
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
