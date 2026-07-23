@@ -93,7 +93,7 @@ jobs:
           mvn -B -q -DskipTests package \
             --file packages/aws-durable-execution-conformance-tests-otel/examples/java/pom.xml
 
-      - name: Run Java X-Ray conformance tests
+      - name: Run X-Ray conformance tests
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
@@ -130,11 +130,24 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Show saved diagnostics
+      - name: Show execution history diagnostics
         if: failure()
         run: |
           shopt -s nullglob
           for artifact in "$RUNNER_TEMP"/java-otel-history/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show normalized X-Ray trace diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$RUNNER_TEMP"/java-otel-history/*-otel.json; do
             echo "::group::$artifact"
             cat "$artifact"
             echo "::endgroup::"

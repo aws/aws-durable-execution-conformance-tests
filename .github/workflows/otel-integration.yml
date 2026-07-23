@@ -111,12 +111,15 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite otel \
-            --report console \
+            --history-dir "$RUNNER_TEMP/python-otel-history" \
+            --report console json junit \
+            --report-file "$RUNNER_TEMP/python-otel-xray-report" \
             --fail-on failed+uncovered \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-backend xray
+
       - name: Show Lambda logs
         if: failure()
         run: |
@@ -126,19 +129,18 @@ jobs:
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
-          target_log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-11-target"
-          echo "::group::$target_log_group"
-          aws logs tail "$target_log_group" --since 20m --format short || true
-          echo "::endgroup::"
-          target_log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-18-target"
-          echo "::group::$target_log_group"
-          aws logs tail "$target_log_group" --since 20m --format short || true
-          echo "::endgroup::"
+          for case_number in 11 18; do
+            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}-target"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 20m --format short || true
+            echo "::endgroup::"
+          done
+
       - name: Show execution history diagnostics
         if: failure()
         run: |
           shopt -s nullglob
-          for artifact in packages/aws-durable-execution-conformance-tests/output/*.json; do
+          for artifact in "$RUNNER_TEMP"/python-otel-history/*.json; do
             if [[ "$artifact" == *-otel.json ]]; then
               continue
             fi
@@ -146,15 +148,27 @@ jobs:
             cat "$artifact"
             echo "::endgroup::"
           done
+
       - name: Show normalized X-Ray trace diagnostics
         if: failure()
         run: |
           shopt -s nullglob
-          for artifact in packages/aws-durable-execution-conformance-tests/output/*-otel.json; do
+          for artifact in "$RUNNER_TEMP"/python-otel-history/*-otel.json; do
             echo "::group::$artifact"
             cat "$artifact"
             echo "::endgroup::"
           done
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-otel-xray-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/python-otel-history/
+            ${{ runner.temp }}/python-otel-xray-report.json
+            ${{ runner.temp }}/python-otel-xray-report.xml
+          if-no-files-found: ignore
 
   datadog:
     name: Community layer + Datadog
