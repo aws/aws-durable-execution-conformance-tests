@@ -214,9 +214,10 @@ secrets.
 
 For Lambda-hosted tests, use
 [`build-lambda-layer.sh`](examples/collector/build-lambda-layer.sh) with the
-pinned upstream collector release. The TypeScript workflow is the reference
-for publishing the custom `awss3exporter` layer, granting prefix-scoped S3
-access, asserting the exported spans, and deleting all temporary resources.
+pinned upstream collector release. The Python, Java, and TypeScript S3
+collector workflows publish the custom `awss3exporter` layer, grant
+prefix-scoped S3 access, assert the exported spans, and delete all temporary
+resources without changing the corresponding X-Ray workflows.
 
 ## Pull-Request Checklist
 

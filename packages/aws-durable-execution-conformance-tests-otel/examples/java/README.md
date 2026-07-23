@@ -68,6 +68,33 @@ attached `AWSOpenTelemetryDistroJava` layer does not start its Java agent. The
 Java SDK plugin creates the only tracer provider and ADOT's X-Ray UDP exporter
 sends durable spans directly to the X-Ray daemon available in Lambda.
 
+## Run Against the AWS S3 Collector
+
+The hosted S3 workflow publishes a temporary OpenTelemetry Lambda collector
+extension and run-scoped bucket. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the
+Java SDK plugin exports spans over OTLP gRPC to the extension on
+`localhost:4317`; otherwise it retains the X-Ray UDP exporter used above.
+
+```bash
+durable-execution-conformance \
+  --template packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml \
+  --language java \
+  --suite otel \
+  --parameter-overrides \
+    LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+    OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \
+    OtelCollectorBucket="$OTEL_S3_BUCKET" \
+    OtelCollectorPrefix=traces \
+  --otel-exporter community \
+  --otel-endpoint http://localhost:4317 \
+  --otel-service-name invocation \
+  --otel-backend collector \
+  --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
+```
+
+The collector writes gzip-compressed OTLP JSON objects. The conformance backend
+queries and merges those S3 objects before evaluating the span assertions.
+
 ## Build Only
 
 The Maven project uses released SDK artifacts and produces one shaded Lambda

@@ -68,9 +68,10 @@ durable-execution-conformance \
 ```
 
 The template adds both the JavaScript instrumentation layer selected by the
-runner and `COLLECTOR_LAYER_ARN`. The bundled `collector.yaml` listens on
-localhost, writes gzip-compressed OTLP JSON to the run prefix, and uses the
-function's AWS credentials for S3.
+runner and `COLLECTOR_LAYER_ARN`. The collector layer's
+`/opt/collector-config/config-s3.yaml` listens on localhost, writes
+gzip-compressed OTLP JSON to the run prefix, and uses the function's AWS
+credentials for S3.
 
 ## Build Only
 

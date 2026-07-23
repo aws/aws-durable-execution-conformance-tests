@@ -39,6 +39,11 @@
             <version>${opentelemetry.version}</version>
         </dependency>
         <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <version>${opentelemetry.version}</version>
+        </dependency>
+        <dependency>
             <groupId>software.amazon.distro.opentelemetry</groupId>
             <artifactId>aws-distro-opentelemetry-xray-udp-span-exporter</artifactId>
             <version>${xray.udp.exporter.version}</version>
