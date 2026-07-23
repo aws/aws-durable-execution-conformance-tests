@@ -46,6 +46,8 @@ TelemetryAssertions:
       count: 2
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition
@@ -53,6 +55,8 @@ TelemetryAssertions:
           durable.operation.status: STARTED
       expect:
         attributes:
+          span.name: otel-condition
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -62,6 +66,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition attempt 1
@@ -69,6 +75,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         attributes:
+          span.name: otel-condition attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -80,6 +88,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition
@@ -87,6 +97,8 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-condition
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -97,6 +109,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition attempt 2
@@ -104,6 +118,8 @@ TelemetryAssertions:
           durable.attempt.number: 2
       expect:
         attributes:
+          span.name: otel-condition attempt 2
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -115,4 +131,6 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}

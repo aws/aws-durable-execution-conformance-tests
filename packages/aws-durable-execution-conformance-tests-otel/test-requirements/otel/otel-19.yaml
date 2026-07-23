@@ -25,4 +25,6 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}

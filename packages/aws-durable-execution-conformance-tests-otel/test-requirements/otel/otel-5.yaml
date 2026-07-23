@@ -40,6 +40,8 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-child-context
@@ -48,6 +50,8 @@ TelemetryAssertions:
           durable.operation.subtype: RunInChildContext
       expect:
         attributes:
+          span.name: otel-child-context
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CTX1}
           durable.operation.type: CONTEXT
@@ -57,6 +61,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-child-step
@@ -65,6 +71,8 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-child-step
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -75,6 +83,8 @@ TelemetryAssertions:
         parent:
           name: otel-child-context
           attributes:
+            span.name: otel-child-context
+            span.kind: INTERNAL
             durable.operation.id: ${CTX1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: RunInChildContext
@@ -85,6 +95,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         attributes:
+          span.name: otel-child-step attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -96,6 +108,8 @@ TelemetryAssertions:
         parent:
           name: otel-child-context
           attributes:
+            span.name: otel-child-context
+            span.kind: INTERNAL
             durable.operation.id: ${CTX1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: RunInChildContext

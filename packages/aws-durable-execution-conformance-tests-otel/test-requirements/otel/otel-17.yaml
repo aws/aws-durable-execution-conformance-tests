@@ -60,6 +60,8 @@ TelemetryAssertions:
       count: 2
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-callback
@@ -67,6 +69,8 @@ TelemetryAssertions:
       expect:
         status: UNSET
         attributes:
+          span.name: otel-failed-callback
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
           durable.operation.type: CONTEXT
@@ -76,6 +80,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-callback
@@ -83,6 +89,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-failed-callback
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
           durable.operation.type: CONTEXT
@@ -92,6 +100,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
@@ -100,6 +110,8 @@ TelemetryAssertions:
       expect:
         status: UNSET
         attributes:
+          span.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_CALLBACK}
           durable.operation.type: CALLBACK
@@ -109,6 +121,8 @@ TelemetryAssertions:
         parent:
           name: otel-failed-callback
           attributes:
+            span.name: otel-failed-callback
+            span.kind: INTERNAL
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
         name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
@@ -117,6 +131,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_CALLBACK}
           durable.operation.type: CALLBACK
@@ -126,6 +142,8 @@ TelemetryAssertions:
         parent:
           name: otel-failed-callback
           attributes:
+            span.name: otel-failed-callback
+            span.kind: INTERNAL
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
         name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
@@ -135,6 +153,8 @@ TelemetryAssertions:
       expect:
         status: OK
         attributes:
+          span.name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK_SUBMITTER}
           durable.operation.type: STEP
@@ -145,6 +165,8 @@ TelemetryAssertions:
         parent:
           name: otel-failed-callback
           attributes:
+            span.name: otel-failed-callback
+            span.kind: INTERNAL
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
         name: "${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}"
@@ -153,6 +175,8 @@ TelemetryAssertions:
       expect:
         status: OK
         attributes:
+          span.name: "${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}"
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK_SUBMITTER}
           durable.operation.type: STEP
@@ -164,4 +188,6 @@ TelemetryAssertions:
         parent:
           name: otel-failed-callback
           attributes:
+            span.name: otel-failed-callback
+            span.kind: INTERNAL
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}

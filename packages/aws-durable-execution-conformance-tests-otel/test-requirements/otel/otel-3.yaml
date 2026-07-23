@@ -45,6 +45,8 @@ TelemetryAssertions:
       count: 2
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry
@@ -53,6 +55,8 @@ TelemetryAssertions:
       expect:
         status: UNSET
         attributes:
+          span.name: otel-retry
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -62,6 +66,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry attempt 1
@@ -70,6 +76,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-retry attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -81,6 +89,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry
@@ -89,6 +99,8 @@ TelemetryAssertions:
       expect:
         status: OK
         attributes:
+          span.name: otel-retry
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -99,6 +111,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry attempt 2
@@ -107,6 +121,8 @@ TelemetryAssertions:
       expect:
         status: OK
         attributes:
+          span.name: otel-retry attempt 2
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -118,4 +134,6 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}

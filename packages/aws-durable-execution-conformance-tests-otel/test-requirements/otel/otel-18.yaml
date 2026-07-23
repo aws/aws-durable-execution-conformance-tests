@@ -42,6 +42,8 @@ TelemetryAssertions:
       count: 2
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: invocation
@@ -49,6 +51,8 @@ TelemetryAssertions:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
     - select:
         name: otel-failed-invoke
@@ -56,6 +60,8 @@ TelemetryAssertions:
           durable.operation.status: STARTED
       expect:
         attributes:
+          span.name: otel-failed-invoke
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_INVOKE}
           durable.operation.type: CHAINED_INVOKE
@@ -65,6 +71,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-invoke
@@ -73,6 +81,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-failed-invoke
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_INVOKE}
           durable.operation.type: CHAINED_INVOKE
@@ -82,4 +92,6 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}

@@ -52,6 +52,8 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-map
@@ -59,6 +61,8 @@ TelemetryAssertions:
           durable.operation.subtype: Map
       expect:
         attributes:
+          span.name: otel-map
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${MAP1}
           durable.operation.type: CONTEXT
@@ -68,6 +72,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-map-iteration-0
@@ -75,6 +81,8 @@ TelemetryAssertions:
           durable.operation.subtype: MapIteration
       expect:
         attributes:
+          span.name: otel-map-iteration-0
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${ITERATION1}
           durable.operation.type: CONTEXT
@@ -84,6 +92,8 @@ TelemetryAssertions:
         parent:
           name: otel-map
           attributes:
+            span.name: otel-map
+            span.kind: INTERNAL
             durable.operation.id: ${MAP1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Map
@@ -94,6 +104,8 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-map-step-0
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -104,6 +116,8 @@ TelemetryAssertions:
         parent:
           name: otel-map-iteration-0
           attributes:
+            span.name: otel-map-iteration-0
+            span.kind: INTERNAL
             durable.operation.id: ${ITERATION1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: MapIteration
@@ -113,6 +127,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         attributes:
+          span.name: otel-map-step-0 attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -124,6 +140,8 @@ TelemetryAssertions:
         parent:
           name: otel-map-iteration-0
           attributes:
+            span.name: otel-map-iteration-0
+            span.kind: INTERNAL
             durable.operation.id: ${ITERATION1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: MapIteration
@@ -133,6 +151,8 @@ TelemetryAssertions:
           durable.operation.subtype: MapIteration
       expect:
         attributes:
+          span.name: otel-map-iteration-1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${ITERATION2}
           durable.operation.type: CONTEXT
@@ -142,6 +162,8 @@ TelemetryAssertions:
         parent:
           name: otel-map
           attributes:
+            span.name: otel-map
+            span.kind: INTERNAL
             durable.operation.id: ${MAP1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Map
@@ -152,6 +174,8 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-map-step-1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
@@ -162,6 +186,8 @@ TelemetryAssertions:
         parent:
           name: otel-map-iteration-1
           attributes:
+            span.name: otel-map-iteration-1
+            span.kind: INTERNAL
             durable.operation.id: ${ITERATION2}
             durable.operation.type: CONTEXT
             durable.operation.subtype: MapIteration
@@ -171,6 +197,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         attributes:
+          span.name: otel-map-step-1 attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
@@ -182,6 +210,8 @@ TelemetryAssertions:
         parent:
           name: otel-map-iteration-1
           attributes:
+            span.name: otel-map-iteration-1
+            span.kind: INTERNAL
             durable.operation.id: ${ITERATION2}
             durable.operation.type: CONTEXT
             durable.operation.subtype: MapIteration

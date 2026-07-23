@@ -78,7 +78,11 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
         "metadata": {
             "durable.execution.arn": "arn:test",
             "faas.invocation_id": "invocation-1",
-            "default": {"legacy.attribute": "legacy-value"},
+            "default": {
+                "legacy.attribute": "legacy-value",
+                "span.name": "conformance",
+                "span.kind": "SERVER",
+            },
             "custom": {"tenant": "example"},
         },
         "subsegments": [
@@ -106,6 +110,8 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
     assert trace.spans[0].attributes["faas.invocation_id"] == "invocation-1"
     assert trace.spans[0].attributes["legacy.attribute"] == "legacy-value"
+    assert trace.spans[0].attributes["span.name"] == "conformance"
+    assert trace.spans[0].attributes["span.kind"] == "SERVER"
     assert trace.spans[0].attributes["xray.custom.tenant"] == "example"
     assert trace.spans[0].parent_span_id == "f" * 16
     assert trace.spans[1].parent_span_id == "1" * 16

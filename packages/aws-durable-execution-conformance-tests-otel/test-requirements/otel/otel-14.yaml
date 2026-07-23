@@ -45,6 +45,8 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-map
@@ -53,6 +55,8 @@ TelemetryAssertions:
       expect:
         status: OK
         attributes:
+          span.name: otel-failed-map
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${MAP1}
           durable.operation.type: CONTEXT
@@ -62,6 +66,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-map-iteration-0
@@ -70,6 +76,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-failed-map-iteration-0
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_ITERATION}
           durable.operation.type: CONTEXT
@@ -79,6 +87,8 @@ TelemetryAssertions:
         parent:
           name: otel-failed-map
           attributes:
+            span.name: otel-failed-map
+            span.kind: INTERNAL
             durable.operation.id: ${MAP1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Map

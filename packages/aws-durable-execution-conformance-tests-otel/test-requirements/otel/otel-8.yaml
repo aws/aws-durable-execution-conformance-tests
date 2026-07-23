@@ -43,6 +43,8 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         attributes:
+          span.name: invocation
+          span.kind: SERVER
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-handled-failure
@@ -52,6 +54,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-handled-failure
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
@@ -62,6 +66,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-handled-failure attempt 1
@@ -70,6 +76,8 @@ TelemetryAssertions:
       expect:
         status: ERROR
         attributes:
+          span.name: otel-handled-failure attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
@@ -81,6 +89,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-recovery-step
@@ -89,6 +99,8 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-recovery-step
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RECOVERY_STEP}
           durable.operation.type: STEP
@@ -99,6 +111,8 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-recovery-step attempt 1
@@ -106,6 +120,8 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
       expect:
         attributes:
+          span.name: otel-recovery-step attempt 1
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RECOVERY_STEP}
           durable.operation.type: STEP
@@ -117,4 +133,6 @@ TelemetryAssertions:
         parent:
           name: invocation
           attributes:
+            span.name: invocation
+            span.kind: SERVER
             durable.execution.arn: ${EXECUTION_ARN}

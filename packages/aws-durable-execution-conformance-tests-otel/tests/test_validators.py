@@ -35,6 +35,8 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
             "durable.execution.arn": execution_arn,
             "faas.invocation_id": "invocation-1",
             "durable.operation.outcome": "retry",
+            "span.name": "root",
+            "span.kind": "SERVER",
         },
     )
     child = Span(
@@ -49,6 +51,8 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         attributes={
             "durable.execution.arn": execution_arn,
             "faas.invocation_id": "invocation-2",
+            "span.name": "child",
+            "span.kind": "INTERNAL",
             "custom.metadata": {
                 "attempt": 2,
                 "labels": ["durable", "resumed"],
@@ -138,6 +142,8 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                         "attributes": {
                             "faas.invocation_id": "invocation-1",
                             "durable.operation.outcome": "retry",
+                            "span.name": "root",
+                            "span.kind": "SERVER",
                         },
                     },
                     "name": "child",
@@ -148,6 +154,8 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "attributes": {
                         "durable.execution.arn": "arn:test",
                         "faas.invocation_id": "invocation-2",
+                        "span.name": "child",
+                        "span.kind": "INTERNAL",
                         "custom.metadata": {
                             "attempt": 2,
                             "labels": ["durable", "resumed"],
@@ -379,7 +387,11 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
                     "select": {"name": "child"},
                     "expect": {
                         "status": "ERROR",
-                        "attributes": {"missing.key": "value"},
+                        "attributes": {
+                            "missing.key": "value",
+                            "span.name": "not-child",
+                            "span.kind": "SERVER",
+                        },
                         "links": [],
                     },
                 },
@@ -392,6 +404,8 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
     assert "span_assertions[1].select matched 2 spans; it must select exactly one" in errors
     assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
     assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
+    assert "span_assertions[2].expect.attributes.span.name: expected 'not-child'" in errors
+    assert "span_assertions[2].expect.attributes.span.kind: expected 'SERVER'" in errors
     assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
 
 
