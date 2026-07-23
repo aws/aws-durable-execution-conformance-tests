@@ -56,7 +56,6 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
                 "ERROR",
                 "OK",
                 "UNSET",
-                "${/^(?:ERROR|UNSET)$/}",
                 "${/^(?:OK|UNSET)$/}",
             }
             assert expected["service_name"] == "invocation"

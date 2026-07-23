@@ -37,11 +37,24 @@ TelemetryAssertions:
   span_assertions:
     - select:
         name: invocation
+        status: UNSET
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
       expect:
-        status: "${/^(?:ERROR|UNSET)$/}"
+        status: UNSET
+        service_name: invocation
+        links: []
+        attributes:
+          span.name: invocation
+          span.kind: SERVER
+          durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: invocation
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        status: ERROR
         service_name: invocation
         links: []
         attributes:
@@ -53,7 +66,7 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
-        status: "${/^(?:ERROR|UNSET)$/}"
+        status: ERROR
         service_name: invocation
         links: []
         attributes:

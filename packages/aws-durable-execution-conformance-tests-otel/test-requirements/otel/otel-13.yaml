@@ -44,7 +44,7 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        status: "${/^(?:ERROR|UNSET)$/}"
+        status: ERROR
         service_name: invocation
         links: []
         attributes:
