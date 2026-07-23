@@ -2,7 +2,6 @@ name: Python OpenTelemetry
 
 on:
   pull_request:
-    branches: [main]
     paths:
       - .github/workflows/python-opentelemetry.yml
       - packages/aws-durable-execution-conformance-tests/**
@@ -42,7 +41,9 @@ env:
 jobs:
   xray:
     name: ADOT + X-Ray
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
