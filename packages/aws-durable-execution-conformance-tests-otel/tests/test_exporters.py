@@ -54,6 +54,18 @@ def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: st
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
+def test_adot_java_uses_current_distro_wrapper() -> None:
+    config = AdotExporterProfile().configure(
+        _options(
+            "java",
+            layer_arn="arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16",
+        )
+    )
+
+    assert config.environment["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/otel-instrument"
+    assert config.parameter_overrides["OtelExecWrapper"] == "/opt/otel-instrument"
+
+
 def test_adot_requires_explicit_layer_arn() -> None:
     with pytest.raises(ValueError, match="pass --otel-layer-arn or set ADOT_PYTHON_LAYER_ARN"):
         AdotExporterProfile().configure(_options())

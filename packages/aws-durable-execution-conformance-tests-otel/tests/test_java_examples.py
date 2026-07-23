@@ -74,6 +74,8 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
+    assert "Default: /opt/otel-instrument" in template
+    assert "/opt/otel-handler" not in template
 
 
 def test_java_example_template_handlers_have_sources() -> None:
@@ -104,11 +106,13 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
-        "opentelemetry-exporter-otlp",
+        "aws-distro-opentelemetry-xray-udp-span-exporter",
     } <= artifacts
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
+    assert "AwsXrayUdpSpanExporterBuilder" in handler
+    assert '"AWS_XRAY_DAEMON_ADDRESS"' in handler
 
 
 def test_java_workflow_uses_supported_adot_distro_layer() -> None:

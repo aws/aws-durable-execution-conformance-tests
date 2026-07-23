@@ -98,8 +98,9 @@ stabilizes.
 The self-contained [Java SAM project](examples/java/README.md) implements the
 same OTel requirements with the Java SDK and its OTel plugin. It builds one
 shaded JAR containing all handlers and uses the `AWSOpenTelemetryDistroJava`
-layer as a collector-only extension so the plugin remains the sole tracer
-provider.
+layer for Lambda instrumentation. The plugin keeps its dedicated tracer
+provider and sends durable spans to Lambda's X-Ray daemon with ADOT's X-Ray
+UDP exporter.
 
 ## Third-Party Plugins
 

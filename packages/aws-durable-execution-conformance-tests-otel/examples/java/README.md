@@ -59,9 +59,10 @@ durable-execution-conformance \
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
 The template sets `AWS_LAMBDA_EXEC_WRAPPER` from `OtelExecWrapper` so the
-`AWSOpenTelemetryDistroJava` layer initializes its collector and built-in
+`AWSOpenTelemetryDistroJava` layer initializes its Java agent and built-in
 Lambda instrumentation. The Java SDK plugin uses a dedicated tracer provider
-for durable spans and exports them to that collector over OTLP.
+for durable spans and ADOT's X-Ray UDP exporter sends them through the X-Ray
+daemon available in Lambda.
 
 ## Build Only
 

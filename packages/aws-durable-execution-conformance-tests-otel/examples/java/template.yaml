@@ -11,8 +11,8 @@ Parameters:
     Description: AWSOpenTelemetryDistroJava Lambda layer used to export OpenTelemetry spans
   OtelExecWrapper:
     Type: String
-    Default: /opt/otel-handler
-    Description: AWSOpenTelemetryDistroJava wrapper that initializes the collector
+    Default: /opt/otel-instrument
+    Description: AWSOpenTelemetryDistroJava wrapper that initializes the Java agent
   OtelServiceName:
     Type: String
     Default: invocation
