@@ -1,4 +1,4 @@
-name: OpenTelemetry hosted integrations
+name: Python OpenTelemetry
 
 on:
   pull_request:
