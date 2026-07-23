@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from aws_durable_execution_conformance_tests import config
@@ -75,6 +76,15 @@ class EventFileError(Exception):
     def __init__(self, file_path: str, reason: str):
         super().__init__(f"Failed to parse event file '{file_path}': {reason}")
         self.file_path = file_path
+        self.reason = reason
+
+
+class InvokeError(Exception):
+    """Raised when a direct Lambda invocation fails."""
+
+    def __init__(self, function_name: str, reason: str):
+        super().__init__(f"Failed to invoke function '{function_name}': {reason}")
+        self.function_name = function_name
         self.reason = reason
 
 
@@ -355,42 +365,6 @@ class CommandBuilder:
         return cmd
 
     @staticmethod
-    def invoke_command(
-        function_name: str,
-        stack_name: str | None = None,
-        event_file: str | None = None,
-        region: str | None = None,
-        output_format: str | None = None,
-        parameters: list[str] | None = None,
-    ) -> list[str]:
-        """Construct the argument list for sam remote invoke.
-
-        Args:
-            function_name: Logical resource ID of the Lambda function.
-            stack_name: Optional CloudFormation stack name.
-            event_file: Optional path to the event JSON file.
-            region: Optional AWS region.
-            output_format: Optional output format ("json" or "text").
-            parameters: Optional list of Boto3 parameter strings.
-
-        Returns:
-            List of command arguments suitable for subprocess invocation.
-        """
-        cmd = ["sam", "remote", "invoke", function_name]
-        if stack_name is not None:
-            cmd.extend(["--stack-name", stack_name])
-        if event_file is not None:
-            cmd.extend(["--event-file", event_file])
-        if region is not None:
-            cmd.extend(["--region", region])
-        if output_format is not None:
-            cmd.extend(["--output", output_format])
-        if parameters is not None:
-            for param in parameters:
-                cmd.extend(["--parameter", param])
-        return cmd
-
-    @staticmethod
     def local_invoke_command(
         function_name: str,
         event_file: str | None = None,
@@ -627,7 +601,6 @@ class Invoker:
     Args:
         stack_name: CloudFormation stack name containing the Lambda function (for remote invoke).
         region: Optional AWS region.
-        output_format: Optional output format ("json" or "text") for remote invoke.
         template_file: Optional path to SAM template file (for local invoke).
     """
 
@@ -635,18 +608,126 @@ class Invoker:
         self,
         stack_name: str,
         region: str | None = None,
-        output_format: str | None = None,
         template_file: str | None = None,
+        lambda_client: Any | None = None,
+        cfn_client: Any | None = None,
     ):
         self._stack_name = stack_name
         self._region = region
-        self._output_format = output_format
         self._template_file = template_file
+        # Clients are created lazily on first remote invocation so that
+        # local_invoke() works without AWS region/credential resolution
+        # (which may probe IMDS or fail offline).
+        self._lambda_client = lambda_client
+        self._cfn_client = cfn_client
+        self._function_map: dict[str, str] | None = None
+
+    _BOTO_CONFIG = Config(retries={"mode": "adaptive", "max_attempts": 10})
+
+    def _get_lambda_client(self) -> Any:
+        if self._lambda_client is None:
+            self._lambda_client = boto3.client("lambda", region_name=self._region, config=self._BOTO_CONFIG)
+        return self._lambda_client
+
+    def _get_cfn_client(self) -> Any:
+        if self._cfn_client is None:
+            self._cfn_client = boto3.client("cloudformation", region_name=self._region, config=self._BOTO_CONFIG)
+        return self._cfn_client
 
     @property
     def stack_name(self) -> str:
         """CloudFormation stack name containing the Lambda function."""
         return self._stack_name
+
+    def _resolve_function(self, logical_id: str) -> str:
+        """Resolve a logical resource ID to its physical Lambda function name.
+
+        The whole stack is resolved with a single (paginated) CloudFormation
+        call on first use and cached for the lifetime of the Invoker, avoiding
+        a per-invocation control-plane lookup.
+
+        Raises:
+            InvokeError: If the stack cannot be listed or the logical ID is
+                not a Lambda function in the stack.
+        """
+        if self._function_map is None:
+            mapping: dict[str, str] = {}
+            try:
+                paginator = self._get_cfn_client().get_paginator("list_stack_resources")
+                for page in paginator.paginate(StackName=self._stack_name):
+                    for res in page["StackResourceSummaries"]:
+                        if res["ResourceType"] == "AWS::Lambda::Function":
+                            mapping[res["LogicalResourceId"]] = res["PhysicalResourceId"]
+            except (BotoCoreError, ClientError) as e:
+                raise InvokeError(logical_id, f"could not list stack resources: {e}") from e
+            self._function_map = mapping
+        physical = self._function_map.get(logical_id)
+        if not physical:
+            raise InvokeError(
+                logical_id,
+                f"no Lambda function with this logical ID in stack '{self._stack_name}'",
+            )
+        return physical
+
+    def _invoke_boto3(
+        self,
+        function_name: str,
+        event_file_path: str | None,
+        invocation_type: str,
+    ) -> InvocationResult:
+        """Invoke a durable Lambda function directly via the Lambda API.
+
+        Durable functions must be invoked with a qualified ARN, so the
+        qualifier is always set explicitly. The output mirrors the JSON that
+        ``sam remote invoke --output json`` prints: the full Invoke response
+        with the payload read into a string, including the top-level
+        ``DurableExecutionArn`` field consumed by the validator.
+        """
+        payload_bytes = b"{}"
+        if event_file_path is not None:
+            event_data = EventFileReader.read(event_file_path)
+            payload = EventFileReader.extract_payload(event_data)
+            payload_bytes = json.dumps(payload).encode()
+
+        physical_name = self._resolve_function(function_name)
+        try:
+            response = self._get_lambda_client().invoke(
+                FunctionName=physical_name,
+                InvocationType=invocation_type,
+                Qualifier="$LATEST",
+                Payload=payload_bytes,
+            )
+            # Reading the StreamingBody is a network operation too: it can raise
+            # streaming/timeout errors after a successful 200 response, and the
+            # bytes may fail to decode. Keep it inside the wrapping so a single
+            # bad invocation records one failed requirement instead of aborting
+            # the whole suite run.
+            payload_str = response["Payload"].read().decode() if "Payload" in response else ""
+        except (BotoCoreError, ClientError, UnicodeDecodeError) as e:
+            raise InvokeError(function_name, str(e)) from e
+
+        execution_arn = response.get("DurableExecutionArn") or response.get("ResponseMetadata", {}).get(
+            "HTTPHeaders", {}
+        ).get("x-amz-durable-execution-arn")
+
+        output: dict[str, Any] = {
+            "StatusCode": response.get("StatusCode"),
+            "Payload": payload_str,
+        }
+        if execution_arn:
+            output["DurableExecutionArn"] = execution_arn
+        if response.get("ExecutedVersion"):
+            output["ExecutedVersion"] = response["ExecutedVersion"]
+        if response.get("FunctionError"):
+            output["FunctionError"] = response["FunctionError"]
+
+        return InvocationResult(
+            success=True,
+            command=f"lambda.invoke {physical_name} (InvocationType={invocation_type})",
+            output=json.dumps(output),
+            stderr="",
+            function_name=function_name,
+        )
 
     def invoke(
         self,
@@ -656,65 +737,36 @@ class Invoker:
     ) -> InvocationResult:
         """Invoke a Lambda function with an optional event file.
 
-        Reads the event file, extracts the payload, writes it to a temp file,
-        builds the command, executes it, and returns the result.
+        Resolves the logical resource ID to the physical function name via
+        CloudFormation (cached per stack) and calls the Lambda Invoke API
+        directly.
 
         Args:
             function_name: Logical resource ID of the Lambda function.
             event_file_path: Optional path to a JSON event file.
-            parameters: Optional list of Boto3 parameter strings.
+            parameters: Optional list of "Key=Value" overrides; only
+                "InvocationType=<type>" is honored.
 
         Returns:
-            InvocationResult with success status and command output.
+            InvocationResult with success status and the Invoke response as
+            JSON output (including DurableExecutionArn).
 
         Raises:
             FileNotFoundError: If event file does not exist.
             EventFileError: If event file contains invalid JSON.
-            SamCliError: If sam remote invoke exits with non-zero code.
+            InvokeError: If resolution or the Invoke API call fails.
         """
-        temp_file_path = None
-        try:
-            event_file_for_command = None
-
-            if event_file_path is not None:
-                event_data = EventFileReader.read(event_file_path)
-                payload = EventFileReader.extract_payload(event_data)
-
-                fd, temp_file_path = tempfile.mkstemp(suffix=".json")
-                with open(fd, "w", closefd=True) as f:
-                    json.dump(payload, f)
-
-                event_file_for_command = temp_file_path
-
-            cmd = CommandBuilder.invoke_command(
-                function_name=function_name,
-                stack_name=self._stack_name,
-                event_file=event_file_for_command,
-                region=self._region,
-                output_format=self._output_format,
-                parameters=parameters,
-            )
-
-            result = SamExecutor.run(cmd)
-            command_str = " ".join(cmd)
-
-            if result.returncode != 0:
-                raise SamCliError(
-                    command=command_str,
-                    exit_code=result.returncode,
-                    stderr=result.stderr,
+        invocation_type = "RequestResponse"
+        for param in parameters or []:
+            key, _, value = param.partition("=")
+            if key == "InvocationType" and value:
+                invocation_type = value
+            else:
+                raise InvokeError(
+                    function_name,
+                    f"unsupported invoke parameter '{param}'; only 'InvocationType=<type>' is supported",
                 )
-
-            return InvocationResult(
-                success=True,
-                command=command_str,
-                output=result.stdout,
-                stderr=result.stderr,
-                function_name=function_name,
-            )
-        finally:
-            if temp_file_path is not None:
-                Path(temp_file_path).unlink(missing_ok=True)
+        return self._invoke_boto3(function_name, event_file_path, invocation_type)
 
     def invoke_async(
         self,
@@ -723,65 +775,24 @@ class Invoker:
     ) -> InvocationResult:
         """Invoke a Lambda function asynchronously (InvocationType=Event).
 
-        Uses sam remote invoke with --parameter InvocationType=Event so the
-        function is triggered but the caller does not wait for completion.
+        The function is triggered without waiting for completion. Durable
+        functions still return the DurableExecutionArn for Event invocations,
+        surfaced in the JSON output.
 
         Args:
             function_name: Logical resource ID of the Lambda function.
             event_file_path: Optional path to a JSON event file.
 
         Returns:
-            InvocationResult with success status. Output may be minimal
-            since the invocation is async.
+            InvocationResult with success status. The payload is empty for
+            Event invocations; DurableExecutionArn is present in the output.
 
         Raises:
             FileNotFoundError: If event file does not exist.
             EventFileError: If event file contains invalid JSON.
-            SamCliError: If sam remote invoke exits with non-zero code.
+            InvokeError: If resolution or the Invoke API call fails.
         """
-        temp_file_path = None
-        try:
-            event_file_for_command = None
-
-            if event_file_path is not None:
-                event_data = EventFileReader.read(event_file_path)
-                payload = EventFileReader.extract_payload(event_data)
-
-                fd, temp_file_path = tempfile.mkstemp(suffix=".json")
-                with open(fd, "w", closefd=True) as f:
-                    json.dump(payload, f)
-
-                event_file_for_command = temp_file_path
-
-            cmd = CommandBuilder.invoke_command(
-                function_name=function_name,
-                stack_name=self._stack_name,
-                event_file=event_file_for_command,
-                region=self._region,
-                output_format=self._output_format,
-                parameters=["InvocationType=Event"],
-            )
-
-            result = SamExecutor.run(cmd)
-            command_str = " ".join(cmd)
-
-            if result.returncode != 0:
-                raise SamCliError(
-                    command=command_str,
-                    exit_code=result.returncode,
-                    stderr=result.stderr,
-                )
-
-            return InvocationResult(
-                success=True,
-                command=command_str,
-                output=result.stdout,
-                stderr=result.stderr,
-                function_name=function_name,
-            )
-        finally:
-            if temp_file_path is not None:
-                Path(temp_file_path).unlink(missing_ok=True)
+        return self._invoke_boto3(function_name, event_file_path, "Event")
 
     def local_invoke(
         self,
