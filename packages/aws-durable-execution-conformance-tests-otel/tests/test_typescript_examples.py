@@ -163,5 +163,6 @@ def test_custom_collector_layer_includes_the_s3_exporter_and_config() -> None:
     assert "awss3_version=v0.151.0" in build_script
     assert 'cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"' in build_script
     assert "awss3exporter@$awss3_version" in build_script
+    assert 'cd "$collector_dir"\n  go mod tidy' in build_script
     assert "lambdacomponents.exporter.awss3" in build_script
     assert "awss3exporter.NewFactory()" in component

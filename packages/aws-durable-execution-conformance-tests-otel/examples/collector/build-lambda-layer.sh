@@ -27,6 +27,10 @@ cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"
     "-require=github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awss3exporter@$awss3_version"
   go mod tidy
 )
+(
+  cd "$collector_dir"
+  go mod tidy
+)
 
 build_tags=lambdacomponents.custom,lambdacomponents.receiver.otlp,lambdacomponents.exporter.awss3
 BUILDTAGS="$build_tags" make -C "$collector_dir" package GOARCH=amd64
