@@ -41,7 +41,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: ai-pr-review-runtime
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -177,7 +177,19 @@ jobs:
             exit 1
           fi
 
-          summary="$(jq -er '.summary | select(length > 0)' <<< "$REVIEW_OUTPUT")"
+          summary="$(
+            jq -ser '
+              select(length == 1) |
+              .[0] |
+              select(type == "object" and keys == ["summary"]) |
+              .summary |
+              select(
+                type == "string" and
+                length <= 4000 and
+                test("[^[:space:]]")
+              )
+            ' <<< "$REVIEW_OUTPUT"
+          )"
           summary="$(
             sed -E \
               -e '1{/^## (Claude|Codex) AI review$/d;}' \
@@ -210,7 +222,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: ai-pr-review-runtime
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -323,7 +335,12 @@ jobs:
           for attempt in 1 2; do
             sudo -u codex-review -- rm -f "$output_file"
 
-            if sudo -u codex-review -- env \
+            # Keep enough of the job budget for a complete second attempt.
+            if sudo -u codex-review -- timeout \
+              --signal=TERM \
+              --kill-after=30s \
+              20m \
+              env \
               CODEX_HOME=/home/codex-review/.codex \
               "$codex_bin" exec \
               --skip-git-repo-check \
@@ -337,14 +354,18 @@ jobs:
               --config 'default_permissions=":read-only"' \
               --ephemeral < .github/prompts/ai-pr-review.md
             then
-              if sudo -u codex-review -- jq -e '
-                type == "object" and
-                keys == ["summary"] and
+              if sudo -u codex-review -- jq -se '
+                length == 1 and
                 (
-                  .summary |
-                  type == "string" and
-                  length <= 4000 and
-                  test("[^[:space:]]")
+                  .[0] |
+                  type == "object" and
+                  keys == ["summary"] and
+                  (
+                    .summary |
+                    type == "string" and
+                    length <= 4000 and
+                    test("[^[:space:]]")
+                  )
                 )
               ' "$output_file" > /dev/null
               then
@@ -380,9 +401,17 @@ jobs:
           set -euo pipefail
 
           CODEX_REVIEW="$(
-            jq -er \
-              '.summary | select(type == "string" and test("[^[:space:]]"))' \
-              "$CODEX_REVIEW_FILE"
+            jq -ser '
+              select(length == 1) |
+              .[0] |
+              select(type == "object" and keys == ["summary"]) |
+              .summary |
+              select(
+                type == "string" and
+                length <= 4000 and
+                test("[^[:space:]]")
+              )
+            ' "$CODEX_REVIEW_FILE"
           )"
           CODEX_REVIEW="$(
             sed -E \
