@@ -1,0 +1,28 @@
+{
+  "name": "@aws/durable-execution-conformance-tests-otel-typescript-examples",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "clean": "rm -rf dist node_modules .rollup.cache",
+    "build": "rollup --config rollup.config.mjs --silent",
+    "install-sdk-main": "./scripts/install-sdk-main.sh",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.9",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.2",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "@types/node": "^22.19.11",
+    "rollup": "^4.57.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3"
+  }
+}
