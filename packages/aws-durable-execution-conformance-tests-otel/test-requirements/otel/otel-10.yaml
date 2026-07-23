@@ -62,7 +62,7 @@ TelemetryAssertions:
         links: []
         attributes:
           span.name: invocation
-          span.kind: SERVER
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-callback
@@ -91,7 +91,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: "${/^otel-callback(?: create callback id|-callback)$/}"

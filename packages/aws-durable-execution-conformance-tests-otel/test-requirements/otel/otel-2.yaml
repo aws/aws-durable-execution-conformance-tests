@@ -44,7 +44,7 @@ TelemetryAssertions:
         links: []
         attributes:
           span.name: invocation
-          span.kind: SERVER
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-wait
@@ -67,7 +67,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-wait
@@ -93,7 +93,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-after-resume
@@ -117,7 +117,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-after-resume attempt 1
@@ -142,5 +142,5 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

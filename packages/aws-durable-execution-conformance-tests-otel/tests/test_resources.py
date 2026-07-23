@@ -73,10 +73,10 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
                 assert "trace_id" not in linked_span
                 assert "span_id" not in linked_span
             assert expected["attributes"]["span.name"] == selected_name
-            assert expected["attributes"]["span.kind"] == ("SERVER" if selected_name == "invocation" else "INTERNAL")
+            assert expected["attributes"]["span.kind"] == "INTERNAL"
             if parent := expected.get("parent"):
                 assert parent["attributes"]["span.name"] == parent["name"]
-                assert parent["attributes"]["span.kind"] == ("SERVER" if parent["name"] == "invocation" else "INTERNAL")
+                assert parent["attributes"]["span.kind"] == "INTERNAL"
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])

@@ -46,7 +46,7 @@ TelemetryAssertions:
         links: []
         attributes:
           span.name: invocation
-          span.kind: SERVER
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: invocation
@@ -58,7 +58,7 @@ TelemetryAssertions:
         links: []
         attributes:
           span.name: invocation
-          span.kind: SERVER
+          span.kind: INTERNAL
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
     - select:
         name: otel-invoke
@@ -81,7 +81,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-invoke
@@ -107,5 +107,5 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

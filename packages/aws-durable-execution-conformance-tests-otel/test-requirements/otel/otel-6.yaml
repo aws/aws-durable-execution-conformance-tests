@@ -56,7 +56,7 @@ TelemetryAssertions:
         links: []
         attributes:
           span.name: invocation
-          span.kind: SERVER
+          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-parallel
@@ -79,7 +79,7 @@ TelemetryAssertions:
           name: invocation
           attributes:
             span.name: invocation
-            span.kind: SERVER
+            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-parallel-branch-a
