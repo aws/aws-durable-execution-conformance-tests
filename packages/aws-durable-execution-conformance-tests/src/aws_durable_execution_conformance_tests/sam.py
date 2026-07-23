@@ -615,10 +615,24 @@ class Invoker:
         self._stack_name = stack_name
         self._region = region
         self._template_file = template_file
-        boto_config = Config(retries={"mode": "adaptive", "max_attempts": 10})
-        self._lambda_client = lambda_client or boto3.client("lambda", region_name=region, config=boto_config)
-        self._cfn_client = cfn_client or boto3.client("cloudformation", region_name=region, config=boto_config)
+        # Clients are created lazily on first remote invocation so that
+        # local_invoke() works without AWS region/credential resolution
+        # (which may probe IMDS or fail offline).
+        self._lambda_client = lambda_client
+        self._cfn_client = cfn_client
         self._function_map: dict[str, str] | None = None
+
+    _BOTO_CONFIG = Config(retries={"mode": "adaptive", "max_attempts": 10})
+
+    def _get_lambda_client(self) -> Any:
+        if self._lambda_client is None:
+            self._lambda_client = boto3.client("lambda", region_name=self._region, config=self._BOTO_CONFIG)
+        return self._lambda_client
+
+    def _get_cfn_client(self) -> Any:
+        if self._cfn_client is None:
+            self._cfn_client = boto3.client("cloudformation", region_name=self._region, config=self._BOTO_CONFIG)
+        return self._cfn_client
 
     @property
     def stack_name(self) -> str:
@@ -639,7 +653,7 @@ class Invoker:
         if self._function_map is None:
             mapping: dict[str, str] = {}
             try:
-                paginator = self._cfn_client.get_paginator("list_stack_resources")
+                paginator = self._get_cfn_client().get_paginator("list_stack_resources")
                 for page in paginator.paginate(StackName=self._stack_name):
                     for res in page["StackResourceSummaries"]:
                         if res["ResourceType"] == "AWS::Lambda::Function":
@@ -677,7 +691,7 @@ class Invoker:
 
         physical_name = self._resolve_function(function_name)
         try:
-            response = self._lambda_client.invoke(
+            response = self._get_lambda_client().invoke(
                 FunctionName=physical_name,
                 InvocationType=invocation_type,
                 Qualifier="$LATEST",

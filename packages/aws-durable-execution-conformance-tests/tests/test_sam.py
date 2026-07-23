@@ -291,4 +291,23 @@ def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
         invoker.invoke("StepBasic")
 
 
+def test_local_invoke_does_not_create_aws_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    """local_invoke must work offline -- no boto3 client construction."""
+
+    def _forbidden(*_a: object, **_k: object) -> object:
+        raise AssertionError("boto3.client must not be called for local invocation")
+
+    monkeypatch.setattr(sam.boto3, "client", _forbidden)
+
+    def _run(command: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, 0, stdout="Execution Summary", stderr="")
+
+    monkeypatch.setattr(sam.SamExecutor, "run", _run)
+
+    invoker = sam.Invoker(stack_name="unused", template_file="template.yaml")
+    result = invoker.local_invoke("StepBasic")
+
+    assert result.success is True
+
+
 # endregion
