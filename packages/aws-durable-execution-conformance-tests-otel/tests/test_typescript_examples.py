@@ -12,7 +12,7 @@ from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
 from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
+S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-s3-collector.yml"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -70,8 +70,10 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: nodejs22.x" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
-    assert "Default: /opt/otel-handler" in template
-    assert "OPENTELEMETRY_COLLECTOR_CONFIG_URI: /var/task/collector.yaml" in template
+    assert "Default: /opt/otel-instrument" in template
+    assert "HasOtelCollectorLayer: !Not" in template
+    assert '!Ref "AWS::NoValue"' in template
+    assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
 
@@ -125,7 +127,7 @@ def test_typescript_examples_build_sdk_packages_from_main() -> None:
 
 
 def test_typescript_workflow_builds_and_queries_the_s3_collector() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
@@ -138,7 +140,7 @@ def test_typescript_workflow_builds_and_queries_the_s3_collector() -> None:
 
 
 def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
     test_name = next(
         line.split(":", maxsplit=1)[1].strip() for line in workflow.splitlines() if line.startswith("  TEST_NAME:")
     )
@@ -148,17 +150,18 @@ def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
     assert len(f"{stack_name}-otel-18-target") <= 64
 
 
-def test_typescript_bundle_includes_the_s3_collector_config() -> None:
+def test_custom_collector_layer_includes_the_s3_exporter_and_config() -> None:
     rollup = (EXAMPLES_DIR / "rollup.config.mjs").read_text(encoding="utf-8")
     config = (EXAMPLES_DIR.parent / "collector" / "config.yaml").read_text(encoding="utf-8")
     build_script = (EXAMPLES_DIR.parent / "collector" / "build-lambda-layer.sh").read_text(encoding="utf-8")
     component = (EXAMPLES_DIR.parent / "collector" / "lambda" / "awss3.go").read_text(encoding="utf-8")
 
-    assert 'copyFileSync("../collector/config.yaml", resolve(dir, "collector.yaml"))' in rollup
+    assert "collector-config" not in rollup
     assert "endpoint: localhost:4318" in config
     assert "marshaler: otlp_json" in config
     assert "compression: gzip" in config
     assert "awss3_version=v0.151.0" in build_script
+    assert 'cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"' in build_script
     assert "awss3exporter@$awss3_version" in build_script
     assert "lambdacomponents.exporter.awss3" in build_script
     assert "awss3exporter.NewFactory()" in component

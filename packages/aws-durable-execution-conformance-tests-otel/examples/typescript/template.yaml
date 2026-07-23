@@ -8,19 +8,22 @@ Parameters:
     Description: Pre-created execution role for the test functions
   OtelLayerArn:
     Type: String
-    Description: OpenTelemetry JavaScript Lambda layer used to instrument the function
+    Description: AWSOpenTelemetryDistroJs Lambda layer used to export spans
   OtelCollectorLayerArn:
     Type: String
-    Description: OpenTelemetry Collector Lambda extension layer with the AWS S3 exporter
+    Default: ""
+    Description: Optional OpenTelemetry Collector Lambda extension layer
   OtelCollectorBucket:
     Type: String
+    Default: ""
     Description: S3 bucket where the collector writes OTLP trace objects
   OtelCollectorPrefix:
     Type: String
-    Description: Run-specific S3 key prefix where the collector writes OTLP trace objects
+    Default: ""
+    Description: S3 key prefix where the collector writes OTLP trace objects
   OtelExecWrapper:
     Type: String
-    Default: /opt/otel-handler
+    Default: /opt/otel-instrument
     Description: Lambda execution wrapper supplied by the exporter profile
   OtelServiceName:
     Type: String
@@ -44,6 +47,9 @@ Parameters:
     Default: ""
     Description: Comma-separated secret environment variable names
 
+Conditions:
+  HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+
 Globals:
   Function:
     Runtime: nodejs22.x
@@ -52,9 +58,10 @@ Globals:
     Timeout: 60
     MemorySize: 512
     Tracing: Active
-    Layers:
-      - !Ref OtelLayerArn
-      - !Ref OtelCollectorLayerArn
+    Layers: !If
+      - HasOtelCollectorLayer
+      - [!Ref OtelLayerArn, !Ref OtelCollectorLayerArn]
+      - [!Ref OtelLayerArn]
     DurableConfig:
       ExecutionTimeout: 300
       RetentionPeriodInDays: 1
@@ -71,7 +78,10 @@ Globals:
         OTEL_S3_BUCKET: !Ref OtelCollectorBucket
         OTEL_S3_PREFIX: !Ref OtelCollectorPrefix
         OTEL_TRACES_SAMPLER: always_on
-        OPENTELEMETRY_COLLECTOR_CONFIG_URI: /var/task/collector.yaml
+        OPENTELEMETRY_COLLECTOR_CONFIG_URI: !If
+          - HasOtelCollectorLayer
+          - /opt/collector-config/config-s3.yaml
+          - !Ref "AWS::NoValue"
 
 Resources:
   Otel1Success:

@@ -20,6 +20,7 @@ if [[ ! -f "$collector_dir/go.mod" || ! -f "$components_dir/exporter/pkg.go" ]];
 fi
 
 cp "$script_dir/lambda/awss3.go" "$components_dir/exporter/awss3.go"
+cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"
 (
   cd "$components_dir"
   go mod edit \

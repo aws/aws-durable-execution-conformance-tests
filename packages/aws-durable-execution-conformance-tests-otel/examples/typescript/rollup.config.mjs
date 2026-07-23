@@ -2,7 +2,7 @@ import commonJs from "@rollup/plugin-commonjs";
 import json from "@rollup/plugin-json";
 import nodeResolve from "@rollup/plugin-node-resolve";
 import typescript from "@rollup/plugin-typescript";
-import { copyFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "rollup";
 
@@ -29,12 +29,6 @@ export default defineConfig({
     nodeResolve({ preferBuiltins: true }),
     json(),
     commonJs(),
-    {
-      name: "collector-config",
-      writeBundle({ dir }) {
-        copyFileSync("../collector/config.yaml", resolve(dir, "collector.yaml"));
-      },
-    },
   ],
   onwarn(warning, warn) {
     if (

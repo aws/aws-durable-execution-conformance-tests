@@ -9,6 +9,18 @@ Parameters:
   OtelLayerArn:
     Type: String
     Description: Lambda layer used to export OpenTelemetry spans
+  OtelCollectorLayerArn:
+    Type: String
+    Default: ""
+    Description: Optional OpenTelemetry Collector Lambda extension layer
+  OtelCollectorBucket:
+    Type: String
+    Default: ""
+    Description: S3 bucket where the collector writes OTLP trace objects
+  OtelCollectorPrefix:
+    Type: String
+    Default: ""
+    Description: S3 key prefix where the collector writes OTLP trace objects
   OtelExecWrapper:
     Type: String
     Default: /opt/otel-instrument
@@ -35,6 +47,9 @@ Parameters:
     Default: ""
     Description: Comma-separated secret environment variable names
 
+Conditions:
+  HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+
 Globals:
   Function:
     Runtime: python3.13
@@ -43,8 +58,10 @@ Globals:
     Timeout: 60
     MemorySize: 256
     Tracing: Active
-    Layers:
-      - !Ref OtelLayerArn
+    Layers: !If
+      - HasOtelCollectorLayer
+      - [!Ref OtelLayerArn, !Ref OtelCollectorLayerArn]
+      - [!Ref OtelLayerArn]
     DurableConfig:
       ExecutionTimeout: 300
       RetentionPeriodInDays: 1
@@ -57,7 +74,13 @@ Globals:
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
         OTEL_PROPAGATORS: xray
+        OTEL_S3_BUCKET: !Ref OtelCollectorBucket
+        OTEL_S3_PREFIX: !Ref OtelCollectorPrefix
         OTEL_TRACES_SAMPLER: always_on
+        OPENTELEMETRY_COLLECTOR_CONFIG_URI: !If
+          - HasOtelCollectorLayer
+          - /opt/collector-config/config-s3.yaml
+          - !Ref "AWS::NoValue"
 
 Resources:
   Otel1Success:

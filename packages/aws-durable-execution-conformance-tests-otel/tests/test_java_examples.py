@@ -14,6 +14,7 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
+S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-s3-collector.yml"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
@@ -40,6 +41,9 @@ EXPECTED_MAPPINGS = [
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
+    "OtelCollectorBucket",
+    "OtelCollectorLayerArn",
+    "OtelCollectorPrefix",
     "OtelLayerArn",
     "OtelExecWrapper",
     "OtelServiceName",
@@ -75,6 +79,11 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Tracing: Active" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER" not in template
     assert "Default: /opt/otel-instrument" in template
+    assert "HasOtelCollectorLayer: !Not" in template
+    assert '!Ref "AWS::NoValue"' in template
+    assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
+    assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert "/opt/collector-config/config-s3.yaml" in template
 
 
 def test_java_example_template_handlers_have_sources() -> None:
@@ -106,12 +115,15 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
         "aws-distro-opentelemetry-xray-udp-span-exporter",
+        "opentelemetry-exporter-otlp",
     } <= artifacts
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
     assert "AwsXrayUdpSpanExporterBuilder" in handler
     assert '"AWS_XRAY_DAEMON_ADDRESS"' in handler
+    assert "OtlpGrpcSpanExporter" in handler
+    assert '"OTEL_EXPORTER_OTLP_ENDPOINT"' in handler
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
@@ -130,6 +142,24 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "--projects sdk,otel-plugin" in workflow
     assert "-Dexpression=project.version" in workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
+
+
+def test_java_s3_workflow_builds_and_queries_the_collector() -> None:
+    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "open-telemetry/opentelemetry-lambda" in workflow
+    assert "layer-collector/0.22.0" in workflow
+    assert "build-lambda-layer.sh" in workflow
+    assert "--compatible-runtimes java21" in workflow
+    assert "--language java" in workflow
+    assert "--otel-exporter community" in workflow
+    assert "--otel-endpoint http://localhost:4317" in workflow
+    assert "--otel-backend collector" in workflow
+    assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
+    assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
+    assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
+    assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
+    assert "delete-layer-version" in workflow
 
 
 def test_map_iteration_names_are_cross_sdk_compatible() -> None:

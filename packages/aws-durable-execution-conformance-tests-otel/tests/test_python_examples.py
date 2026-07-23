@@ -11,6 +11,7 @@ from pathlib import Path
 from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
+S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-s3-collector.yml"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -34,6 +35,9 @@ EXPECTED_MAPPINGS = [
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
+    "OtelCollectorBucket",
+    "OtelCollectorLayerArn",
+    "OtelCollectorPrefix",
     "OtelLayerArn",
     "OtelExecWrapper",
     "OtelServiceName",
@@ -66,6 +70,11 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
+    assert "HasOtelCollectorLayer: !Not" in template
+    assert '!Ref "AWS::NoValue"' in template
+    assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
+    assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert "/opt/collector-config/config-s3.yaml" in template
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
     for logical_id, _description_id in EXPECTED_MAPPINGS:
@@ -117,3 +126,21 @@ def test_python_examples_track_both_sdk_packages_from_main() -> None:
         "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
         "#subdirectory=packages/aws-durable-execution-sdk-python-otel"
     ) in requirements
+
+
+def test_python_s3_workflow_builds_and_queries_the_collector() -> None:
+    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "open-telemetry/opentelemetry-lambda" in workflow
+    assert "layer-collector/0.22.0" in workflow
+    assert "build-lambda-layer.sh" in workflow
+    assert "--compatible-runtimes python3.13" in workflow
+    assert "--language python" in workflow
+    assert "--otel-exporter community" in workflow
+    assert "--otel-endpoint http://localhost:4318" in workflow
+    assert "--otel-backend collector" in workflow
+    assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
+    assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
+    assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
+    assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
+    assert "delete-layer-version" in workflow

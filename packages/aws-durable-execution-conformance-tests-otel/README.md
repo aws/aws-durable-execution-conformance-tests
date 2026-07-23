@@ -33,6 +33,9 @@ The SDK test template must accept the non-secret parameters `OtelLayerArn`,
 `OtelExecWrapper`, `OtelServiceName`, `OtelTracesExporter`, and, for OTLP,
 `OtelExporterEndpoint`, `OtelSecretEnvironmentNames`, and a `NoEcho`
 `OtelExporterHeaders` parameter mapped to `OTEL_EXPORTER_OTLP_HEADERS`.
+Templates that support the Lambda-hosted S3 collector also accept optional
+`OtelCollectorLayerArn`, `OtelCollectorBucket`, and `OtelCollectorPrefix`
+parameters.
 Credentials and OTLP headers remain in environment variables or the CI secret
 store; the runner redacts the secret parameter from commands and SAM output.
 
@@ -85,10 +88,11 @@ The stock OpenTelemetry Lambda collector layer does not include
 `awss3exporter`. The included
 [`build-lambda-layer.sh`](examples/collector/build-lambda-layer.sh) adds that
 upstream component to a pinned `opentelemetry-lambda` checkout and builds a
-custom extension layer. The TypeScript hosted workflow publishes the layer for
-one run, sends each function's OTLP traffic to the local extension, queries the
-resulting S3 objects through the `collector` backend, and removes the stack,
-bucket, and layer version afterward.
+custom extension layer containing `config-s3.yaml`. Separate Python, Java, and
+TypeScript hosted workflows publish temporary language-compatible layer
+versions, send each function's OTLP traffic to the local extension, query the
+resulting S3 objects through the `collector` backend, and remove every
+temporary stack, bucket, and layer version afterward.
 
 ## Python Examples
 
@@ -105,8 +109,8 @@ The self-contained [Java SAM project](examples/java/README.md) implements the
 same OTel requirements with the Java SDK and its OTel plugin. It builds one
 shaded JAR containing all handlers and attaches the
 `AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
-remains the sole tracer provider and sends durable spans directly to Lambda's
-X-Ray daemon with ADOT's X-Ray UDP exporter.
+remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
+gRPC endpoint from the deployment environment.
 
 ## TypeScript Examples
 
