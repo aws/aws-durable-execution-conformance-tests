@@ -9,6 +9,7 @@ import gzip
 import json
 from compression import zstd
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +26,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingPolicy,
 )
+
+COLLECTOR_DIR = Path(__file__).resolve().parents[1] / "examples" / "collector"
 
 
 class _Body:
@@ -292,3 +295,19 @@ def test_collector_factory_requires_an_s3_backend_location() -> None:
             {"otel_backend_endpoint": "https://collector.example"},
             region="us-west-2",
         )
+
+
+def test_custom_collector_layer_includes_the_s3_exporter_and_config() -> None:
+    config = (COLLECTOR_DIR / "config.yaml").read_text(encoding="utf-8")
+    build_script = (COLLECTOR_DIR / "build-lambda-layer.sh").read_text(encoding="utf-8")
+    component = (COLLECTOR_DIR / "lambda" / "awss3.go").read_text(encoding="utf-8")
+
+    assert "endpoint: localhost:4318" in config
+    assert "marshaler: otlp_json" in config
+    assert "compression: gzip" in config
+    assert "awss3_version=v0.151.0" in build_script
+    assert 'cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"' in build_script
+    assert "awss3exporter@$awss3_version" in build_script
+    assert 'cd "$collector_dir"\n  go mod tidy' in build_script
+    assert "lambdacomponents.exporter.awss3" in build_script
+    assert "awss3exporter.NewFactory()" in component
