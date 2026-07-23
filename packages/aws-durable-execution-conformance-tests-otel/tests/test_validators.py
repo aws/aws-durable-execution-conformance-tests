@@ -163,8 +163,12 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     },
                     "links": [
                         {
-                            "trace_id": "1" * 32,
-                            "span_id": "2" * 16,
+                            "name": "root",
+                            "status": "OK",
+                            "attributes": {
+                                "durable.execution.arn": "arn:test",
+                                "span.name": "root",
+                            },
                         }
                     ],
                 },
@@ -206,8 +210,10 @@ def test_span_links_accept_any_of_matchers() -> None:
                             [],
                             [
                                 {
-                                    "trace_id": "${/^[0-9a-f]{32}$/}",
-                                    "span_id": "${/^[0-9a-f]{16}$/}",
+                                    "name": "root",
+                                    "attributes": {
+                                        "durable.execution.arn": "arn:test",
+                                    },
                                 }
                             ],
                         ]
@@ -219,6 +225,47 @@ def test_span_links_accept_any_of_matchers() -> None:
     )
 
     assert errors == []
+
+
+def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    missing_link = replace(
+        child,
+        links=(SpanLink(trace_id=child.trace_id, span_id="9" * 16),),
+    )
+
+    errors = validate_trace(
+        trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": [
+                        {
+                            "name": "not-root",
+                            "attributes": {"missing.key": "value"},
+                        }
+                    ]
+                },
+            }
+        },
+        _query(),
+    )
+    missing_errors = validate_trace(
+        replace(trace, spans=(root, missing_link)),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"links": [{"name": "root"}]},
+            }
+        },
+        _query(),
+    )
+
+    assert "span_assertions[0].expect.links[0].name: expected 'not-root'" in errors
+    assert "span_assertions[0].expect.links[0].attributes.missing.key: property is missing" in errors
+    assert missing_errors == ["span_assertions[0].expect.links[0]: linked span is not present in the trace"]
 
 
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:

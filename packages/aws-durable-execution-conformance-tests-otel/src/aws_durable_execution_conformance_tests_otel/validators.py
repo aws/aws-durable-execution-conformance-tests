@@ -151,8 +151,6 @@ def _span_expectation_errors(
     errors: list[str] = []
     for key, value in expected.items():
         child_path = f"{path}.{key}"
-        if key == "links" and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
-            continue
         if key not in actual:
             errors.append(f"{child_path}: property is missing")
             continue
@@ -189,6 +187,71 @@ def _parent_expectation_errors(
         path=path,
         feature_disparities=feature_disparities,
     )
+
+
+def _link_expectation_errors(
+    expected: Any,
+    span: Mapping[str, Any],
+    spans_by_id: Mapping[str, list[Mapping[str, Any]]],
+    *,
+    path: str,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    if BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
+        return []
+
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of: expected a non-empty sequence"]
+        if any(
+            not _link_expectation_errors(
+                alternative,
+                span,
+                spans_by_id,
+                path=path,
+                feature_disparities=feature_disparities,
+            )
+            for alternative in alternatives
+        ):
+            return []
+        return [f"{path}: linked spans do not match any allowed value"]
+
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence"]
+
+    links = span["links"]
+    if len(expected) != len(links):
+        return [f"{path}: expected {len(expected)} item(s), found {len(links)}"]
+
+    errors: list[str] = []
+    for index, (expected_span, link) in enumerate(zip(expected, links, strict=True)):
+        link_path = f"{path}[{index}]"
+        if not isinstance(expected_span, Mapping):
+            errors.append(f"{link_path} must be a mapping")
+            continue
+
+        linked_spans = [
+            candidate for candidate in spans_by_id.get(link["span_id"], []) if candidate["trace_id"] == link["trace_id"]
+        ]
+        if not linked_spans:
+            errors.append(f"{link_path}: linked span is not present in the trace")
+            continue
+        if len(linked_spans) > 1:
+            errors.append(
+                f"{link_path}: linked span id matched {len(linked_spans)} spans; it must identify exactly one"
+            )
+            continue
+
+        errors.extend(
+            _span_expectation_errors(
+                expected_span,
+                linked_spans[0],
+                path=link_path,
+                feature_disparities=feature_disparities,
+            )
+        )
+    return errors
 
 
 def _span_assertion_errors(
@@ -256,7 +319,7 @@ def _span_assertion_errors(
             errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
             continue
 
-        expected_properties = {key: value for key, value in expected.items() if key != "parent"}
+        expected_properties = {key: value for key, value in expected.items() if key not in {"links", "parent"}}
         expected_attributes = expected.get("attributes")
         for match_index, (_span_index, matched_span) in enumerate(matches):
             expectation_path = f"{path}.expect"
@@ -277,6 +340,16 @@ def _span_assertion_errors(
                         matched_span,
                         spans_by_id,
                         path=f"{expectation_path}.parent",
+                        feature_disparities=feature_disparities,
+                    )
+                )
+            if "links" in expected:
+                errors.extend(
+                    _link_expectation_errors(
+                        expected["links"],
+                        matched_span,
+                        spans_by_id,
+                        path=f"{expectation_path}.links",
                         feature_disparities=feature_disparities,
                     )
                 )

@@ -91,8 +91,9 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - trace_id: "${/^[0-9a-f]{32}$/}"
-            span_id: "${/^[0-9a-f]{16}$/}"
+          - name: otel-invoke
+            attributes:
+              durable.operation.id: ${INVOKE1}
         attributes:
           span.name: otel-invoke
           span.kind: INTERNAL

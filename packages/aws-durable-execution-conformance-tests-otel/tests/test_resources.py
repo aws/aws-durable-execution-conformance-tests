@@ -60,17 +60,19 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
                 "${/^(?:OK|UNSET)$/}",
             }
             assert expected["service_name"] == "invocation"
-            one_link = [
-                {
-                    "trace_id": "${/^[0-9a-f]{32}$/}",
-                    "span_id": "${/^[0-9a-f]{16}$/}",
-                }
-            ]
-            assert expected["links"] in (
-                [],
-                one_link,
-                {"$any_of": [[], one_link]},
-            )
+            links = expected["links"]
+            if isinstance(links, dict):
+                assert set(links) == {"$any_of"}
+                assert links["$any_of"][0] == []
+                links = links["$any_of"][1]
+            assert isinstance(links, list)
+            assert len(links) <= 1
+            if links:
+                linked_span = links[0]
+                assert linked_span["name"]
+                assert linked_span["attributes"]["durable.operation.id"]
+                assert "trace_id" not in linked_span
+                assert "span_id" not in linked_span
             assert expected["attributes"]["span.name"] == selected_name
             assert expected["attributes"]["span.kind"] == ("SERVER" if selected_name == "invocation" else "INTERNAL")
             if parent := expected.get("parent"):

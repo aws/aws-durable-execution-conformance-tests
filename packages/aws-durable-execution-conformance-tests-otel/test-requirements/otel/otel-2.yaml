@@ -77,8 +77,9 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - trace_id: "${/^[0-9a-f]{32}$/}"
-            span_id: "${/^[0-9a-f]{16}$/}"
+          - name: otel-wait
+            attributes:
+              durable.operation.id: ${WAIT1}
         attributes:
           span.name: otel-wait
           span.kind: INTERNAL

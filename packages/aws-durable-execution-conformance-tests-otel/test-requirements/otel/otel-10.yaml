@@ -75,8 +75,9 @@ TelemetryAssertions:
         links:
           $any_of:
             - []
-            - - trace_id: "${/^[0-9a-f]{32}$/}"
-                span_id: "${/^[0-9a-f]{16}$/}"
+            - - name: otel-callback
+                attributes:
+                  durable.operation.id: ${CALLBACK_CONTEXT}
         attributes:
           span.name: otel-callback
           span.kind: INTERNAL
@@ -124,8 +125,9 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - trace_id: "${/^[0-9a-f]{32}$/}"
-            span_id: "${/^[0-9a-f]{16}$/}"
+          - name: "${/^otel-callback(?: create callback id|-callback)$/}"
+            attributes:
+              durable.operation.id: ${CALLBACK1}
         attributes:
           span.name: "${/^otel-callback(?: create callback id|-callback)$/}"
           span.kind: INTERNAL
@@ -153,8 +155,9 @@ TelemetryAssertions:
         links:
           $any_of:
             - []
-            - - trace_id: "${/^[0-9a-f]{32}$/}"
-                span_id: "${/^[0-9a-f]{16}$/}"
+            - - name: "${/^otel-callback(?: submitter|-submitter)$/}"
+                attributes:
+                  durable.operation.id: ${SUBMITTER_STEP}
         attributes:
           span.name: "${/^otel-callback(?: submitter|-submitter)$/}"
           span.kind: INTERNAL
