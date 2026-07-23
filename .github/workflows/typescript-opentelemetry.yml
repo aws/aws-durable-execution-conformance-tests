@@ -26,7 +26,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
-  TEST_STACK_NAME: durable-execution-conformance-tests-typescript-xray
+  TEST_STACK_NAME: conformance-tests-typescript-xray
   TEST_NAME: typescript-xray
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
@@ -112,18 +112,23 @@ jobs:
           npm run typecheck
           npm run build
 
-      - name: Delete rolled-back test stack
+      - name: Delete rolled-back test stacks
         run: |
-          stack_status=$(
-            aws cloudformation describe-stacks \
-              --stack-name "$TEST_STACK_NAME" \
-              --query "Stacks[0].StackStatus" \
-              --output text 2>/dev/null || true
-          )
-          if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
-            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
-            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME"
-          fi
+          for stack_name in \
+            "$TEST_STACK_NAME" \
+            "durable-execution-conformance-tests-typescript-xray"
+          do
+            stack_status=$(
+              aws cloudformation describe-stacks \
+                --stack-name "$stack_name" \
+                --query "Stacks[0].StackStatus" \
+                --output text 2>/dev/null || true
+            )
+            if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+              aws cloudformation delete-stack --stack-name "$stack_name"
+              aws cloudformation wait stack-delete-complete --stack-name "$stack_name"
+            fi
+          done
 
       - name: Run X-Ray conformance tests
         env:
@@ -158,13 +163,13 @@ jobs:
         if: failure()
         run: |
           for case_number in {1..19}; do
-            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}"
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
           for case_number in 11 18; do
-            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}-target"
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}-target"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"

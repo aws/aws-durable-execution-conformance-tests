@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
 from aws_durable_execution_conformance_tests.validate import (
     parse_expected_failures,
     parse_function_descriptions,
@@ -131,3 +132,14 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "aws-observability/aws-otel-js-instrumentation/releases/latest" in workflow
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
+
+
+def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    test_name = next(
+        line.split(":", maxsplit=1)[1].strip() for line in workflow.splitlines() if line.startswith("  TEST_NAME:")
+    )
+    stack_name = f"{STACK_NAME_PREFIX}-{test_name}"
+
+    assert f"  TEST_STACK_NAME: {stack_name}" in workflow
+    assert len(f"{stack_name}-otel-18-target") <= 64

@@ -124,13 +124,13 @@ jobs:
         if: failure()
         run: |
           for case_number in {1..19}; do
-            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}"
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
           for case_number in 11 18; do
-            log_group="/aws/lambda/durable-execution-conformance-tests-${TEST_NAME}-otel-${case_number}-target"
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}-target"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"

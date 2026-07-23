@@ -17,7 +17,7 @@ _RUNTIME_ROOT: Path = _PROJECT_ROOT if _IN_SOURCE_CHECKOUT else Path.cwd()
 TESTS_DIR: Path = _REPOSITORY_TESTS_DIR if _IN_SOURCE_CHECKOUT else _PACKAGE_TESTS_DIR
 OUTPUT_DIR: Path = _RUNTIME_ROOT / "output"
 BUILD_DIR: Path = _RUNTIME_ROOT / "build"
-STACK_NAME_PREFIX = "durable-execution-conformance-tests"
+STACK_NAME_PREFIX = "conformance-tests"
 DEFAULT_REGION = "us-west-2"
 DEFAULT_MAX_WORKERS = 4
 
