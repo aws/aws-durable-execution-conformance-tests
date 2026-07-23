@@ -212,6 +212,12 @@ with no compression, gzip, or zstd. Hosted-backend coverage should be added
 separately and must read all credentials from environment variables or CI
 secrets.
 
+For Lambda-hosted tests, use
+[`build-lambda-layer.sh`](examples/collector/build-lambda-layer.sh) with the
+pinned upstream collector release. The TypeScript workflow is the reference
+for publishing the custom `awss3exporter` layer, granting prefix-scoped S3
+access, asserting the exported spans, and deleting all temporary resources.
+
 ## Pull-Request Checklist
 
 - The requirement is language-neutral and provider-neutral.

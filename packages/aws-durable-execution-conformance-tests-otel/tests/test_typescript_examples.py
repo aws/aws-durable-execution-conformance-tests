@@ -36,6 +36,9 @@ EXPECTED_MAPPINGS = [
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
+    "OtelCollectorBucket",
+    "OtelCollectorLayerArn",
+    "OtelCollectorPrefix",
     "OtelLayerArn",
     "OtelExecWrapper",
     "OtelServiceName",
@@ -67,7 +70,10 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: nodejs22.x" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
-    assert "Default: /opt/otel-instrument" in template
+    assert "Default: /opt/otel-handler" in template
+    assert "OPENTELEMETRY_COLLECTOR_CONFIG_URI: /var/task/collector.yaml" in template
+    assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
+    assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
 
 
 def test_typescript_template_handlers_have_sources() -> None:
@@ -118,11 +124,15 @@ def test_typescript_examples_build_sdk_packages_from_main() -> None:
     assert "InvocationOtelPlugin({ useDefaultTracerProvider: true })" in common
 
 
-def test_typescript_workflow_uses_current_adot_distro() -> None:
+def test_typescript_workflow_builds_and_queries_the_s3_collector() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "AWSOpenTelemetryDistroJs" in workflow
-    assert "aws-observability/aws-otel-js-instrumentation/releases/latest" in workflow
+    assert "open-telemetry/opentelemetry-lambda" in workflow
+    assert "layer-collector/0.22.0" in workflow
+    assert "build-lambda-layer.sh" in workflow
+    assert "--otel-exporter community" in workflow
+    assert "--otel-backend collector" in workflow
+    assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
 
@@ -136,3 +146,19 @@ def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
 
     assert f"  TEST_STACK_NAME: {stack_name}" in workflow
     assert len(f"{stack_name}-otel-18-target") <= 64
+
+
+def test_typescript_bundle_includes_the_s3_collector_config() -> None:
+    rollup = (EXAMPLES_DIR / "rollup.config.mjs").read_text(encoding="utf-8")
+    config = (EXAMPLES_DIR.parent / "collector" / "config.yaml").read_text(encoding="utf-8")
+    build_script = (EXAMPLES_DIR.parent / "collector" / "build-lambda-layer.sh").read_text(encoding="utf-8")
+    component = (EXAMPLES_DIR.parent / "collector" / "lambda" / "awss3.go").read_text(encoding="utf-8")
+
+    assert 'copyFileSync("../collector/config.yaml", resolve(dir, "collector.yaml"))' in rollup
+    assert "endpoint: localhost:4318" in config
+    assert "marshaler: otlp_json" in config
+    assert "compression: gzip" in config
+    assert "awss3_version=v0.151.0" in build_script
+    assert "awss3exporter@$awss3_version" in build_script
+    assert "lambdacomponents.exporter.awss3" in build_script
+    assert "awss3exporter.NewFactory()" in component

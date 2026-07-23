@@ -57,7 +57,7 @@ ADOT layer ARN with `--otel-layer-arn` or the runtime-specific
 `ADOT_<RUNTIME>_LAYER_ARN` environment variable. The hosted integration
 workflow discovers the latest Python layer from the ADOT release.
 
-## AWS S3 Collector Prototype
+## AWS S3 Collector
 
 The `collector` backend reads trace files written by the OpenTelemetry
 Collector Contrib
@@ -81,8 +81,14 @@ S3 destination through `--otel-backend-endpoint s3://bucket/prefix` (or
 the bucket and `s3:GetObject` under the prefix; the collector identity needs
 write access.
 
-This is a query-side prototype and is not wired into the hosted integration
-workflow.
+The stock OpenTelemetry Lambda collector layer does not include
+`awss3exporter`. The included
+[`build-lambda-layer.sh`](examples/collector/build-lambda-layer.sh) adds that
+upstream component to a pinned `opentelemetry-lambda` checkout and builds a
+custom extension layer. The TypeScript hosted workflow publishes the layer for
+one run, sends each function's OTLP traffic to the local extension, queries the
+resulting S3 objects through the `collector` backend, and removes the stack,
+bucket, and layer version afterward.
 
 ## Python Examples
 
