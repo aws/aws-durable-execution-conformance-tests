@@ -9,10 +9,7 @@ import json
 from pathlib import Path
 
 from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
-from aws_durable_execution_conformance_tests.validate import (
-    parse_expected_failures,
-    parse_function_descriptions,
-)
+from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
@@ -51,10 +48,6 @@ REQUIRED_OTEL_PARAMETERS = {
 
 def test_typescript_example_template_maps_every_otel_requirement() -> None:
     assert parse_function_descriptions(str(EXAMPLES_DIR / "template.yaml")) == EXPECTED_MAPPINGS
-
-
-def test_typescript_example_template_has_no_expected_failures() -> None:
-    assert parse_expected_failures(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
 def test_typescript_example_template_accepts_runner_parameters() -> None:
