@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - .github/workflows/otel-integration.yml
+      - .github/workflows/python-opentelemetry.yml
       - packages/aws-durable-execution-conformance-tests/**
       - packages/aws-durable-execution-conformance-tests-otel/**
   workflow_dispatch:

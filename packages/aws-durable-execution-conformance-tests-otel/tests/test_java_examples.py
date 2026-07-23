@@ -13,7 +13,7 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-otel-integration.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
