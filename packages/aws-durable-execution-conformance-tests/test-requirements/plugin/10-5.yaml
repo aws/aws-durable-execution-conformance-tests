@@ -1,0 +1,53 @@
+---
+# 10.5: Multiple plugins
+description: Multiple registered plugins all receive lifecycle hooks
+optional: true
+handler: |
+  A handler with a single step that returns a greeting string, configured with TWO
+  instrumentation plugins registered together (in order A, B). Plugin A logs
+  `CONFPLUGIN-A invocation-start` / `CONFPLUGIN-A invocation-end status=<status>`;
+  plugin B logs `CONFPLUGIN-B invocation-start` /
+  `CONFPLUGIN-B invocation-end status=<status>`. Hooks across multiple plugins
+  may be dispatched concurrently, so no cross-plugin ordering is asserted; only
+  plugin A's start-before-end ordering is asserted, plugin B's hooks are
+  asserted by count alone.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt,
+    execution succeeds in a single invocation. Both plugins receive the
+    invocation-start and invocation-end hooks exactly once.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Plugin A: start observed before its own end
+  - pattern: CONFPLUGIN-A invocation-start
+    count: 1
+  - pattern: CONFPLUGIN-A invocation-end status=SUCCEEDED
+    count: 1
+  # Plugin B: both hooks fired; cross-plugin ordering not asserted
+  - pattern: CONFPLUGIN-B invocation-start
+    count: 1
+    unordered: true
+  - pattern: CONFPLUGIN-B invocation-end status=SUCCEEDED
+    count: 1
+    unordered: true

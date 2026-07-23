@@ -1,0 +1,60 @@
+---
+# 10.4: Plugin error isolation
+description: Plugin exceptions are swallowed and never affect the execution outcome
+optional: true
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin whose EVERY hook first logs a line and then throws an
+  error. Hook log lines: `CONFPLUGIN faulty invocation-start`,
+  `CONFPLUGIN faulty invocation-end`, `CONFPLUGIN faulty operation-start`,
+  `CONFPLUGIN faulty operation-end`, `CONFPLUGIN faulty attempt-start`,
+  `CONFPLUGIN faulty attempt-end` (operation/attempt hooks filter to step-type
+  operations). The SDK must catch and ignore every plugin exception: the
+  execution result and history are identical to running without the plugin.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt.
+    Each plugin hook logs its line and throws; the SDK swallows all plugin
+    exceptions and the execution succeeds normally.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Invocation hooks both ran (each logged before throwing)
+  - pattern: CONFPLUGIN faulty invocation-start
+    count: 1
+  - pattern: CONFPLUGIN faulty invocation-end
+    count: 1
+  # Operation and attempt hooks also ran exactly once; dispatch model
+  # varies per SDK, so these are asserted without ordering
+  - pattern: CONFPLUGIN faulty operation-start
+    count: 1
+    unordered: true
+  - pattern: CONFPLUGIN faulty operation-end
+    count: 1
+    unordered: true
+  - pattern: CONFPLUGIN faulty attempt-start
+    count: 1
+    unordered: true
+  - pattern: CONFPLUGIN faulty attempt-end
+    count: 1
+    unordered: true

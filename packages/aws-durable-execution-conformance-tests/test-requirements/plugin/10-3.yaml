@@ -1,0 +1,79 @@
+---
+# 10.3: Plugin attempt hooks under retry
+description: Plugin attempt hooks fire per step attempt with attempt number and outcome
+optional: true
+handler: |
+  A handler with a single step that fails on the first attempt and succeeds on the
+  second, configured with a retry strategy (max attempts >= 2, ~1s delay) and an
+  instrumentation plugin. The plugin, filtering to step-type operations, logs
+  `CONFPLUGIN attempt-start n=<attempt>` when a step attempt's user function
+  starts and `CONFPLUGIN attempt-end n=<attempt> outcome=<outcome>` when it
+  finishes (outcome as the enum token: SUCCEEDED or FAILED). These hooks run on
+  the same thread as the user function, so their relative order is deterministic.
+invocations: |
+  - Handler invokes `context.step(unreliable_func, config={ retryStrategy: ... })`,
+    the plugin logs `attempt-start n=1`, the step throws, the plugin logs
+    `attempt-end n=1 outcome=FAILED`, SDK checkpoints StepFailed with RetryDetails
+    (CurrentAttempt=1), invocation completes, execution suspends.
+  - Replay 1: Re-invoked after the retry delay, the plugin logs
+    `attempt-start n=2`, the step succeeds, the plugin logs
+    `attempt-end n=2 outcome=SUCCEEDED`, SDK checkpoints StepSucceeded with
+    RetryDetails (CurrentAttempt=2), execution succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Operation succeeded
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Attempt 1 starts, fails
+  - pattern: CONFPLUGIN attempt-start n=1
+    count: 1
+  - pattern: CONFPLUGIN attempt-end n=1 outcome=FAILED
+    count: 1
+  # Attempt 2 starts after attempt 1 ended, succeeds
+  - pattern: CONFPLUGIN attempt-start n=2
+    count: 1
+  - pattern: CONFPLUGIN attempt-end n=2 outcome=SUCCEEDED
+    count: 1
+  # Exactly two attempts: no third attempt may start
+  - pattern: CONFPLUGIN attempt-start n=3
+    count: 0

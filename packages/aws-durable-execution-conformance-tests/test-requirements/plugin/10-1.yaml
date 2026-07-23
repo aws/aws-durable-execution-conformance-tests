@@ -1,0 +1,53 @@
+---
+# 10.1: Plugin invocation lifecycle hooks
+description: Plugin invocation lifecycle hooks (start and end on a single invocation)
+optional: true
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin registered through the SDK's plugin API. The step body
+  logs `Greeting step running for: <input>` before returning. The plugin logs
+  `CONFPLUGIN invocation-start first=<is_first_invocation>` from its
+  invocation-start hook and `CONFPLUGIN invocation-end status=<status>` from its
+  invocation-end hook (boolean lowercase, status as the enum token, e.g. SUCCEEDED).
+invocations: |
+  - Handler invokes `context.step(greet(event))`, the step logs its running line
+    and succeeds on first attempt, execution succeeds in a single invocation. The
+    plugin's invocation-start hook fires before the handler code runs (logs
+    `first=true`) and its invocation-end hook fires after the execution result is
+    finalized (logs `status=SUCCEEDED`).
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Invocation-start hook fires (synchronously) before handler code runs
+  - pattern: CONFPLUGIN invocation-start first=true
+    count: 1
+  # Handler step body runs between the two invocation hooks
+  - pattern: 'Greeting step running for: ${INPUT_1}'
+    count: 1
+  # Invocation-end hook fires last, with the terminal status
+  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+    count: 1
+  # Single invocation: no replay invocation-start may appear
+  - pattern: CONFPLUGIN invocation-start first=false
+    count: 0

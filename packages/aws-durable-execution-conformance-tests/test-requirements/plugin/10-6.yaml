@@ -1,0 +1,53 @@
+---
+# 10.6: Plugin first-invocation flag across replay
+description: Plugin sees is-first-invocation true once, then false on replay
+optional: true
+handler: |
+  A handler with a single 2-second wait, configured with an instrumentation
+  plugin. The plugin logs `CONFPLUGIN invocation-start first=<is_first_invocation>`
+  from its invocation-start hook and `CONFPLUGIN invocation-end status=<status>`
+  from its invocation-end hook (boolean lowercase, status as the enum token).
+invocations: |
+  - Handler invokes `context.wait(2 seconds)`, plugin logs
+    `invocation-start first=true`, SDK checkpoints WaitStarted, invocation
+    completes, execution suspends (an invocation-end fired here, if any,
+    carries a non-terminal status and is not asserted).
+  - Replay 1: Re-invoked because the wait completed, plugin logs
+    `invocation-start first=false`, SDK checkpoints WaitSucceeded, execution
+    succeeds, plugin logs `invocation-end status=SUCCEEDED`.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # First invocation reports first=true, exactly once across the execution
+  - pattern: CONFPLUGIN invocation-start first=true
+    count: 1
+  # Replay invocation reports first=false, after the first invocation
+  - pattern: CONFPLUGIN invocation-start first=false
+    count: 1
+  # Terminal invocation-end carries SUCCEEDED, exactly once, last
+  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+    count: 1
