@@ -267,4 +267,28 @@ def test_invoke_rejects_unsupported_parameters() -> None:
         invoker.invoke("StepBasic", parameters=["ClientContext=abc"])
 
 
+def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
+    import pytest as _pytest
+    from botocore.exceptions import BotoCoreError
+
+    class _StreamError(BotoCoreError):
+        fmt = "connection interrupted while reading payload"
+
+    class _ExplodingPayload:
+        def read(self) -> bytes:
+            raise _StreamError()
+
+    response = {
+        "StatusCode": 200,
+        "Payload": _ExplodingPayload(),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    # A post-200 stream failure must surface as InvokeError so validate.py
+    # records one failed requirement instead of aborting the whole run.
+    with _pytest.raises(sam.InvokeError, match="connection interrupted"):
+        invoker.invoke("StepBasic")
+
+
 # endregion

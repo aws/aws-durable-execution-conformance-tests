@@ -683,10 +683,15 @@ class Invoker:
                 Qualifier="$LATEST",
                 Payload=payload_bytes,
             )
-        except (BotoCoreError, ClientError) as e:
+            # Reading the StreamingBody is a network operation too: it can raise
+            # streaming/timeout errors after a successful 200 response, and the
+            # bytes may fail to decode. Keep it inside the wrapping so a single
+            # bad invocation records one failed requirement instead of aborting
+            # the whole suite run.
+            payload_str = response["Payload"].read().decode() if "Payload" in response else ""
+        except (BotoCoreError, ClientError, UnicodeDecodeError) as e:
             raise InvokeError(function_name, str(e)) from e
 
-        payload_str = response["Payload"].read().decode() if "Payload" in response else ""
         execution_arn = response.get("DurableExecutionArn") or response.get("ResponseMetadata", {}).get(
             "HTTPHeaders", {}
         ).get("x-amz-durable-execution-arn")
