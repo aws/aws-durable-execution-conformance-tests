@@ -53,6 +53,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -64,6 +65,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map
           span.kind: INTERNAL
@@ -86,6 +88,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-iteration-0
           span.kind: INTERNAL
@@ -111,6 +114,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-step-0
           span.kind: INTERNAL
@@ -136,6 +140,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-step-0 attempt 1
           span.kind: INTERNAL
@@ -162,6 +167,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-iteration-1
           span.kind: INTERNAL
@@ -187,6 +193,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-step-1
           span.kind: INTERNAL
@@ -212,6 +219,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-map-step-1 attempt 1
           span.kind: INTERNAL

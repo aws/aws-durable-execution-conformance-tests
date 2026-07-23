@@ -194,6 +194,33 @@ def test_span_names_accept_regex_matchers() -> None:
     assert errors == []
 
 
+def test_span_links_accept_any_of_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": {
+                        "$any_of": [
+                            [],
+                            [
+                                {
+                                    "trace_id": "${/^[0-9a-f]{32}$/}",
+                                    "span_id": "${/^[0-9a-f]{16}$/}",
+                                }
+                            ],
+                        ]
+                    }
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
     errors = validate_trace(
         _trace(),
@@ -476,6 +503,28 @@ def test_unset_status_disparity_applies_to_status_matchers() -> None:
             assertions,
             _query(),
             feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_span_link_disparity_skips_link_expectations() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {"links": []},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.links: expected 0 item(s), found 1",
+    ]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.SPAN_LINKS}),
         )
         == []
     )

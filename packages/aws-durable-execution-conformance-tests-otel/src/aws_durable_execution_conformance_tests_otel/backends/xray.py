@@ -96,7 +96,12 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
 
 class XRayBackend(PollingBackend):
     name = "xray"
-    feature_disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+    feature_disparities = frozenset(
+        {
+            BackendFeatureDisparity.SPAN_LINKS,
+            BackendFeatureDisparity.UNSET_STATUS,
+        }
+    )
 
     def __init__(self, client: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)

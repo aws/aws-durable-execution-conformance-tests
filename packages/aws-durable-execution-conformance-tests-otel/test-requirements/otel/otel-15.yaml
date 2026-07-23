@@ -29,6 +29,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -40,6 +41,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-interrupted-wait
           span.kind: INTERNAL

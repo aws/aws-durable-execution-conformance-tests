@@ -34,6 +34,7 @@ TelemetryAssertions:
       expect:
         status: "${/^(?:ERROR|UNSET)$/}"
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -45,6 +46,7 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-failed-condition
           span.kind: INTERNAL
@@ -68,6 +70,7 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-failed-condition attempt 1
           span.kind: INTERNAL

@@ -60,6 +60,17 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
                 "${/^(?:OK|UNSET)$/}",
             }
             assert expected["service_name"] == "invocation"
+            one_link = [
+                {
+                    "trace_id": "${/^[0-9a-f]{32}$/}",
+                    "span_id": "${/^[0-9a-f]{16}$/}",
+                }
+            ]
+            assert expected["links"] in (
+                [],
+                one_link,
+                {"$any_of": [[], one_link]},
+            )
             assert expected["attributes"]["span.name"] == selected_name
             assert expected["attributes"]["span.kind"] == ("SERVER" if selected_name == "invocation" else "INTERNAL")
             if parent := expected.get("parent"):

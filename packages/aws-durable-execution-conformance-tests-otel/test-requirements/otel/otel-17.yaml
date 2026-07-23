@@ -61,6 +61,7 @@ TelemetryAssertions:
       expect:
         status: "${/^(?:ERROR|UNSET)$/}"
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -71,6 +72,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-failed-callback
           span.kind: INTERNAL
@@ -92,6 +94,9 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links:
+          - trace_id: "${/^[0-9a-f]{32}$/}"
+            span_id: "${/^[0-9a-f]{16}$/}"
         attributes:
           span.name: otel-failed-callback
           span.kind: INTERNAL
@@ -114,6 +119,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
           span.kind: INTERNAL
@@ -136,6 +142,9 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links:
+          - trace_id: "${/^[0-9a-f]{32}$/}"
+            span_id: "${/^[0-9a-f]{16}$/}"
         attributes:
           span.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
           span.kind: INTERNAL
@@ -159,6 +168,11 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links:
+          $any_of:
+            - []
+            - - trace_id: "${/^[0-9a-f]{32}$/}"
+                span_id: "${/^[0-9a-f]{16}$/}"
         attributes:
           span.name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
           span.kind: INTERNAL
@@ -182,6 +196,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: "${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}"
           span.kind: INTERNAL

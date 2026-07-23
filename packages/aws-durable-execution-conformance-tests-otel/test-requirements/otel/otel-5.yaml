@@ -41,6 +41,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -53,6 +54,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-child-context
           span.kind: INTERNAL
@@ -76,6 +78,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-child-step
           span.kind: INTERNAL
@@ -102,6 +105,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-child-step attempt 1
           span.kind: INTERNAL

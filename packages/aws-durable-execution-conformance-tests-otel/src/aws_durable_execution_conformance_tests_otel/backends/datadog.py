@@ -71,7 +71,7 @@ def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
 
 class DatadogBackend(PollingBackend):
     name = "datadog"
-    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
+    feature_disparities = frozenset({BackendFeatureDisparity.SPAN_LINKS})
 
     def __init__(
         self,

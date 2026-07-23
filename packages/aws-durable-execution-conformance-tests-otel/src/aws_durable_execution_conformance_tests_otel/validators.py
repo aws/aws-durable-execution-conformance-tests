@@ -46,6 +46,9 @@ def _matches(expected: Any, actual: Any) -> bool:
         return True
     if pattern := get_regex_pattern(expected):
         return bool(pattern.search(str(actual)))
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        return _is_sequence(alternatives) and any(_matches(alternative, actual) for alternative in alternatives)
     if isinstance(expected, Mapping):
         return isinstance(actual, Mapping) and all(
             key in actual and _matches(value, actual[key]) for key, value in expected.items()
@@ -100,6 +103,13 @@ def _expectation_errors(
         if pattern.search(str(actual)):
             return []
         return [f"{path}: value {actual!r} does not match regex pattern {pattern.pattern!r}"]
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of: expected a non-empty sequence"]
+        if any(_matches(alternative, actual) for alternative in alternatives):
+            return []
+        return [f"{path}: value {actual!r} does not match any allowed value"]
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
             return [f"{path}: expected a mapping"]
@@ -141,6 +151,8 @@ def _span_expectation_errors(
     errors: list[str] = []
     for key, value in expected.items():
         child_path = f"{path}.{key}"
+        if key == "links" and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
+            continue
         if key not in actual:
             errors.append(f"{child_path}: property is missing")
             continue

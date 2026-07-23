@@ -100,6 +100,8 @@ Both `select` and `expect` can use any canonical span property: `trace_id`,
 `service_name`, `attributes`, or `links`. Nested mappings support arbitrary
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions, including `links`, compare length, order, and nested values. The
+`$any_of` matcher accepts a non-empty sequence of alternative expected values.
+Use it when repeated spans intentionally have one of a small set of shapes. The
 optional `expect.parent` mapping resolves the selected span's `parent_span_id`
 within the same trace and applies the same partial matching constructs to that
 parent span.

@@ -41,6 +41,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -52,6 +53,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-wait
           span.kind: INTERNAL
@@ -74,6 +76,9 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links:
+          - trace_id: "${/^[0-9a-f]{32}$/}"
+            span_id: "${/^[0-9a-f]{16}$/}"
         attributes:
           span.name: otel-wait
           span.kind: INTERNAL
@@ -96,6 +101,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-after-resume
           span.kind: INTERNAL
@@ -119,6 +125,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-after-resume attempt 1
           span.kind: INTERNAL

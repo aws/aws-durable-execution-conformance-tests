@@ -44,6 +44,7 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -56,6 +57,7 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-handled-failure
           span.kind: INTERNAL
@@ -79,6 +81,7 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-handled-failure attempt 1
           span.kind: INTERNAL
@@ -104,6 +107,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-recovery-step
           span.kind: INTERNAL
@@ -127,6 +131,7 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
+        links: []
         attributes:
           span.name: otel-recovery-step attempt 1
           span.kind: INTERNAL

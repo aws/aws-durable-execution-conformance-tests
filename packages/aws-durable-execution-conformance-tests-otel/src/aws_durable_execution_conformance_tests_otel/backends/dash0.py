@@ -71,7 +71,7 @@ def normalize_dash0(payload: Mapping[str, Any]) -> list[Trace]:
 
 class Dash0Backend(PollingBackend):
     name = "dash0"
-    feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
+    feature_disparities = frozenset({BackendFeatureDisparity.SPAN_LINKS})
 
     def __init__(
         self,

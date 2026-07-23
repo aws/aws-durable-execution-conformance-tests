@@ -26,6 +26,7 @@ TelemetryAssertions:
       expect:
         status: "${/^(?:ERROR|UNSET)$/}"
         service_name: invocation
+        links: []
         attributes:
           span.name: invocation
           span.kind: SERVER
