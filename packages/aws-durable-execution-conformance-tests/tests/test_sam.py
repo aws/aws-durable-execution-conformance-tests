@@ -9,10 +9,11 @@ import json
 import subprocess
 from typing import TYPE_CHECKING
 
-from aws_durable_execution_conformance_tests import sam
+import pytest
 from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
 from botocore.exceptions import BotoCoreError, ClientError
-import pytest
+
+from aws_durable_execution_conformance_tests import sam
 
 if TYPE_CHECKING:
     from pathlib import Path
