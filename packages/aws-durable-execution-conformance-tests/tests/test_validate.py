@@ -231,3 +231,125 @@ Resources:
 """,
     )
     assert parse_not_implemented(template) == {"8-13": "gap"}
+
+
+# region End-to-end ExpectedLogs validation
+
+
+def _insights_row(timestamp: str, message: str) -> list[dict[str, str]]:
+    return [
+        {"field": "@timestamp", "value": timestamp},
+        {"field": "@message", "value": message},
+        {"field": "@ptr", "value": "ptr"},
+    ]
+
+
+class _StubCfnClient:
+    def describe_stack_resource(self, **kwargs):
+        return {"StackResourceDetail": {"PhysicalResourceId": "my-stack-PluginFn-abc123"}}
+
+
+class _StubLogsClient:
+    """Stub Logs Insights client returning one completed query."""
+
+    def __init__(self, rows: list[list[dict[str, str]]]) -> None:
+        self._rows = rows
+        self.queries: list[dict] = []
+
+    def start_query(self, **kwargs):
+        self.queries.append(kwargs)
+        return {"queryId": "q-1"}
+
+    def get_query_results(self, **kwargs):
+        return {"status": "Complete", "results": self._rows}
+
+
+def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
+    """Drive _validate_expected_logs end-to-end with stubbed AWS clients."""
+    import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
+    from aws_durable_execution_conformance_tests.clients import AwsClients
+    from aws_durable_execution_conformance_tests.validate import _validate_expected_logs
+    from aws_durable_execution_conformance_tests.variables import PlaceholderContext
+
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+
+    rows = [_insights_row(f"2026-07-23 22:32:3{i}.000", msg) for i, msg in enumerate(messages_in_order)]
+    logs_client = _StubLogsClient(rows)
+    description_data = {
+        "Variables": {"INPUT_1": "abc123XY"},
+        "ExpectedLogs": expected_logs,
+    }
+    context = PlaceholderContext()
+    context.resolve_variables(description_data["Variables"])
+
+    errors = _validate_expected_logs(
+        description_data=description_data,
+        stack_name="my-stack",
+        function_name="PluginFn",
+        execution_arn="arn:aws:lambda:us-west-2:123456789012:function:f:$LATEST/durable-execution/execution/e1",
+        start_time_ms=1_000_000,
+        aws_clients=AwsClients({"cloudformation": _StubCfnClient(), "logs": logs_client}),
+        context=context,
+    )
+    return errors, logs_client
+
+
+def test_e2e_expected_logs_ordered_pass(monkeypatch) -> None:
+    """Full path: CFN log-group resolution -> Insights query -> placeholder
+    substitution -> ordered validation. Mirrors a plugin-suite spec."""
+    errors, logs_client = _run_expected_logs(
+        monkeypatch,
+        expected_logs=[
+            {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
+            {"pattern": "Greeting step running for: ${INPUT_1}", "count": 1},
+            {"pattern": "CONFPLUGIN invocation-end status=SUCCEEDED", "count": 1},
+            {"pattern": "CONFPLUGIN invocation-start first=false", "count": 0},
+            {"pattern": "concurrent-hook", "count": 1, "unordered": True},
+        ],
+        messages_in_order=[
+            "concurrent-hook",
+            "CONFPLUGIN invocation-start first=true",
+            "Greeting step running for: abc123XY",
+            "CONFPLUGIN invocation-end status=SUCCEEDED",
+        ],
+    )
+    assert errors == []
+    # The Insights query is scoped to the execution ARN
+    assert "durable-execution/execution/e1" in logs_client.queries[0]["queryString"]
+
+
+def test_e2e_expected_logs_ordered_violation_fails(monkeypatch) -> None:
+    """Same path, but the terminal line precedes the start line: the
+    ordered-by-default semantics must reject it."""
+    errors, _ = _run_expected_logs(
+        monkeypatch,
+        expected_logs=[
+            {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
+            {"pattern": "CONFPLUGIN invocation-end status=SUCCEEDED", "count": 1},
+        ],
+        messages_in_order=[
+            "CONFPLUGIN invocation-end status=SUCCEEDED",
+            "CONFPLUGIN invocation-start first=true",
+        ],
+    )
+    assert len(errors) == 1
+    assert "invocation-end status=SUCCEEDED" in errors[0]
+
+
+def test_e2e_expected_logs_absent_field_skips_validation(monkeypatch) -> None:
+    from aws_durable_execution_conformance_tests.clients import AwsClients
+    from aws_durable_execution_conformance_tests.validate import _validate_expected_logs
+
+    errors = _validate_expected_logs(
+        description_data={},
+        stack_name="my-stack",
+        function_name="PluginFn",
+        execution_arn="arn:whatever",
+        start_time_ms=0,
+        aws_clients=AwsClients({}),  # must not be touched when ExpectedLogs is absent
+        context=None,
+    )
+    assert errors == []
+
+
+# endregion
