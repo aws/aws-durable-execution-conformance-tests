@@ -77,6 +77,9 @@ jobs:
       - name: Install Hatch
         run: python -m pip install hatch==1.16.5
 
+      - name: Test TypeScript example contract
+        run: hatch run test:all packages/aws-durable-execution-conformance-tests-otel/tests/test_typescript_examples.py
+
       - name: Resolve latest AWS Distro for OpenTelemetry JavaScript layer
         env:
           GH_TOKEN: ${{ github.token }}
