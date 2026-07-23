@@ -68,7 +68,7 @@ def _matches_span_status(
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> bool:
     return _matches(expected, actual) or (
-        BackendFeatureDisparity.UNSET_STATUS in feature_disparities and expected == "UNSET" and actual == "OK"
+        BackendFeatureDisparity.UNSET_STATUS in feature_disparities and actual == "OK" and _matches(expected, "UNSET")
     )
 
 

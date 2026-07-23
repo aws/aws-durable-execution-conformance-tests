@@ -44,6 +44,9 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       count: 2
       expect:
+        name: invocation
+        status: UNSET
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -53,7 +56,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: STARTED
       expect:
+        name: otel-retry
         status: UNSET
+        service_name: invocation
         attributes:
           span.name: otel-retry
           span.kind: INTERNAL
@@ -74,7 +79,9 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
+        name: otel-retry attempt 1
         status: ERROR
+        service_name: invocation
         attributes:
           span.name: otel-retry attempt 1
           span.kind: INTERNAL
@@ -97,7 +104,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: SUCCEEDED
       expect:
+        name: otel-retry
         status: OK
+        service_name: invocation
         attributes:
           span.name: otel-retry
           span.kind: INTERNAL
@@ -119,7 +128,9 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 2
       expect:
+        name: otel-retry attempt 2
         status: OK
+        service_name: invocation
         attributes:
           span.name: otel-retry attempt 2
           span.kind: INTERNAL

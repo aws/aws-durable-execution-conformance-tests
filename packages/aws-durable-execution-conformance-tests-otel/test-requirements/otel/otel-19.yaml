@@ -24,6 +24,9 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
+        name: invocation
+        status: "${/^(?:ERROR|UNSET)$/}"
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER

@@ -51,6 +51,9 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
+        name: invocation
+        status: UNSET
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -60,6 +63,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: Parallel
       expect:
+        name: otel-parallel
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel
           span.kind: INTERNAL
@@ -80,6 +86,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: ParallelBranch
       expect:
+        name: otel-parallel-branch-a
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-branch-a
           span.kind: INTERNAL
@@ -103,6 +112,9 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
+        name: otel-parallel-step-a
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-step-a
           span.kind: INTERNAL
@@ -126,6 +138,9 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
+        name: otel-parallel-step-a attempt 1
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-step-a attempt 1
           span.kind: INTERNAL
@@ -150,6 +165,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: ParallelBranch
       expect:
+        name: otel-parallel-branch-b
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-branch-b
           span.kind: INTERNAL
@@ -173,6 +191,9 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
+        name: otel-parallel-step-b
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-step-b
           span.kind: INTERNAL
@@ -196,6 +217,9 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
+        name: otel-parallel-step-b attempt 1
+        status: OK
+        service_name: invocation
         attributes:
           span.name: otel-parallel-step-b attempt 1
           span.kind: INTERNAL

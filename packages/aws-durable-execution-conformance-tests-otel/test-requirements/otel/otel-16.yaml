@@ -32,6 +32,9 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
+        name: invocation
+        status: "${/^(?:ERROR|UNSET)$/}"
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -41,7 +44,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: FAILED
       expect:
+        name: otel-failed-condition
         status: ERROR
+        service_name: invocation
         attributes:
           span.name: otel-failed-condition
           span.kind: INTERNAL
@@ -63,7 +68,9 @@ TelemetryAssertions:
         attributes:
           durable.attempt.outcome: FAILED
       expect:
+        name: otel-failed-condition attempt 1
         status: ERROR
+        service_name: invocation
         attributes:
           span.name: otel-failed-condition attempt 1
           span.kind: INTERNAL

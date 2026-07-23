@@ -41,6 +41,9 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       count: 2
       expect:
+        name: invocation
+        status: "${/^(?:ERROR|UNSET)$/}"
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -50,6 +53,9 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
+        name: invocation
+        status: "${/^(?:ERROR|UNSET)$/}"
+        service_name: invocation
         attributes:
           span.name: invocation
           span.kind: SERVER
@@ -59,6 +65,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: STARTED
       expect:
+        name: otel-failed-invoke
+        status: UNSET
+        service_name: invocation
         attributes:
           span.name: otel-failed-invoke
           span.kind: INTERNAL
@@ -79,7 +88,9 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: FAILED
       expect:
+        name: otel-failed-invoke
         status: ERROR
+        service_name: invocation
         attributes:
           span.name: otel-failed-invoke
           span.kind: INTERNAL

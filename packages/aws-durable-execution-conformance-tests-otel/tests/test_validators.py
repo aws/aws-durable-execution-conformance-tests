@@ -386,7 +386,9 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
                 {
                     "select": {"name": "child"},
                     "expect": {
+                        "name": "not-child",
                         "status": "ERROR",
+                        "service_name": "not-service",
                         "attributes": {
                             "missing.key": "value",
                             "span.name": "not-child",
@@ -402,7 +404,9 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
 
     assert "span_assertions[0].select matched no spans" in errors
     assert "span_assertions[1].select matched 2 spans; it must select exactly one" in errors
+    assert "span_assertions[2].expect.name: expected 'not-child'" in errors
     assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
+    assert "span_assertions[2].expect.service_name: expected 'not-service'" in errors
     assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
     assert "span_assertions[2].expect.attributes.span.name: expected 'not-child'" in errors
     assert "span_assertions[2].expect.attributes.span.kind: expected 'SERVER'" in errors
@@ -444,6 +448,28 @@ def test_unset_status_disparity_applies_to_span_selectors() -> None:
     }
 
     assert validate_trace(_trace(), assertions, _query()) == ["span_assertions[0].select matched no spans"]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_unset_status_disparity_applies_to_status_matchers() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {"status": "${/^(?:ERROR|UNSET)$/}"},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.status: value 'OK' does not match regex pattern '^(?:ERROR|UNSET)$'",
+    ]
     assert (
         validate_trace(
             _trace(),

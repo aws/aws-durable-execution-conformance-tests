@@ -51,6 +51,15 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
         for span_assertion in assertions["span_assertions"]:
             selected_name = span_assertion["select"]["name"]
             expected = span_assertion["expect"]
+            assert expected["name"] == selected_name
+            assert expected["status"] in {
+                "ERROR",
+                "OK",
+                "UNSET",
+                "${/^(?:ERROR|UNSET)$/}",
+                "${/^(?:OK|UNSET)$/}",
+            }
+            assert expected["service_name"] == "invocation"
             assert expected["attributes"]["span.name"] == selected_name
             assert expected["attributes"]["span.kind"] == ("SERVER" if selected_name == "invocation" else "INTERNAL")
             if parent := expected.get("parent"):
