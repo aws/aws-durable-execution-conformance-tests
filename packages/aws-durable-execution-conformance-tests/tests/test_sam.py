@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 from typing import TYPE_CHECKING
 
 import pytest
@@ -93,8 +96,10 @@ class _FakePayload:
 class _FakeCfnClient:
     """Fake CloudFormation client returning one Lambda resource page."""
 
-    def __init__(self, resources: dict[str, str]):
+    def __init__(self, resources: dict[str, str], page_delay_seconds: float = 0):
         self._resources = resources
+        self._page_delay_seconds = page_delay_seconds
+        self._list_lock = Lock()
         self.list_calls = 0
 
     def get_paginator(self, name: str) -> object:
@@ -103,7 +108,10 @@ class _FakeCfnClient:
 
         class _Paginator:
             def paginate(self, **_kwargs: object) -> list[dict]:
-                outer.list_calls += 1
+                with outer._list_lock:
+                    outer.list_calls += 1
+                if outer._page_delay_seconds:
+                    time.sleep(outer._page_delay_seconds)
                 return [
                     {
                         "StackResourceSummaries": [
@@ -201,6 +209,36 @@ def test_invoke_resolves_stack_once_and_caches() -> None:
     invoker.invoke("StepBasic")
 
     assert cfn.list_calls == 1
+
+
+def test_invoke_resolves_stack_once_across_concurrent_invocations() -> None:
+    resources = {f"Function{index}": f"physical-function-{index}" for index in range(4)}
+    response = {
+        "StatusCode": 200,
+        "Payload": _FakePayload(b"{}"),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    cfn = _FakeCfnClient(resources, page_delay_seconds=0.02)
+    lam = _FakeLambdaClient(response)
+    invoker = sam.Invoker(
+        stack_name="my-stack",
+        region="us-west-2",
+        lambda_client=lam,
+        cfn_client=cfn,
+    )
+    barrier = Barrier(len(resources))
+
+    def _invoke(function_name: str) -> None:
+        barrier.wait(timeout=1)
+        invoker.invoke(function_name)
+
+    with ThreadPoolExecutor(max_workers=len(resources)) as executor:
+        futures = [executor.submit(_invoke, function_name) for function_name in resources]
+        for future in futures:
+            future.result()
+
+    assert cfn.list_calls == 1
+    assert {call["FunctionName"] for call in lam.invocations} == set(resources.values())
 
 
 def test_invoke_unknown_logical_id_raises_invoke_error() -> None:

@@ -37,8 +37,13 @@ class _Extension:
     name = "fake"
     requires_core = ">=0.2,<0.3"
 
-    def __init__(self, suites: tuple[RequirementSuite, ...] = ()) -> None:
+    def __init__(
+        self,
+        suites: tuple[RequirementSuite, ...] = (),
+        validation_services: tuple[str, ...] = (),
+    ) -> None:
         self._suites = suites
+        self._validation_services = validation_services
 
     def requirement_suites(self) -> tuple[RequirementSuite, ...]:
         return self._suites
@@ -52,6 +57,10 @@ class _Extension:
 
     def deployment_parameters(self, args: argparse.Namespace) -> dict[str, str]:
         return {"FakeParameter": args.fake}
+
+    def validation_client_services(self, args: argparse.Namespace) -> tuple[str, ...]:
+        del args
+        return self._validation_services
 
 
 def _requirement(root: Path, suite: str, description_id: str) -> Path:
@@ -152,3 +161,23 @@ def test_extension_arguments_and_deployment_parameters(tmp_path: Path) -> None:
 
     registry.validate_configuration(args)
     assert registry.deployment_parameters(args) == {"FakeParameter": "value"}
+
+
+def test_collects_clients_only_for_active_extension_suites(tmp_path: Path) -> None:
+    extension_root = tmp_path / "extension"
+    _requirement(extension_root, "otel", "otel-1")
+    registry = load_extensions(
+        tmp_path / "core",
+        entry_points=[
+            _Point(
+                _Extension(
+                    (RequirementSuite(name="otel", root=extension_root / "otel"),),
+                    validation_services=("xray",),
+                )
+            )
+        ],
+    )
+    args = argparse.Namespace()
+
+    assert registry.validation_client_services(args, {"otel"}) == ("xray",)
+    assert registry.validation_client_services(args, {"step"}) == ()

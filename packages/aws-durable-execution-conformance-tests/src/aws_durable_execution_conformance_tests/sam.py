@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import boto3
@@ -621,6 +622,7 @@ class Invoker:
         self._lambda_client = lambda_client
         self._cfn_client = cfn_client
         self._function_map: dict[str, str] | None = None
+        self._function_map_lock = Lock()
 
     _BOTO_CONFIG = Config(retries={"mode": "adaptive", "max_attempts": 10})
 
@@ -650,18 +652,22 @@ class Invoker:
             InvokeError: If the stack cannot be listed or the logical ID is
                 not a Lambda function in the stack.
         """
-        if self._function_map is None:
-            mapping: dict[str, str] = {}
-            try:
-                paginator = self._get_cfn_client().get_paginator("list_stack_resources")
-                for page in paginator.paginate(StackName=self._stack_name):
-                    for res in page["StackResourceSummaries"]:
-                        if res["ResourceType"] == "AWS::Lambda::Function":
-                            mapping[res["LogicalResourceId"]] = res["PhysicalResourceId"]
-            except (BotoCoreError, ClientError) as e:
-                raise InvokeError(logical_id, f"could not list stack resources: {e}") from e
-            self._function_map = mapping
-        physical = self._function_map.get(logical_id)
+        function_map = self._function_map
+        if function_map is None:
+            with self._function_map_lock:
+                function_map = self._function_map
+                if function_map is None:
+                    function_map = {}
+                    try:
+                        paginator = self._get_cfn_client().get_paginator("list_stack_resources")
+                        for page in paginator.paginate(StackName=self._stack_name):
+                            for res in page["StackResourceSummaries"]:
+                                if res["ResourceType"] == "AWS::Lambda::Function":
+                                    function_map[res["LogicalResourceId"]] = res["PhysicalResourceId"]
+                    except (BotoCoreError, ClientError) as e:
+                        raise InvokeError(logical_id, f"could not list stack resources: {e}") from e
+                    self._function_map = function_map
+        physical = function_map.get(logical_id)
         if not physical:
             raise InvokeError(
                 logical_id,

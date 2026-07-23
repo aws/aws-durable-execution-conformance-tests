@@ -162,7 +162,19 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         find_trace=find_trace,
         name="xray",
     )
-    factory = SimpleNamespace(create=lambda _options, *, region: backend)
+    received_clients: list[object] = []
+
+    def create_with_clients(
+        _options: object,
+        *,
+        region: str,
+        aws_clients: object,
+    ) -> object:
+        assert region == "us-west-2"
+        received_clients.append(aws_clients)
+        return backend
+
+    factory = SimpleNamespace(create_with_clients=create_with_clients)
     monkeypatch.setattr(OtelExtension, "_backends", staticmethod(lambda: {"xray": factory}))
     monkeypatch.setattr(extension_module, "validate_trace", capture_assertions)
 
@@ -195,6 +207,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "STEP1": "step-id",
             },
             options=vars(_args("adot", "xray")),
+            aws_clients={"xray": object()},
         )
     )
 
@@ -205,3 +218,4 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         "durable.operation.id": "step-id",
     }
     assert received_disparities == [disparities, disparities]
+    assert len(received_clients) == 1

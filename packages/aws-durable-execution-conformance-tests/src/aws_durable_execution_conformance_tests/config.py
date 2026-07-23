@@ -19,6 +19,7 @@ OUTPUT_DIR: Path = _RUNTIME_ROOT / "output"
 BUILD_DIR: Path = _RUNTIME_ROOT / "build"
 STACK_NAME_PREFIX = "durable-execution-conformance-tests"
 DEFAULT_REGION = "us-west-2"
+DEFAULT_MAX_WORKERS = 4
 
 # Async polling configuration
 POLL_INTERVAL_SECONDS = 2.0

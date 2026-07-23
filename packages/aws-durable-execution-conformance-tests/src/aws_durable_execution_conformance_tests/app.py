@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,8 +24,10 @@ from typing import Any
 
 import yaml
 
+from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.config import (
     BUILD_DIR,
+    DEFAULT_MAX_WORKERS,
     DEFAULT_REGION,
     OUTPUT_DIR,
     STACK_NAME_PREFIX,
@@ -32,6 +36,7 @@ from aws_durable_execution_conformance_tests.config import (
 from aws_durable_execution_conformance_tests.extensions import (
     ExtensionError,
     ExtensionRegistry,
+    RequirementCase,
     ValidationContext,
     load_extensions,
 )
@@ -66,6 +71,14 @@ def _parse_parameter_override(value: str) -> tuple[str, str]:
     return key, parameter_value
 
 
+def _positive_int(value: str) -> int:
+    """Parse a positive integer command-line value."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
+
+
 def parse_args(
     argv: list[str] | None = None,
     *,
@@ -98,6 +111,14 @@ def parse_args(
         "--history-dir",
         default=str(OUTPUT_DIR),
         help="Directory to save execution history JSON files. Defaults to output/.",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=_positive_int,
+        default=DEFAULT_MAX_WORKERS,
+        metavar="N",
+        help=f"Maximum test descriptions to validate concurrently. Defaults to {DEFAULT_MAX_WORKERS}; use 1 "
+        "for sequential execution.",
     )
     # Discover suites from the requirements tree so accepted values track the
     # folders that actually exist without a hardcoded list. Suites may cover
@@ -288,56 +309,30 @@ def _deploy_validate_report(
         print(f"  {fn} -> {did}")
 
     # 4 & 5. Invoke and assert each test description
-    invoker = Invoker(stack_name=stack_name, region=args.region)
-    results: list[DescriptionResult] = []
+    active_suites = {
+        requirement.suite.name
+        for _, description_id in function_descriptions
+        if (requirement := requirements.get(description_id)) is not None
+    }
+    additional_services = registry.validation_client_services(args, active_suites)
+    aws_clients = AwsClients.create(args.region, additional_services)
+    invoker = Invoker(
+        stack_name=stack_name,
+        region=args.region,
+        lambda_client=aws_clients["lambda"],
+        cfn_client=aws_clients["cloudformation"],
+    )
 
     tmp_dir = tempfile.mkdtemp(prefix="sdk-test-events-")
     try:
-        for function_name, description_id in function_descriptions:
-            print(f"\n--- Validating test description {description_id} ({function_name}) ---")
-            requirement = requirements.get(description_id)
-            if not requirement:
-                results.append(
-                    DescriptionResult(
-                        description_id=description_id,
-                        function_name=function_name,
-                        passed=False,
-                        errors=[f"Test file not found for description: {description_id}"],
-                    )
-                )
-                print("  ❌ FAILED")
-                print(f"     Test file not found for description: {description_id}")
-                continue
-            result = validate_description(
-                function_name,
-                description_id,
-                str(requirement.path),
-                invoker,
-                tmp_dir,
-                output_dir=args.history_dir,
-                region=args.region,
-            )
-            if result.passed and requirement.suite.validation_hook is not None:
-                result = _run_extension_validation(
-                    result=result,
-                    hook=requirement.suite.validation_hook,
-                    requirement_path=requirement.path,
-                    args=args,
-                )
-            results.append(result)
-
-            if result.passed:
-                print("  ✅ PASSED")
-                if result.placeholders:
-                    print(f"     Placeholders: {result.placeholders}")
-            elif result.optional:
-                print("  ⚠️  FAILED (optional)")
-                for err in result.errors:
-                    print(f"     {err}")
-            else:
-                print("  ❌ FAILED")
-                for err in result.errors:
-                    print(f"     {err}")
+        results = _validate_descriptions(
+            function_descriptions,
+            requirements=requirements,
+            invoker=invoker,
+            tmp_dir=tmp_dir,
+            args=args,
+            aws_clients=aws_clients,
+        )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -452,12 +447,126 @@ def _deploy_validate_report(
     sys.exit(report.exit_code())
 
 
+def _validate_descriptions(
+    function_descriptions: list[tuple[str, str]],
+    *,
+    requirements: Mapping[str, RequirementCase],
+    invoker: Invoker,
+    tmp_dir: str,
+    args: argparse.Namespace,
+    aws_clients: AwsClients,
+) -> list[DescriptionResult]:
+    """Validate test descriptions concurrently while preserving input order."""
+
+    if not function_descriptions:
+        return []
+
+    worker_count = min(args.max_workers, len(function_descriptions))
+    if worker_count > 1:
+        print(f"\n=== Validating with up to {worker_count} concurrent workers ===")
+
+    if worker_count == 1:
+        results = [
+            _validate_test_description(
+                function_name,
+                description_id,
+                requirements=requirements,
+                invoker=invoker,
+                tmp_dir=tmp_dir,
+                args=args,
+                aws_clients=aws_clients,
+            )
+            for function_name, description_id in function_descriptions
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="conformance") as executor:
+            futures = [
+                executor.submit(
+                    _validate_test_description,
+                    function_name,
+                    description_id,
+                    requirements=requirements,
+                    invoker=invoker,
+                    tmp_dir=tmp_dir,
+                    args=args,
+                    aws_clients=aws_clients,
+                )
+                for function_name, description_id in function_descriptions
+            ]
+            results = [future.result() for future in futures]
+
+    for result in results:
+        _print_description_result(result)
+    return results
+
+
+def _validate_test_description(
+    function_name: str,
+    description_id: str,
+    *,
+    requirements: Mapping[str, RequirementCase],
+    invoker: Invoker,
+    tmp_dir: str,
+    args: argparse.Namespace,
+    aws_clients: AwsClients,
+) -> DescriptionResult:
+    """Validate one requirement and run its extension hook when applicable."""
+
+    print(f"\n--- Validating test description {description_id} ({function_name}) ---")
+    requirement = requirements.get(description_id)
+    if not requirement:
+        return DescriptionResult(
+            description_id=description_id,
+            function_name=function_name,
+            passed=False,
+            errors=[f"Test file not found for description: {description_id}"],
+        )
+
+    result = validate_description(
+        function_name,
+        description_id,
+        str(requirement.path),
+        invoker,
+        tmp_dir,
+        output_dir=args.history_dir,
+        region=args.region,
+        aws_clients=aws_clients,
+    )
+    if result.passed and requirement.suite.validation_hook is not None:
+        result = _run_extension_validation(
+            result=result,
+            hook=requirement.suite.validation_hook,
+            requirement_path=requirement.path,
+            args=args,
+            aws_clients=aws_clients,
+        )
+    return result
+
+
+def _print_description_result(result: DescriptionResult) -> None:
+    """Print one completed validation result."""
+
+    if result.passed:
+        print(f"  ✅ {result.description_id} PASSED")
+        if result.placeholders:
+            print(f"     Placeholders: {result.placeholders}")
+    elif result.optional:
+        print(f"  ⚠️  {result.description_id} FAILED (optional)")
+        for error in result.errors:
+            print(f"     {error}")
+    else:
+        print(f"  ❌ {result.description_id} FAILED")
+        for error in result.errors:
+            print(f"     {error}")
+
+
 def _run_extension_validation(
     *,
     result: DescriptionResult,
     hook: Any,
     requirement_path: Path,
     args: argparse.Namespace,
+    aws_clients: AwsClients,
 ) -> DescriptionResult:
     """Run an extension hook and preserve the core result/report model."""
 
@@ -492,6 +601,7 @@ def _run_extension_validation(
                 "EXECUTION_ARN": result.execution_arn,
             },
             options={key: value for key, value in vars(args).items() if not key.startswith("_")},
+            aws_clients=aws_clients,
         )
         errors = list(hook(context))
     except Exception as exc:

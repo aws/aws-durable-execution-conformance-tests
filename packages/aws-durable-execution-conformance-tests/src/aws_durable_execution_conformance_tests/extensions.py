@@ -53,6 +53,7 @@ class ValidationContext:
     output_dir: Path
     placeholders: Mapping[str, Any] = field(default_factory=dict)
     options: Mapping[str, Any] = field(default_factory=dict)
+    aws_clients: Mapping[str, Any] = field(default_factory=dict)
 
 
 ValidationHook = Callable[[ValidationContext], Sequence[str]]
@@ -97,6 +98,13 @@ class ConformanceExtension(Protocol):
 
     def deployment_secrets(self, args: argparse.Namespace) -> Mapping[str, str]:
         """Return secret SAM parameters that must be redacted from diagnostics."""
+
+
+class ValidationClientProvider(Protocol):
+    """Optional extension capability for pre-created AWS validation clients."""
+
+    def validation_client_services(self, args: argparse.Namespace) -> Sequence[str]:
+        """Return AWS services whose clients must be created before validation."""
 
 
 @dataclass
@@ -145,6 +153,27 @@ class ExtensionRegistry:
                     raise ExtensionError(f"Secret deployment parameter {key!r} is provided by more than one extension")
                 secrets[key] = value
         return secrets
+
+    def validation_client_services(
+        self,
+        args: argparse.Namespace,
+        active_suites: Iterable[str],
+    ) -> tuple[str, ...]:
+        """Collect AWS client services needed by active extension suites."""
+        active = set(active_suites)
+        services: set[str] = set()
+        for extension in self.extensions:
+            owned_suites = {suite.name for suite in extension.requirement_suites()}
+            if not active.intersection(owned_suites):
+                continue
+            provider = getattr(extension, "validation_client_services", None)
+            if provider is None:
+                continue
+            for service_name in provider(args):
+                if not isinstance(service_name, str) or not service_name:
+                    raise ExtensionError(f"Extension {extension.name!r} returned an invalid AWS service name")
+                services.add(service_name)
+        return tuple(sorted(services))
 
     def discover_requirements(
         self,
