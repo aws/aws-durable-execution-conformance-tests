@@ -112,8 +112,8 @@ def test_java_workflow_uses_supported_adot_distro_layer() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "AWSOpenTelemetryDistroJava" in workflow
-    assert "615299751070" in workflow
-    assert "list-layer-versions" in workflow
+    assert "aws-observability/aws-otel-java-instrumentation/releases/latest" in workflow
+    assert "list-layer-versions" not in workflow
     assert "aws-otel-java-agent" not in workflow
 
 

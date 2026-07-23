@@ -77,16 +77,21 @@ jobs:
         run: python -m pip install hatch==1.16.5
 
       - name: Resolve latest AWS Distro for OpenTelemetry Java layer
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ADOT_LAYER_ARN=$(
-            aws lambda list-layer-versions \
-              --layer-name "arn:aws:lambda:${AWS_REGION}:615299751070:layer:AWSOpenTelemetryDistroJava" \
-              --compatible-runtime java21 \
-              --region "$AWS_REGION" \
-              --query "LayerVersions[0].LayerVersionArn" \
-              --output text
+            gh api repos/aws-observability/aws-otel-java-instrumentation/releases/latest \
+              --jq .body |
+              awk -F '|' -v region="$AWS_REGION" '
+                $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                  print $3
+                  exit
+                }
+              '
           )
-          if [ -z "$ADOT_LAYER_ARN" ] || [ "$ADOT_LAYER_ARN" = "None" ]; then
+          if [ -z "$ADOT_LAYER_ARN" ]; then
             echo "Could not resolve AWSOpenTelemetryDistroJava for $AWS_REGION"
             exit 1
           fi
