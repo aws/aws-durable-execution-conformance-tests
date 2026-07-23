@@ -15,10 +15,7 @@ jobs:
     name: Approve AI PR review
     if: >-
       github.actor != 'dependabot[bot]' &&
-      (
-        github.event.pull_request.draft ||
-        github.event.pull_request.author_association != 'MEMBER'
-      )
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     environment: ai-pr-review
     permissions: {}
@@ -33,10 +30,7 @@ jobs:
       always() &&
       github.actor != 'dependabot[bot]' &&
       (
-        (
-          !github.event.pull_request.draft &&
-          github.event.pull_request.author_association == 'MEMBER'
-        ) ||
+        github.event.pull_request.head.repo.full_name == github.repository ||
         needs.approve_review.result == 'success'
       )
     runs-on: ubuntu-latest
@@ -214,10 +208,7 @@ jobs:
       always() &&
       github.actor != 'dependabot[bot]' &&
       (
-        (
-          !github.event.pull_request.draft &&
-          github.event.pull_request.author_association == 'MEMBER'
-        ) ||
+        github.event.pull_request.head.repo.full_name == github.repository ||
         needs.approve_review.result == 'success'
       )
     runs-on: ubuntu-latest
