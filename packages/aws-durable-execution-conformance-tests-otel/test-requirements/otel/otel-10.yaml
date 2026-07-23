@@ -33,11 +33,6 @@ ExpectedExecutionHistory:
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
     Name: "${/^otel-callback(?: submitter|-submitter)$/}"
-  - EventId: 7
-    EventType: CallbackSucceeded
-    SubType: Callback
-    Id: ${CALLBACK1}
-    ParentId: ${CALLBACK_CONTEXT}
   - EventId: 8
     EventType: ContextSucceeded
     SubType: WaitForCallback

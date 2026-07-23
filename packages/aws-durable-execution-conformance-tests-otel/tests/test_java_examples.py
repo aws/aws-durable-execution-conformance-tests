@@ -73,7 +73,7 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
-    assert "AWS_LAMBDA_EXEC_WRAPPER" not in template
+    assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
 
 
 def test_java_example_template_handlers_have_sources() -> None:
@@ -106,6 +106,9 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
         "aws-durable-execution-sdk-java-plugin-otel",
         "opentelemetry-exporter-otlp",
     } <= artifacts
+    handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
+    assert ".setResource(resource)" in handler
+    assert 'AttributeKey.stringKey("service.name")' in handler
 
 
 def test_java_workflow_uses_supported_adot_distro_layer() -> None:

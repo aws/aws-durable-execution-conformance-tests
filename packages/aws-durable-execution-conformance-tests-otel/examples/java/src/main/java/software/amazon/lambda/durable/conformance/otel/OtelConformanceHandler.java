@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 package software.amazon.lambda.durable.conformance.otel;
 
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
+import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import java.util.Map;
@@ -21,8 +24,17 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
     @Override
     protected final DurableConfig createConfiguration() {
         var exporter = OtlpGrpcSpanExporter.getDefault();
-        var plugin =
-                new OtelPlugin(SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)));
+        var resource =
+                Resource.getDefault()
+                        .merge(
+                                Resource.create(
+                                        Attributes.of(
+                                                AttributeKey.stringKey("service.name"),
+                                                System.getenv().getOrDefault("OTEL_SERVICE_NAME", "invocation"))));
+        var plugin = new OtelPlugin(
+                SdkTracerProvider.builder()
+                        .setResource(resource)
+                        .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
         return DurableConfig.builder().withPlugins(plugin).build();
     }
 

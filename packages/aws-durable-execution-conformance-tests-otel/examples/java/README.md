@@ -58,11 +58,10 @@ durable-execution-conformance \
 
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
-The template accepts `OtelExecWrapper` for the runner's shared parameter
-contract but intentionally does not set `AWS_LAMBDA_EXEC_WRAPPER`. The Java SDK
-plugin creates its own deterministic tracer provider; attaching the ADOT Java
-agent would create a competing provider and disconnected traces. The
-`AWSOpenTelemetryDistroJava` layer is used only for its collector extension.
+The template sets `AWS_LAMBDA_EXEC_WRAPPER` from `OtelExecWrapper` so the
+`AWSOpenTelemetryDistroJava` layer initializes its collector and built-in
+Lambda instrumentation. The Java SDK plugin uses a dedicated tracer provider
+for durable spans and exports them to that collector over OTLP.
 
 ## Build Only
 

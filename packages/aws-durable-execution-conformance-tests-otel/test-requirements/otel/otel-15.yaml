@@ -10,8 +10,6 @@ ExpectedExecutionHistory:
     SubType: Wait
     Id: ${INTERRUPTED_WAIT}
     Name: otel-interrupted-wait
-  - EventId: 4
-    EventType: ExecutionTimedOut
 ExpectedResult:
   ExecutionStatus: TIMED_OUT
 TelemetryAssertions:

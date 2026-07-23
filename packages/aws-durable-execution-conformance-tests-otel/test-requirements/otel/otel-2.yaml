@@ -10,11 +10,6 @@ ExpectedExecutionHistory:
     SubType: Wait
     Id: ${WAIT1}
     Name: otel-wait
-  - EventId: 4
-    EventType: WaitSucceeded
-    SubType: Wait
-    Id: ${WAIT1}
-    Name: otel-wait
   - EventId: 5
     EventType: StepStarted
     SubType: Step

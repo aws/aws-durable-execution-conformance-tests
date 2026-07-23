@@ -12,7 +12,7 @@ Parameters:
   OtelExecWrapper:
     Type: String
     Default: /opt/otel-handler
-    Description: Exporter profile wrapper; accepted for runner compatibility and intentionally unused
+    Description: AWSOpenTelemetryDistroJava wrapper that initializes the collector
   OtelServiceName:
     Type: String
     Default: invocation
@@ -56,6 +56,7 @@ Globals:
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: grpc
         OTEL_PROPAGATORS: xray
+        AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
 
 Resources:
   Otel1Success:

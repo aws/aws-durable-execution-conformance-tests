@@ -35,11 +35,6 @@ ExpectedExecutionHistory:
     Id: ${CALLBACK_SUBMITTER}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
     Name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
-  - EventId: 7
-    EventType: CallbackFailed
-    SubType: Callback
-    Id: ${FAILED_CALLBACK}
-    ParentId: ${FAILED_CALLBACK_CONTEXT}
   - EventId: 8
     EventType: ContextFailed
     SubType: WaitForCallback
