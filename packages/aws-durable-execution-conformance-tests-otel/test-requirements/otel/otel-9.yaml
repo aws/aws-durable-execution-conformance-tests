@@ -45,7 +45,6 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       count: 2
       expect:
-        name: invocation
         status: UNSET
         service_name: invocation
         attributes:
@@ -57,7 +56,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: STARTED
       expect:
-        name: otel-condition
         status: UNSET
         service_name: invocation
         attributes:
@@ -80,7 +78,6 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
-        name: otel-condition attempt 1
         status: OK
         service_name: invocation
         attributes:
@@ -105,7 +102,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: SUCCEEDED
       expect:
-        name: otel-condition
         status: OK
         service_name: invocation
         attributes:
@@ -129,7 +125,6 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 2
       expect:
-        name: otel-condition attempt 2
         status: OK
         service_name: invocation
         attributes:

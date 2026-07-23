@@ -59,7 +59,6 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       count: 2
       expect:
-        name: invocation
         status: "${/^(?:ERROR|UNSET)$/}"
         service_name: invocation
         attributes:
@@ -70,7 +69,6 @@ TelemetryAssertions:
         name: otel-failed-callback
         status: UNSET
       expect:
-        name: otel-failed-callback
         status: UNSET
         service_name: invocation
         attributes:
@@ -92,7 +90,6 @@ TelemetryAssertions:
         name: otel-failed-callback
         status: ERROR
       expect:
-        name: otel-failed-callback
         status: ERROR
         service_name: invocation
         attributes:
@@ -115,7 +112,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: STARTED
       expect:
-        name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         status: UNSET
         service_name: invocation
         attributes:
@@ -138,7 +134,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: FAILED
       expect:
-        name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
         status: ERROR
         service_name: invocation
         attributes:
@@ -162,7 +157,6 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       count: 2
       expect:
-        name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
         status: OK
         service_name: invocation
         attributes:
@@ -186,7 +180,6 @@ TelemetryAssertions:
         attributes:
           durable.attempt.outcome: SUCCEEDED
       expect:
-        name: "${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}"
         status: OK
         service_name: invocation
         attributes:

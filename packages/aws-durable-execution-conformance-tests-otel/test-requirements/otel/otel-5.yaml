@@ -39,7 +39,6 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        name: invocation
         status: UNSET
         service_name: invocation
         attributes:
@@ -52,7 +51,6 @@ TelemetryAssertions:
           durable.operation.type: CONTEXT
           durable.operation.subtype: RunInChildContext
       expect:
-        name: otel-child-context
         status: OK
         service_name: invocation
         attributes:
@@ -76,7 +74,6 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
-        name: otel-child-step
         status: OK
         service_name: invocation
         attributes:
@@ -103,7 +100,6 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.attempt.number: 1
       expect:
-        name: otel-child-step attempt 1
         status: OK
         service_name: invocation
         attributes:

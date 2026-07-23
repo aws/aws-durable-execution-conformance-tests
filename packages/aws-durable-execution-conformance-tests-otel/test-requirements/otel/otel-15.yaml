@@ -27,7 +27,6 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        name: invocation
         status: UNSET
         service_name: invocation
         attributes:
@@ -39,7 +38,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${INTERRUPTED_WAIT}
       expect:
-        name: otel-interrupted-wait
         status: UNSET
         service_name: invocation
         attributes:

@@ -51,7 +51,6 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        name: invocation
         status: UNSET
         service_name: invocation
         attributes:
@@ -63,7 +62,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: Map
       expect:
-        name: otel-map
         status: OK
         service_name: invocation
         attributes:
@@ -86,7 +84,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: MapIteration
       expect:
-        name: otel-map-iteration-0
         status: OK
         service_name: invocation
         attributes:
@@ -112,7 +109,6 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
-        name: otel-map-step-0
         status: OK
         service_name: invocation
         attributes:
@@ -138,7 +134,6 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
-        name: otel-map-step-0 attempt 1
         status: OK
         service_name: invocation
         attributes:
@@ -165,7 +160,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.subtype: MapIteration
       expect:
-        name: otel-map-iteration-1
         status: OK
         service_name: invocation
         attributes:
@@ -191,7 +185,6 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
-        name: otel-map-step-1
         status: OK
         service_name: invocation
         attributes:
@@ -217,7 +210,6 @@ TelemetryAssertions:
         attributes:
           durable.attempt.number: 1
       expect:
-        name: otel-map-step-1 attempt 1
         status: OK
         service_name: invocation
         attributes:

@@ -44,7 +44,6 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        name: invocation
         status: "${/^(?:ERROR|UNSET)$/}"
         service_name: invocation
         attributes:
@@ -56,7 +55,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${PARALLEL1}
       expect:
-        name: otel-failed-parallel
         status: OK
         service_name: invocation
         attributes:
@@ -79,7 +77,6 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${FAILED_BRANCH}
       expect:
-        name: otel-failed-parallel-branch
         status: ERROR
         service_name: invocation
         attributes:

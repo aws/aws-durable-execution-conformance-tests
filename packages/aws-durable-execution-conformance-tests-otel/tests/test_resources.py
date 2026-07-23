@@ -51,7 +51,7 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
         for span_assertion in assertions["span_assertions"]:
             selected_name = span_assertion["select"]["name"]
             expected = span_assertion["expect"]
-            assert expected["name"] == selected_name
+            assert "name" not in expected
             assert expected["status"] in {
                 "ERROR",
                 "OK",
