@@ -147,6 +147,7 @@ def _span_expectation_errors(
     *,
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
+    optional_missing_attributes: Collection[str],
 ) -> list[str]:
     errors: list[str] = []
     for key, value in expected.items():
@@ -154,6 +155,12 @@ def _span_expectation_errors(
         if key not in actual:
             errors.append(f"{child_path}: property is missing")
             continue
+        if key == "attributes" and isinstance(value, Mapping) and isinstance(actual[key], Mapping):
+            value = {
+                attribute: expected_value
+                for attribute, expected_value in value.items()
+                if attribute not in optional_missing_attributes or attribute in actual[key]
+            }
         if key == "status" and _matches_span_status(value, actual[key], feature_disparities):
             continue
         errors.extend(_expectation_errors(value, actual[key], path=child_path))
@@ -167,6 +174,7 @@ def _parent_expectation_errors(
     *,
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
+    optional_missing_attributes: Collection[str],
 ) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
@@ -186,6 +194,7 @@ def _parent_expectation_errors(
         parents[0],
         path=path,
         feature_disparities=feature_disparities,
+        optional_missing_attributes=optional_missing_attributes,
     )
 
 
@@ -196,6 +205,7 @@ def _link_expectation_errors(
     *,
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
+    optional_missing_attributes: Collection[str],
 ) -> list[str]:
     if BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
         return []
@@ -211,6 +221,7 @@ def _link_expectation_errors(
                 spans_by_id,
                 path=path,
                 feature_disparities=feature_disparities,
+                optional_missing_attributes=optional_missing_attributes,
             )
             for alternative in alternatives
         ):
@@ -249,6 +260,7 @@ def _link_expectation_errors(
                 linked_spans[0],
                 path=link_path,
                 feature_disparities=feature_disparities,
+                optional_missing_attributes=optional_missing_attributes,
             )
         )
     return errors
@@ -262,6 +274,7 @@ def _span_assertion_errors(
     assertion_scopes: Sequence[Mapping[str, Any]] = (),
     exact_attribute_prefixes: Sequence[str] = (),
     feature_disparities: Collection[BackendFeatureDisparity] = (),
+    optional_missing_attributes: Collection[str] = (),
 ) -> list[str]:
     if raw_assertions is None:
         return []
@@ -331,6 +344,7 @@ def _span_assertion_errors(
                     matched_span,
                     path=expectation_path,
                     feature_disparities=feature_disparities,
+                    optional_missing_attributes=optional_missing_attributes,
                 )
             )
             if "parent" in expected:
@@ -341,6 +355,7 @@ def _span_assertion_errors(
                         spans_by_id,
                         path=f"{expectation_path}.parent",
                         feature_disparities=feature_disparities,
+                        optional_missing_attributes=optional_missing_attributes,
                     )
                 )
             if "links" in expected:
@@ -351,6 +366,7 @@ def _span_assertion_errors(
                         spans_by_id,
                         path=f"{expectation_path}.links",
                         feature_disparities=feature_disparities,
+                        optional_missing_attributes=optional_missing_attributes,
                     )
                 )
 
@@ -383,6 +399,7 @@ def validate_trace(
     query: TelemetryQuery,
     *,
     feature_disparities: Collection[BackendFeatureDisparity] = (),
+    optional_missing_attributes: Collection[str] = (),
 ) -> list[str]:
     """Validate stable integration invariants without prescribing span schemas."""
 
@@ -456,6 +473,7 @@ def validate_trace(
             assertion_scopes=assertion_scopes,
             exact_attribute_prefixes=exact_attribute_prefixes,
             feature_disparities=feature_disparities,
+            optional_missing_attributes=optional_missing_attributes,
         )
     )
 

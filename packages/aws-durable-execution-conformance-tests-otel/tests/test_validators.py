@@ -180,6 +180,55 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     assert errors == []
 
 
+def test_optional_missing_attributes_are_still_validated_when_present() -> None:
+    root, child = _trace().spans
+    attributes_without_identity = {
+        key: value for key, value in child.attributes.items() if key not in {"span.name", "span.kind"}
+    }
+    trace_without_identity = Trace(
+        trace_id=root.trace_id,
+        spans=(root, replace(child, attributes=attributes_without_identity)),
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "attributes": {
+                    "span.name": "child",
+                    "span.kind": "INTERNAL",
+                },
+            },
+        },
+    }
+
+    assert validate_trace(trace_without_identity, assertions, _query()) == [
+        "span_assertions[0].expect.attributes.span.name: property is missing",
+        "span_assertions[0].expect.attributes.span.kind: property is missing",
+    ]
+    assert (
+        validate_trace(
+            trace_without_identity,
+            assertions,
+            _query(),
+            optional_missing_attributes={"span.name", "span.kind"},
+        )
+        == []
+    )
+
+    mismatched = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {"attributes": {"span.kind": "SERVER"}},
+        },
+    }
+    assert validate_trace(
+        _trace(),
+        mismatched,
+        _query(),
+        optional_missing_attributes={"span.kind"},
+    ) == ["span_assertions[0].expect.attributes.span.kind: expected 'SERVER'"]
+
+
 def test_span_names_accept_regex_matchers() -> None:
     errors = validate_trace(
         _trace(),

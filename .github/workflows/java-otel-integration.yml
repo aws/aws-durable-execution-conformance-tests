@@ -111,6 +111,7 @@ jobs:
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-allow-missing-span-identity-attributes \
             --otel-service-name invocation \
             --otel-backend xray
 
