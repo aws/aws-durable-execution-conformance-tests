@@ -26,6 +26,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
+  TEST_STACK_NAME: durable-execution-conformance-tests-typescript-xray
   TEST_NAME: typescript-xray
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
@@ -111,6 +112,19 @@ jobs:
           npm run typecheck
           npm run build
 
+      - name: Delete rolled-back test stack
+        run: |
+          stack_status=$(
+            aws cloudformation describe-stacks \
+              --stack-name "$TEST_STACK_NAME" \
+              --query "Stacks[0].StackStatus" \
+              --output text 2>/dev/null || true
+          )
+          if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
+            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME"
+          fi
+
       - name: Run X-Ray conformance tests
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
@@ -131,6 +145,14 @@ jobs:
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-service-name invocation \
             --otel-backend xray
+
+      - name: Show CloudFormation diagnostics
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$TEST_STACK_NAME" \
+            --query "StackEvents[?ResourceStatus == 'CREATE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]" \
+            --output table || true
 
       - name: Show Lambda logs
         if: failure()
