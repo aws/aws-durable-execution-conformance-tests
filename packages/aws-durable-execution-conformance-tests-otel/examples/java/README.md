@@ -58,11 +58,12 @@ durable-execution-conformance \
 
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
-The template sets `AWS_LAMBDA_EXEC_WRAPPER` from `OtelExecWrapper` so the
-`AWSOpenTelemetryDistroJava` layer initializes its Java agent and built-in
-Lambda instrumentation. The Java SDK plugin uses a dedicated tracer provider
-for durable spans and ADOT's X-Ray UDP exporter sends them through the X-Ray
-daemon available in Lambda.
+The template accepts `OtelExecWrapper` for the runner's shared parameter
+contract but intentionally does not set `AWS_LAMBDA_EXEC_WRAPPER`. The Java SDK
+plugin creates its own deterministic tracer provider; attaching the ADOT Java
+agent would create a competing provider and disconnected traces until the
+[SDK compatibility fix](https://github.com/aws/aws-durable-execution-sdk-java/pull/540)
+is released. The legacy ADOT layer is used only for its collector extension.
 
 ## Build Only
 

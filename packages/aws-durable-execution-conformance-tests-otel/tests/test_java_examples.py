@@ -73,9 +73,8 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
-    assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
-    assert "Default: /opt/otel-instrument" in template
-    assert "/opt/otel-handler" not in template
+    assert "AWS_LAMBDA_EXEC_WRAPPER" not in template
+    assert "Default: /opt/otel-handler" in template
 
 
 def test_java_example_template_handlers_have_sources() -> None:
@@ -106,22 +105,20 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
-        "aws-distro-opentelemetry-xray-udp-span-exporter",
+        "opentelemetry-exporter-otlp",
     } <= artifacts
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
-    assert "AwsXrayUdpSpanExporterBuilder" in handler
-    assert '"AWS_XRAY_DAEMON_ADDRESS"' in handler
+    assert "OtlpGrpcSpanExporter.getDefault()" in handler
 
 
-def test_java_workflow_uses_supported_adot_distro_layer() -> None:
+def test_java_workflow_uses_legacy_adot_collector_layer() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "AWSOpenTelemetryDistroJava" in workflow
-    assert "aws-observability/aws-otel-java-instrumentation/releases/latest" in workflow
-    assert "list-layer-versions" not in workflow
-    assert "aws-otel-java-agent" not in workflow
+    assert ("arn:aws:lambda:${AWS_REGION}:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6") in workflow
+    assert "AWSOpenTelemetryDistroJava" not in workflow
+    assert "aws-observability/aws-otel-java-instrumentation/releases/latest" not in workflow
 
 
 def test_map_iteration_names_are_cross_sdk_compatible() -> None:

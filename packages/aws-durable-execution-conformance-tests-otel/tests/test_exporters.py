@@ -39,7 +39,7 @@ def _options(runtime: str = "python", *, layer_arn: str | None = None) -> Export
 @pytest.mark.parametrize(
     ("runtime", "expected_layer"),
     [
-        ("java", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16"),
+        ("java", "arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6"),
         ("javascript", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJs:15"),
         ("python", "arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroPython:33"),
     ],
@@ -54,16 +54,16 @@ def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: st
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
-def test_adot_java_uses_current_distro_wrapper() -> None:
+def test_adot_java_uses_legacy_layer_wrapper() -> None:
     config = AdotExporterProfile().configure(
         _options(
             "java",
-            layer_arn="arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16",
+            layer_arn="arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-java-agent-amd64-ver-1-32-0:6",
         )
     )
 
-    assert config.environment["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/otel-instrument"
-    assert config.parameter_overrides["OtelExecWrapper"] == "/opt/otel-instrument"
+    assert config.environment["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/otel-handler"
+    assert config.parameter_overrides["OtelExecWrapper"] == "/opt/otel-handler"
 
 
 def test_adot_requires_explicit_layer_arn() -> None:
