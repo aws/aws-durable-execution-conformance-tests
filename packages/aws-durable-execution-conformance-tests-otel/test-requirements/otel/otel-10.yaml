@@ -61,9 +61,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
@@ -77,9 +76,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
@@ -97,9 +95,8 @@ TelemetryAssertions:
             - - name: otel-callback
                 attributes:
                   durable.operation.id: ${CALLBACK_CONTEXT}
+        kind: INTERNAL
         attributes:
-          span.name: otel-callback
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK_CONTEXT}
           durable.operation.type: CONTEXT
@@ -108,9 +105,8 @@ TelemetryAssertions:
           durable.operation.name: otel-callback
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: "${/^otel-callback(?: create callback id|-callback)$/}"
@@ -120,9 +116,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: "${/^otel-callback(?: create callback id|-callback)$/}"
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
@@ -131,9 +126,8 @@ TelemetryAssertions:
           durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
-            span.name: otel-callback
-            span.kind: INTERNAL
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
@@ -147,9 +141,8 @@ TelemetryAssertions:
           - name: "${/^otel-callback(?: create callback id|-callback)$/}"
             attributes:
               durable.operation.id: ${CALLBACK1}
+        kind: INTERNAL
         attributes:
-          span.name: "${/^otel-callback(?: create callback id|-callback)$/}"
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
@@ -158,9 +151,8 @@ TelemetryAssertions:
           durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
-            span.name: otel-callback
-            span.kind: INTERNAL
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
@@ -177,9 +169,8 @@ TelemetryAssertions:
             - - name: "${/^otel-callback(?: submitter|-submitter)$/}"
                 attributes:
                   durable.operation.id: ${SUBMITTER_STEP}
+        kind: INTERNAL
         attributes:
-          span.name: "${/^otel-callback(?: submitter|-submitter)$/}"
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
@@ -189,9 +180,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
-            span.name: otel-callback
-            span.kind: INTERNAL
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
@@ -202,9 +192,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: "${/^otel-callback(?: submitter|-submitter) attempt 1$/}"
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
@@ -215,8 +204,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
-            span.name: otel-callback
-            span.kind: INTERNAL
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback

@@ -23,6 +23,9 @@ from aws_durable_execution_conformance_tests_otel.model import (
     normalize_id,
     parse_timestamp,
 )
+from aws_durable_execution_conformance_tests_otel.normalizers import (
+    normalize_span_kind,
+)
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     BackendFeatureDisparity,
@@ -59,6 +62,9 @@ def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
                 span_id=span_id,
                 parent_span_id=normalize_id(parent_value, 16),
                 name=str(outer.get("resource_name", outer.get("name", ""))),
+                kind=normalize_span_kind(
+                    outer.get("kind") or outer.get("span.kind") or attributes.get("span.kind"),
+                ),
                 start_time=start,
                 end_time=end,
                 status="ERROR" if outer.get("status") == "error" else "OK",

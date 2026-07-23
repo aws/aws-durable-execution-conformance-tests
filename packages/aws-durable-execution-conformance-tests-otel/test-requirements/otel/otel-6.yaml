@@ -56,9 +56,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: SUCCEEDED
@@ -70,9 +69,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${PARALLEL1}
           durable.operation.type: CONTEXT
@@ -81,9 +79,8 @@ TelemetryAssertions:
           durable.operation.name: otel-parallel
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-parallel-branch-a
@@ -93,9 +90,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-branch-a
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${BRANCH1}
           durable.operation.type: CONTEXT
@@ -104,9 +100,8 @@ TelemetryAssertions:
           durable.operation.name: otel-parallel-branch-a
         parent:
           name: otel-parallel
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel
-            span.kind: INTERNAL
             durable.operation.id: ${PARALLEL1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Parallel
@@ -119,9 +114,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-step-a
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -131,9 +125,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: otel-parallel-branch-a
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel-branch-a
-            span.kind: INTERNAL
             durable.operation.id: ${BRANCH1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: ParallelBranch
@@ -145,9 +138,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-step-a attempt 1
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -158,9 +150,8 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-parallel-branch-a
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel-branch-a
-            span.kind: INTERNAL
             durable.operation.id: ${BRANCH1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: ParallelBranch
@@ -172,9 +163,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-branch-b
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${BRANCH2}
           durable.operation.type: CONTEXT
@@ -183,9 +173,8 @@ TelemetryAssertions:
           durable.operation.name: otel-parallel-branch-b
         parent:
           name: otel-parallel
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel
-            span.kind: INTERNAL
             durable.operation.id: ${PARALLEL1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Parallel
@@ -198,9 +187,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-step-b
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
@@ -210,9 +198,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: otel-parallel-branch-b
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel-branch-b
-            span.kind: INTERNAL
             durable.operation.id: ${BRANCH2}
             durable.operation.type: CONTEXT
             durable.operation.subtype: ParallelBranch
@@ -224,9 +211,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-parallel-step-b attempt 1
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
@@ -237,9 +223,8 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-parallel-branch-b
+          kind: INTERNAL
           attributes:
-            span.name: otel-parallel-branch-b
-            span.kind: INTERNAL
             durable.operation.id: ${BRANCH2}
             durable.operation.type: CONTEXT
             durable.operation.subtype: ParallelBranch

@@ -45,9 +45,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
@@ -61,9 +60,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
@@ -77,9 +75,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: SUCCEEDED
@@ -91,9 +88,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-invoke
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${INVOKE1}
           durable.operation.type: CHAINED_INVOKE
@@ -102,9 +98,8 @@ TelemetryAssertions:
           durable.operation.name: otel-invoke
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-invoke
@@ -117,9 +112,8 @@ TelemetryAssertions:
           - name: otel-invoke
             attributes:
               durable.operation.id: ${INVOKE1}
+        kind: INTERNAL
         attributes:
-          span.name: otel-invoke
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${INVOKE1}
           durable.operation.type: CHAINED_INVOKE
@@ -128,7 +122,6 @@ TelemetryAssertions:
           durable.operation.name: otel-invoke
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

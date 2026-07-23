@@ -49,9 +49,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: FAILED
@@ -63,9 +62,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-failed-map
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${MAP1}
           durable.operation.type: CONTEXT
@@ -74,9 +72,8 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-map
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-map-iteration-0
@@ -86,9 +83,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-failed-map-iteration-0
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_ITERATION}
           durable.operation.type: CONTEXT
@@ -97,9 +93,8 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-map-iteration-0
         parent:
           name: otel-failed-map
+          kind: INTERNAL
           attributes:
-            span.name: otel-failed-map
-            span.kind: INTERNAL
             durable.operation.id: ${MAP1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Map

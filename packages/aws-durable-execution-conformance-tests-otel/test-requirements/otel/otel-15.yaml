@@ -32,9 +32,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
@@ -46,9 +45,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-interrupted-wait
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${INTERRUPTED_WAIT}
           durable.operation.type: WAIT
@@ -57,7 +55,6 @@ TelemetryAssertions:
           durable.operation.name: otel-interrupted-wait
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

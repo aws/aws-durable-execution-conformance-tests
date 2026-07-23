@@ -44,9 +44,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: SUCCEEDED
@@ -59,9 +58,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-child-context
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CTX1}
           durable.operation.type: CONTEXT
@@ -70,9 +68,8 @@ TelemetryAssertions:
           durable.operation.name: otel-child-context
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-child-step
@@ -83,9 +80,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-child-step
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -95,9 +91,8 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: otel-child-context
+          kind: INTERNAL
           attributes:
-            span.name: otel-child-context
-            span.kind: INTERNAL
             durable.operation.id: ${CTX1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: RunInChildContext
@@ -110,9 +105,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-child-step attempt 1
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
@@ -123,9 +117,8 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-child-context
+          kind: INTERNAL
           attributes:
-            span.name: otel-child-context
-            span.kind: INTERNAL
             durable.operation.id: ${CTX1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: RunInChildContext

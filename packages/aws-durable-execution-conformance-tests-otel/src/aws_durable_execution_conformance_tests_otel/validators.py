@@ -9,7 +9,6 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests.history import get_regex_pattern
-
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,

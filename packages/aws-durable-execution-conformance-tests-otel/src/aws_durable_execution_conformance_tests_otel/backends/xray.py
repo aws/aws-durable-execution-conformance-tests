@@ -23,6 +23,9 @@ from aws_durable_execution_conformance_tests_otel.model import (
     normalize_id,
     parse_timestamp,
 )
+from aws_durable_execution_conformance_tests_otel.normalizers import (
+    normalize_span_kind,
+)
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     BackendFeatureDisparity,
@@ -72,6 +75,7 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
                 span_id=span_id,
                 parent_span_id=parent_span_id,
                 name=str(segment.get("name", "")),
+                kind=normalize_span_kind(attributes.get("span.kind")),
                 start_time=start,
                 end_time=end,
                 status=status,

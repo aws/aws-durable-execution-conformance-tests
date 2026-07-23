@@ -48,9 +48,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
@@ -64,9 +63,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
@@ -78,9 +76,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-retry
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -89,9 +86,8 @@ TelemetryAssertions:
           durable.operation.name: otel-retry
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry attempt 1
@@ -101,9 +97,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-retry attempt 1
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -114,9 +109,8 @@ TelemetryAssertions:
           durable.attempt.outcome: FAILED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry
@@ -129,9 +123,8 @@ TelemetryAssertions:
           - name: otel-retry
             attributes:
               durable.operation.id: ${RETRY_STEP}
+        kind: INTERNAL
         attributes:
-          span.name: otel-retry
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -141,9 +134,8 @@ TelemetryAssertions:
           durable.attempt.number: 2
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-retry attempt 2
@@ -153,9 +145,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-retry attempt 2
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
@@ -166,7 +157,6 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

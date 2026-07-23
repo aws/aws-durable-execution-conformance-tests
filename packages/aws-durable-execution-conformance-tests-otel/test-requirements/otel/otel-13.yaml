@@ -49,9 +49,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: FAILED
@@ -63,9 +62,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-failed-parallel
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${PARALLEL1}
           durable.operation.type: CONTEXT
@@ -74,9 +72,8 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-parallel
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-failed-parallel-branch
@@ -86,9 +83,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-failed-parallel-branch
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_BRANCH}
           durable.operation.type: CONTEXT
@@ -97,9 +93,8 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-parallel-branch
         parent:
           name: otel-failed-parallel
+          kind: INTERNAL
           attributes:
-            span.name: otel-failed-parallel
-            span.kind: INTERNAL
             durable.operation.id: ${PARALLEL1}
             durable.operation.type: CONTEXT
             durable.operation.subtype: Parallel

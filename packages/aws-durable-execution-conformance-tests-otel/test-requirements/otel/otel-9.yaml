@@ -49,9 +49,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
@@ -65,9 +64,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: invocation
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
@@ -79,9 +77,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-condition
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -90,9 +87,8 @@ TelemetryAssertions:
           durable.operation.name: otel-condition
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition attempt 1
@@ -102,9 +98,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-condition attempt 1
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -115,9 +110,8 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition
@@ -130,9 +124,8 @@ TelemetryAssertions:
           - name: otel-condition
             attributes:
               durable.operation.id: ${CONDITION1}
+        kind: INTERNAL
         attributes:
-          span.name: otel-condition
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -142,9 +135,8 @@ TelemetryAssertions:
           durable.attempt.number: 2
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-condition attempt 2
@@ -154,9 +146,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
+        kind: INTERNAL
         attributes:
-          span.name: otel-condition attempt 2
-          span.kind: INTERNAL
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
@@ -167,7 +158,6 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
-            span.name: invocation
-            span.kind: INTERNAL
             durable.execution.arn: ${EXECUTION_ARN}

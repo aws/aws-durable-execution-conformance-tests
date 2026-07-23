@@ -25,6 +25,7 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.normalizers import (
     normalize_otlp_json,
+    normalize_span_kind,
     normalize_status,
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
@@ -59,6 +60,9 @@ def normalize_dash0(payload: Mapping[str, Any]) -> list[Trace]:
                     16,
                 ),
                 name=str(raw_span.get("name", "")),
+                kind=normalize_span_kind(
+                    raw_span.get("kind") or raw_span.get("spanKind") or attributes.get("span.kind"),
+                ),
                 start_time=parse_timestamp(raw_span.get("startTimeUnixNano", raw_span.get("start_time"))),
                 end_time=parse_timestamp(raw_span.get("endTimeUnixNano", raw_span.get("end_time"))),
                 status=normalize_status(raw_span.get("status")),

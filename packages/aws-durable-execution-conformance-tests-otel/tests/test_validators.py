@@ -29,14 +29,13 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         name="root",
         start_time=now,
         end_time=now,
+        kind="SERVER",
         status="OK",
         service_name="service",
         attributes={
             "durable.execution.arn": execution_arn,
             "faas.invocation_id": "invocation-1",
             "durable.operation.outcome": "retry",
-            "span.name": "root",
-            "span.kind": "SERVER",
         },
     )
     child = Span(
@@ -46,13 +45,12 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         name="child",
         start_time=now,
         end_time=now,
+        kind="INTERNAL",
         status="OK",
         service_name="service",
         attributes={
             "durable.execution.arn": execution_arn,
             "faas.invocation_id": "invocation-2",
-            "span.name": "child",
-            "span.kind": "INTERNAL",
             "custom.metadata": {
                 "attempt": 2,
                 "labels": ["durable", "resumed"],
@@ -137,16 +135,16 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "parent_span_id": "2" * 16,
                     "parent": {
                         "name": "root",
+                        "kind": "SERVER",
                         "status": "OK",
                         "parent_span_id": None,
                         "attributes": {
                             "faas.invocation_id": "invocation-1",
                             "durable.operation.outcome": "retry",
-                            "span.name": "root",
-                            "span.kind": "SERVER",
                         },
                     },
                     "name": "child",
+                    "kind": "INTERNAL",
                     "start_time": "*",
                     "end_time": "*",
                     "status": "OK",
@@ -154,8 +152,6 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "attributes": {
                         "durable.execution.arn": "arn:test",
                         "faas.invocation_id": "invocation-2",
-                        "span.name": "child",
-                        "span.kind": "INTERNAL",
                         "custom.metadata": {
                             "attempt": 2,
                             "labels": ["durable", "resumed"],
@@ -164,10 +160,10 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "links": [
                         {
                             "name": "root",
+                            "kind": "SERVER",
                             "status": "OK",
                             "attributes": {
                                 "durable.execution.arn": "arn:test",
-                                "span.name": "root",
                             },
                         }
                     ],
@@ -395,6 +391,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
         name=child.name,
         start_time=child.start_time,
         end_time=child.end_time,
+        kind=child.kind,
         status=child.status,
         service_name=child.service_name,
         attributes=child.attributes,
@@ -461,12 +458,11 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
                     "select": {"name": "child"},
                     "expect": {
                         "name": "not-child",
+                        "kind": "SERVER",
                         "status": "ERROR",
                         "service_name": "not-service",
                         "attributes": {
                             "missing.key": "value",
-                            "span.name": "not-child",
-                            "span.kind": "SERVER",
                         },
                         "links": [],
                     },
@@ -479,11 +475,10 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
     assert "span_assertions[0].select matched no spans" in errors
     assert "span_assertions[1].select matched 2 spans; it must select exactly one" in errors
     assert "span_assertions[2].expect.name: expected 'not-child'" in errors
+    assert "span_assertions[2].expect.kind: expected 'SERVER'" in errors
     assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
     assert "span_assertions[2].expect.service_name: expected 'not-service'" in errors
     assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
-    assert "span_assertions[2].expect.attributes.span.name: expected 'not-child'" in errors
-    assert "span_assertions[2].expect.attributes.span.kind: expected 'SERVER'" in errors
     assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
 
 
