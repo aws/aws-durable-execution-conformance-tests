@@ -10,10 +10,10 @@ import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
-from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
 from botocore.exceptions import BotoCoreError, ClientError
 
 from aws_durable_execution_conformance_tests import sam
+from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -260,7 +260,7 @@ def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
 
     class _ExplodingPayload:
         def read(self) -> bytes:
-            raise _StreamError()
+            raise _StreamError
 
     response = {
         "StatusCode": 200,
