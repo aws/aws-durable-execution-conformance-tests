@@ -122,6 +122,16 @@ def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
     assert "--otel-allow-missing-span-identity-attributes" not in workflow
 
 
+def test_java_workflow_builds_handlers_with_sdk_main() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "repository: aws/aws-durable-execution-sdk-java" in workflow
+    assert "ref: main" in workflow
+    assert "--projects sdk,otel-plugin" in workflow
+    assert "-Dexpression=project.version" in workflow
+    assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
+
+
 def test_map_iteration_names_are_cross_sdk_compatible() -> None:
     requirements_dir = EXAMPLES_DIR.parents[1] / "test-requirements" / "otel"
     python_source = EXAMPLES_DIR.parent / "python" / "src"

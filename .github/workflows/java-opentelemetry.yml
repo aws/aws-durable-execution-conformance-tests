@@ -27,6 +27,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
+  JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
   JAVA_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml
   TEST_NAME: java-xray
 
@@ -40,12 +41,38 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Check out Java SDK main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: aws/aws-durable-execution-sdk-java
+          ref: main
+          path: ${{ env.JAVA_SDK_CHECKOUT }}
+
       - name: Set up Java
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
         with:
           distribution: corretto
           java-version: "21"
           cache: maven
+
+      - name: Install Java SDK main
+        run: |
+          JAVA_SDK_VERSION=$(
+            mvn -B -q \
+              --file "$JAVA_SDK_CHECKOUT/pom.xml" \
+              -Dstyle.color=never \
+              -Dexpression=project.version \
+              -DforceStdout \
+              help:evaluate
+          )
+          mvn -B -q \
+            --file "$JAVA_SDK_CHECKOUT/pom.xml" \
+            --projects sdk,otel-plugin \
+            --also-make \
+            -DskipTests \
+            install
+          echo "Using Java SDK main version $JAVA_SDK_VERSION"
+          echo "JAVA_SDK_VERSION=$JAVA_SDK_VERSION" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -103,9 +130,10 @@ jobs:
           echo "Using AWSOpenTelemetryDistroJava layer $ADOT_LAYER_ARN with its Java agent disabled"
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
-      - name: Compile Java handlers
+      - name: Compile Java handlers with SDK main
         run: |
           mvn -B -q -DskipTests package \
+            -Ddurable.sdk.version="$JAVA_SDK_VERSION" \
             --file packages/aws-durable-execution-conformance-tests-otel/examples/java/pom.xml
 
       - name: Run X-Ray conformance tests
