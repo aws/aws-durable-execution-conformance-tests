@@ -8,10 +8,19 @@ Parameters:
     Description: Pre-created execution role for the test functions
   OtelLayerArn:
     Type: String
-    Description: AWSOpenTelemetryDistroJs Lambda layer used to export spans
+    Description: OpenTelemetry JavaScript Lambda layer used to instrument the function
+  OtelCollectorLayerArn:
+    Type: String
+    Description: OpenTelemetry Collector Lambda extension layer with the AWS S3 exporter
+  OtelCollectorBucket:
+    Type: String
+    Description: S3 bucket where the collector writes OTLP trace objects
+  OtelCollectorPrefix:
+    Type: String
+    Description: Run-specific S3 key prefix where the collector writes OTLP trace objects
   OtelExecWrapper:
     Type: String
-    Default: /opt/otel-instrument
+    Default: /opt/otel-handler
     Description: Lambda execution wrapper supplied by the exporter profile
   OtelServiceName:
     Type: String
@@ -45,6 +54,7 @@ Globals:
     Tracing: Active
     Layers:
       - !Ref OtelLayerArn
+      - !Ref OtelCollectorLayerArn
     DurableConfig:
       ExecutionTimeout: 300
       RetentionPeriodInDays: 1
@@ -58,7 +68,10 @@ Globals:
         OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
         OTEL_NODE_ENABLED_INSTRUMENTATIONS: aws-lambda
         OTEL_PROPAGATORS: xray
+        OTEL_S3_BUCKET: !Ref OtelCollectorBucket
+        OTEL_S3_PREFIX: !Ref OtelCollectorPrefix
         OTEL_TRACES_SAMPLER: always_on
+        OPENTELEMETRY_COLLECTOR_CONFIG_URI: /var/task/collector.yaml
 
 Resources:
   Otel1Success:

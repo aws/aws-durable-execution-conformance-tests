@@ -39,38 +39,38 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-18` | `otel_18_chained_invoke_failure.handler` | Failed chained invoke. |
 | `otel-19` | `otel_19_execution_failure.handler` | Direct handler failure. |
 
-## Run Against X-Ray
+## Run Against the S3 Collector
 
-Install the conformance packages, configure AWS credentials, and use the latest
-AWS Distro for OpenTelemetry JavaScript layer:
+The hosted workflow builds a custom OpenTelemetry Lambda collector extension
+with `awss3exporter`, publishes it in the test account, and creates a
+run-scoped S3 bucket. It then runs all 19 scenarios with the community
+JavaScript instrumentation layer and queries the exported OTLP objects through
+the conformance package's `collector` backend.
+
+After building the handlers and collector layer, the equivalent runner command
+is:
 
 ```bash
-pip install \
-  aws-durable-execution-conformance-tests \
-  aws-durable-execution-conformance-tests-otel
-
-npm ci \
-  --prefix packages/aws-durable-execution-conformance-tests-otel/examples/typescript
-npm run install-sdk-main \
-  --prefix packages/aws-durable-execution-conformance-tests-otel/examples/typescript
-npm run build \
-  --prefix packages/aws-durable-execution-conformance-tests-otel/examples/typescript
-
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml \
   --language javascript \
   --suite otel \
-  --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
-  --otel-exporter adot \
-  --otel-layer-arn "$ADOT_JS_LAYER_ARN" \
+  --parameter-overrides \
+    LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+    OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \
+    OtelCollectorBucket="$OTEL_S3_BUCKET" \
+    OtelCollectorPrefix=traces \
+  --otel-exporter community \
+  --otel-endpoint http://localhost:4318 \
   --otel-service-name invocation \
-  --otel-backend xray
+  --otel-backend collector \
+  --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
 ```
 
-Set `ADOT_JS_LAYER_ARN` to the current regional ARN from the
-[ADOT JavaScript release](https://github.com/aws-observability/aws-otel-js-instrumentation/releases/latest).
-The template enables `/opt/otel-instrument`; the plugin uses the tracer provider
-registered by that layer.
+The template adds both the JavaScript instrumentation layer selected by the
+runner and `COLLECTOR_LAYER_ARN`. The bundled `collector.yaml` listens on
+localhost, writes gzip-compressed OTLP JSON to the run prefix, and uses the
+function's AWS credentials for S3.
 
 ## Build Only
 
