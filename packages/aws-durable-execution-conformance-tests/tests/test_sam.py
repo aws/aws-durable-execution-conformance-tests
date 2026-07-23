@@ -5,17 +5,17 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import TYPE_CHECKING
 
 from aws_durable_execution_conformance_tests import sam
 from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
+import pytest
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def test_delete_stack_returns_true_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,8 +137,6 @@ def _make_invoker(response: dict, resources: dict[str, str] | None = None) -> tu
 
 
 def test_invoke_output_is_sam_compatible_json_with_arn() -> None:
-    import json as _json
-
     response = {
         "StatusCode": 200,
         "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/a/b",
@@ -154,15 +152,13 @@ def test_invoke_output_is_sam_compatible_json_with_arn() -> None:
     assert lam.invocations[0]["FunctionName"] == "physical-step-basic"
     assert lam.invocations[0]["Qualifier"] == "$LATEST"
     assert lam.invocations[0]["InvocationType"] == "RequestResponse"
-    output = _json.loads(result.output)
+    output = json.loads(result.output)
     assert output["DurableExecutionArn"].endswith("/durable-execution/a/b")
     assert output["StatusCode"] == 200
     assert output["Payload"] == '"Hello, World!"'
 
 
 def test_invoke_async_uses_event_type_and_returns_arn() -> None:
-    import json as _json
-
     response = {
         "StatusCode": 202,
         "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/c/d",
@@ -174,14 +170,12 @@ def test_invoke_async_uses_event_type_and_returns_arn() -> None:
     result = invoker.invoke_async("StepBasic")
 
     assert lam.invocations[0]["InvocationType"] == "Event"
-    output = _json.loads(result.output)
+    output = json.loads(result.output)
     assert output["DurableExecutionArn"].endswith("/durable-execution/c/d")
     assert output["Payload"] == ""
 
 
 def test_invoke_falls_back_to_arn_header_when_field_missing() -> None:
-    import json as _json
-
     response = {
         "StatusCode": 200,
         "Payload": _FakePayload(b"{}"),
@@ -189,7 +183,7 @@ def test_invoke_falls_back_to_arn_header_when_field_missing() -> None:
     }
     invoker, _lam, _cfn = _make_invoker(response)
 
-    output = _json.loads(invoker.invoke("StepBasic").output)
+    output = json.loads(invoker.invoke("StepBasic").output)
 
     assert output["DurableExecutionArn"] == "arn:from-header"
 
@@ -209,18 +203,14 @@ def test_invoke_resolves_stack_once_and_caches() -> None:
 
 
 def test_invoke_unknown_logical_id_raises_invoke_error() -> None:
-    import pytest as _pytest
-
     response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
     invoker, _lam, _cfn = _make_invoker(response)
 
-    with _pytest.raises(sam.InvokeError, match="no Lambda function"):
+    with pytest.raises(sam.InvokeError, match="no Lambda function"):
         invoker.invoke("DoesNotExist")
 
 
 def test_invoke_client_error_wrapped_as_invoke_error() -> None:
-    import pytest as _pytest
-
     class _ErrLambdaClient:
         def invoke(self, **_kwargs: object) -> dict:
             raise ClientError(
@@ -231,13 +221,11 @@ def test_invoke_client_error_wrapped_as_invoke_error() -> None:
     cfn = _FakeCfnClient({"StepBasic": "physical-step-basic"})
     invoker = sam.Invoker(stack_name="my-stack", region="us-west-2", lambda_client=_ErrLambdaClient(), cfn_client=cfn)
 
-    with _pytest.raises(sam.InvokeError, match="Rate exceeded"):
+    with pytest.raises(sam.InvokeError, match="Rate exceeded"):
         invoker.invoke("StepBasic")
 
 
 def test_invoke_function_error_surfaces_in_output() -> None:
-    import json as _json
-
     response = {
         "StatusCode": 200,
         "FunctionError": "Unhandled",
@@ -252,25 +240,20 @@ def test_invoke_function_error_surfaces_in_output() -> None:
     # failure -- the error payload and FunctionError marker pass through for
     # the validator/diagnostics to interpret.
     assert result.success is True
-    output = _json.loads(result.output)
+    output = json.loads(result.output)
     assert output["FunctionError"] == "Unhandled"
     assert "boom" in output["Payload"]
 
 
 def test_invoke_rejects_unsupported_parameters() -> None:
-    import pytest as _pytest
-
     response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
     invoker, _lam, _cfn = _make_invoker(response)
 
-    with _pytest.raises(sam.InvokeError, match="unsupported invoke parameter"):
+    with pytest.raises(sam.InvokeError, match="unsupported invoke parameter"):
         invoker.invoke("StepBasic", parameters=["ClientContext=abc"])
 
 
 def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
-    import pytest as _pytest
-    from botocore.exceptions import BotoCoreError
-
     class _StreamError(BotoCoreError):
         fmt = "connection interrupted while reading payload"
 
@@ -287,7 +270,7 @@ def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
 
     # A post-200 stream failure must surface as InvokeError so validate.py
     # records one failed requirement instead of aborting the whole run.
-    with _pytest.raises(sam.InvokeError, match="connection interrupted"):
+    with pytest.raises(sam.InvokeError, match="connection interrupted"):
         invoker.invoke("StepBasic")
 
 
