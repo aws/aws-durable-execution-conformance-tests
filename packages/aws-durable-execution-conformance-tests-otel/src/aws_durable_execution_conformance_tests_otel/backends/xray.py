@@ -153,3 +153,18 @@ class XRayBackendFactory:
         region: str,
     ) -> PollingBackend:
         return XRayBackend(boto3.client("xray", region_name=region))
+
+    def create_with_clients(
+        self,
+        options: Mapping[str, Any],
+        *,
+        region: str,
+        aws_clients: Mapping[str, Any],
+    ) -> PollingBackend:
+        """Create a backend from a client initialized before worker startup."""
+        del options, region
+        try:
+            client = aws_clients["xray"]
+        except KeyError as exc:
+            raise BackendError("Pre-created X-Ray client is unavailable") from exc
+        return XRayBackend(client)

@@ -212,3 +212,20 @@ class CollectorBackendFactory:
             bucket,
             prefix,
         )
+
+    def create_with_clients(
+        self,
+        options: Mapping[str, Any],
+        *,
+        region: str,
+        aws_clients: Mapping[str, Any],
+    ) -> PollingBackend:
+        """Create a backend from a client initialized before worker startup."""
+        del region
+        location = str(options.get("otel_backend_endpoint") or os.environ.get("OTEL_COLLECTOR_S3_URI") or "")
+        bucket, prefix = _parse_s3_uri(location)
+        try:
+            client = aws_clients["s3"]
+        except KeyError as exc:
+            raise BackendError("Pre-created S3 client is unavailable") from exc
+        return CollectorBackend(client, bucket, prefix)

@@ -24,6 +24,7 @@ from typing import Any
 
 import yaml
 
+from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.config import (
     BUILD_DIR,
     DEFAULT_MAX_WORKERS,
@@ -446,6 +447,15 @@ def _validate_descriptions(
     if not function_descriptions:
         return []
 
+    registry: ExtensionRegistry | None = getattr(args, "_extension_registry", None)
+    active_suites = {
+        requirement.suite.name
+        for _, description_id in function_descriptions
+        if (requirement := requirements.get(description_id)) is not None
+    }
+    additional_services = registry.validation_client_services(args, active_suites) if registry is not None else ()
+    aws_clients = AwsClients.create(args.region, additional_services)
+
     worker_count = min(args.max_workers, len(function_descriptions))
     if worker_count > 1:
         print(f"\n=== Validating with up to {worker_count} concurrent workers ===")
@@ -459,6 +469,7 @@ def _validate_descriptions(
                 invoker=invoker,
                 tmp_dir=tmp_dir,
                 args=args,
+                aws_clients=aws_clients,
             )
             for function_name, description_id in function_descriptions
         ]
@@ -473,6 +484,7 @@ def _validate_descriptions(
                     invoker=invoker,
                     tmp_dir=tmp_dir,
                     args=args,
+                    aws_clients=aws_clients,
                 )
                 for function_name, description_id in function_descriptions
             ]
@@ -491,6 +503,7 @@ def _validate_test_description(
     invoker: Invoker,
     tmp_dir: str,
     args: argparse.Namespace,
+    aws_clients: AwsClients,
 ) -> DescriptionResult:
     """Validate one requirement and run its extension hook when applicable."""
 
@@ -512,6 +525,7 @@ def _validate_test_description(
         tmp_dir,
         output_dir=args.history_dir,
         region=args.region,
+        aws_clients=aws_clients,
     )
     if result.passed and requirement.suite.validation_hook is not None:
         result = _run_extension_validation(
@@ -519,6 +533,7 @@ def _validate_test_description(
             hook=requirement.suite.validation_hook,
             requirement_path=requirement.path,
             args=args,
+            aws_clients=aws_clients,
         )
     return result
 
@@ -546,6 +561,7 @@ def _run_extension_validation(
     hook: Any,
     requirement_path: Path,
     args: argparse.Namespace,
+    aws_clients: AwsClients,
 ) -> DescriptionResult:
     """Run an extension hook and preserve the core result/report model."""
 
@@ -580,6 +596,7 @@ def _run_extension_validation(
                 "EXECUTION_ARN": result.execution_arn,
             },
             options={key: value for key, value in vars(args).items() if not key.startswith("_")},
+            aws_clients=aws_clients,
         )
         errors = list(hook(context))
     except Exception as exc:

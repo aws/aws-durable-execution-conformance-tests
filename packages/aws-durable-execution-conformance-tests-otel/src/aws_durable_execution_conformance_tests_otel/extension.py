@@ -180,12 +180,28 @@ class OtelExtension:
             return {}
         return {"OtelExporterHeaders": headers}
 
+    def validation_client_services(self, args: argparse.Namespace) -> tuple[str, ...]:
+        """Declare AWS clients used by the selected telemetry backend."""
+        return {
+            "collector": ("s3",),
+            "xray": ("xray",),
+        }.get(args.otel_backend, ())
+
     def validate_telemetry(self, context: ValidationContext) -> list[str]:
         options = context.options
         try:
             factories = self._backends()
             backend_name = str(options["otel_backend"])
-            backend = factories[backend_name].create(options, region=context.region)
+            factory = factories[backend_name]
+            create_with_clients = getattr(factory, "create_with_clients", None)
+            if create_with_clients is None:
+                backend = factory.create(options, region=context.region)
+            else:
+                backend = create_with_clients(
+                    options,
+                    region=context.region,
+                    aws_clients=context.aws_clients,
+                )
             feature_disparities = (
                 ", ".join(sorted(disparity.name for disparity in backend.feature_disparities)) or "none"
             )

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from threading import Barrier, Lock
+from threading import Barrier, Lock, get_ident
 from typing import TYPE_CHECKING
 
 import aws_durable_execution_conformance_tests.app as app_module
@@ -17,6 +17,7 @@ from aws_durable_execution_conformance_tests.app import (
     _validate_descriptions,
     parse_args,
 )
+from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.config import DEFAULT_MAX_WORKERS, DEFAULT_REGION
 from aws_durable_execution_conformance_tests.extensions import RequirementCase, RequirementSuite
 from aws_durable_execution_conformance_tests.sam import Invoker
@@ -199,6 +200,13 @@ def test_extension_hook_failure_uses_core_description_result(tmp_path: Path) -> 
             language="python",
             history_dir=str(tmp_path),
         ),
+        aws_clients=AwsClients(
+            {
+                "lambda": object(),
+                "cloudformation": object(),
+                "logs": object(),
+            }
+        ),
     )
 
     assert result.passed is False
@@ -226,6 +234,25 @@ def test_validates_descriptions_concurrently_and_preserves_order(
     active = 0
     max_active = 0
     completion_order: list[str] = []
+    validation_thread_ids: list[int] = []
+    creation_thread_ids: list[int] = []
+    received_clients: list[AwsClients] = []
+    aws_clients = AwsClients(
+        {
+            "lambda": object(),
+            "cloudformation": object(),
+            "logs": object(),
+        }
+    )
+
+    def _create_clients(
+        region: str,
+        additional_services: tuple[str, ...] = (),
+    ) -> AwsClients:
+        assert region == "us-west-2"
+        assert additional_services == ()
+        creation_thread_ids.append(get_ident())
+        return aws_clients
 
     def _validate_description(
         function_name: str,
@@ -234,6 +261,7 @@ def test_validates_descriptions_concurrently_and_preserves_order(
         invoker: Invoker,
         tmp_dir: str,
         region: str,
+        aws_clients: AwsClients,
         output_dir: str | None = None,
     ) -> DescriptionResult:
         del test_file, invoker, tmp_dir, region, output_dir
@@ -241,6 +269,8 @@ def test_validates_descriptions_concurrently_and_preserves_order(
         with lock:
             active += 1
             max_active = max(max_active, active)
+            validation_thread_ids.append(get_ident())
+            received_clients.append(aws_clients)
         barrier.wait(timeout=1)
         if description_id == "test-1":
             time.sleep(0.02)
@@ -253,8 +283,10 @@ def test_validates_descriptions_concurrently_and_preserves_order(
             passed=True,
         )
 
+    monkeypatch.setattr(app_module.AwsClients, "create", staticmethod(_create_clients))
     monkeypatch.setattr(app_module, "validate_description", _validate_description)
 
+    main_thread_id = get_ident()
     results = _validate_descriptions(
         [("Function1", "test-1"), ("Function2", "test-2")],
         requirements=requirements,
@@ -271,3 +303,6 @@ def test_validates_descriptions_concurrently_and_preserves_order(
     assert max_active == 2
     assert completion_order == ["test-2", "test-1"]
     assert [result.description_id for result in results] == ["test-1", "test-2"]
+    assert creation_thread_ids == [main_thread_id]
+    assert all(thread_id != main_thread_id for thread_id in validation_thread_ids)
+    assert received_clients == [aws_clients, aws_clients]

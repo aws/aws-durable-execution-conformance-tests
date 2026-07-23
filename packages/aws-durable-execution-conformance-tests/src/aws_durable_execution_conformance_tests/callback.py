@@ -13,7 +13,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 # region Exceptions
@@ -121,12 +120,11 @@ class CallbackSender:
     """Sends durable execution callbacks via the boto3 SDK.
 
     Args:
-        region: AWS region for the Lambda function.
+        client: Pre-created low-level Lambda client.
     """
 
-    def __init__(self, region: str):
-        self._region = region
-        self._client = boto3.client("lambda", region_name=region)
+    def __init__(self, client: Any):
+        self._client = client
 
     def send(self, callback_id: str, action: CallbackAction) -> CallbackResult:
         """Dispatch a callback based on the action's operation type.

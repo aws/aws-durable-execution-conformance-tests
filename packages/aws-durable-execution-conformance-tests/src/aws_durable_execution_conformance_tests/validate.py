@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import boto3
 import yaml
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -26,6 +25,7 @@ from aws_durable_execution_conformance_tests.callback import (
     CallbackError,
     CallbackSender,
 )
+from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.cloudwatch import (
     CloudWatchLogRetriever,
     CloudWatchLogValidator,
@@ -324,17 +324,16 @@ def discover_suites(tests_dir: str | Path) -> list[str]:
 # region Execution history retrieval
 
 
-def get_execution_history(execution_arn: str, region: str) -> dict[str, Any] | None:
+def get_execution_history(execution_arn: str, client: Any) -> dict[str, Any] | None:
     """Retrieve durable execution event history via the boto3 SDK.
 
     Args:
         execution_arn: The durable execution ARN.
-        region: AWS region.
+        client: Pre-created low-level Lambda client.
 
     Returns:
         Parsed response dict, or None on failure.
     """
-    client = boto3.client("lambda", region_name=region)
     try:
         response: dict[str, Any] = client.get_durable_execution_history(
             DurableExecutionArn=execution_arn,
@@ -347,7 +346,7 @@ def get_execution_history(execution_arn: str, region: str) -> dict[str, Any] | N
         return response
 
 
-def get_durable_execution(execution_arn: str, region: str) -> dict[str, Any] | None:
+def get_durable_execution(execution_arn: str, client: Any) -> dict[str, Any] | None:
     """Retrieve durable execution details including status and result.
 
     Uses the get_durable_execution API to retrieve the execution's current
@@ -355,12 +354,11 @@ def get_durable_execution(execution_arn: str, region: str) -> dict[str, Any] | N
 
     Args:
         execution_arn: The durable execution ARN.
-        region: AWS region.
+        client: Pre-created low-level Lambda client.
 
     Returns:
         Parsed response dict, or None on failure.
     """
-    client = boto3.client("lambda", region_name=region)
     try:
         response: dict[str, Any] = client.get_durable_execution(
             DurableExecutionArn=execution_arn,
@@ -453,7 +451,7 @@ def save_execution_history(description_id: str, history: dict, output_dir: str |
 def _validate_execution_result(
     execution_arn: str,
     expected_result: dict[str, Any],
-    region: str,
+    lambda_client: Any,
     context: PlaceholderContext | None = None,
 ) -> list[str]:
     """Validate execution status and result using get_durable_execution.
@@ -471,14 +469,14 @@ def _validate_execution_result(
                   YAML authors should write the post-decode form they expect
         context: Optional PlaceholderContext for substituting placeholders
             in expected values.
-        region: AWS region.
+        lambda_client: Pre-created low-level Lambda client.
 
     Returns:
         A list of error strings. Empty list means validation passed.
     """
     errors: list[str] = []
 
-    execution: dict[str, Any] | None = get_durable_execution(execution_arn, region)
+    execution: dict[str, Any] | None = get_durable_execution(execution_arn, lambda_client)
     if execution is None:
         errors.append("Failed to retrieve durable execution details")
         return errors
@@ -600,14 +598,14 @@ class PollingValidator:
 
     def __init__(
         self,
-        region: str,
+        lambda_client: Any,
         config: AsyncValidationConfig | None = None,
         context: PlaceholderContext | None = None,
     ):
-        self._region = region
+        self._lambda_client = lambda_client
         self._config: AsyncValidationConfig = config or AsyncValidationConfig()
         self._context: PlaceholderContext = context or PlaceholderContext()
-        self._callback_sender = CallbackSender(region=region)
+        self._callback_sender = CallbackSender(client=lambda_client)
 
     def validate(
         self,
@@ -648,7 +646,7 @@ class PollingValidator:
         while True:
             time.sleep(self._config.poll_interval_seconds)
 
-            history: dict | None = get_execution_history(execution_arn, self._region)
+            history: dict | None = get_execution_history(execution_arn, self._lambda_client)
             if history is None:
                 errors.append("Failed to retrieve execution history during polling")
                 return AsyncValidationResult(
@@ -761,7 +759,7 @@ class PollingValidator:
                 execution_arn=execution_arn,
                 expected_result=expected_result,
                 context=self._context,
-                region=self._region,
+                lambda_client=self._lambda_client,
             )
             errors.extend(result_errors)
 
@@ -786,7 +784,7 @@ def _validate_expected_logs(
     stack_name: str,
     function_name: str,
     start_time_ms: int,
-    region: str,
+    aws_clients: AwsClients,
     context: PlaceholderContext | None = None,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
@@ -797,7 +795,7 @@ def _validate_expected_logs(
         function_name: Logical resource ID of the Lambda function.
         start_time_ms: Epoch milliseconds marking the start of the invocation.
         context: Optional PlaceholderContext for substituting placeholders.
-        region: AWS region.
+        aws_clients: Pre-created AWS clients.
 
     Returns:
         A list of error strings. Empty list means all log expectations passed.
@@ -807,7 +805,10 @@ def _validate_expected_logs(
         return []
 
     log_validator = CloudWatchLogValidator()
-    log_retriever = CloudWatchLogRetriever(region=region)
+    log_retriever = CloudWatchLogRetriever(
+        cloudformation_client=aws_clients["cloudformation"],
+        logs_client=aws_clients["logs"],
+    )
 
     log_group: str = log_retriever.get_log_group_name(stack_name, function_name)
 
@@ -828,6 +829,7 @@ def validate_description(
     invoker: Invoker,
     tmp_dir: str,
     region: str,
+    aws_clients: AwsClients,
     output_dir: str | None = None,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
@@ -861,6 +863,7 @@ def validate_description(
             context=context,
             output_dir=output_dir,
             region=region,
+            aws_clients=aws_clients,
         )
 
     # --- Substitute placeholders in Input ---
@@ -912,7 +915,7 @@ def validate_description(
         )
 
     # --- Get history ---
-    history = get_execution_history(execution_arn, region)
+    history = get_execution_history(execution_arn, aws_clients["lambda"])
     if history is None:
         return DescriptionResult(
             description_id=description_id,
@@ -959,7 +962,7 @@ def validate_description(
             execution_arn=execution_arn,
             expected_result=expected_result,
             context=context,
-            region=region,
+            lambda_client=aws_clients["lambda"],
         )
         if result_errors:
             return DescriptionResult(
@@ -978,7 +981,7 @@ def validate_description(
         function_name=function_name,
         start_time_ms=invocation_start_ms,
         context=context,
-        region=region,
+        aws_clients=aws_clients,
     )
     if log_errors:
         return DescriptionResult(
@@ -1011,6 +1014,7 @@ def _validate_description_async(
     invoker: Invoker,
     tmp_dir: str,
     region: str,
+    aws_clients: AwsClients,
     is_optional: bool = False,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
@@ -1032,6 +1036,7 @@ def _validate_description_async(
         context: PlaceholderContext with pre-resolved variables.
         output_dir: Optional directory for execution history files.
         region: AWS region.
+        aws_clients: Pre-created AWS clients.
 
     Returns:
         DescriptionResult with pass/fail status.
@@ -1106,7 +1111,11 @@ def _validate_description_async(
     expected_events: list[dict] = description_data.get("ExpectedExecutionHistory", [])
     expected_result: dict | None = description_data.get("ExpectedResult")
 
-    validator = PollingValidator(region=region, config=async_config, context=context)
+    validator = PollingValidator(
+        lambda_client=aws_clients["lambda"],
+        config=async_config,
+        context=context,
+    )
     print(f"  Polling execution history for {execution_arn} ...")
     async_result: AsyncValidationResult = validator.validate(
         execution_arn=execution_arn,
@@ -1116,7 +1125,7 @@ def _validate_description_async(
     )
 
     # --- Save final history ---
-    final_history: dict | None = get_execution_history(execution_arn, region)
+    final_history: dict | None = get_execution_history(execution_arn, aws_clients["lambda"])
     if final_history:
         save_execution_history(description_id, final_history, output_dir=output_dir)
 
@@ -1137,7 +1146,7 @@ def _validate_description_async(
         function_name=function_name,
         start_time_ms=invocation_start_ms,
         context=context,
-        region=region,
+        aws_clients=aws_clients,
     )
     if log_errors:
         return DescriptionResult(

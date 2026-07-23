@@ -14,7 +14,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 if TYPE_CHECKING:
@@ -91,10 +90,9 @@ class CloudWatchLogRetriever:
     # Default wait before querying logs to allow propagation
     DEFAULT_WAIT_SECONDS = 5
 
-    def __init__(self, region: str) -> None:
-        self.region = region
-        self._cfn_client = boto3.client("cloudformation", region_name=region)
-        self._logs_client = boto3.client("logs", region_name=region)
+    def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
+        self._cfn_client = cloudformation_client
+        self._logs_client = logs_client
 
     @staticmethod
     def log_group_for_function(function_name: str) -> str:
