@@ -79,6 +79,7 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Tracing: Active" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER" not in template
     assert "Default: /opt/otel-instrument" in template
+    assert "HasOtelLayer: !Not" in template
     assert "HasOtelCollectorLayer: !Not" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
@@ -157,6 +158,7 @@ def test_java_s3_workflow_builds_and_queries_the_collector() -> None:
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
+    assert '"OtelLayerArn="' in workflow
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
     assert "delete-layer-version" in workflow
