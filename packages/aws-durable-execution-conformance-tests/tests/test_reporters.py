@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+
 from aws_durable_execution_conformance_tests.report import (
     Report,
     ReportEntry,

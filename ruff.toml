@@ -6,5 +6,13 @@ extend-exclude = ["dist", "build"]
 select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 ignore = ["E501"]
 
+[lint.isort]
+# Classify workspace packages explicitly so import ordering does not depend on
+# ruff's environment-sensitive first-party inference (local vs CI).
+known-first-party = [
+  "aws_durable_execution_conformance_tests",
+  "aws_durable_execution_conformance_tests_otel",
+]
+
 [format]
 docstring-code-format = true

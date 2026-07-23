@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from aws_durable_execution_conformance_tests.extensions import (
     ExtensionCompatibilityError,
     ExtensionLoadError,

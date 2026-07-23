@@ -5,17 +5,18 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import TYPE_CHECKING
 
+import pytest
+from botocore.exceptions import BotoCoreError, ClientError
+
 from aws_durable_execution_conformance_tests import sam
 from aws_durable_execution_conformance_tests.sam import Deployer, delete_stack
-from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def test_delete_stack_returns_true_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,3 +77,221 @@ def test_deploy_passes_but_redacts_secret_parameters(
     assert "header-secret" not in result.output
     assert "[REDACTED]" in result.command
     assert "[REDACTED]" in result.output
+
+
+# region Invoker (direct boto3 invocation)
+
+
+class _FakePayload:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeCfnClient:
+    """Fake CloudFormation client returning one Lambda resource page."""
+
+    def __init__(self, resources: dict[str, str]):
+        self._resources = resources
+        self.list_calls = 0
+
+    def get_paginator(self, name: str) -> object:
+        assert name == "list_stack_resources"
+        outer = self
+
+        class _Paginator:
+            def paginate(self, **_kwargs: object) -> list[dict]:
+                outer.list_calls += 1
+                return [
+                    {
+                        "StackResourceSummaries": [
+                            {
+                                "ResourceType": "AWS::Lambda::Function",
+                                "LogicalResourceId": logical,
+                                "PhysicalResourceId": physical,
+                            }
+                            for logical, physical in outer._resources.items()
+                        ]
+                    }
+                ]
+
+        return _Paginator()
+
+
+class _FakeLambdaClient:
+    def __init__(self, response: dict):
+        self._response = response
+        self.invocations: list[dict] = []
+
+    def invoke(self, **kwargs: object) -> dict:
+        self.invocations.append(kwargs)
+        return self._response
+
+
+def _make_invoker(response: dict, resources: dict[str, str] | None = None) -> tuple:
+    cfn = _FakeCfnClient(resources or {"StepBasic": "physical-step-basic"})
+    lam = _FakeLambdaClient(response)
+    invoker = sam.Invoker(stack_name="my-stack", region="us-west-2", lambda_client=lam, cfn_client=cfn)
+    return invoker, lam, cfn
+
+
+def test_invoke_output_is_sam_compatible_json_with_arn() -> None:
+    response = {
+        "StatusCode": 200,
+        "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/a/b",
+        "ExecutedVersion": "$LATEST",
+        "Payload": _FakePayload(b'"Hello, World!"'),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke("StepBasic")
+
+    assert result.success is True
+    assert lam.invocations[0]["FunctionName"] == "physical-step-basic"
+    assert lam.invocations[0]["Qualifier"] == "$LATEST"
+    assert lam.invocations[0]["InvocationType"] == "RequestResponse"
+    output = json.loads(result.output)
+    assert output["DurableExecutionArn"].endswith("/durable-execution/a/b")
+    assert output["StatusCode"] == 200
+    assert output["Payload"] == '"Hello, World!"'
+
+
+def test_invoke_async_uses_event_type_and_returns_arn() -> None:
+    response = {
+        "StatusCode": 202,
+        "DurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:f:$LATEST/durable-execution/c/d",
+        "Payload": _FakePayload(b""),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke_async("StepBasic")
+
+    assert lam.invocations[0]["InvocationType"] == "Event"
+    output = json.loads(result.output)
+    assert output["DurableExecutionArn"].endswith("/durable-execution/c/d")
+    assert output["Payload"] == ""
+
+
+def test_invoke_falls_back_to_arn_header_when_field_missing() -> None:
+    response = {
+        "StatusCode": 200,
+        "Payload": _FakePayload(b"{}"),
+        "ResponseMetadata": {"HTTPHeaders": {"x-amz-durable-execution-arn": "arn:from-header"}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    output = json.loads(invoker.invoke("StepBasic").output)
+
+    assert output["DurableExecutionArn"] == "arn:from-header"
+
+
+def test_invoke_resolves_stack_once_and_caches() -> None:
+    response = {
+        "StatusCode": 200,
+        "Payload": _FakePayload(b"{}"),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, cfn = _make_invoker(response)
+
+    invoker.invoke("StepBasic")
+    invoker.invoke("StepBasic")
+
+    assert cfn.list_calls == 1
+
+
+def test_invoke_unknown_logical_id_raises_invoke_error() -> None:
+    response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    with pytest.raises(sam.InvokeError, match="no Lambda function"):
+        invoker.invoke("DoesNotExist")
+
+
+def test_invoke_client_error_wrapped_as_invoke_error() -> None:
+    class _ErrLambdaClient:
+        def invoke(self, **_kwargs: object) -> dict:
+            raise ClientError(
+                {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}},
+                "Invoke",
+            )
+
+    cfn = _FakeCfnClient({"StepBasic": "physical-step-basic"})
+    invoker = sam.Invoker(stack_name="my-stack", region="us-west-2", lambda_client=_ErrLambdaClient(), cfn_client=cfn)
+
+    with pytest.raises(sam.InvokeError, match="Rate exceeded"):
+        invoker.invoke("StepBasic")
+
+
+def test_invoke_function_error_surfaces_in_output() -> None:
+    response = {
+        "StatusCode": 200,
+        "FunctionError": "Unhandled",
+        "Payload": _FakePayload(b'{"errorMessage": "boom", "errorType": "TypeError"}'),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    result = invoker.invoke("StepBasic")
+
+    # Parity with `sam remote invoke`: a handler-side error is not an invoke
+    # failure -- the error payload and FunctionError marker pass through for
+    # the validator/diagnostics to interpret.
+    assert result.success is True
+    output = json.loads(result.output)
+    assert output["FunctionError"] == "Unhandled"
+    assert "boom" in output["Payload"]
+
+
+def test_invoke_rejects_unsupported_parameters() -> None:
+    response = {"StatusCode": 200, "Payload": _FakePayload(b"{}"), "ResponseMetadata": {}}
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    with pytest.raises(sam.InvokeError, match="unsupported invoke parameter"):
+        invoker.invoke("StepBasic", parameters=["ClientContext=abc"])
+
+
+def test_invoke_payload_stream_error_wrapped_as_invoke_error() -> None:
+    class _StreamError(BotoCoreError):
+        fmt = "connection interrupted while reading payload"
+
+    class _ExplodingPayload:
+        def read(self) -> bytes:
+            raise _StreamError
+
+    response = {
+        "StatusCode": 200,
+        "Payload": _ExplodingPayload(),
+        "ResponseMetadata": {"HTTPHeaders": {}},
+    }
+    invoker, _lam, _cfn = _make_invoker(response)
+
+    # A post-200 stream failure must surface as InvokeError so validate.py
+    # records one failed requirement instead of aborting the whole run.
+    with pytest.raises(sam.InvokeError, match="connection interrupted"):
+        invoker.invoke("StepBasic")
+
+
+def test_local_invoke_does_not_create_aws_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    """local_invoke must work offline -- no boto3 client construction."""
+
+    def _forbidden(*_a: object, **_k: object) -> object:
+        raise AssertionError("boto3.client must not be called for local invocation")
+
+    monkeypatch.setattr(sam.boto3, "client", _forbidden)
+
+    def _run(command: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, 0, stdout="Execution Summary", stderr="")
+
+    monkeypatch.setattr(sam.SamExecutor, "run", _run)
+
+    invoker = sam.Invoker(stack_name="unused", template_file="template.yaml")
+    result = invoker.local_invoke("StepBasic")
+
+    assert result.success is True
+
+
+# endregion

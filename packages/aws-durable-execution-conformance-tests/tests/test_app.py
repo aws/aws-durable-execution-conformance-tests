@@ -10,8 +10,9 @@ import time
 from threading import Barrier, Lock, get_ident
 from typing import TYPE_CHECKING
 
-import aws_durable_execution_conformance_tests.app as app_module
 import pytest
+
+import aws_durable_execution_conformance_tests.app as app_module
 from aws_durable_execution_conformance_tests.app import (
     _run_extension_validation,
     _validate_descriptions,
@@ -235,7 +236,6 @@ def test_validates_descriptions_concurrently_and_preserves_order(
     max_active = 0
     completion_order: list[str] = []
     validation_thread_ids: list[int] = []
-    creation_thread_ids: list[int] = []
     received_clients: list[AwsClients] = []
     aws_clients = AwsClients(
         {
@@ -244,15 +244,6 @@ def test_validates_descriptions_concurrently_and_preserves_order(
             "logs": object(),
         }
     )
-
-    def _create_clients(
-        region: str,
-        additional_services: tuple[str, ...] = (),
-    ) -> AwsClients:
-        assert region == "us-west-2"
-        assert additional_services == ()
-        creation_thread_ids.append(get_ident())
-        return aws_clients
 
     def _validate_description(
         function_name: str,
@@ -283,7 +274,6 @@ def test_validates_descriptions_concurrently_and_preserves_order(
             passed=True,
         )
 
-    monkeypatch.setattr(app_module.AwsClients, "create", staticmethod(_create_clients))
     monkeypatch.setattr(app_module, "validate_description", _validate_description)
 
     main_thread_id = get_ident()
@@ -298,11 +288,11 @@ def test_validates_descriptions_concurrently_and_preserves_order(
             max_workers=2,
             region="us-west-2",
         ),
+        aws_clients=aws_clients,
     )
 
     assert max_active == 2
     assert completion_order == ["test-2", "test-1"]
     assert [result.description_id for result in results] == ["test-1", "test-2"]
-    assert creation_thread_ids == [main_thread_id]
     assert all(thread_id != main_thread_id for thread_id in validation_thread_ids)
     assert received_clients == [aws_clients, aws_clients]

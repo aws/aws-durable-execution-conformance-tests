@@ -309,7 +309,19 @@ def _deploy_validate_report(
         print(f"  {fn} -> {did}")
 
     # 4 & 5. Invoke and assert each test description
-    invoker = Invoker(stack_name=stack_name, region=args.region, output_format="json")
+    active_suites = {
+        requirement.suite.name
+        for _, description_id in function_descriptions
+        if (requirement := requirements.get(description_id)) is not None
+    }
+    additional_services = registry.validation_client_services(args, active_suites)
+    aws_clients = AwsClients.create(args.region, additional_services)
+    invoker = Invoker(
+        stack_name=stack_name,
+        region=args.region,
+        lambda_client=aws_clients["lambda"],
+        cfn_client=aws_clients["cloudformation"],
+    )
 
     tmp_dir = tempfile.mkdtemp(prefix="sdk-test-events-")
     try:
@@ -319,6 +331,7 @@ def _deploy_validate_report(
             invoker=invoker,
             tmp_dir=tmp_dir,
             args=args,
+            aws_clients=aws_clients,
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -441,20 +454,12 @@ def _validate_descriptions(
     invoker: Invoker,
     tmp_dir: str,
     args: argparse.Namespace,
+    aws_clients: AwsClients,
 ) -> list[DescriptionResult]:
     """Validate test descriptions concurrently while preserving input order."""
 
     if not function_descriptions:
         return []
-
-    registry: ExtensionRegistry | None = getattr(args, "_extension_registry", None)
-    active_suites = {
-        requirement.suite.name
-        for _, description_id in function_descriptions
-        if (requirement := requirements.get(description_id)) is not None
-    }
-    additional_services = registry.validation_client_services(args, active_suites) if registry is not None else ()
-    aws_clients = AwsClients.create(args.region, additional_services)
 
     worker_count = min(args.max_workers, len(function_descriptions))
     if worker_count > 1:

@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+
 from aws_durable_execution_conformance_tests_otel.backends.collector import (
     CollectorBackend,
 )

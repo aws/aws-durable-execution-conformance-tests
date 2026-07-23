@@ -41,6 +41,7 @@ from aws_durable_execution_conformance_tests.history import (
 )
 from aws_durable_execution_conformance_tests.sam import (
     EventFileError,
+    InvokeError,
     Invoker,
     SamCliError,
 )
@@ -884,7 +885,7 @@ def validate_description(
             function_name=function_name,
             event_file_path=event_file,
         )
-    except (FileNotFoundError, EventFileError, SamCliError) as e:
+    except (FileNotFoundError, EventFileError, SamCliError, InvokeError) as e:
         return DescriptionResult(
             description_id=description_id,
             function_name=function_name,
@@ -1081,7 +1082,7 @@ def _validate_description_async(
             function_name=function_name,
             event_file_path=event_file,
         )
-    except (FileNotFoundError, EventFileError, SamCliError) as e:
+    except (FileNotFoundError, EventFileError, SamCliError, InvokeError) as e:
         return DescriptionResult(
             description_id=description_id,
             function_name=function_name,

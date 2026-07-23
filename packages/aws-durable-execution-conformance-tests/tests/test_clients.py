@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import aws_durable_execution_conformance_tests.clients as clients_module
 import pytest
+
+import aws_durable_execution_conformance_tests.clients as clients_module
 from aws_durable_execution_conformance_tests.clients import AwsClients
 
 
@@ -19,7 +20,8 @@ def test_creates_each_client_serially_from_one_explicit_session(
     session_regions: list[str] = []
 
     class _Session:
-        def client(self, service_name: str) -> Any:
+        def client(self, service_name: str, *, config: Any) -> Any:
+            assert config is clients_module.AWS_CLIENT_CONFIG
             created_services.append(service_name)
             return object()
 
