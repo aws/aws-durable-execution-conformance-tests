@@ -97,8 +97,9 @@ stabilizes.
 
 The self-contained [Java SAM project](examples/java/README.md) implements the
 same OTel requirements with the Java SDK and its OTel plugin. It builds one
-shaded JAR containing all handlers and uses the ADOT Java layer as a
-collector-only extension so the plugin remains the sole tracer provider.
+shaded JAR containing all handlers and uses the `AWSOpenTelemetryDistroJava`
+layer as a collector-only extension so the plugin remains the sole tracer
+provider.
 
 ## Third-Party Plugins
 

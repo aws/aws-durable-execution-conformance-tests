@@ -61,8 +61,8 @@ The execution role must allow Durable Execution, logs, and X-Ray writes.
 The template accepts `OtelExecWrapper` for the runner's shared parameter
 contract but intentionally does not set `AWS_LAMBDA_EXEC_WRAPPER`. The Java SDK
 plugin creates its own deterministic tracer provider; attaching the ADOT Java
-agent would create a competing provider and disconnected traces. The ADOT layer
-is used only for its collector extension.
+agent would create a competing provider and disconnected traces. The
+`AWSOpenTelemetryDistroJava` layer is used only for its collector extension.
 
 ## Build Only
 
