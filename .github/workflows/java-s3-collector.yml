@@ -250,6 +250,7 @@ jobs:
             --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelLayerArn=" \
               "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
               "OtelCollectorBucket=$OTEL_S3_BUCKET" \
               "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
