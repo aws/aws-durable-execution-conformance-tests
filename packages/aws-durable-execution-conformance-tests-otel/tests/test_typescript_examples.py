@@ -13,7 +13,6 @@ from aws_durable_execution_conformance_tests.validate import parse_function_desc
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
-S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-s3-collector.yml"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -136,9 +135,10 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "--language javascript" in workflow
 
 
-def test_typescript_workflow_builds_and_queries_the_s3_collector() -> None:
-    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert "build-lambda-layer.sh" in workflow
@@ -150,14 +150,13 @@ def test_typescript_workflow_builds_and_queries_the_s3_collector() -> None:
 
 
 def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
-    for workflow_path in (WORKFLOW_PATH, S3_WORKFLOW_PATH):
-        workflow = workflow_path.read_text(encoding="utf-8")
-        test_name = next(
-            line.split(":", maxsplit=1)[1].strip() for line in workflow.splitlines() if line.startswith("  TEST_NAME:")
-        )
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    for test_name in ("typescript-xray", "typescript-s3"):
         stack_name = f"{STACK_NAME_PREFIX}-{test_name}"
 
-        assert f"  TEST_STACK_NAME: {stack_name}" in workflow
+        assert f"TEST_STACK_NAME: {stack_name}" in workflow
+        assert f"TEST_NAME: {test_name}" in workflow
         assert len(f"{stack_name}-otel-18-target") <= 64
 
 

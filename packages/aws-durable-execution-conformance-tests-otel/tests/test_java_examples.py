@@ -14,7 +14,6 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
-S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-s3-collector.yml"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
@@ -144,9 +143,10 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
 
 
-def test_java_s3_workflow_builds_and_queries_the_collector() -> None:
-    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_java_s3_job_builds_and_queries_the_collector() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert "build-lambda-layer.sh" in workflow

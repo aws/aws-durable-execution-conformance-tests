@@ -11,7 +11,7 @@ from pathlib import Path
 from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
-S3_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-s3-collector.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -128,9 +128,11 @@ def test_python_examples_track_both_sdk_packages_from_main() -> None:
     ) in requirements
 
 
-def test_python_s3_workflow_builds_and_queries_the_collector() -> None:
-    workflow = S3_WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_python_s3_job_builds_and_queries_the_collector() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    assert "  collector:" in workflow
+    assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert "build-lambda-layer.sh" in workflow
