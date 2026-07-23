@@ -130,6 +130,7 @@ def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
 
     assert "AWSOpenTelemetryDistroJava" in workflow
     assert "aws-observability/aws-otel-java-instrumentation/releases/latest" in workflow
+    assert "github.base_ref == 'main'" in workflow
     assert "--otel-allow-missing-span-identity-attributes" not in workflow
 
 

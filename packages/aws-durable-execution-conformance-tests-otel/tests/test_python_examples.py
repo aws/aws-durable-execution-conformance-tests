@@ -133,6 +133,7 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
 
     assert "  collector:" in workflow
     assert "  s3_collector:" in workflow
+    assert "github.base_ref == 'main'" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert "build-lambda-layer.sh" in workflow
