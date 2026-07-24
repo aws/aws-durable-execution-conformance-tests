@@ -82,8 +82,18 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
                 assert expected_attributes["durable.invocation.status"] in {
                     "FAILED",
                     "PENDING",
+                    "RETRY",
                     "SUCCEEDED",
                 }
+                assert (
+                    expected["status"]
+                    == {
+                        "FAILED": "ERROR",
+                        "PENDING": "UNSET",
+                        "RETRY": "ERROR",
+                        "SUCCEEDED": "OK",
+                    }[expected_attributes["durable.invocation.status"]]
+                )
                 assert (
                     selector_attributes["durable.invocation.first"] == expected_attributes["durable.invocation.first"]
                 )

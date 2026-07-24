@@ -73,7 +73,7 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL
