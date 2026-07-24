@@ -37,6 +37,8 @@ if f"repos/{repository}/issues/{pr_number}/comments" in args:
     raise SystemExit
 
 if "--paginate" in args:
+    if os.environ.get("MOCK_FAIL_FETCH") == "true":
+        raise SystemExit(1)
     sys.stdout.write(Path(os.environ["MOCK_COMMENTS"]).read_text(encoding="utf-8"))
     raise SystemExit
 
@@ -166,6 +168,7 @@ def test_post_summary_minimizes_only_exact_same_reviewer_comments(
             "MOCK_POSTED_BODY": str(posted_body),
             "MOCK_MINIMIZED_IDS": str(minimized_ids),
             "MOCK_FAIL_ID": "OLD_MARKER",
+            "MOCK_FAIL_FETCH": "false",
         }
     )
 
@@ -198,3 +201,54 @@ def test_post_summary_minimizes_only_exact_same_reviewer_comments(
         "Reviewed commit `expected-head-sha`. "
         "[Workflow run](https://github.example/example/repository/actions/runs/123)"
     )
+
+
+def test_post_summary_treats_comment_fetch_failure_as_cleanup_warning(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    mock_gh = bin_dir / "gh"
+    mock_gh.write_text(MOCK_GH, encoding="utf-8")
+    mock_gh.chmod(0o755)
+
+    summary_file = tmp_path / "summary.md"
+    summary_file.write_text("No actionable findings.", encoding="utf-8")
+    posted_body = tmp_path / "posted-body.md"
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{environment['PATH']}",
+            "GH_TOKEN": "test-token",
+            "GITHUB_REPOSITORY": "example/repository",
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_SERVER_URL": "https://github.example",
+            "PR_NUMBER": "42",
+            "RUNNER_TEMP": str(tmp_path),
+            "MOCK_COMMENTS": str(tmp_path / "unused-comments.json"),
+            "MOCK_POSTED_BODY": str(posted_body),
+            "MOCK_MINIMIZED_IDS": str(tmp_path / "minimized-ids.txt"),
+            "MOCK_FAIL_ID": "",
+            "MOCK_FAIL_FETCH": "true",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            POST_SUMMARY_SCRIPT,
+            "claude",
+            "expected-head-sha",
+            str(summary_file),
+        ],
+        check=False,
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert posted_body.is_file()
+    assert "::warning::Failed to list previous Claude AI review comments for cleanup." in result.stdout

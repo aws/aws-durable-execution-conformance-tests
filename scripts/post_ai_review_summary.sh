@@ -74,7 +74,7 @@ comments_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-comments.XXXXXX")"
 trap 'rm -f "$comments_file"' EXIT
 
 # shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
-gh api graphql \
+if ! gh api graphql \
   --paginate \
   -F owner="$owner" \
   -F repository="$repository" \
@@ -105,7 +105,10 @@ gh api graphql \
         }
       }
     }
-  ' > "$comments_file"
+  ' > "$comments_file"; then
+  echo "::warning::Failed to list previous $title comments for cleanup."
+  exit 0
+fi
 
 previous_comment_count=0
 while IFS= read -r comment_id; do
