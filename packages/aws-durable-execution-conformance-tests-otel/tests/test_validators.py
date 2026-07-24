@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from aws_durable_execution_conformance_tests_otel.model import (
     Span,
@@ -28,7 +28,7 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         span_id="2" * 16,
         name="root",
         start_time=now,
-        end_time=now,
+        end_time=now + timedelta(seconds=10),
         kind="SERVER",
         status="OK",
         service_name="service",
@@ -43,8 +43,8 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         span_id="3" * 16,
         parent_span_id=root.span_id,
         name="child",
-        start_time=now,
-        end_time=now,
+        start_time=now + timedelta(seconds=2),
+        end_time=now + timedelta(seconds=3),
         kind="INTERNAL",
         status="OK",
         service_name="service",
@@ -76,6 +76,151 @@ def test_validates_stable_cross_invocation_invariants() -> None:
         _query(),
     )
     assert errors == []
+
+
+def test_rejects_spans_that_end_before_they_start() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    invalid_child = replace(
+        child,
+        start_time=child.end_time + timedelta(seconds=1),
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, invalid_child)),
+        {},
+        _query(),
+    )
+
+    assert errors == [
+        f"Span 'child' ({child.span_id}) starts at {invalid_child.start_time.isoformat()}, "
+        f"after it ends at {invalid_child.end_time.isoformat()}"
+    ]
+
+
+def test_asserts_before_after_and_parent_containment() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    child = replace(
+        child,
+        start_time=root.start_time,
+        end_time=root.end_time,
+    )
+    later = replace(
+        child,
+        span_id="4" * 16,
+        name="later",
+        start_time=child.end_time,
+        end_time=child.end_time + timedelta(seconds=1),
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child, later)),
+        {
+            "span_assertions": [
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "before": {"name": "later"},
+                        "parent": {"name": "root"},
+                    },
+                },
+                {
+                    "select": {"name": "later"},
+                    "expect": {"after": {"name": "child"}},
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_reports_timestamp_and_parent_containment_violations() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    overlapping = replace(
+        child,
+        span_id="4" * 16,
+        name="overlapping",
+        start_time=child.start_time - timedelta(seconds=1),
+        end_time=child.start_time + timedelta(milliseconds=500),
+    )
+    narrow_container = replace(
+        root,
+        span_id="5" * 16,
+        name="narrow-container",
+        start_time=child.start_time + timedelta(milliseconds=250),
+        end_time=child.end_time - timedelta(milliseconds=250),
+    )
+    child_outside_parent = replace(
+        child,
+        parent_span_id=narrow_container.span_id,
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child_outside_parent, overlapping, narrow_container)),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "before": {"name": "overlapping"},
+                    "after": {"name": "overlapping"},
+                    "parent": {"name": "narrow-container"},
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert len(errors) == 4
+    assert any("expect.before: span 'child'" in error and "after span 'overlapping'" in error for error in errors)
+    assert any("expect.after: span 'child'" in error and "before span 'overlapping'" in error for error in errors)
+    assert any(
+        "expect.parent: child span 'child'" in error and "before parent span 'narrow-container'" in error
+        for error in errors
+    )
+    assert any(
+        "expect.parent: child span 'child'" in error and "after parent span 'narrow-container'" in error
+        for error in errors
+    )
+
+
+def test_reports_invalid_timestamp_relationship_selectors() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    sibling = replace(
+        child,
+        span_id="4" * 16,
+        name="sibling",
+    )
+    errors = validate_trace(
+        replace(trace, spans=(root, child, sibling)),
+        {
+            "span_assertions": [
+                {
+                    "select": {"name": "child"},
+                    "expect": {"before": "root"},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {"after": {"name": "missing"}},
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {"before": {"service_name": "service"}},
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == [
+        "span_assertions[0].expect.before must be a mapping",
+        "span_assertions[1].expect.after matched no spans",
+        "span_assertions[2].expect.before matched 2 spans; it must select exactly one",
+    ]
 
 
 def test_counts_every_canonical_invocation_span_occurrence() -> None:

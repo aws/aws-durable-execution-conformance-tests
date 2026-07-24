@@ -106,7 +106,24 @@ using the same mechanism as `expect.parent`. The
 Use it when repeated spans intentionally have one of a small set of shapes. The
 optional `expect.parent` mapping resolves the selected span's `parent_span_id`
 within the same trace and applies the same partial matching constructs to that
-parent span.
+parent span. The selected child must start at or after that parent starts and
+end at or before that parent ends.
+
+Every normalized span must have `start_time <= end_time`. An `expect` mapping
+can also select exactly one other span with `before` or `after`. These
+relationships require the selected span's end to be at or before the other
+span's start, or its start to be at or after the other span's end,
+respectively:
+
+```yaml
+TelemetryAssertions:
+  span_assertions:
+    select:
+      name: second attempt
+    expect:
+      after:
+        name: first attempt
+```
 
 Capture dynamic values with placeholders in `ExpectedExecutionHistory`, then
 reuse those placeholders in telemetry assertions. For example, `Id: ${STEP1}`
