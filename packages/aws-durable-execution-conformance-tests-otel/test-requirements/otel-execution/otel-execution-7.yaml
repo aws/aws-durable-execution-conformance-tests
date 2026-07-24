@@ -46,7 +46,7 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         parent_span_id: null
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL

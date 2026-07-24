@@ -175,7 +175,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             assert (
                 workflow["expect"]["status"]
                 == {
-                    "SUCCEEDED": "${/^(?:OK|UNSET)$/}",
+                    "SUCCEEDED": "OK",
                     "FAILED": "ERROR",
                     "TIMED_OUT": "ERROR",
                 }[execution_status]
