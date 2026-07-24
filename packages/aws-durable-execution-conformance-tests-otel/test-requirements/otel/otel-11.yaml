@@ -21,7 +21,7 @@ ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
   minimum_spans: 5
-  minimum_invocation_spans: 3
+  minimum_invocations: 3
   require_execution_correlation: true
   allowed_execution_arns:
     - ${EXECUTION_ARN}

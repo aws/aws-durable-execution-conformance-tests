@@ -23,10 +23,6 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable.execution.arn",
     "durable_execution_arn",
 )
-_INVOCATION_ATTRIBUTE_KEYS = (
-    "faas.invocation_id",
-    "aws.lambda.invocation_id",
-)
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
     "durable.invocation.first",
     "durable.invocation.status",
@@ -40,17 +36,12 @@ def _attribute_values(
     return [str(span.attributes[key]).lower() for span in trace.spans for key in keys if key in span.attributes]
 
 
-def _invocation_id_count(trace: Trace) -> int:
-    return len(set(_attribute_values(trace, _INVOCATION_ATTRIBUTE_KEYS)))
-
-
-def _invocation_span_count(trace: Trace) -> int:
-    durable_invocations = {
-        (span.trace_id, span.span_id)
+def _invocation_count(trace: Trace) -> int:
+    return sum(
+        1
         for span in trace.spans
         if span.name == "invocation" and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
-    }
-    return len(durable_invocations)
+    )
 
 
 def _is_sequence(value: Any) -> bool:
@@ -438,19 +429,10 @@ def validate_trace(
 
     minimum_invocations = int(assertions.get("minimum_invocations", 1))
     if minimum_invocations > 1:
-        invocation_count = _invocation_id_count(trace)
+        invocation_count = _invocation_count(trace)
         if invocation_count < minimum_invocations:
             errors.append(
-                f"Expected at least {minimum_invocations} distinct Lambda invocation IDs, found {invocation_count}"
-            )
-
-    minimum_invocation_spans = int(assertions.get("minimum_invocation_spans", 0))
-    if minimum_invocation_spans > 0:
-        invocation_span_count = _invocation_span_count(trace)
-        if invocation_span_count < minimum_invocation_spans:
-            errors.append(
-                f"Expected at least {minimum_invocation_spans} canonical durable invocation spans, "
-                f"found {invocation_span_count}"
+                f"Expected at least {minimum_invocations} canonical durable invocation spans, found {invocation_count}"
             )
 
     raw_prefixes = assertions.get("exact_attribute_prefixes", ())

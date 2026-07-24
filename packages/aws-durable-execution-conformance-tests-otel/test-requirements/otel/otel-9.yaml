@@ -30,7 +30,7 @@ ExpectedResult:
   Result: 2
 TelemetryAssertions:
   minimum_spans: 6
-  minimum_invocation_spans: 2
+  minimum_invocations: 2
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:

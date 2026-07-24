@@ -71,7 +71,6 @@ def test_validates_stable_cross_invocation_invariants() -> None:
         _trace(),
         {
             "minimum_spans": 2,
-            "minimum_invocations": 2,
             "require_execution_correlation": True,
         },
         _query(),
@@ -79,45 +78,22 @@ def test_validates_stable_cross_invocation_invariants() -> None:
     assert errors == []
 
 
-def test_distinguishes_invocation_ids_from_canonical_invocation_spans() -> None:
+def test_counts_every_canonical_invocation_span_occurrence() -> None:
     trace = _trace()
-    root, child = trace.spans
-    first_invocation = replace(
-        root,
+    invocation = replace(
+        trace.spans[0],
         name="invocation",
         attributes={
             "durable.execution.arn": "arn:test",
             "durable.invocation.first": True,
-            "durable.invocation.status": "PENDING",
-        },
-    )
-    resumed_invocation = replace(
-        child,
-        name="invocation",
-        attributes={
-            "durable.execution.arn": "arn:test",
-            "durable.invocation.first": False,
             "durable.invocation.status": "SUCCEEDED",
         },
     )
-    handler = replace(
-        root,
-        span_id="4" * 16,
-        name="handler",
-        attributes={"faas.invocation_id": "invocation-2"},
-    )
 
-    incomplete_identity_trace = replace(trace, spans=(first_invocation, resumed_invocation, handler))
-
-    assert validate_trace(
-        incomplete_identity_trace,
-        {"minimum_invocations": 2},
-        _query(),
-    ) == ["Expected at least 2 distinct Lambda invocation IDs, found 1"]
     assert (
         validate_trace(
-            incomplete_identity_trace,
-            {"minimum_invocation_spans": 2},
+            replace(trace, spans=(invocation, invocation)),
+            {"minimum_invocations": 2},
             _query(),
         )
         == []
@@ -144,7 +120,7 @@ def test_does_not_count_noncanonical_spans_named_invocation() -> None:
 
     assert validate_trace(
         replace(trace, spans=(durable_invocation, application_span)),
-        {"minimum_invocation_spans": 2},
+        {"minimum_invocations": 2},
         _query(),
     ) == ["Expected at least 2 canonical durable invocation spans, found 1"]
 

@@ -46,7 +46,7 @@ ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
   minimum_spans: 2
-  minimum_invocation_spans: 2
+  minimum_invocations: 2
   require_execution_correlation: true
 ```
 
@@ -55,8 +55,7 @@ The currently supported telemetry assertions are:
 | Key | Meaning |
 |---|---|
 | `minimum_spans` | Minimum number of normalized spans; defaults to `1`. |
-| `minimum_invocations` | Minimum distinct Lambda invocation IDs; defaults to `1`. |
-| `minimum_invocation_spans` | Minimum distinct canonical durable invocation spans; disabled by default. |
+| `minimum_invocations` | Minimum canonical durable invocation span occurrences; identical spans are counted separately. Defaults to `1`. |
 | `require_execution_correlation` | Require the durable execution ARN on the trace; defaults to `true`. |
 | `require_all_spans` | Require every normalized span to match at least one span assertion. |
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
