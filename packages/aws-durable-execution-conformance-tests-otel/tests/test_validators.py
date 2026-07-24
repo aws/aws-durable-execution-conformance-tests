@@ -71,12 +71,58 @@ def test_validates_stable_cross_invocation_invariants() -> None:
         _trace(),
         {
             "minimum_spans": 2,
-            "minimum_invocations": 2,
             "require_execution_correlation": True,
         },
         _query(),
     )
     assert errors == []
+
+
+def test_counts_every_canonical_invocation_span_occurrence() -> None:
+    trace = _trace()
+    invocation = replace(
+        trace.spans[0],
+        name="invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+            "durable.invocation.status": "SUCCEEDED",
+        },
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(invocation, invocation)),
+            {"minimum_invocations": 2},
+            _query(),
+        )
+        == []
+    )
+
+
+def test_does_not_count_noncanonical_spans_named_invocation() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    durable_invocation = replace(
+        root,
+        name="invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+            "durable.invocation.status": "SUCCEEDED",
+        },
+    )
+    application_span = replace(
+        child,
+        name="invocation",
+        attributes={"durable.execution.arn": "arn:test"},
+    )
+
+    assert validate_trace(
+        replace(trace, spans=(durable_invocation, application_span)),
+        {"minimum_invocations": 2},
+        _query(),
+    ) == ["Expected at least 2 canonical durable invocation spans, found 1"]
 
 
 def test_reports_correlation_mismatches() -> None:

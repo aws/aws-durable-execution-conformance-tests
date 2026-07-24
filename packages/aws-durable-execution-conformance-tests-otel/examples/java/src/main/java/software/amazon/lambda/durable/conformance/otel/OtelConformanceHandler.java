@@ -5,10 +5,16 @@ package software.amazon.lambda.durable.conformance.otel;
 
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import software.amazon.distro.opentelemetry.exporter.xray.udp.trace.AwsXrayUdpSpanExporterBuilder;
 import software.amazon.lambda.durable.DurableConfig;
 import software.amazon.lambda.durable.DurableHandler;
@@ -23,12 +29,7 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
 
     @Override
     protected final DurableConfig createConfiguration() {
-        var exporter =
-                new AwsXrayUdpSpanExporterBuilder()
-                        .setEndpoint(
-                                System.getenv()
-                                        .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
-                        .build();
+        var exporter = createExporter();
         var resource =
                 Resource.getDefault()
                         .merge(
@@ -41,6 +42,64 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                         .setResource(resource)
                         .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
         return DurableConfig.builder().withPlugins(plugin).build();
+    }
+
+    private SpanExporter createExporter() {
+        var otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
+        if (otlpEndpoint != null && !otlpEndpoint.isBlank()) {
+            var builder = OtlpGrpcSpanExporter.builder().setEndpoint(otlpEndpoint);
+            applyOtlpHeaders(System.getenv("OTEL_EXPORTER_OTLP_HEADERS"), builder::addHeader);
+            return builder.build();
+        }
+        return new AwsXrayUdpSpanExporterBuilder()
+                .setEndpoint(
+                        System.getenv()
+                                .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
+                .build();
+    }
+
+    static void applyOtlpHeaders(
+            String rawHeaders, BiConsumer<String, String> addHeader) {
+        parseOtlpHeaders(rawHeaders).forEach(addHeader);
+    }
+
+    private static Map<String, String> parseOtlpHeaders(String rawHeaders) {
+        var headers = new LinkedHashMap<String, String>();
+        if (rawHeaders == null || rawHeaders.isBlank()) {
+            return headers;
+        }
+
+        var entries = rawHeaders.split(",", -1);
+        for (int index = 0; index < entries.length; index++) {
+            var entry = entries[index];
+            var separator = entry.indexOf('=');
+            if (separator <= 0) {
+                throw invalidOtlpHeader(index, null);
+            }
+            String name;
+            String value;
+            try {
+                name =
+                        URLDecoder.decode(
+                                entry.substring(0, separator).trim(), StandardCharsets.UTF_8);
+                value =
+                        URLDecoder.decode(
+                                entry.substring(separator + 1).trim(), StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException error) {
+                throw invalidOtlpHeader(index, error);
+            }
+            if (name.isBlank()) {
+                throw invalidOtlpHeader(index, null);
+            }
+            headers.put(name, value);
+        }
+        return headers;
+    }
+
+    private static IllegalArgumentException invalidOtlpHeader(
+            int index, IllegalArgumentException cause) {
+        return new IllegalArgumentException(
+                "Invalid OTEL_EXPORTER_OTLP_HEADERS entry at position " + (index + 1), cause);
     }
 
     protected final void requireScenario(Map<String, Object> event, String expected) {

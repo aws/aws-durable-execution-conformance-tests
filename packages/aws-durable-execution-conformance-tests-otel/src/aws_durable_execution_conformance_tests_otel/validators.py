@@ -23,9 +23,9 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable.execution.arn",
     "durable_execution_arn",
 )
-_INVOCATION_ATTRIBUTE_KEYS = (
-    "faas.invocation_id",
-    "aws.lambda.invocation_id",
+_DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
+    "durable.invocation.first",
+    "durable.invocation.status",
 )
 
 
@@ -34,6 +34,14 @@ def _attribute_values(
     keys: tuple[str, ...],
 ) -> list[str]:
     return [str(span.attributes[key]).lower() for span in trace.spans for key in keys if key in span.attributes]
+
+
+def _invocation_count(trace: Trace) -> int:
+    return sum(
+        1
+        for span in trace.spans
+        if span.name == "invocation" and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
+    )
 
 
 def _is_sequence(value: Any) -> bool:
@@ -421,10 +429,10 @@ def validate_trace(
 
     minimum_invocations = int(assertions.get("minimum_invocations", 1))
     if minimum_invocations > 1:
-        invocations = set(_attribute_values(trace, _INVOCATION_ATTRIBUTE_KEYS))
-        if len(invocations) < minimum_invocations:
+        invocation_count = _invocation_count(trace)
+        if invocation_count < minimum_invocations:
             errors.append(
-                f"Expected telemetry from at least {minimum_invocations} Lambda invocations, found {len(invocations)}"
+                f"Expected at least {minimum_invocations} canonical durable invocation spans, found {invocation_count}"
             )
 
     raw_prefixes = assertions.get("exact_attribute_prefixes", ())

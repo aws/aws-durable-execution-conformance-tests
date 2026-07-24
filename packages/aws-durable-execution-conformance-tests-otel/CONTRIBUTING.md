@@ -55,7 +55,7 @@ The currently supported telemetry assertions are:
 | Key | Meaning |
 |---|---|
 | `minimum_spans` | Minimum number of normalized spans; defaults to `1`. |
-| `minimum_invocations` | Minimum distinct Lambda invocation IDs; defaults to `1`. |
+| `minimum_invocations` | Minimum canonical durable invocation span occurrences; identical spans are counted separately. Defaults to `1`. |
 | `require_execution_correlation` | Require the durable execution ARN on the trace; defaults to `true`. |
 | `require_all_spans` | Require every normalized span to match at least one span assertion. |
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
@@ -194,14 +194,14 @@ hatch run dist:all
 `hatch run dist:all` verifies both archives and installs the built wheels in
 isolation to confirm extension discovery and packaged requirement loading.
 
-For an end-to-end run, start OpenTelemetry Collector Contrib with the example
-[`awss3exporter` configuration](examples/collector/config.yaml):
+For an end-to-end run, start OpenTelemetry Collector Contrib with the shared
+[`awss3exporter` configuration](collector/config.yaml):
 
 ```bash
 AWS_REGION=us-west-2 \
 OTEL_S3_BUCKET=example-telemetry \
 OTEL_S3_PREFIX=durable-execution \
-otelcol-contrib --config examples/collector/config.yaml
+otelcol-contrib --config collector/config.yaml
 ```
 
 Then run the conformance CLI with `--suite otel`,
@@ -211,6 +211,15 @@ The backend supports the exporter's `otlp_json` and `otlp_proto` marshalers,
 with no compression, gzip, or zstd. Hosted-backend coverage should be added
 separately and must read all credentials from environment variables or CI
 secrets.
+
+For Lambda-hosted tests, use the package-level
+[`build-lambda-layer.sh`](collector/build-lambda-layer.sh) with the
+pinned upstream collector release. The Python, Java, and TypeScript S3
+collector workflows publish the custom `awss3exporter` layer, grant
+prefix-scoped S3 access, assert the exported spans, and delete all temporary
+resources without changing the corresponding X-Ray workflows. Keep this
+shared collector implementation outside SDK-specific example directories so
+examples hosted in separate SDK repositories can use the same build logic.
 
 ## Pull-Request Checklist
 
