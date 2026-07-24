@@ -149,7 +149,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: invocation
+          name: otel-after-resume
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${STEP1}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

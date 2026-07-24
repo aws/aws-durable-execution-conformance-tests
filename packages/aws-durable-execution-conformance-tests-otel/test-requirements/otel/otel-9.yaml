@@ -109,10 +109,12 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: invocation
+          name: otel-condition
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${CONDITION1}
+            durable.operation.type: STEP
+            durable.operation.subtype: WaitForCondition
     - select:
         name: otel-condition
         attributes:
@@ -157,7 +159,9 @@ TelemetryAssertions:
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: invocation
+          name: otel-condition
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${CONDITION1}
+            durable.operation.type: STEP
+            durable.operation.subtype: WaitForCondition
