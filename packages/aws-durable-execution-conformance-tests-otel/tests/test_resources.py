@@ -26,10 +26,10 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
 
     assert set(suites) == {"otel-execution", "otel-invocation"}
     assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 20)}
-    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 4)}
+    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 20)}
 
 
-@pytest.mark.parametrize("case_number", range(1, 4))
+@pytest.mark.parametrize("case_number", range(1, 20))
 def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_number: int) -> None:
     invocation = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
     execution = load_yaml_file(_requirements("otel-execution")[f"otel-execution-{case_number}"])
@@ -149,22 +149,35 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
 def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links() -> None:
     requirements = _requirements("otel-execution")
 
-    for case_number in range(1, 4):
+    for case_number in range(1, 20):
         requirement = load_yaml_file(requirements[f"otel-execution-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
         span_assertions = assertions["span_assertions"]
-        workflow = next(item for item in span_assertions if item["select"]["name"] == "Workflow")
+        workflows = [item for item in span_assertions if item["select"]["name"] == "Workflow"]
+        expected_workflow_statuses = {
+            "${EXECUTION_ARN}": requirement["ExpectedResult"]["ExecutionStatus"],
+        }
+        if case_number in {11, 18}:
+            expected_workflow_statuses["${TARGET_EXECUTION_ARN}"] = "SUCCEEDED" if case_number == 11 else "FAILED"
+            assert assertions["allowed_execution_arns"] == [
+                "${EXECUTION_ARN}",
+                "${TARGET_EXECUTION_ARN}",
+            ]
 
         assert assertions["require_execution_correlation"] is True
+        assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
-        assert workflow["expect"]["parent_span_id"] is None
-        assert workflow["expect"]["attributes"] == {
-            "durable.execution.arn": "${EXECUTION_ARN}",
-            "durable.execution.status": "SUCCEEDED",
-        }
+        assert len(workflows) == len(expected_workflow_statuses)
+        for workflow in workflows:
+            execution_arn = workflow["select"]["attributes"]["durable.execution.arn"]
+            assert workflow["expect"]["parent_span_id"] is None
+            assert workflow["expect"]["attributes"] == {
+                "durable.execution.arn": execution_arn,
+                "durable.execution.status": expected_workflow_statuses[execution_arn],
+            }
 
-        descendants = [item for item in span_assertions if item is not workflow]
-        assert descendants
+        descendants = [item for item in span_assertions if item not in workflows]
+        assert bool(descendants) is (case_number != 19)
         for descendant in descendants:
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
@@ -179,3 +192,13 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
                     }
                 }
             ]
+
+        telemetry_json = json.dumps(assertions)
+        history_json = json.dumps(requirement["ExpectedExecutionHistory"])
+        telemetry_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", telemetry_json))
+        history_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", history_json))
+
+        assert telemetry_placeholders <= history_placeholders | {
+            "EXECUTION_ARN",
+            "TARGET_EXECUTION_ARN",
+        }

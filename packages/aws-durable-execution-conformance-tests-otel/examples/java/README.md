@@ -12,10 +12,10 @@ every handler in one shaded JAR. The template maps `otel-invocation-1` through
 `otel-invocation-11` and `otel-invocation-18` also deploy durable chained-invoke
 targets.
 
-Requirements `otel-execution-1` through `otel-execution-3` exercise
-`ExecutionOtelPlugin`, which is not available in the Java SDK. The template declares those cases under
-`TestingMetadata.NotImplemented` so reports distinguish that SDK gap from
-uncovered requirements.
+Requirements `otel-execution-1` through `otel-execution-19` exercise
+`ExecutionOtelPlugin`, which is not available in the Java SDK. The template
+declares those cases under `TestingMetadata.NotImplemented` so reports
+distinguish that SDK gap from uncovered requirements.
 
 The hosted Java workflow checks out the Java SDK repository's latest `main`,
 installs its SDK and OTel plugin artifacts, and overrides the Maven project's

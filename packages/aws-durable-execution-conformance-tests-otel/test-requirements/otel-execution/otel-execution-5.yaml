@@ -1,0 +1,118 @@
+description: Execution view emits the complete child-context and nested-step hierarchy
+Input:
+  scenario: child-context
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: RunInChildContext
+    Id: ${CTX1}
+    Name: otel-child-context
+  - EventId: 3
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    Name: otel-child-step
+  - EventId: 4
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    Name: otel-child-step
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 5
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-child-context
+        attributes:
+          durable.operation.id: ${CTX1}
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CTX1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
+          durable.operation.name: otel-child-context
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-child-step
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-child-step
+        parent:
+          name: otel-child-context
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${CTX1}
+    - select:
+        name: otel-child-step attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-child-step
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-child-step
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}

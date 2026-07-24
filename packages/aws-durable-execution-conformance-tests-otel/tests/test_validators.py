@@ -680,6 +680,40 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     assert external_errors == ["span_assertions[0].expect.parent: parent span is not present in the trace"]
 
 
+def test_parent_assertion_accepts_matching_replayed_span_with_duplicate_id() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_root = replace(
+        root,
+        name="replayed-root",
+        attributes={
+            **root.attributes,
+            "durable.operation.outcome": "pending",
+        },
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(replayed_root, root, child)),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "parent": {
+                            "name": "root",
+                            "attributes": {
+                                "durable.operation.outcome": "retry",
+                            },
+                        }
+                    },
+                }
+            },
+            _query(),
+        )
+        == []
+    )
+
+
 def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
     errors = validate_trace(
         _trace(),

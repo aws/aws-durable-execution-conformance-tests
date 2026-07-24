@@ -42,7 +42,7 @@ jobs:
     uses: ./.github/workflows/python-opentelemetry.yml
     with:
       suite: otel-execution
-      case_count: 3
+      case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
       collector_query_endpoint: ${{ inputs.collector_query_endpoint || '' }}
@@ -54,6 +54,6 @@ jobs:
     uses: ./.github/workflows/typescript-opentelemetry.yml
     with:
       suite: otel-execution
-      case_count: 3
+      case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

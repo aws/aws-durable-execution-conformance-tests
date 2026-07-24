@@ -187,30 +187,45 @@ def _parent_expectation_errors(
     parents = spans_by_id.get(parent_span_id, [])
     if not parents:
         return [f"{path}: parent span is not present in the trace"]
-    if len(parents) > 1:
-        return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
 
-    parent, serialized_parent = parents[0]
-    errors = _span_expectation_errors(
-        expected,
-        serialized_parent,
-        path=path,
-        feature_disparities=feature_disparities,
-    )
-    if errors:
-        return errors
+    expectation_errors = [
+        _span_expectation_errors(
+            expected,
+            serialized_parent,
+            path=path,
+            feature_disparities=feature_disparities,
+        )
+        for _parent, serialized_parent in parents
+    ]
+    matching_parents = [
+        parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
+    ]
+    if not matching_parents:
+        if len(parents) > 1:
+            return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
+        return expectation_errors[0]
 
-    if span.start_time < parent.start_time:
-        errors.append(
-            f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
-            f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
-        )
-    if span.end_time > parent.end_time:
-        errors.append(
-            f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
-            f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
-        )
-    return errors
+    candidate_errors = []
+    for parent in matching_parents:
+        errors: list[str] = []
+        if span.start_time < parent.start_time:
+            errors.append(
+                f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
+                f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
+            )
+        if span.end_time > parent.end_time:
+            errors.append(
+                f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
+                f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
+            )
+        candidate_errors.append(errors)
+    if any(not errors for errors in candidate_errors):
+        return []
+    if len(matching_parents) > 1:
+        return [
+            f"{path}: parent span id matched {len(matching_parents)} expected spans; none contained the child timespan"
+        ]
+    return candidate_errors[0]
 
 
 def _link_expectation_errors(

@@ -63,9 +63,8 @@ def test_java_example_template_maps_every_otel_requirement() -> None:
 
 def test_java_example_declares_execution_view_plugin_gap() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
-        "otel-execution-1": "ExecutionOtelPlugin is not available in the Java SDK",
-        "otel-execution-2": "ExecutionOtelPlugin is not available in the Java SDK",
-        "otel-execution-3": "ExecutionOtelPlugin is not available in the Java SDK",
+        f"otel-execution-{case_number}": "ExecutionOtelPlugin is not available in the Java SDK"
+        for case_number in range(1, 20)
     }
 
 

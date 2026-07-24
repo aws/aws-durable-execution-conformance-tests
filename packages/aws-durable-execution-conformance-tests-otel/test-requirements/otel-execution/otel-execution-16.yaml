@@ -1,0 +1,87 @@
+description: Execution view emits failed wait-for-condition operation and attempt spans
+Input:
+  scenario: wait-for-condition-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
+  - EventId: 3
+    EventType: StepFailed
+    SubType: WaitForCondition
+    Id: ${FAILED_CONDITION}
+    Name: otel-failed-condition
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 4
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: otel-failed-condition
+        attributes:
+          durable.operation.id: ${FAILED_CONDITION}
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONDITION}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.name: otel-failed-condition
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED
+    - select:
+        name: otel-failed-condition attempt 1
+        attributes:
+          durable.operation.id: ${FAILED_CONDITION}
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONDITION}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.name: otel-failed-condition
+          durable.attempt.outcome: FAILED
+        parent:
+          name: otel-failed-condition
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${FAILED_CONDITION}

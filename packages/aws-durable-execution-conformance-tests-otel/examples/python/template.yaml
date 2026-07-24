@@ -2,6 +2,13 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Python SDK examples for the durable execution OTel conformance suite
 
+TestingMetadata:
+  NotImplemented:
+    - id: otel-execution-15
+      reason: ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally
+    - id: otel-execution-19
+      reason: ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY
+
 Parameters:
   LambdaExecutionRoleArn:
     Type: String
@@ -402,6 +409,258 @@ Resources:
       CodeUri: src/
       Handler: otel_3_retry.handler
       FunctionName: !Sub "${AWS::StackName}-otel-execution-3"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution4TerminalFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-4
+    Properties:
+      CodeUri: src/
+      Handler: otel_4_terminal_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-4"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution5ChildContext:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-5
+    Properties:
+      CodeUri: src/
+      Handler: otel_5_child_context.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-5"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution6Parallel:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-6
+    Properties:
+      CodeUri: src/
+      Handler: otel_6_parallel.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-6"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution7Map:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-7
+    Properties:
+      CodeUri: src/
+      Handler: otel_7_map.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-7"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution8HandledFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-8
+    Properties:
+      CodeUri: src/
+      Handler: otel_8_handled_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-8"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution9WaitForCondition:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-9
+    Properties:
+      CodeUri: src/
+      Handler: otel_9_wait_for_condition.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-9"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution10WaitForCallback:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-10
+    Properties:
+      CodeUri: src/
+      Handler: otel_10_wait_for_callback.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-10"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution11ChainedInvoke:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-11
+    Properties:
+      CodeUri: src/
+      Handler: otel_11_chained_invoke.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-11"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"
+
+  OtelExecution11InvokeTarget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_11_chained_invoke.target_handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-11-target"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution12ChildContextFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-12
+    Properties:
+      CodeUri: src/
+      Handler: otel_12_child_context_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-12"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution13ParallelFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-13
+    Properties:
+      CodeUri: src/
+      Handler: otel_13_parallel_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-13"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution14MapFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-14
+    Properties:
+      CodeUri: src/
+      Handler: otel_14_map_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-14"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution16WaitForConditionFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-16
+    Properties:
+      CodeUri: src/
+      Handler: otel_16_wait_for_condition_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-16"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution17WaitForCallbackFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-17
+    Properties:
+      CodeUri: src/
+      Handler: otel_17_wait_for_callback_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-17"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution18ChainedInvokeFailure:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-18
+    Properties:
+      CodeUri: src/
+      Handler: otel_18_chained_invoke_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-18"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"
+
+  OtelExecution18InvokeTarget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_18_chained_invoke_failure.target_handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-18-target"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:

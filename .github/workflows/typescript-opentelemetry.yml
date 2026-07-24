@@ -174,9 +174,9 @@ jobs:
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
-          if [ "$OTEL_SUITE" = "otel-invocation" ]; then
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
             for case_number in 11 18; do
-              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-invocation-${case_number}-target"
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
               echo "::group::$log_group"
               aws logs tail "$log_group" --since 20m --format short || true
               echo "::endgroup::"
@@ -441,9 +441,9 @@ jobs:
             aws logs tail "$log_group" --since 30m --format short || true
             echo "::endgroup::"
           done
-          if [ "$OTEL_SUITE" = "otel-invocation" ]; then
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
             for case_number in 11 18; do
-              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-invocation-${case_number}-target"
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
               echo "::group::$log_group"
               aws logs tail "$log_group" --since 30m --format short || true
               echo "::endgroup::"

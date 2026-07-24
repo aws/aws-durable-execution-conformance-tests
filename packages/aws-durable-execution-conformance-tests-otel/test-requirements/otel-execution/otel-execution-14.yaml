@@ -1,0 +1,97 @@
+description: Execution view emits a failed map iteration under its operation
+Input:
+  scenario: map-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: Map
+    Id: ${MAP1}
+    Name: otel-failed-map
+  - EventId: 3
+    EventType: ContextStarted
+    SubType: MapIteration
+    Id: ${FAILED_ITERATION}
+    ParentId: ${MAP1}
+    Name: otel-failed-map-iteration-0
+  - EventId: 4
+    EventType: ContextFailed
+    SubType: MapIteration
+    Id: ${FAILED_ITERATION}
+    ParentId: ${MAP1}
+    Name: otel-failed-map-iteration-0
+  - EventId: 5
+    EventType: ContextSucceeded
+    SubType: Map
+    Id: ${MAP1}
+    Name: otel-failed-map
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 4
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: otel-failed-map
+        attributes:
+          durable.operation.id: ${MAP1}
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${MAP1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: Map
+          durable.operation.name: otel-failed-map
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED
+    - select:
+        name: otel-failed-map-iteration-0
+        attributes:
+          durable.operation.id: ${FAILED_ITERATION}
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_ITERATION}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: MapIteration
+          durable.operation.name: otel-failed-map-iteration-0
+        parent:
+          name: otel-failed-map
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${MAP1}
