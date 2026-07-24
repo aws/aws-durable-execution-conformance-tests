@@ -15,8 +15,7 @@ from aws_durable_execution_sdk_python import (
     durable_step,
 )
 from aws_durable_execution_sdk_python.config import MapConfig
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -36,7 +35,7 @@ def process_map_item(
     )
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> list[int]:
     require_scenario(event, "map-hierarchy")
     return context.map(

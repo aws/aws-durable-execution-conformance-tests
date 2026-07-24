@@ -1,0 +1,117 @@
+description: Execution view preserves workflow hierarchy across a wait and resumed invocation
+Input:
+  scenario: wait-resume
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: WaitStarted
+    SubType: Wait
+    Id: ${WAIT1}
+    Name: otel-wait
+  - EventId: 5
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-after-resume
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-after-resume
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 6
+  minimum_invocations: 2
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-wait
+        attributes:
+          durable.operation.id: ${WAIT1}
+      expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: "*"
+                - aws.lambda.invocation_id: "*"
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${WAIT1}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.name: otel-wait
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-after-resume
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: "*"
+                - aws.lambda.invocation_id: "*"
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-after-resume
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-after-resume attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: "*"
+                - aws.lambda.invocation_id: "*"
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-after-resume
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-after-resume
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}

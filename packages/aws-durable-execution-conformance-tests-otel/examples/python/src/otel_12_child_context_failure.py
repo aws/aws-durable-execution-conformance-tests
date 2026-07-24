@@ -12,8 +12,7 @@ from aws_durable_execution_sdk_python import (
     durable_execution,
     durable_with_child_context,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_with_child_context
@@ -21,7 +20,7 @@ def fail_child_context(_context: DurableContext) -> None:
     raise RuntimeError("Intentional child-context failure")
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> None:
     require_scenario(event, "child-context-failure")
     context.run_in_child_context(

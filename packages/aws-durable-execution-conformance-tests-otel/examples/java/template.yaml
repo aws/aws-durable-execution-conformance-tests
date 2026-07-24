@@ -2,6 +2,15 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Java SDK examples for the durable execution OTel conformance suite
 
+TestingMetadata:
+  NotImplemented:
+    - id: otel-20
+      reason: ExecutionOtelPlugin is not available in the Java SDK
+    - id: otel-21
+      reason: ExecutionOtelPlugin is not available in the Java SDK
+    - id: otel-22
+      reason: ExecutionOtelPlugin is not available in the Java SDK
+
 Parameters:
   LambdaExecutionRoleArn:
     Type: String

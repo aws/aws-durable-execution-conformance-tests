@@ -317,3 +317,45 @@ Resources:
       Handler: otel_19_execution_failure.handler
       FunctionName: !Sub "${AWS::StackName}-otel-19"
       Role: !Ref LambdaExecutionRoleArn
+
+  Otel20ExecutionSuccess:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-20
+    Properties:
+      CodeUri: dist/
+      Handler: otel_1_success.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-20"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  Otel21ExecutionWaitResume:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-21
+    Properties:
+      CodeUri: dist/
+      Handler: otel_2_wait_resume.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-21"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  Otel22ExecutionRetry:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-22
+    Properties:
+      CodeUri: dist/
+      Handler: otel_3_retry.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-22"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution

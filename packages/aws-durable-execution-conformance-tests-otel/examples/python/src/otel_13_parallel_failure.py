@@ -13,8 +13,7 @@ from aws_durable_execution_sdk_python import (
     durable_parallel_branch,
 )
 from aws_durable_execution_sdk_python.config import ParallelConfig
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_parallel_branch(name="otel-failed-parallel-branch")
@@ -22,7 +21,7 @@ def fail_parallel_branch(_context: DurableContext) -> None:
     raise RuntimeError("Intentional parallel branch failure")
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> None:
     require_scenario(event, "parallel-failure")
     result = context.parallel(
