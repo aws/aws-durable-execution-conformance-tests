@@ -79,6 +79,69 @@ def test_validates_stable_cross_invocation_invariants() -> None:
     assert errors == []
 
 
+def test_counts_canonical_invocation_spans_when_invocation_ids_are_incomplete() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    first_invocation = replace(
+        root,
+        name="invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+            "durable.invocation.status": "PENDING",
+        },
+    )
+    resumed_invocation = replace(
+        child,
+        name="invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": False,
+            "durable.invocation.status": "SUCCEEDED",
+        },
+    )
+    handler = replace(
+        root,
+        span_id="4" * 16,
+        name="handler",
+        attributes={"faas.invocation_id": "invocation-2"},
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(first_invocation, resumed_invocation, handler)),
+            {"minimum_invocations": 2},
+            _query(),
+        )
+        == []
+    )
+
+
+def test_does_not_count_noncanonical_spans_named_invocation() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    durable_invocation = replace(
+        root,
+        name="invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+            "durable.invocation.status": "SUCCEEDED",
+        },
+    )
+    application_span = replace(
+        child,
+        name="invocation",
+        attributes={"durable.execution.arn": "arn:test"},
+    )
+
+    assert validate_trace(
+        replace(trace, spans=(durable_invocation, application_span)),
+        {"minimum_invocations": 2},
+        _query(),
+    ) == ["Expected telemetry from at least 2 Lambda invocations, found 1"]
+
+
 def test_reports_correlation_mismatches() -> None:
     errors = validate_trace(
         _trace("arn:wrong"),

@@ -36,6 +36,9 @@ EXPECTED_MAPPINGS = [
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
+    "OtelCollectorBucket",
+    "OtelCollectorLayerArn",
+    "OtelCollectorPrefix",
     "OtelLayerArn",
     "OtelExecWrapper",
     "OtelServiceName",
@@ -68,6 +71,11 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "Runtime: nodejs22.x" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
     assert "Default: /opt/otel-instrument" in template
+    assert "HasOtelCollectorLayer: !Not" in template
+    assert '!Ref "AWS::NoValue"' in template
+    assert "/opt/collector-config/config-s3.yaml" in template
+    assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
+    assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
 
 
 def test_typescript_template_handlers_have_sources() -> None:
@@ -127,12 +135,32 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "--language javascript" in workflow
 
 
+def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "  s3_collector:" in workflow
+    assert "open-telemetry/opentelemetry-lambda" in workflow
+    assert "layer-collector/0.22.0" in workflow
+    assert "build-lambda-layer.sh" in workflow
+    assert "--otel-exporter community" in workflow
+    assert "--otel-backend collector" in workflow
+    assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
+    assert "npm run install-sdk-main" in workflow
+    assert "--language javascript" in workflow
+
+
 def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    test_name = next(
-        line.split(":", maxsplit=1)[1].strip() for line in workflow.splitlines() if line.startswith("  TEST_NAME:")
-    )
-    stack_name = f"{STACK_NAME_PREFIX}-{test_name}"
 
-    assert f"  TEST_STACK_NAME: {stack_name}" in workflow
-    assert len(f"{stack_name}-otel-18-target") <= 64
+    for test_name in ("typescript-xray", "typescript-s3"):
+        stack_name = f"{STACK_NAME_PREFIX}-{test_name}"
+
+        assert f"TEST_STACK_NAME: {stack_name}" in workflow
+        assert f"TEST_NAME: {test_name}" in workflow
+        assert len(f"{stack_name}-otel-18-target") <= 64
+
+
+def test_typescript_bundle_uses_the_external_collector_layer() -> None:
+    rollup = (EXAMPLES_DIR / "rollup.config.mjs").read_text(encoding="utf-8")
+
+    assert "collector-config" not in rollup

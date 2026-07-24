@@ -9,6 +9,7 @@ import gzip
 import json
 from compression import zstd
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +26,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingPolicy,
 )
+
+COLLECTOR_DIR = Path(__file__).resolve().parents[1] / "examples" / "collector"
 
 
 class _Body:
@@ -223,9 +226,88 @@ def test_collector_reads_otlp_protobuf_files() -> None:
     assert trace.spans[0].kind == "INTERNAL"
 
 
+def test_collector_only_downloads_each_immutable_s3_object_once() -> None:
+    first_key = "otel/year=2026/month=07/day=21/traces_100.json"
+    second_key = "otel/year=2026/month=07/day=21/traces_101.json"
+    client = _S3(
+        {
+            first_key: (
+                json.dumps(
+                    _json_payload(
+                        span_id="2" * 16,
+                        execution_arn="arn:test",
+                        invocation_id="invoke-1",
+                    )
+                ).encode(),
+                "",
+            ),
+        }
+    )
+    backend = CollectorBackend(client, "telemetry-bucket", "otel/")
+
+    first_trace = backend._lookup(_query())
+    assert first_trace is not None
+    assert len(client.get_calls) == 1
+
+    assert backend._lookup(_query()) == first_trace
+    assert len(client.get_calls) == 1
+
+    client.objects[second_key] = (
+        json.dumps(
+            _json_payload(
+                span_id="3" * 16,
+                execution_arn="arn:test",
+                invocation_id="invoke-2",
+            )
+        ).encode(),
+        "",
+    )
+    complete_trace = backend._lookup(_query())
+
+    assert complete_trace is not None
+    assert {span.span_id for span in complete_trace.spans} == {"2" * 16, "3" * 16}
+    assert [call["Key"] for call in client.get_calls] == [first_key, second_key]
+
+
+def test_collector_rejects_s3_objects_without_readable_bodies() -> None:
+    class _MissingBodyS3(_S3):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            self.get_calls.append(kwargs)
+            return {}
+
+    client = _MissingBodyS3(
+        {
+            "otel/year=2026/month=07/day=21/traces_100.json": (
+                b"unused",
+                "",
+            )
+        }
+    )
+    backend = CollectorBackend(client, "telemetry-bucket", "otel/")
+
+    with pytest.raises(BackendError, match="readable body"):
+        backend._lookup(_query())
+
+
 def test_collector_factory_requires_an_s3_backend_location() -> None:
     with pytest.raises(BackendError, match="s3://bucket/prefix"):
         CollectorBackendFactory().create(
             {"otel_backend_endpoint": "https://collector.example"},
             region="us-west-2",
         )
+
+
+def test_custom_collector_layer_includes_the_s3_exporter_and_config() -> None:
+    config = (COLLECTOR_DIR / "config.yaml").read_text(encoding="utf-8")
+    build_script = (COLLECTOR_DIR / "build-lambda-layer.sh").read_text(encoding="utf-8")
+    component = (COLLECTOR_DIR / "lambda" / "awss3.go").read_text(encoding="utf-8")
+
+    assert "endpoint: localhost:4318" in config
+    assert "marshaler: otlp_json" in config
+    assert "compression: gzip" in config
+    assert "awss3_version=v0.151.0" in build_script
+    assert 'cp "$script_dir/config.yaml" "$collector_dir/config-s3.yaml"' in build_script
+    assert "awss3exporter@$awss3_version" in build_script
+    assert 'cd "$collector_dir"\n  go mod tidy' in build_script
+    assert "lambdacomponents.exporter.awss3" in build_script
+    assert "awss3exporter.NewFactory()" in component

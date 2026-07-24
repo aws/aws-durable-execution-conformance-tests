@@ -130,16 +130,23 @@ class CollectorBackend(PollingBackend):
         self._client = client
         self._bucket = bucket
         self._prefix = prefix
+        self._trace_cache: dict[str, list[Trace]] = {}
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
         try:
-            files = [(key, self._read_traces(key)) for key in self._list_keys()]
+            keys = self._list_keys()
+            for key in keys:
+                if key not in self._trace_cache:
+                    self._trace_cache[key] = self._read_traces(key)
         except BackendError:
             raise
         except (BotoCoreError, ClientError) as exc:
             raise BackendError(f"S3 telemetry query failed: {type(exc).__name__}") from exc
         return matching_trace(
-            _merge_trace_files(files, bucket=self._bucket),
+            _merge_trace_files(
+                ((key, self._trace_cache[key]) for key in keys),
+                bucket=self._bucket,
+            ),
             query,
         )
 
@@ -167,12 +174,15 @@ class CollectorBackend(PollingBackend):
 
     def _read_traces(self, key: str) -> list[Trace]:
         response = self._client.get_object(Bucket=self._bucket, Key=key)
-        body = response["Body"]
+        body = response.get("Body")
+        read = getattr(body, "read", None)
+        if not callable(read):
+            raise BackendError(f"S3 telemetry object {key!r} did not return a readable body")
         try:
-            payload = body.read()
+            payload = read()
         finally:
             close = getattr(body, "close", None)
-            if close is not None:
+            if callable(close):
                 close()
         if not isinstance(payload, bytes):
             raise BackendError(f"S3 telemetry object {key!r} returned a non-bytes body")
@@ -184,6 +194,7 @@ class CollectorBackend(PollingBackend):
             )
         except (
             DecodeError,
+            EOFError,
             UnicodeDecodeError,
             gzip.BadGzipFile,
             json.JSONDecodeError,

@@ -68,30 +68,33 @@ Set `ADOT_LAYER_ARN` to the current regional ARN from the
 The runner supplies all OTel SAM parameters. The execution role must allow
 Durable Execution, logs, and X-Ray access.
 
-## Run Against The AWS S3 Collector
+## Run Against the AWS S3 Collector
 
-Start OpenTelemetry Collector Contrib with the package's
-[`awss3exporter` configuration](../collector/config.yaml) on an HTTPS endpoint
-reachable from the deployed Lambda functions. Pass its OTLP ingest endpoint
-separately from the S3 location queried by the conformance backend:
+The hosted S3 workflow builds and publishes a temporary OpenTelemetry Lambda
+collector extension with `awss3exporter`, then creates a run-scoped S3 bucket.
+The Python community instrumentation layer sends OTLP HTTP traffic to that
+extension on `localhost:4318`, and the conformance backend reads the official
+OTLP objects back from S3 for assertion:
 
 ```bash
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml \
   --language python \
   --suite otel \
-  --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+  --parameter-overrides \
+    LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+    OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \
+    OtelCollectorBucket="$OTEL_S3_BUCKET" \
+    OtelCollectorPrefix=traces \
   --otel-exporter community \
+  --otel-endpoint http://localhost:4318 \
   --otel-backend collector \
-  --otel-endpoint https://otel-collector.example/v1/traces \
-  --otel-backend-endpoint s3://example-telemetry/durable-execution
+  --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
 ```
 
-`localhost` is not reachable from a Lambda function deployed by SAM. Use a
-network-accessible collector endpoint for an end-to-end run. The collector
-writes official `awss3exporter` OTLP files; this repository does not provide a
-custom S3 exporter. The runner's AWS identity must be able to list the bucket
-and read objects under the configured prefix.
+The collector config is packaged at
+`/opt/collector-config/config-s3.yaml`. The function role needs prefix-scoped
+S3 write access; the runner identity needs list, read, and cleanup access.
 
 ## Build Only
 

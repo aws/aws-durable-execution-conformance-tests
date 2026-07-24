@@ -5,9 +5,11 @@ package software.amazon.lambda.durable.conformance.otel;
 
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
 import java.util.Map;
 import software.amazon.distro.opentelemetry.exporter.xray.udp.trace.AwsXrayUdpSpanExporterBuilder;
 import software.amazon.lambda.durable.DurableConfig;
@@ -23,12 +25,7 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
 
     @Override
     protected final DurableConfig createConfiguration() {
-        var exporter =
-                new AwsXrayUdpSpanExporterBuilder()
-                        .setEndpoint(
-                                System.getenv()
-                                        .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
-                        .build();
+        var exporter = createExporter();
         var resource =
                 Resource.getDefault()
                         .merge(
@@ -41,6 +38,18 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                         .setResource(resource)
                         .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
         return DurableConfig.builder().withPlugins(plugin).build();
+    }
+
+    private SpanExporter createExporter() {
+        var otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
+        if (otlpEndpoint != null && !otlpEndpoint.isBlank()) {
+            return OtlpGrpcSpanExporter.builder().setEndpoint(otlpEndpoint).build();
+        }
+        return new AwsXrayUdpSpanExporterBuilder()
+                .setEndpoint(
+                        System.getenv()
+                                .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
+                .build();
     }
 
     protected final void requireScenario(Map<String, Object> event, String expected) {

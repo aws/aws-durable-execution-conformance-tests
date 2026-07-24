@@ -89,7 +89,7 @@ class CommunityExporterProfile:
 
     _LAYERS: ClassVar[dict[str, str]] = {
         "python": "opentelemetry-python-0_13_0:1",
-        "java": "opentelemetry-javaagent:1",
+        "java": "opentelemetry-javaagent-0_20_0:1",
         "javascript": "opentelemetry-nodejs-0_18_0:1",
     }
     _WRAPPERS: ClassVar[dict[str, str]] = {
