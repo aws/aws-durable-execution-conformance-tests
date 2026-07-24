@@ -63,6 +63,10 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.name: otel-handled-failure
+        before:
+          name: otel-recovery-step
+          attributes:
+            durable.operation.id: ${RECOVERY_STEP}
         parent:
           name: Workflow
           kind: INTERNAL
@@ -114,6 +118,10 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.name: otel-recovery-step
+        after:
+          name: otel-handled-failure
+          attributes:
+            durable.operation.id: ${FAILED_STEP}
         parent:
           name: Workflow
           kind: INTERNAL

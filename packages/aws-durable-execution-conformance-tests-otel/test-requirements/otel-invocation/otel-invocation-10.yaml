@@ -66,6 +66,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -81,6 +87,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
         name: otel-callback
         attributes:
@@ -124,6 +136,10 @@ TelemetryAssertions:
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
           durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
+        before:
+          name: "${/^otel-callback(?: create callback id|-callback)$/}"
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: otel-callback
           kind: INTERNAL
@@ -149,6 +165,10 @@ TelemetryAssertions:
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
           durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
+        after:
+          name: "${/^otel-callback(?: create callback id|-callback)$/}"
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: otel-callback
           kind: INTERNAL

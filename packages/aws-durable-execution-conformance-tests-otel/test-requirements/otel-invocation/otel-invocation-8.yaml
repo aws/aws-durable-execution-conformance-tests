@@ -70,6 +70,10 @@ TelemetryAssertions:
           durable.operation.status: FAILED
           durable.operation.name: otel-handled-failure
           durable.attempt.number: 1
+        before:
+          name: otel-recovery-step
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -93,6 +97,10 @@ TelemetryAssertions:
           durable.operation.name: otel-handled-failure
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
+        before:
+          name: otel-recovery-step attempt 1
+          attributes:
+            durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-handled-failure
           kind: INTERNAL
@@ -118,6 +126,10 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-recovery-step
           durable.attempt.number: 1
+        after:
+          name: otel-handled-failure
+          attributes:
+            durable.operation.status: FAILED
         parent:
           name: invocation
           kind: INTERNAL
@@ -141,6 +153,10 @@ TelemetryAssertions:
           durable.operation.name: otel-recovery-step
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-handled-failure attempt 1
+          attributes:
+            durable.attempt.outcome: FAILED
         parent:
           name: otel-recovery-step
           kind: INTERNAL

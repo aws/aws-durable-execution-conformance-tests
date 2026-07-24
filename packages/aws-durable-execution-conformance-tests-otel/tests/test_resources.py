@@ -211,3 +211,33 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             "EXECUTION_ARN",
             "TARGET_EXECUTION_ARN",
         }
+
+
+@pytest.mark.parametrize(
+    ("suite_name", "ordered_cases"),
+    [
+        ("otel-execution", {2, 3, 8, 9}),
+        ("otel-invocation", {2, 3, 8, 9, 10, 11, 17, 18}),
+    ],
+)
+def test_otel_catalog_asserts_every_deterministic_span_order(
+    suite_name: str,
+    ordered_cases: set[int],
+) -> None:
+    requirements = _requirements(suite_name)
+
+    for case_number in range(1, 20):
+        requirement = load_yaml_file(requirements[f"{suite_name}-{case_number}"])
+        assert all(
+            not {"before", "after"} & set(span_assertion["select"])
+            for span_assertion in requirement["TelemetryAssertions"]["span_assertions"]
+        )
+        relationships = {
+            key
+            for span_assertion in requirement["TelemetryAssertions"]["span_assertions"]
+            for key in {"before", "after"} & set(span_assertion["expect"])
+        }
+
+        assert bool(relationships) is (case_number in ordered_cases)
+        if relationships:
+            assert relationships == {"before", "after"}

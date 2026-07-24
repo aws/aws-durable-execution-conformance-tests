@@ -54,6 +54,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -69,6 +75,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
         name: otel-condition
         attributes:
@@ -85,6 +97,10 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCondition
           durable.operation.status: STARTED
           durable.operation.name: otel-condition
+        before:
+          name: otel-condition
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -108,6 +124,10 @@ TelemetryAssertions:
           durable.operation.name: otel-condition
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
+        before:
+          name: otel-condition attempt 2
+          attributes:
+            durable.attempt.number: 2
         parent:
           name: otel-condition
           kind: INTERNAL
@@ -135,6 +155,10 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-condition
           durable.attempt.number: 2
+        after:
+          name: otel-condition
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: invocation
           kind: INTERNAL
@@ -158,6 +182,10 @@ TelemetryAssertions:
           durable.operation.name: otel-condition
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-condition attempt 1
+          attributes:
+            durable.attempt.number: 1
         parent:
           name: otel-condition
           kind: INTERNAL

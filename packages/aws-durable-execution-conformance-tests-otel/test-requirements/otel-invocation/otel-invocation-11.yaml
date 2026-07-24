@@ -50,6 +50,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -65,6 +71,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -80,6 +92,12 @@ TelemetryAssertions:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: SUCCEEDED
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: otel-invoke
         attributes:
@@ -96,6 +114,10 @@ TelemetryAssertions:
           durable.operation.subtype: ChainedInvoke
           durable.operation.status: STARTED
           durable.operation.name: otel-invoke
+        before:
+          name: otel-invoke
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -120,6 +142,10 @@ TelemetryAssertions:
           durable.operation.subtype: ChainedInvoke
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-invoke
+        after:
+          name: otel-invoke
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: invocation
           kind: INTERNAL

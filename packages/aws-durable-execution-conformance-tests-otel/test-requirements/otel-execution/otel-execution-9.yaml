@@ -92,6 +92,11 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCondition
           durable.operation.name: otel-condition
           durable.attempt.outcome: SUCCEEDED
+        before:
+          name: otel-condition attempt 2
+          attributes:
+            durable.operation.id: ${CONDITION1}
+            durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-condition
           kind: INTERNAL
@@ -118,6 +123,11 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCondition
           durable.operation.name: otel-condition
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-condition attempt 1
+          attributes:
+            durable.operation.id: ${CONDITION1}
+            durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-condition
           kind: INTERNAL
