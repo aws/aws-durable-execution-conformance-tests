@@ -106,6 +106,9 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_execution_success",
+        "otel_21_execution_wait_resume",
+        "otel_22_execution_retry",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules

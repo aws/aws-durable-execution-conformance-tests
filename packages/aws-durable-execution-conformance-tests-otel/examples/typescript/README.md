@@ -9,9 +9,8 @@ AWS Durable Execution SDK for JavaScript and its OpenTelemetry plugin:
 The project runs on Node.js 22 and bundles one CommonJS entry point per
 scenario. The template maps `otel-1` through `otel-22` with
 `TestingMetadata.TestDescription`; `otel-11` and `otel-18` also deploy durable
-chained-invoke targets. Cases `otel-20` through `otel-22` reuse the first three
-scenarios with `ExecutionOtelPlugin` to validate the execution-oriented trace
-view.
+chained-invoke targets. Cases `otel-20` through `otel-22` use dedicated
+`ExecutionOtelPlugin` handlers to validate the execution-oriented trace view.
 
 The OTel package's `InvocationOtelPlugin` API is newer than its latest npm
 artifact, so `scripts/install-sdk-main.sh` builds and installs both SDK packages
@@ -40,9 +39,9 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-17` | `otel_17_wait_for_callback_failure.handler` | External callback failure. |
 | `otel-18` | `otel_18_chained_invoke_failure.handler` | Failed chained invoke. |
 | `otel-19` | `otel_19_execution_failure.handler` | Direct handler failure. |
-| `otel-20` | `otel_1_success.handler` | Execution-view workflow, step, and attempt hierarchy. |
-| `otel-21` | `otel_2_wait_resume.handler` | Execution-view hierarchy across a resumed invocation. |
-| `otel-22` | `otel_3_retry.handler` | Execution-view hierarchy across retry attempts. |
+| `otel-20` | `otel_20_execution_success.handler` | Execution-view workflow, step, and attempt hierarchy. |
+| `otel-21` | `otel_21_execution_wait_resume.handler` | Execution-view hierarchy across a resumed invocation. |
+| `otel-22` | `otel_22_execution_retry.handler` | Execution-view hierarchy across retry attempts. |
 
 ## Run Against the S3 Collector
 
