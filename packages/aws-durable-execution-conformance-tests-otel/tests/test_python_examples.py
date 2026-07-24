@@ -153,9 +153,9 @@ def test_python_example_handlers_are_valid_python() -> None:
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_python_examples_pin_both_sdk_packages_to_execution_plugin_pr() -> None:
+def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit() -> None:
     requirements = (EXAMPLES_DIR / "src" / "requirements.txt").read_text(encoding="utf-8")
-    sdk_ref = "6ff4e2e8fecd4530e55959a479c20ca458d307e6"
+    sdk_ref = "01d789744dc051809a181cc985cd1a9a64e0dbe5"
 
     assert (
         "aws-durable-execution-sdk-python @ "

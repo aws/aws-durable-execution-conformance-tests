@@ -110,9 +110,9 @@ temporary stack, bucket, and layer version afterward.
 The package includes a self-contained
 [Python SAM project](examples/python/README.md) that implements every OTel
 requirement with the Python SDK and its OTel plugins. Its runtime requirements
-pin both packages to the tested head of Python SDK PR 576 while
-`ExecutionOtelPlugin` is under review. The folder is structured to move into
-the Python SDK's OTel package when this suite stabilizes.
+pin both packages to the merge commit of Python SDK PR 576, which introduced
+`ExecutionOtelPlugin`. The folder is structured to move into the Python SDK's
+OTel package when this suite stabilizes.
 
 ## Java Examples
 
