@@ -59,6 +59,7 @@ class Span:
     name: str
     start_time: datetime
     end_time: datetime
+    kind: str = "UNSPECIFIED"
     parent_span_id: str | None = None
     status: str = "UNSET"
     attributes: Mapping[str, Any] = field(default_factory=dict)
@@ -101,6 +102,7 @@ def span_to_dict(span: Span) -> dict[str, Any]:
         "span_id": span.span_id,
         "parent_span_id": span.parent_span_id,
         "name": span.name,
+        "kind": span.kind,
         "start_time": span.start_time.isoformat(),
         "end_time": span.end_time.isoformat(),
         "status": span.status,

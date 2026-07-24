@@ -33,6 +33,22 @@ def normalize_status(value: Any) -> str:
     return "UNSET"
 
 
+def normalize_span_kind(value: Any) -> str:
+    """Normalize OTLP span-kind enum names and numbers."""
+
+    kinds = {
+        "0": "UNSPECIFIED",
+        "1": "INTERNAL",
+        "2": "SERVER",
+        "3": "CLIENT",
+        "4": "PRODUCER",
+        "5": "CONSUMER",
+    }
+    text = str(value if value is not None else 0).strip().upper()
+    text = text.removeprefix("SPAN_KIND_")
+    return kinds.get(text, text if text in kinds.values() else "UNSPECIFIED")
+
+
 def _json_any_value(value: Any) -> Any:
     if not isinstance(value, Mapping):
         return value
@@ -94,6 +110,7 @@ def normalize_otlp_json(payload: Mapping[str, Any]) -> list[Trace]:
                             16,
                         ),
                         name=str(raw_span.get("name", "")),
+                        kind=normalize_span_kind(raw_span.get("kind")),
                         start_time=parse_timestamp(raw_span.get("startTimeUnixNano", 0)),
                         end_time=parse_timestamp(raw_span.get("endTimeUnixNano", 0)),
                         status=normalize_status(raw_span.get("status", {}).get("code")),
@@ -148,6 +165,7 @@ def normalize_otlp_protobuf(
                         span_id=span_id,
                         parent_span_id=raw_span.parent_span_id.hex() or None,
                         name=raw_span.name,
+                        kind=normalize_span_kind(raw_span.kind),
                         start_time=parse_timestamp(raw_span.start_time_unix_nano),
                         end_time=parse_timestamp(raw_span.end_time_unix_nano),
                         status=normalize_status(raw_span.status.code),

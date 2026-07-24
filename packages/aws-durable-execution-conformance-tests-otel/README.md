@@ -93,6 +93,15 @@ track both packages directly from the SDK repository's `main` branch. The
 folder is structured to move into the Python SDK's OTel package when this suite
 stabilizes.
 
+## Java Examples
+
+The self-contained [Java SAM project](examples/java/README.md) implements the
+same OTel requirements with the Java SDK and its OTel plugin. It builds one
+shaded JAR containing all handlers and attaches the
+`AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
+remains the sole tracer provider and sends durable spans directly to Lambda's
+X-Ray daemon with ADOT's X-Ray UDP exporter.
+
 ## Third-Party Plugins
 
 Additional profiles and backends register entry points in:

@@ -16,6 +16,7 @@ from aws_durable_execution_conformance_tests_otel.backends.datadog import (
 from aws_durable_execution_conformance_tests_otel.backends.xray import normalize_xray
 from aws_durable_execution_conformance_tests_otel.normalizers import (
     normalize_otlp_json,
+    normalize_span_kind,
 )
 
 
@@ -38,6 +39,7 @@ def _otlp_payload() -> dict:
                                 "traceId": "1" * 32,
                                 "spanId": "2" * 16,
                                 "name": "durable step",
+                                "kind": "SPAN_KIND_INTERNAL",
                                 "startTimeUnixNano": "1000000000",
                                 "endTimeUnixNano": "2000000000",
                                 "status": {"code": "STATUS_CODE_OK"},
@@ -62,8 +64,17 @@ def test_normalizes_otlp_json_resource_and_span_attributes() -> None:
 
     assert trace.trace_id == "1" * 32
     assert span.service_name == "conformance"
+    assert span.kind == "INTERNAL"
     assert span.attributes["durable.execution.arn"] == "arn:test"
     assert span.status == "OK"
+
+
+def test_normalizes_span_kind_names_and_numbers() -> None:
+    assert normalize_span_kind("SPAN_KIND_SERVER") == "SERVER"
+    assert normalize_span_kind("client") == "CLIENT"
+    assert normalize_span_kind(4) == "PRODUCER"
+    assert normalize_span_kind(None) == "UNSPECIFIED"
+    assert normalize_span_kind("unexpected") == "UNSPECIFIED"
 
 
 def test_normalizes_xray_segments_and_subsegments() -> None:
@@ -78,7 +89,11 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
         "metadata": {
             "durable.execution.arn": "arn:test",
             "faas.invocation_id": "invocation-1",
-            "default": {"legacy.attribute": "legacy-value"},
+            "default": {
+                "legacy.attribute": "legacy-value",
+                "span.name": "conformance",
+                "span.kind": "SERVER",
+            },
             "custom": {"tenant": "example"},
         },
         "subsegments": [
@@ -106,6 +121,9 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
     assert trace.spans[0].attributes["faas.invocation_id"] == "invocation-1"
     assert trace.spans[0].attributes["legacy.attribute"] == "legacy-value"
+    assert trace.spans[0].attributes["span.name"] == "conformance"
+    assert trace.spans[0].attributes["span.kind"] == "SERVER"
+    assert trace.spans[0].kind == "SERVER"
     assert trace.spans[0].attributes["xray.custom.tenant"] == "example"
     assert trace.spans[0].parent_span_id == "f" * 16
     assert trace.spans[1].parent_span_id == "1" * 16
@@ -125,7 +143,10 @@ def test_normalizes_datadog_decimal_identifiers() -> None:
                     "resource_name": "step",
                     "start_timestamp": "2026-01-01T00:00:00Z",
                     "duration": 100,
-                    "attributes": {"durable.execution.arn": "arn:test"},
+                    "attributes": {
+                        "durable.execution.arn": "arn:test",
+                        "span.kind": "CLIENT",
+                    },
                 },
             }
         ]
@@ -135,8 +156,10 @@ def test_normalizes_datadog_decimal_identifiers() -> None:
     assert span.trace_id.endswith("a")
     assert span.span_id.endswith("7")
     assert span.service_name == "conformance"
+    assert span.kind == "CLIENT"
 
 
 def test_normalizes_dash0_otlp_shape() -> None:
     trace = normalize_dash0(_otlp_payload())[0]
     assert trace.spans[0].name == "durable step"
+    assert trace.spans[0].kind == "INTERNAL"

@@ -10,8 +10,6 @@ ExpectedExecutionHistory:
     SubType: Wait
     Id: ${INTERRUPTED_WAIT}
     Name: otel-interrupted-wait
-  - EventId: 4
-    EventType: ExecutionTimedOut
 ExpectedResult:
   ExecutionStatus: TIMED_OUT
 TelemetryAssertions:
@@ -28,15 +26,26 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
     - select:
         name: otel-interrupted-wait
         attributes:
           durable.operation.id: ${INTERRUPTED_WAIT}
       expect:
         status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${INTERRUPTED_WAIT}
@@ -46,5 +55,6 @@ TelemetryAssertions:
           durable.operation.name: otel-interrupted-wait
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}

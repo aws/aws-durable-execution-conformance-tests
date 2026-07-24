@@ -44,7 +44,7 @@ def handler(event: dict[str, Any], context: DurableContext) -> list[int]:
         func=process_map_item,
         name="otel-map",
         config=MapConfig(
-            item_namer=lambda _item, index: f"otel-map-item-{index}",
+            item_namer=lambda _item, index: f"otel-map-iteration-{index}",
             max_concurrency=1,
         ),
     ).get_results()

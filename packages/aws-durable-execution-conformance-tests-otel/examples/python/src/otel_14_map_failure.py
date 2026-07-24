@@ -31,7 +31,7 @@ def handler(event: dict[str, Any], context: DurableContext) -> None:
         func=fail_map_item,
         name="otel-failed-map",
         config=MapConfig(
-            item_namer=lambda _item, index: f"otel-failed-map-item-{index}",
+            item_namer=lambda _item, index: f"otel-failed-map-iteration-{index}",
             max_concurrency=1,
         ),
     )

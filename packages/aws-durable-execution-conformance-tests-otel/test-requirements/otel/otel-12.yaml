@@ -31,15 +31,26 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
       expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
     - select:
         name: otel-failed-child-context
         attributes:
           durable.operation.id: ${FAILED_CONTEXT}
       expect:
         status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_CONTEXT}
@@ -49,5 +60,6 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-child-context
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
