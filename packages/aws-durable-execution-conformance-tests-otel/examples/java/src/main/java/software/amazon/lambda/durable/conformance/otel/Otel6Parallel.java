@@ -9,7 +9,7 @@ import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.DurableFuture;
 import software.amazon.lambda.durable.config.ParallelConfig;
 
-/** Parallel hierarchy scenario for OTel requirement otel-6. */
+/** Parallel hierarchy scenario for OTel requirement otel-invocation-6. */
 public final class Otel6Parallel extends OtelConformanceHandler<List<String>> {
 
     @Override

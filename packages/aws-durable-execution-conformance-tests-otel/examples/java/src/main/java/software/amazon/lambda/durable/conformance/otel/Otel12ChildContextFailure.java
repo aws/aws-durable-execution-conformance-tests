@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Failed child-context scenario for OTel requirement otel-12. */
+/** Failed child-context scenario for OTel requirement otel-invocation-12. */
 public final class Otel12ChildContextFailure extends OtelConformanceHandler<Void> {
 
     @Override

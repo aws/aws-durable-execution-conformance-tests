@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Failed parallel scenario for OTel requirement otel-13."""
+"""Failed parallel scenario for OTel requirement otel-invocation-13."""
 
 from __future__ import annotations
 

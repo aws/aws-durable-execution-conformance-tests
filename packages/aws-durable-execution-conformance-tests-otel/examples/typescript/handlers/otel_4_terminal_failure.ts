@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
-/** Terminal execution failure scenario for OTel requirement otel-4. */
+/** Terminal execution failure scenario for OTel requirement otel-invocation-4. */
 
 import { createScenarioHandler } from "./common";
 

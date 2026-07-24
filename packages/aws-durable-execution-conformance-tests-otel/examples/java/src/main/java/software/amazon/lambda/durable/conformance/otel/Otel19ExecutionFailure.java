@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Direct handler failure scenario for OTel requirement otel-19. */
+/** Direct handler failure scenario for OTel requirement otel-invocation-19. */
 public final class Otel19ExecutionFailure extends OtelConformanceHandler<Void> {
 
     @Override

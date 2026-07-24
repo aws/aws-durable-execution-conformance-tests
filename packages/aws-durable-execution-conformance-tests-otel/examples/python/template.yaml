@@ -89,11 +89,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-1
+        - otel-invocation-1
     Properties:
       CodeUri: src/
       Handler: otel_1_success.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-1"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-1"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel2WaitResume:
@@ -102,11 +102,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-2
+        - otel-invocation-2
     Properties:
       CodeUri: src/
       Handler: otel_2_wait_resume.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-2"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-2"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel3Retry:
@@ -115,11 +115,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-3
+        - otel-invocation-3
     Properties:
       CodeUri: src/
       Handler: otel_3_retry.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-3"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-3"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel4TerminalFailure:
@@ -128,11 +128,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-4
+        - otel-invocation-4
     Properties:
       CodeUri: src/
       Handler: otel_4_terminal_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-4"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-4"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel5ChildContext:
@@ -141,11 +141,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-5
+        - otel-invocation-5
     Properties:
       CodeUri: src/
       Handler: otel_5_child_context.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-5"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-5"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel6Parallel:
@@ -154,11 +154,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-6
+        - otel-invocation-6
     Properties:
       CodeUri: src/
       Handler: otel_6_parallel.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-6"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-6"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel7Map:
@@ -167,11 +167,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-7
+        - otel-invocation-7
     Properties:
       CodeUri: src/
       Handler: otel_7_map.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-7"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-7"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel8HandledFailure:
@@ -180,11 +180,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-8
+        - otel-invocation-8
     Properties:
       CodeUri: src/
       Handler: otel_8_handled_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-8"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-8"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel9WaitForCondition:
@@ -193,11 +193,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-9
+        - otel-invocation-9
     Properties:
       CodeUri: src/
       Handler: otel_9_wait_for_condition.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-9"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-9"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel10WaitForCallback:
@@ -206,11 +206,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-10
+        - otel-invocation-10
     Properties:
       CodeUri: src/
       Handler: otel_10_wait_for_callback.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-10"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-10"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel11ChainedInvoke:
@@ -219,11 +219,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-11
+        - otel-invocation-11
     Properties:
       CodeUri: src/
       Handler: otel_11_chained_invoke.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-11"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-11"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
@@ -236,7 +236,7 @@ Resources:
     Properties:
       CodeUri: src/
       Handler: otel_11_chained_invoke.target_handler
-      FunctionName: !Sub "${AWS::StackName}-otel-11-target"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel12ChildContextFailure:
@@ -245,11 +245,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-12
+        - otel-invocation-12
     Properties:
       CodeUri: src/
       Handler: otel_12_child_context_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-12"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-12"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel13ParallelFailure:
@@ -258,11 +258,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-13
+        - otel-invocation-13
     Properties:
       CodeUri: src/
       Handler: otel_13_parallel_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-13"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-13"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel14MapFailure:
@@ -271,11 +271,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-14
+        - otel-invocation-14
     Properties:
       CodeUri: src/
       Handler: otel_14_map_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-14"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-14"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel15WaitInterrupted:
@@ -284,11 +284,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-15
+        - otel-invocation-15
     Properties:
       CodeUri: src/
       Handler: otel_15_wait_interrupted.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-15"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
         ExecutionTimeout: 5
@@ -300,11 +300,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-16
+        - otel-invocation-16
     Properties:
       CodeUri: src/
       Handler: otel_16_wait_for_condition_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-16"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-16"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel17WaitForCallbackFailure:
@@ -313,11 +313,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-17
+        - otel-invocation-17
     Properties:
       CodeUri: src/
       Handler: otel_17_wait_for_callback_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-17"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-17"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel18ChainedInvokeFailure:
@@ -326,11 +326,11 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-18
+        - otel-invocation-18
     Properties:
       CodeUri: src/
       Handler: otel_18_chained_invoke_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-18"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-18"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
@@ -343,7 +343,7 @@ Resources:
     Properties:
       CodeUri: src/
       Handler: otel_18_chained_invoke_failure.target_handler
-      FunctionName: !Sub "${AWS::StackName}-otel-18-target"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"
       Role: !Ref LambdaExecutionRoleArn
 
   Otel19ExecutionFailure:
@@ -352,56 +352,56 @@ Resources:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-19
+        - otel-invocation-19
     Properties:
       CodeUri: src/
       Handler: otel_19_execution_failure.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-19"
+      FunctionName: !Sub "${AWS::StackName}-otel-invocation-19"
       Role: !Ref LambdaExecutionRoleArn
 
-  Otel20ExecutionSuccess:
+  OtelExecution1Success:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-20
+        - otel-execution-1
     Properties:
       CodeUri: src/
       Handler: otel_1_success.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-20"
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-1"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
           OTEL_PLUGIN_MODE: execution
 
-  Otel21ExecutionWaitResume:
+  OtelExecution2WaitResume:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-21
+        - otel-execution-2
     Properties:
       CodeUri: src/
       Handler: otel_2_wait_resume.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-21"
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-2"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
           OTEL_PLUGIN_MODE: execution
 
-  Otel22ExecutionRetry:
+  OtelExecution3Retry:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
       TestDescription:
-        - otel-22
+        - otel-execution-3
     Properties:
       CodeUri: src/
       Handler: otel_3_retry.handler
-      FunctionName: !Sub "${AWS::StackName}-otel-22"
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-3"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:

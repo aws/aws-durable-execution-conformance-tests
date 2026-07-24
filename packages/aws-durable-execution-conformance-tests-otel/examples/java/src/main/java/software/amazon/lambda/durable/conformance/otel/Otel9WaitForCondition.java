@@ -10,7 +10,7 @@ import software.amazon.lambda.durable.config.WaitForConditionConfig;
 import software.amazon.lambda.durable.model.WaitForConditionResult;
 import software.amazon.lambda.durable.retry.WaitStrategies;
 
-/** Wait-for-condition scenario for OTel requirement otel-9. */
+/** Wait-for-condition scenario for OTel requirement otel-invocation-9. */
 public final class Otel9WaitForCondition extends OtelConformanceHandler<Integer> {
 
     @Override

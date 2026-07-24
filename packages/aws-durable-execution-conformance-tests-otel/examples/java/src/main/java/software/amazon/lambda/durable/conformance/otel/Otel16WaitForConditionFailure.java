@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Failed wait-for-condition scenario for OTel requirement otel-16. */
+/** Failed wait-for-condition scenario for OTel requirement otel-invocation-16. */
 public final class Otel16WaitForConditionFailure extends OtelConformanceHandler<Integer> {
 
     @Override

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Failed child-context scenario for OTel requirement otel-12."""
+"""Failed child-context scenario for OTel requirement otel-invocation-12."""
 
 from __future__ import annotations
 

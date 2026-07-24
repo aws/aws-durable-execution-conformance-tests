@@ -7,12 +7,13 @@ AWS Durable Execution SDK for Java and its experimental OpenTelemetry plugin:
 - [`aws-durable-execution-sdk-java-plugin-otel`](https://central.sonatype.com/artifact/software.amazon.lambda.durable/aws-durable-execution-sdk-java-plugin-otel)
 
 The project uses Java 21 at runtime, compiles to Java 17 bytecode, and packages
-every handler in one shaded JAR. The template maps `otel-1` through `otel-19`
-with `TestingMetadata.TestDescription`; `otel-11` and `otel-18` also deploy
-durable chained-invoke targets.
+every handler in one shaded JAR. The template maps `otel-invocation-1` through
+`otel-invocation-19` with `TestingMetadata.TestDescription`;
+`otel-invocation-11` and `otel-invocation-18` also deploy durable chained-invoke
+targets.
 
-Requirements `otel-20` through `otel-22` exercise `ExecutionOtelPlugin`, which
-is not available in the Java SDK. The template declares those cases under
+Requirements `otel-execution-1` through `otel-execution-3` exercise
+`ExecutionOtelPlugin`, which is not available in the Java SDK. The template declares those cases under
 `TestingMetadata.NotImplemented` so reports distinguish that SDK gap from
 uncovered requirements.
 
@@ -24,25 +25,25 @@ default released SDK version for the conformance run.
 
 | Requirement | Handler | Behavior |
 |---|---|---|
-| `otel-1` | `Otel1Success` | Successful step and attempt. |
-| `otel-2` | `Otel2WaitResume` | Wait, resume, and post-resume step. |
-| `otel-3` | `Otel3Retry` | Failed and successful retry attempts. |
-| `otel-4` | `Otel4TerminalFailure` | Terminal step failure. |
-| `otel-5` | `Otel5ChildContext` | Child context with a nested step. |
-| `otel-6` | `Otel6Parallel` | Parallel context, branches, and steps. |
-| `otel-7` | `Otel7Map` | Map context, iterations, and steps. |
-| `otel-8` | `Otel8HandledFailure` | Handled failed step and recovery step. |
-| `otel-9` | `Otel9WaitForCondition` | Two condition polling attempts. |
-| `otel-10` | `Otel10WaitForCallback` | Callback context, callback, and submitter. |
-| `otel-11` | `Otel11ChainedInvoke` | Successful chained invoke. |
-| `otel-12` | `Otel12ChildContextFailure` | Failed child context. |
-| `otel-13` | `Otel13ParallelFailure` | Failed parallel branch. |
-| `otel-14` | `Otel14MapFailure` | Failed map iteration. |
-| `otel-15` | `Otel15WaitInterrupted` | Wait interrupted by execution timeout. |
-| `otel-16` | `Otel16WaitForConditionFailure` | Failed condition check. |
-| `otel-17` | `Otel17WaitForCallbackFailure` | External callback failure. |
-| `otel-18` | `Otel18ChainedInvokeFailure` | Failed chained invoke. |
-| `otel-19` | `Otel19ExecutionFailure` | Direct handler failure. |
+| `otel-invocation-1` | `Otel1Success` | Successful step and attempt. |
+| `otel-invocation-2` | `Otel2WaitResume` | Wait, resume, and post-resume step. |
+| `otel-invocation-3` | `Otel3Retry` | Failed and successful retry attempts. |
+| `otel-invocation-4` | `Otel4TerminalFailure` | Terminal step failure. |
+| `otel-invocation-5` | `Otel5ChildContext` | Child context with a nested step. |
+| `otel-invocation-6` | `Otel6Parallel` | Parallel context, branches, and steps. |
+| `otel-invocation-7` | `Otel7Map` | Map context, iterations, and steps. |
+| `otel-invocation-8` | `Otel8HandledFailure` | Handled failed step and recovery step. |
+| `otel-invocation-9` | `Otel9WaitForCondition` | Two condition polling attempts. |
+| `otel-invocation-10` | `Otel10WaitForCallback` | Callback context, callback, and submitter. |
+| `otel-invocation-11` | `Otel11ChainedInvoke` | Successful chained invoke. |
+| `otel-invocation-12` | `Otel12ChildContextFailure` | Failed child context. |
+| `otel-invocation-13` | `Otel13ParallelFailure` | Failed parallel branch. |
+| `otel-invocation-14` | `Otel14MapFailure` | Failed map iteration. |
+| `otel-invocation-15` | `Otel15WaitInterrupted` | Wait interrupted by execution timeout. |
+| `otel-invocation-16` | `Otel16WaitForConditionFailure` | Failed condition check. |
+| `otel-invocation-17` | `Otel17WaitForCallbackFailure` | External callback failure. |
+| `otel-invocation-18` | `Otel18ChainedInvokeFailure` | Failed chained invoke. |
+| `otel-invocation-19` | `Otel19ExecutionFailure` | Direct handler failure. |
 
 ## Run Against X-Ray
 
@@ -57,7 +58,7 @@ pip install \
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml \
   --language java \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_JAVA_LAYER_ARN" \
@@ -84,7 +85,7 @@ Java SDK plugin exports spans over OTLP gRPC to the extension on
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml \
   --language java \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --parameter-overrides \
     LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
     OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \

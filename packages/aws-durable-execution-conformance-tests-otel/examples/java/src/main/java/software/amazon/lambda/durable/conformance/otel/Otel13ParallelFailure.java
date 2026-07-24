@@ -8,7 +8,7 @@ import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.DurableFuture;
 import software.amazon.lambda.durable.config.ParallelConfig;
 
-/** Failed parallel-branch scenario for OTel requirement otel-13. */
+/** Failed parallel-branch scenario for OTel requirement otel-invocation-13. */
 public final class Otel13ParallelFailure extends OtelConformanceHandler<Void> {
 
     @Override

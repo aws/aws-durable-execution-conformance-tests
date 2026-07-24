@@ -8,7 +8,7 @@ import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.config.MapConfig;
 
-/** Map hierarchy scenario for OTel requirement otel-7. */
+/** Map hierarchy scenario for OTel requirement otel-invocation-7. */
 public final class Otel7Map extends OtelConformanceHandler<List<Integer>> {
 
     @Override

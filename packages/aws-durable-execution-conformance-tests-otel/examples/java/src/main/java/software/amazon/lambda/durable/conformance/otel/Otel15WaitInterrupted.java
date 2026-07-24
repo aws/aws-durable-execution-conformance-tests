@@ -7,7 +7,7 @@ import java.time.Duration;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Interrupted wait scenario for OTel requirement otel-15. */
+/** Interrupted wait scenario for OTel requirement otel-invocation-15. */
 public final class Otel15WaitInterrupted extends OtelConformanceHandler<Void> {
 
     @Override

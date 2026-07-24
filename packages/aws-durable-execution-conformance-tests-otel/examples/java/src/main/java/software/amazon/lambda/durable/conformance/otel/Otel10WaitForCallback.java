@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Wait-for-callback scenario for OTel requirement otel-10. */
+/** Wait-for-callback scenario for OTel requirement otel-invocation-10. */
 public final class Otel10WaitForCallback extends OtelConformanceHandler<String> {
 
     @Override

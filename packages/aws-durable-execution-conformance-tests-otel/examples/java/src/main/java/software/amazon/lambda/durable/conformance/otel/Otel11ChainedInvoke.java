@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Chained-invoke scenario for OTel requirement otel-11. */
+/** Chained-invoke scenario for OTel requirement otel-invocation-11. */
 public final class Otel11ChainedInvoke extends OtelConformanceHandler<Map<String, Object>> {
 
     @Override

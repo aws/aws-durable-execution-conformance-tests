@@ -15,28 +15,28 @@ EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
-    ("Otel1Success", "otel-1"),
-    ("Otel2WaitResume", "otel-2"),
-    ("Otel3Retry", "otel-3"),
-    ("Otel4TerminalFailure", "otel-4"),
-    ("Otel5ChildContext", "otel-5"),
-    ("Otel6Parallel", "otel-6"),
-    ("Otel7Map", "otel-7"),
-    ("Otel8HandledFailure", "otel-8"),
-    ("Otel9WaitForCondition", "otel-9"),
-    ("Otel10WaitForCallback", "otel-10"),
-    ("Otel11ChainedInvoke", "otel-11"),
-    ("Otel12ChildContextFailure", "otel-12"),
-    ("Otel13ParallelFailure", "otel-13"),
-    ("Otel14MapFailure", "otel-14"),
-    ("Otel15WaitInterrupted", "otel-15"),
-    ("Otel16WaitForConditionFailure", "otel-16"),
-    ("Otel17WaitForCallbackFailure", "otel-17"),
-    ("Otel18ChainedInvokeFailure", "otel-18"),
-    ("Otel19ExecutionFailure", "otel-19"),
-    ("Otel20ExecutionSuccess", "otel-20"),
-    ("Otel21ExecutionWaitResume", "otel-21"),
-    ("Otel22ExecutionRetry", "otel-22"),
+    ("Otel1Success", "otel-invocation-1"),
+    ("Otel2WaitResume", "otel-invocation-2"),
+    ("Otel3Retry", "otel-invocation-3"),
+    ("Otel4TerminalFailure", "otel-invocation-4"),
+    ("Otel5ChildContext", "otel-invocation-5"),
+    ("Otel6Parallel", "otel-invocation-6"),
+    ("Otel7Map", "otel-invocation-7"),
+    ("Otel8HandledFailure", "otel-invocation-8"),
+    ("Otel9WaitForCondition", "otel-invocation-9"),
+    ("Otel10WaitForCallback", "otel-invocation-10"),
+    ("Otel11ChainedInvoke", "otel-invocation-11"),
+    ("Otel12ChildContextFailure", "otel-invocation-12"),
+    ("Otel13ParallelFailure", "otel-invocation-13"),
+    ("Otel14MapFailure", "otel-invocation-14"),
+    ("Otel15WaitInterrupted", "otel-invocation-15"),
+    ("Otel16WaitForConditionFailure", "otel-invocation-16"),
+    ("Otel17WaitForCallbackFailure", "otel-invocation-17"),
+    ("Otel18ChainedInvokeFailure", "otel-invocation-18"),
+    ("Otel19ExecutionFailure", "otel-invocation-19"),
+    ("OtelExecution1Success", "otel-execution-1"),
+    ("OtelExecution2WaitResume", "otel-execution-2"),
+    ("OtelExecution3Retry", "otel-execution-3"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -65,10 +65,12 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "    NoEcho: true" in template
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
     assert template.count("      CodeUri: dist/") == len(EXPECTED_MAPPINGS) + 2
-    for case_number in range(1, 23):
-        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
+    for case_number in range(1, 20):
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
+    for case_number in range(1, 4):
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-execution-{case_number}"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
@@ -107,9 +109,6 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
-        "otel_20_execution_success",
-        "otel_21_execution_wait_resume",
-        "otel_22_execution_retry",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules
@@ -143,6 +142,7 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "aws-observability/aws-otel-js-instrumentation/releases/latest" in workflow
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
+    assert '--suite "$OTEL_SUITE"' in workflow
 
 
 def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
@@ -167,7 +167,7 @@ def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
 
         assert f"TEST_STACK_NAME: {stack_name}" in workflow
         assert f"TEST_NAME: {test_name}" in workflow
-        assert len(f"{stack_name}-otel-18-target") <= 64
+        assert len(f"{stack_name}-otel-invocation-18-target") <= 64
 
 
 def test_typescript_bundle_uses_the_external_collector_layer() -> None:
