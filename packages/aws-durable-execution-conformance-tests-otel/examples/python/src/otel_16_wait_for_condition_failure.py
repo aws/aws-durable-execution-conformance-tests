@@ -14,8 +14,7 @@ from aws_durable_execution_sdk_python.waits import (
     WaitForConditionConfig,
     WaitForConditionDecision,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 def fail_condition_check(
@@ -32,7 +31,7 @@ def continue_condition(
     return WaitForConditionDecision.continue_waiting(Duration.from_seconds(1))
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> None:
     require_scenario(event, "wait-for-condition-failure")
     context.wait_for_condition(

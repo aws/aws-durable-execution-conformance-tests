@@ -20,8 +20,7 @@ from aws_durable_execution_sdk_python.retries import (
     RetryStrategyConfig,
     create_retry_strategy,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -34,7 +33,7 @@ def recover_after_failure(_step_context: StepContext) -> str:
     return "recovered"
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> str:
     require_scenario(event, "handled-failure")
     retry_strategy = create_retry_strategy(

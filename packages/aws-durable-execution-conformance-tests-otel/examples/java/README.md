@@ -11,6 +11,11 @@ every handler in one shaded JAR. The template maps `otel-1` through `otel-19`
 with `TestingMetadata.TestDescription`; `otel-11` and `otel-18` also deploy
 durable chained-invoke targets.
 
+Requirements `otel-20` through `otel-22` exercise `ExecutionOtelPlugin`, which
+is not available in the Java SDK. The template declares those cases under
+`TestingMetadata.NotImplemented` so reports distinguish that SDK gap from
+uncovered requirements.
+
 The hosted Java workflow checks out the Java SDK repository's latest `main`,
 installs its SDK and OTel plugin artifacts, and overrides the Maven project's
 default released SDK version for the conformance run.

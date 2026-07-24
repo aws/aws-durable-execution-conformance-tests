@@ -1,0 +1,86 @@
+description: Execution view emits a terminal workflow with successful step and attempt descendants
+Input:
+  scenario: success
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-success
+  - EventId: 3
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-success
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 4
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-success
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: "*"
+                - aws.lambda.invocation_id: "*"
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-success
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-success attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: "*"
+                - aws.lambda.invocation_id: "*"
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-success
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-success
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}
