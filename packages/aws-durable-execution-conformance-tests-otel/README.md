@@ -102,6 +102,14 @@ shaded JAR containing all handlers and attaches the
 remains the sole tracer provider and sends durable spans directly to Lambda's
 X-Ray daemon with ADOT's X-Ray UDP exporter.
 
+## TypeScript Examples
+
+The self-contained
+[TypeScript SAM project](examples/typescript/README.md) implements all OTel
+requirements on Node.js 22. It builds the JavaScript SDK and OTel plugin from
+their `main` branch, bundles the handlers, and uses `InvocationOtelPlugin` with
+the tracer provider registered by `AWSOpenTelemetryDistroJs`.
+
 ## Third-Party Plugins
 
 Additional profiles and backends register entry points in:

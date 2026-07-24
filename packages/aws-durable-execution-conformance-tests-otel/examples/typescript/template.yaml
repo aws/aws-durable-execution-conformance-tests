@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: TypeScript SDK examples for the durable execution OTel conformance suite
+
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Pre-created execution role for the test functions
+  OtelLayerArn:
+    Type: String
+    Description: AWSOpenTelemetryDistroJs Lambda layer used to export spans
+  OtelExecWrapper:
+    Type: String
+    Default: /opt/otel-instrument
+    Description: Lambda execution wrapper supplied by the exporter profile
+  OtelServiceName:
+    Type: String
+    Default: invocation
+    Description: OpenTelemetry service name used to find the exported trace
+  OtelTracesExporter:
+    Type: String
+    Default: otlp
+    Description: OpenTelemetry traces exporter selected by the runner
+  OtelExporterEndpoint:
+    Type: String
+    Default: ""
+    Description: Non-secret OTLP endpoint used by community exporters
+  OtelExporterHeaders:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Secret OTLP exporter headers supplied by the runner
+  OtelSecretEnvironmentNames:
+    Type: String
+    Default: ""
+    Description: Comma-separated secret environment variable names
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures:
+      - x86_64
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+    Layers:
+      - !Ref OtelLayerArn
+    DurableConfig:
+      ExecutionTimeout: 300
+      RetentionPeriodInDays: 1
+    Environment:
+      Variables:
+        AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
+        OTEL_SERVICE_NAME: !Ref OtelServiceName
+        OTEL_TRACES_EXPORTER: !Ref OtelTracesExporter
+        OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
+        OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
+        OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+        OTEL_NODE_ENABLED_INSTRUMENTATIONS: aws-lambda
+        OTEL_PROPAGATORS: xray
+        OTEL_TRACES_SAMPLER: always_on
+
+Resources:
+  Otel1Success:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-1
+    Properties:
+      CodeUri: dist/
+      Handler: otel_1_success.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-1"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel2WaitResume:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-2
+    Properties:
+      CodeUri: dist/
+      Handler: otel_2_wait_resume.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-2"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel3Retry:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-3
+    Properties:
+      CodeUri: dist/
+      Handler: otel_3_retry.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-3"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel4TerminalFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-4
+    Properties:
+      CodeUri: dist/
+      Handler: otel_4_terminal_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-4"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel5ChildContext:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-5
+    Properties:
+      CodeUri: dist/
+      Handler: otel_5_child_context.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-5"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel6Parallel:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-6
+    Properties:
+      CodeUri: dist/
+      Handler: otel_6_parallel.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-6"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel7Map:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-7
+    Properties:
+      CodeUri: dist/
+      Handler: otel_7_map.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-7"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel8HandledFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-8
+    Properties:
+      CodeUri: dist/
+      Handler: otel_8_handled_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-8"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel9WaitForCondition:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-9
+    Properties:
+      CodeUri: dist/
+      Handler: otel_9_wait_for_condition.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-9"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel10WaitForCallback:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-10
+    Properties:
+      CodeUri: dist/
+      Handler: otel_10_wait_for_callback.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-10"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel11ChainedInvoke:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-11
+    Properties:
+      CodeUri: dist/
+      Handler: otel_11_chained_invoke.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-11"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"
+
+  Otel11InvokeTarget:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/
+      Handler: otel_11_chained_invoke.targetHandler
+      FunctionName: !Sub "${AWS::StackName}-otel-11-target"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel12ChildContextFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-12
+    Properties:
+      CodeUri: dist/
+      Handler: otel_12_child_context_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-12"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel13ParallelFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-13
+    Properties:
+      CodeUri: dist/
+      Handler: otel_13_parallel_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-13"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel14MapFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-14
+    Properties:
+      CodeUri: dist/
+      Handler: otel_14_map_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-14"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel15WaitInterrupted:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-15
+    Properties:
+      CodeUri: dist/
+      Handler: otel_15_wait_interrupted.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-15"
+      Role: !Ref LambdaExecutionRoleArn
+      DurableConfig:
+        ExecutionTimeout: 5
+        RetentionPeriodInDays: 1
+
+  Otel16WaitForConditionFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-16
+    Properties:
+      CodeUri: dist/
+      Handler: otel_16_wait_for_condition_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-16"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel17WaitForCallbackFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-17
+    Properties:
+      CodeUri: dist/
+      Handler: otel_17_wait_for_callback_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-17"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel18ChainedInvokeFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-18
+    Properties:
+      CodeUri: dist/
+      Handler: otel_18_chained_invoke_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-18"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"
+
+  Otel18InvokeTarget:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/
+      Handler: otel_18_chained_invoke_failure.targetHandler
+      FunctionName: !Sub "${AWS::StackName}-otel-18-target"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Otel19ExecutionFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-19
+    Properties:
+      CodeUri: dist/
+      Handler: otel_19_execution_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-19"
+      Role: !Ref LambdaExecutionRoleArn
