@@ -98,7 +98,7 @@ def test_rejects_spans_that_end_before_they_start() -> None:
     ]
 
 
-def test_asserts_before_after_inside_and_parent_containment() -> None:
+def test_asserts_before_after_non_parent_inside_and_parent_containment() -> None:
     trace = _trace()
     root, child = trace.spans
     child = replace(
@@ -113,16 +113,23 @@ def test_asserts_before_after_inside_and_parent_containment() -> None:
         start_time=child.end_time,
         end_time=child.end_time + timedelta(seconds=1),
     )
+    container = replace(
+        root,
+        span_id="5" * 16,
+        name="container",
+        start_time=child.start_time - timedelta(seconds=1),
+        end_time=child.end_time + timedelta(seconds=1),
+    )
 
     errors = validate_trace(
-        replace(trace, spans=(root, child, later)),
+        replace(trace, spans=(root, child, later, container)),
         {
             "span_assertions": [
                 {
                     "select": {"name": "child"},
                     "expect": {
                         "before": {"name": "later"},
-                        "inside": {"name": "root"},
+                        "inside": {"name": "container"},
                         "parent": {"name": "root"},
                     },
                 },
@@ -148,20 +155,25 @@ def test_reports_timestamp_and_parent_containment_violations() -> None:
         start_time=child.start_time - timedelta(seconds=1),
         end_time=child.start_time + timedelta(milliseconds=500),
     )
-    narrow_container = replace(
+    narrow_parent = replace(
         root,
         span_id="5" * 16,
-        name="narrow-container",
+        name="narrow-parent",
         start_time=child.start_time + timedelta(milliseconds=250),
         end_time=child.end_time - timedelta(milliseconds=250),
     )
+    narrow_container = replace(
+        narrow_parent,
+        span_id="6" * 16,
+        name="narrow-container",
+    )
     child_outside_parent = replace(
         child,
-        parent_span_id=narrow_container.span_id,
+        parent_span_id=narrow_parent.span_id,
     )
 
     errors = validate_trace(
-        replace(trace, spans=(root, child_outside_parent, overlapping, narrow_container)),
+        replace(trace, spans=(root, child_outside_parent, overlapping, narrow_parent, narrow_container)),
         {
             "span_assertions": {
                 "select": {"name": "child"},
@@ -169,7 +181,7 @@ def test_reports_timestamp_and_parent_containment_violations() -> None:
                     "before": {"name": "overlapping"},
                     "after": {"name": "overlapping"},
                     "inside": {"name": "narrow-container"},
-                    "parent": {"name": "narrow-container"},
+                    "parent": {"name": "narrow-parent"},
                 },
             }
         },
@@ -188,11 +200,11 @@ def test_reports_timestamp_and_parent_containment_violations() -> None:
         for error in errors
     )
     assert any(
-        "expect.parent: child span 'child'" in error and "before parent span 'narrow-container'" in error
+        "expect.parent: child span 'child'" in error and "before parent span 'narrow-parent'" in error
         for error in errors
     )
     assert any(
-        "expect.parent: child span 'child'" in error and "after parent span 'narrow-container'" in error
+        "expect.parent: child span 'child'" in error and "after parent span 'narrow-parent'" in error
         for error in errors
     )
 
