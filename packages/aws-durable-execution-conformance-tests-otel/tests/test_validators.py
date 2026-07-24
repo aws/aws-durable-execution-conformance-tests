@@ -98,7 +98,7 @@ def test_rejects_spans_that_end_before_they_start() -> None:
     ]
 
 
-def test_asserts_before_after_and_parent_containment() -> None:
+def test_asserts_before_after_inside_and_parent_containment() -> None:
     trace = _trace()
     root, child = trace.spans
     child = replace(
@@ -122,6 +122,7 @@ def test_asserts_before_after_and_parent_containment() -> None:
                     "select": {"name": "child"},
                     "expect": {
                         "before": {"name": "later"},
+                        "inside": {"name": "root"},
                         "parent": {"name": "root"},
                     },
                 },
@@ -167,6 +168,7 @@ def test_reports_timestamp_and_parent_containment_violations() -> None:
                 "expect": {
                     "before": {"name": "overlapping"},
                     "after": {"name": "overlapping"},
+                    "inside": {"name": "narrow-container"},
                     "parent": {"name": "narrow-container"},
                 },
             }
@@ -174,9 +176,17 @@ def test_reports_timestamp_and_parent_containment_violations() -> None:
         _query(),
     )
 
-    assert len(errors) == 4
+    assert len(errors) == 6
     assert any("expect.before: span 'child'" in error and "after span 'overlapping'" in error for error in errors)
     assert any("expect.after: span 'child'" in error and "before span 'overlapping'" in error for error in errors)
+    assert any(
+        "expect.inside: span 'child'" in error and "before containing span 'narrow-container'" in error
+        for error in errors
+    )
+    assert any(
+        "expect.inside: span 'child'" in error and "after containing span 'narrow-container'" in error
+        for error in errors
+    )
     assert any(
         "expect.parent: child span 'child'" in error and "before parent span 'narrow-container'" in error
         for error in errors
@@ -201,7 +211,7 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
             "span_assertions": [
                 {
                     "select": {"name": "child"},
-                    "expect": {"before": "root"},
+                    "expect": {"inside": "root"},
                 },
                 {
                     "select": {"name": "child"},
@@ -217,7 +227,7 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
     )
 
     assert errors == [
-        "span_assertions[0].expect.before must be a mapping",
+        "span_assertions[0].expect.inside must be a mapping",
         "span_assertions[1].expect.after matched no spans",
         "span_assertions[2].expect.before matched 2 spans; it must select exactly one",
     ]

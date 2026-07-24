@@ -110,10 +110,10 @@ parent span. The selected child must start at or after that parent starts and
 end at or before that parent ends.
 
 Every normalized span must have `start_time <= end_time`. An `expect` mapping
-can also select exactly one other span with `before` or `after`. These
-relationships require the selected span's end to be at or before the other
-span's start, or its start to be at or after the other span's end,
-respectively:
+can also select exactly one other span with `before`, `after`, or `inside`.
+These relationships require the selected span's end to be at or before the
+other span's start, its start to be at or after the other span's end, or its
+complete timespan to be contained by the other span, respectively:
 
 ```yaml
 TelemetryAssertions:
@@ -123,6 +123,8 @@ TelemetryAssertions:
     expect:
       after:
         name: first attempt
+      inside:
+        name: durable execution
 ```
 
 Capture dynamic values with placeholders in `ExpectedExecutionHistory`, then

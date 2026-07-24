@@ -28,7 +28,7 @@ _DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
     "durable.invocation.first",
     "durable.invocation.status",
 )
-_TEMPORAL_RELATION_KEYS = ("before", "after")
+_TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
 
 
 def _attribute_values(
@@ -315,6 +315,19 @@ def _temporal_relation_errors(
             f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
             f"before span {related_description} ends at {related_span.end_time.isoformat()}"
         ]
+    if relation == "inside":
+        errors = []
+        if selected_span.start_time < related_span.start_time:
+            errors.append(
+                f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
+                f"before containing span {related_description} starts at {related_span.start_time.isoformat()}"
+            )
+        if selected_span.end_time > related_span.end_time:
+            errors.append(
+                f"{path}: span {selected_description} ends at {selected_span.end_time.isoformat()}, "
+                f"after containing span {related_description} ends at {related_span.end_time.isoformat()}"
+            )
+        return errors
     return []
 
 

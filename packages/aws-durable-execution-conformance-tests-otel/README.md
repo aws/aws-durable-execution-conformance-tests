@@ -43,7 +43,7 @@ store; the runner redacts the secret parameter from commands and SAM output.
 canonical spans and assert any properties, nested attributes, parent
 relationships, and timestamp ordering. Every span must start at or before it
 ends, and every asserted parent must contain its child's complete timespan.
-`before` and `after` compare a selected span with one other span.
+`before`, `after`, and `inside` compare a selected span with one other span.
 Complete-contract cases can require every plugin span and every attribute
 under a stable prefix to be asserted. See the
 [contribution guide](CONTRIBUTING.md#add-a-requirement) for the requirement
