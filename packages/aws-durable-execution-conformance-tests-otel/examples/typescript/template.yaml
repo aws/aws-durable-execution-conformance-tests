@@ -325,7 +325,7 @@ Resources:
         - otel-20
     Properties:
       CodeUri: dist/
-      Handler: otel_1_success.handler
+      Handler: otel_20_execution_success.handler
       FunctionName: !Sub "${AWS::StackName}-otel-20"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
@@ -339,7 +339,7 @@ Resources:
         - otel-21
     Properties:
       CodeUri: dist/
-      Handler: otel_2_wait_resume.handler
+      Handler: otel_21_execution_wait_resume.handler
       FunctionName: !Sub "${AWS::StackName}-otel-21"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
@@ -353,7 +353,7 @@ Resources:
         - otel-22
     Properties:
       CodeUri: dist/
-      Handler: otel_3_retry.handler
+      Handler: otel_22_execution_retry.handler
       FunctionName: !Sub "${AWS::StackName}-otel-22"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
