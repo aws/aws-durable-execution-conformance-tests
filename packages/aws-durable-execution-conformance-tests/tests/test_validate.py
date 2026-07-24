@@ -311,15 +311,23 @@ def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
 
 def test_e2e_expected_logs_ordered_pass(monkeypatch) -> None:
     """Full path: CFN log-group resolution -> Insights query -> placeholder
-    substitution -> ordered validation. Mirrors a plugin-suite spec."""
+    substitution -> before/after ordering. Mirrors a plugin-suite spec."""
     errors, logs_client = _run_expected_logs(
         monkeypatch,
         expected_logs=[
             {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
-            {"pattern": "Greeting step running for: ${INPUT_1}", "count": 1},
-            {"pattern": "CONFPLUGIN invocation-end status=SUCCEEDED", "count": 1},
+            {
+                "pattern": "Greeting step running for: ${INPUT_1}",
+                "count": 1,
+                "after": "CONFPLUGIN invocation-start first=true",
+            },
+            {
+                "pattern": "CONFPLUGIN invocation-end status=SUCCEEDED",
+                "count": 1,
+                "after": "Greeting step running for: ${INPUT_1}",
+            },
             {"pattern": "CONFPLUGIN invocation-start first=false", "count": 0},
-            {"pattern": "concurrent-hook", "count": 1, "unordered": True},
+            {"pattern": "concurrent-hook", "count": 1},
         ],
         messages_in_order=[
             "concurrent-hook",
@@ -335,12 +343,16 @@ def test_e2e_expected_logs_ordered_pass(monkeypatch) -> None:
 
 def test_e2e_expected_logs_ordered_violation_fails(monkeypatch) -> None:
     """Same path, but the terminal line precedes the start line: the
-    ordered-by-default semantics must reject it."""
+    explicit after constraint must reject it."""
     errors, _ = _run_expected_logs(
         monkeypatch,
         expected_logs=[
             {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
-            {"pattern": "CONFPLUGIN invocation-end status=SUCCEEDED", "count": 1},
+            {
+                "pattern": "CONFPLUGIN invocation-end status=SUCCEEDED",
+                "count": 1,
+                "after": "CONFPLUGIN invocation-start first=true",
+            },
         ],
         messages_in_order=[
             "CONFPLUGIN invocation-end status=SUCCEEDED",

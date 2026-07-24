@@ -41,8 +41,10 @@ class CloudWatchLogError(Exception):
 class LogExpectation:
     """A single expected log entry from the YAML spec.
 
-    Entries in ``ExpectedLogs`` are matched **in list order by default**
-    (see CloudWatchLogValidator for the sequential-scan semantics).
+    Cardinality (``count``/``min_count``/``max_count``) is always evaluated
+    over the whole log stream. Ordering is asserted only where an entry
+    declares ``before``/``after`` — each contains the ``pattern`` text of
+    another entry in the list (placeholders substituted).
 
     Attributes:
         pattern: The string or regex pattern to search for.
@@ -50,8 +52,10 @@ class LogExpectation:
         count: If set, the exact number of matching log lines expected.
         min_count: If set, the minimum number of matches required.
         max_count: If set, the maximum number of matches allowed.
-        unordered: If True, this entry is counted over the whole log stream
-            and neither anchors nor advances the ordered scan position.
+        before: Pattern of another entry; all of this entry's matches must
+            occur at-or-before all matches of the referenced entry.
+        after: Pattern of another entry; all of this entry's matches must
+            occur at-or-after all matches of the referenced entry.
     """
 
     pattern: str
@@ -59,7 +63,8 @@ class LogExpectation:
     count: int | None = None
     min_count: int | None = None
     max_count: int | None = None
-    unordered: bool = False
+    before: str | None = None
+    after: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LogExpectation:
@@ -70,33 +75,9 @@ class LogExpectation:
             count=data.get("count"),
             min_count=data.get("min_count"),
             max_count=data.get("max_count"),
-            unordered=bool(data.get("unordered", False)),
+            before=data.get("before"),
+            after=data.get("after"),
         )
-
-    @property
-    def min_required(self) -> int:
-        """Minimum number of matches this entry requires.
-
-        ``count`` wins; else ``min_count``; a ``max_count``-only entry is a
-        pure upper bound (zero required); no constraint at all means one.
-        """
-        if self.count is not None:
-            return self.count
-        if self.min_count is not None:
-            return self.min_count
-        if self.max_count is not None:
-            return 0
-        return 1
-
-    @property
-    def is_ordered(self) -> bool:
-        """True when the entry participates in the ordered sequential scan.
-
-        Entries whose minimum requirement is zero (absence assertions like
-        ``count: 0``, or ``max_count``-only upper bounds) cannot anchor a
-        position and are checked globally, as are ``unordered: true`` entries.
-        """
-        return not self.unordered and self.min_required > 0
 
 
 @dataclass(frozen=True)
@@ -293,22 +274,22 @@ class CloudWatchLogRetriever:
 class CloudWatchLogValidator:
     """Matches expected log patterns against actual CloudWatch log events.
 
-    Entries in ``ExpectedLogs`` are matched **in list order by default**.
-    Cardinality and ordering are validated independently:
+    Cardinality and ordering are independent:
 
     - **Cardinality**: every entry's ``count``/``min_count``/``max_count``
-      constraints are evaluated over the WHOLE stream (sorted by timestamp),
-      so duplicates anywhere — including before the first ordered anchor —
-      are always counted.
-    - **Ordering**: each *ordered* entry must additionally find its minimum
-      required matches at/after the scan position left by the previous
-      ordered entry; the position then advances past the match that satisfied
-      that minimum. Entries with a zero minimum requirement (``count: 0``
-      absence assertions, ``max_count``-only upper bounds) and entries marked
-      ``unordered: true`` are position-neutral.
-
-    With a single positive entry this reduces to a global count, so specs
-    written against the previous (unordered) semantics keep working.
+      constraints are evaluated over the WHOLE stream. There is no implicit
+      list-order chain — an entry without ``before``/``after`` asserts
+      counts only.
+    - **Ordering**: an entry with ``after: <pattern>`` (or ``before``)
+      requires all of its matches to occur at-or-after (at-or-before) all
+      matches of the entry whose ``pattern`` equals the referenced text.
+      Events are compared by ``(timestamp, ingestionTime)``; events sharing
+      an identical key are treated as CONCURRENT and satisfy either
+      direction — CloudWatch provides no sub-millisecond order, so ties are
+      never treated as violations.
+    - References must name the ``pattern`` of another entry in the same
+      list (after placeholder substitution); dangling or self references
+      are validation errors.
     """
 
     def validate(
@@ -331,37 +312,65 @@ class CloudWatchLogValidator:
         errors: list[str] = []
         sorted_events = sorted(actual_events, key=self._event_sort_key)
         messages = [evt.get("message", "") for evt in sorted_events]
-        scan_pos = 0
+        keys = [self._event_sort_key(evt) for evt in sorted_events]
 
+        # Parse all entries first so before/after can reference any entry.
+        expectations: list[LogExpectation | None] = []
         for i, raw in enumerate(expected_logs):
-            # Substitute placeholders in the pattern before building expectation
             resolved_raw: dict[str, Any] = raw
             if context is not None:
                 resolved_raw = context.substitute(raw)
-
             try:
-                expectation = LogExpectation.from_dict(resolved_raw)
+                expectations.append(LogExpectation.from_dict(resolved_raw))
             except (KeyError, TypeError) as e:
                 errors.append(f"ExpectedLogs[{i}]: invalid entry — {e}")
+                expectations.append(None)
+
+        by_pattern: dict[str, LogExpectation] = {}
+        for exp in expectations:
+            if exp is not None and exp.pattern not in by_pattern:
+                by_pattern[exp.pattern] = exp
+
+        match_cache: dict[tuple[str, str], list[int]] = {}
+
+        def matches_of(exp: LogExpectation) -> list[int]:
+            cache_key = (exp.pattern, exp.match)
+            if cache_key not in match_cache:
+                match_cache[cache_key] = self._match_indices(exp, messages, start=0)
+            return match_cache[cache_key]
+
+        for i, exp in enumerate(expectations):
+            if exp is None:
                 continue
 
-            # Cardinality: always checked over the whole stream.
-            global_matches = self._match_indices(expectation, messages, start=0)
-            errors.extend(self._check_count(expectation, len(global_matches), index=i))
+            own_matches = matches_of(exp)
+            errors.extend(self._check_count(exp, len(own_matches), index=i))
 
-            # Ordering: ordered entries must find their minimum required
-            # matches at/after the current scan position.
-            if expectation.is_ordered:
-                required = expectation.min_required
-                post_matches = [idx for idx in global_matches if idx >= scan_pos]
-                if len(post_matches) < required:
-                    errors.append(
-                        f"ExpectedLogs[{i}] pattern={expectation.pattern!r}: expected at least "
-                        f"{required} match(es) at/after ordered position {scan_pos}, got "
-                        f"{len(post_matches)} (log lines out of order)"
-                    )
-                else:
-                    scan_pos = post_matches[required - 1] + 1
+            for field_name, ref in (("after", exp.after), ("before", exp.before)):
+                if ref is None:
+                    continue
+                label = f"ExpectedLogs[{i}] pattern={exp.pattern!r}"
+                if ref == exp.pattern:
+                    errors.append(f"{label}: {field_name} must not reference the entry's own pattern")
+                    continue
+                ref_exp = by_pattern.get(ref)
+                if ref_exp is None:
+                    errors.append(f"{label}: {field_name}={ref!r} does not match the pattern of any other entry")
+                    continue
+
+                ref_matches = matches_of(ref_exp)
+                if not own_matches or not ref_matches:
+                    # Missing matches are reported by each entry's own
+                    # cardinality checks; the ordering constraint is vacuous.
+                    continue
+
+                if field_name == "after":
+                    # All own matches at-or-after all referenced matches
+                    # (identical sort keys = concurrent = satisfied).
+                    if keys[own_matches[0]] < keys[ref_matches[-1]]:
+                        errors.append(f"{label}: expected all matches after {ref!r} (log lines out of order)")
+                elif keys[own_matches[-1]] > keys[ref_matches[0]]:
+                    errors.append(f"{label}: expected all matches before {ref!r} (log lines out of order)")
 
         return LogMatchResult(
             success=len(errors) == 0,

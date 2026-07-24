@@ -151,7 +151,7 @@ def test_raises_when_filter_log_events_fails() -> None:
         )
 
 
-# region Validator (ordered-by-default ExpectedLogs)
+# region Validator (global cardinality + before/after ordering)
 
 
 def _events(*messages: str) -> list[dict]:
@@ -159,120 +159,53 @@ def _events(*messages: str) -> list[dict]:
     return [{"message": msg, "timestamp": 1000 + i, "ingestionTime": 2000 + i} for i, msg in enumerate(messages)]
 
 
-# region LogExpectation parsing
+def _validator():
+    return CloudWatchLogValidator()
+
+
+# --- LogExpectation parsing ---
 
 
 def test_from_dict_defaults():
     exp = LogExpectation.from_dict({"pattern": "foo"})
     assert exp.match == "contains"
     assert exp.count is None
-    assert exp.unordered is False
-    assert exp.is_ordered
+    assert exp.before is None
+    assert exp.after is None
 
 
-def test_absence_entries_are_not_ordered():
-    assert not LogExpectation.from_dict({"pattern": "x", "count": 0}).is_ordered
-    assert not LogExpectation.from_dict({"pattern": "x", "max_count": 0}).is_ordered
+def test_from_dict_before_after():
+    exp = LogExpectation.from_dict({"pattern": "b", "after": "a", "before": "c"})
+    assert exp.after == "a"
+    assert exp.before == "c"
 
 
-def test_zero_minimum_entries_are_not_ordered():
-    # max_count-only is a pure upper bound (zero required) — position-neutral.
-    assert not LogExpectation.from_dict({"pattern": "x", "max_count": 1}).is_ordered
-    assert not LogExpectation.from_dict({"pattern": "x", "min_count": 0, "max_count": 2}).is_ordered
-    assert LogExpectation.from_dict({"pattern": "x", "min_count": 1}).is_ordered
-
-
-def test_unordered_flag():
-    exp = LogExpectation.from_dict({"pattern": "x", "unordered": True})
-    assert not exp.is_ordered
-
-
-# endregion
-
-
-# region Ordered matching
-
-
-def test_ordered_patterns_in_emission_order_pass():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
-        [{"pattern": "start"}, {"pattern": "middle"}, {"pattern": "end"}],
-        _events("start", "middle", "end"),
-    )
-    assert result.success, result.errors
-
-
-def test_ordered_patterns_out_of_order_fail():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
-        [{"pattern": "end"}, {"pattern": "start"}],
-        _events("start", "end"),
-    )
+def test_invalid_entry_reports_error():
+    result = _validator().validate([{"match": "contains"}], _events("x"))
     assert not result.success
-    assert any("start" in e for e in result.errors)
+    assert "invalid entry" in result.errors[0]
 
 
-def test_events_sorted_by_timestamp_before_matching():
-    validator = CloudWatchLogValidator()
-    # Events arrive out of order; timestamps define the real order.
-    events = [
-        {"message": "second", "timestamp": 2, "ingestionTime": 0},
-        {"message": "first", "timestamp": 1, "ingestionTime": 0},
-    ]
-    result = validator.validate([{"pattern": "first"}, {"pattern": "second"}], events)
-    assert result.success, result.errors
+# --- Cardinality (always global) ---
 
 
-def test_equal_timestamps_tiebreak_by_ingestion_time():
-    validator = CloudWatchLogValidator()
-    # Same-millisecond events: ingestionTime breaks the tie.
-    events = [
-        {"message": "second", "timestamp": 5, "ingestionTime": 20},
-        {"message": "first", "timestamp": 5, "ingestionTime": 10},
-    ]
-    result = validator.validate([{"pattern": "first"}, {"pattern": "second"}], events)
-    assert result.success, result.errors
-
-
-def test_string_timestamps_from_logs_insights_sort_correctly():
-    validator = CloudWatchLogValidator()
-    # The Logs Insights path yields string @timestamp values and no
-    # ingestionTime; ordering must still work (ISO-ish strings sort).
-    events = [
-        {"message": "second", "timestamp": "2026-07-23 22:32:34.000"},
-        {"message": "first", "timestamp": "2026-07-23 22:32:33.000"},
-    ]
-    result = validator.validate([{"pattern": "first"}, {"pattern": "second"}], events)
-    assert result.success, result.errors
-
-
-def test_min_and_max_count_constraints_on_ordered_entry():
-    validator = CloudWatchLogValidator()
-    events = _events("x", "x", "x")
-    ok = validator.validate([{"pattern": "x", "min_count": 2, "max_count": 3}], events)
-    assert ok.success, ok.errors
-    too_few = validator.validate([{"pattern": "x", "min_count": 4}], events)
-    assert not too_few.success
-    too_many = validator.validate([{"pattern": "x", "max_count": 2}], events)
-    assert not too_many.success
+def test_default_requires_at_least_one_match():
+    assert _validator().validate([{"pattern": "hit"}], _events("hit")).success
+    assert not _validator().validate([{"pattern": "miss"}], _events("hit")).success
 
 
 def test_exact_count_is_global():
-    validator = CloudWatchLogValidator()
-    # Cardinality is global: a later duplicate of an earlier pattern still
-    # counts against an exact-count entry ("executed exactly once" stays strong).
-    result = validator.validate(
+    # A duplicate anywhere in the stream counts against an exact-count entry.
+    result = _validator().validate(
         [{"pattern": "a", "count": 1}, {"pattern": "b", "count": 1}],
         _events("a", "b", "a"),
     )
     assert not result.success
 
 
-def test_duplicate_before_first_anchor_fails_global_count():
-    validator = CloudWatchLogValidator()
-    # Reviewer counterexample: end,start,end with start(1), end(1) must FAIL —
-    # the duplicated 'end' before the first anchor is counted globally.
-    result = validator.validate(
+def test_duplicate_anywhere_fails_global_count():
+    # end,start,end with start(1), end(1): the duplicated 'end' fails globally.
+    result = _validator().validate(
         [{"pattern": "start", "count": 1}, {"pattern": "end", "count": 1}],
         _events("end", "start", "end"),
     )
@@ -280,123 +213,186 @@ def test_duplicate_before_first_anchor_fails_global_count():
     assert any("exactly 1" in e for e in result.errors)
 
 
-def test_out_of_order_with_correct_counts_fails_ordering():
-    validator = CloudWatchLogValidator()
-    # Counts are satisfied globally (1 each) but the order is wrong: the
-    # ordering check must catch it with a distinct error.
-    result = validator.validate(
-        [{"pattern": "start", "count": 1}, {"pattern": "end", "count": 1}],
+def test_min_and_max_count_constraints():
+    events = _events("x", "x", "x")
+    assert _validator().validate([{"pattern": "x", "min_count": 2, "max_count": 3}], events).success
+    assert not _validator().validate([{"pattern": "x", "min_count": 4}], events).success
+    assert not _validator().validate([{"pattern": "x", "max_count": 2}], events).success
+
+
+def test_entries_without_before_after_assert_counts_only():
+    # No implicit list-order chain: reversed emission order still passes.
+    result = _validator().validate(
+        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1}],
+        _events("second", "first"),
+    )
+    assert result.success, result.errors
+
+
+def test_absence_entry():
+    assert _validator().validate([{"pattern": "ERROR", "count": 0}], _events("ok")).success
+    assert not _validator().validate([{"pattern": "ERROR", "count": 0}], _events("ERROR boom")).success
+
+
+def test_max_only_entry_permits_zero_matches():
+    result = _validator().validate(
+        [{"pattern": "optional", "max_count": 1}, {"pattern": "end", "count": 1}],
+        _events("end"),
+    )
+    assert result.success, result.errors
+
+
+# --- Ordering via before/after ---
+
+
+def test_after_satisfied_in_emission_order():
+    result = _validator().validate(
+        [
+            {"pattern": "start", "count": 1},
+            {"pattern": "end", "count": 1, "after": "start"},
+        ],
+        _events("start", "end"),
+    )
+    assert result.success, result.errors
+
+
+def test_after_violated_reports_out_of_order():
+    result = _validator().validate(
+        [
+            {"pattern": "start", "count": 1},
+            {"pattern": "end", "count": 1, "after": "start"},
+        ],
         _events("end", "start"),
     )
     assert not result.success
     assert any("out of order" in e for e in result.errors)
 
 
-def test_max_only_entry_is_position_neutral():
-    validator = CloudWatchLogValidator()
-    # Reviewer counterexample: optional(max_count=1), end(1) vs end,optional
-    # must PASS — a max-only entry permits zero matches and must not consume
-    # an ordered anchor.
-    result = validator.validate(
-        [{"pattern": "optional", "max_count": 1}, {"pattern": "end", "count": 1}],
-        _events("end", "optional"),
-    )
-    assert result.success, result.errors
+def test_before_field_mirror_semantics():
+    spec = [
+        {"pattern": "start", "count": 1, "before": "end"},
+        {"pattern": "end", "count": 1},
+    ]
+    assert _validator().validate(spec, _events("start", "end")).success
+    assert not _validator().validate(spec, _events("end", "start")).success
 
 
-def test_repeating_sequences_use_distinct_patterns():
-    validator = CloudWatchLogValidator()
-    # Idiom for interleaved repeats: make each line distinct (e.g. attempt
-    # numbers) instead of repeating the same pattern.
-    result = validator.validate(
+def test_after_chain_three_entries():
+    spec = [
+        {"pattern": "a", "count": 1},
+        {"pattern": "b", "count": 1, "after": "a"},
+        {"pattern": "c", "count": 1, "after": "b"},
+    ]
+    assert _validator().validate(spec, _events("a", "b", "c")).success
+    assert not _validator().validate(spec, _events("a", "c", "b")).success
+
+
+def test_after_requires_all_matches_after_reference():
+    # One of the two 'end' matches precedes 'start': violation.
+    result = _validator().validate(
         [
-            {"pattern": "attempt n=1", "count": 1},
-            {"pattern": "outcome n=1 FAILED", "count": 1},
-            {"pattern": "attempt n=2", "count": 1},
-            {"pattern": "outcome n=2 SUCCEEDED", "count": 1},
+            {"pattern": "start", "count": 1},
+            {"pattern": "end", "count": 2, "after": "start"},
         ],
-        _events("attempt n=1", "outcome n=1 FAILED", "attempt n=2", "outcome n=2 SUCCEEDED"),
-    )
-    assert result.success, result.errors
-
-
-def test_ordered_count_multiple_matches():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
-        [{"pattern": "attempt", "count": 3}, {"pattern": "done", "count": 1}],
-        _events("attempt", "attempt", "attempt", "done"),
-    )
-    assert result.success, result.errors
-
-
-def test_ordered_count_mismatch_fails():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
-        [{"pattern": "attempt", "count": 3}],
-        _events("attempt", "attempt"),
+        _events("end", "start", "end"),
     )
     assert not result.success
 
 
-def test_single_entry_degenerates_to_global_count():
-    # Backwards compatibility: single positive entry == old global semantics.
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
-        [{"pattern": "x", "count": 2}],
-        _events("x", "y", "x"),
+def test_same_timestamp_ties_are_concurrent():
+    # CloudWatch has no sub-millisecond order: identical sort keys satisfy
+    # either direction, so adjacent same-ms hook lines never flake.
+    events = [
+        {"message": "end", "timestamp": 5, "ingestionTime": 0},
+        {"message": "start", "timestamp": 5, "ingestionTime": 0},
+    ]
+    result = _validator().validate(
+        [
+            {"pattern": "start", "count": 1},
+            {"pattern": "end", "count": 1, "after": "start"},
+        ],
+        events,
     )
     assert result.success, result.errors
 
 
-# endregion
-
-
-# region Absence + unordered entries
-
-
-def test_absence_entry_is_position_neutral():
-    validator = CloudWatchLogValidator()
-    # count: 0 in the middle must not break ordering of surrounding entries.
-    result = validator.validate(
-        [{"pattern": "start"}, {"pattern": "ERROR", "count": 0}, {"pattern": "end"}],
-        _events("start", "end"),
-    )
-    assert result.success, result.errors
-
-
-def test_absence_entry_checked_globally():
-    validator = CloudWatchLogValidator()
-    # The ERROR line is BEFORE the current scan position; absence must
-    # still be checked over the whole stream and fail.
-    result = validator.validate(
-        [{"pattern": "start"}, {"pattern": "ERROR", "count": 0}],
-        _events("ERROR boom", "start"),
+def test_dangling_reference_is_an_error():
+    result = _validator().validate(
+        [{"pattern": "end", "count": 1, "after": "nonexistent"}],
+        _events("end"),
     )
     assert not result.success
+    assert any("does not match the pattern of any other entry" in e for e in result.errors)
 
 
-def test_unordered_entry_matches_anywhere_and_is_position_neutral():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
+def test_self_reference_is_an_error():
+    result = _validator().validate(
+        [{"pattern": "x", "count": 1, "after": "x"}],
+        _events("x"),
+    )
+    assert not result.success
+    assert any("own pattern" in e for e in result.errors)
+
+
+def test_ordering_vacuous_when_reference_has_no_matches():
+    # The referenced entry's own count check reports the miss; the
+    # ordering constraint itself is vacuous.
+    result = _validator().validate(
         [
-            {"pattern": "start"},
-            {"pattern": "concurrent", "count": 2, "unordered": True},
-            {"pattern": "end"},
+            {"pattern": "start", "count": 0},
+            {"pattern": "end", "count": 1, "after": "start"},
         ],
-        _events("concurrent", "start", "end", "concurrent"),
+        _events("end"),
     )
     assert result.success, result.errors
 
 
-# endregion
+# --- Event sorting ---
 
 
-# region Match modes
+def test_events_sorted_by_timestamp_before_matching():
+    events = [
+        {"message": "second", "timestamp": 2, "ingestionTime": 0},
+        {"message": "first", "timestamp": 1, "ingestionTime": 0},
+    ]
+    result = _validator().validate(
+        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
+        events,
+    )
+    assert result.success, result.errors
+
+
+def test_equal_timestamps_tiebreak_by_ingestion_time():
+    events = [
+        {"message": "second", "timestamp": 5, "ingestionTime": 20},
+        {"message": "first", "timestamp": 5, "ingestionTime": 10},
+    ]
+    result = _validator().validate(
+        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
+        events,
+    )
+    assert result.success, result.errors
+
+
+def test_string_timestamps_from_logs_insights_sort_correctly():
+    # The Logs Insights path yields string @timestamp values and no
+    # ingestionTime; before/after ordering must still work.
+    events = [
+        {"message": "second", "timestamp": "2026-07-23 22:32:34.000"},
+        {"message": "first", "timestamp": "2026-07-23 22:32:33.000"},
+    ]
+    result = _validator().validate(
+        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
+        events,
+    )
+    assert result.success, result.errors
+
+
+# --- Match modes ---
 
 
 def test_exact_and_regex_modes():
-    validator = CloudWatchLogValidator()
-    result = validator.validate(
+    result = _validator().validate(
         [
             {"pattern": "hello", "match": "exact"},
             {"pattern": r"wor\w+", "match": "regex"},
@@ -407,17 +403,8 @@ def test_exact_and_regex_modes():
 
 
 def test_exact_mode_strips_message_whitespace():
-    validator = CloudWatchLogValidator()
-    # CloudWatch messages carry trailing newlines; exact mode strips them.
-    result = validator.validate([{"pattern": "hello", "match": "exact"}], _events("  hello\n"))
+    result = _validator().validate([{"pattern": "hello", "match": "exact"}], _events("  hello\n"))
     assert result.success, result.errors
-
-
-def test_invalid_entry_reports_error():
-    validator = CloudWatchLogValidator()
-    result = validator.validate([{"match": "contains"}], _events("x"))
-    assert not result.success
-    assert "invalid entry" in result.errors[0]
 
 
 # endregion

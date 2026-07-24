@@ -47,6 +47,8 @@ ExpectedLogs:
   # Replay invocation reports first=false, after the first invocation
   - pattern: CONFPLUGIN invocation-start first=false
     count: 1
+    after: CONFPLUGIN invocation-start first=true
   # Terminal invocation-end carries SUCCEEDED, exactly once, last
   - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
     count: 1
+    after: CONFPLUGIN invocation-start first=false

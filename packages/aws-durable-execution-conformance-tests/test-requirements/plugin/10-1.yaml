@@ -44,9 +44,11 @@ ExpectedLogs:
   # Handler step body runs between the two invocation hooks
   - pattern: 'Greeting step running for: ${INPUT_1}'
     count: 1
+    after: CONFPLUGIN invocation-start first=true
   # Invocation-end hook fires last, with the terminal status
   - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
     count: 1
+    after: 'Greeting step running for: ${INPUT_1}'
   # Single invocation: no replay invocation-start may appear
   - pattern: CONFPLUGIN invocation-start first=false
     count: 0

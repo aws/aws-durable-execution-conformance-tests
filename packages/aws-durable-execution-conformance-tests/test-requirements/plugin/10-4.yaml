@@ -43,17 +43,14 @@ ExpectedLogs:
     count: 1
   - pattern: CONFPLUGIN faulty invocation-end
     count: 1
+    after: CONFPLUGIN faulty invocation-start
   # Operation and attempt hooks also ran exactly once; dispatch model
-  # varies per SDK, so these are asserted without ordering
+  # varies per SDK, so no ordering is asserted
   - pattern: CONFPLUGIN faulty operation-start
     count: 1
-    unordered: true
   - pattern: CONFPLUGIN faulty operation-end
     count: 1
-    unordered: true
   - pattern: CONFPLUGIN faulty attempt-start
     count: 1
-    unordered: true
   - pattern: CONFPLUGIN faulty attempt-end
     count: 1
-    unordered: true

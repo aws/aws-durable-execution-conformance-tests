@@ -4,15 +4,19 @@ description: Plugin operation lifecycle hooks (step start and terminal end)
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin. The plugin, filtering to step-type operations only, logs
-  `CONFPLUGIN operation-start` from its operation-start hook and
-  `CONFPLUGIN operation-end status=<status>` from its operation-end hook (status
-  as the operation-status enum token, e.g. SUCCEEDED).
+  `CONFPLUGIN operation-start op=<operation_id>` from its operation-start hook and
+  `CONFPLUGIN operation-end op=<operation_id> status=<status>` from its
+  operation-end hook, where `<operation_id>` is the operation id received in the
+  hook's info parameter (status as the operation-status enum token, e.g.
+  SUCCEEDED). The logged id must equal the id the execution history checkpointed
+  for the step.
 invocations: |
   - Handler invokes `context.step(greet(event))`, step succeeds on first attempt.
     The plugin's operation-start hook fires when the step's STARTED checkpoint is
     observed and its operation-end hook fires when the step reaches its terminal
     SUCCEEDED status. Operation hooks may be dispatched asynchronously, so their
-    relative log order is not asserted — only that each fires exactly once.
+    relative log order is not asserted — only that each fires exactly once and
+    carries the history-consistent operation id.
 Variables:
   INPUT_1: ${GEN_STR:8}
 Input: ${INPUT_1}
@@ -37,14 +41,13 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # Both operation hooks fire exactly once; dispatch may be async,
-  # so no relative ordering is asserted
-  - pattern: CONFPLUGIN operation-start
+  # Both operation hooks fire exactly once and carry the operation id the
+  # history checkpointed (${ID1}); dispatch may be async, so no ordering
+  # is asserted (no before/after)
+  - pattern: CONFPLUGIN operation-start op=${ID1}
     count: 1
-    unordered: true
-  - pattern: CONFPLUGIN operation-end status=SUCCEEDED
+  - pattern: CONFPLUGIN operation-end op=${ID1} status=SUCCEEDED
     count: 1
-    unordered: true
   # The step never reaches a FAILED terminal status
-  - pattern: CONFPLUGIN operation-end status=FAILED
+  - pattern: CONFPLUGIN operation-end op=${ID1} status=FAILED
     count: 0
