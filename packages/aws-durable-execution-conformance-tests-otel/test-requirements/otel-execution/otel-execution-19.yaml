@@ -1,0 +1,28 @@
+description: Execution view emits a terminal failed workflow when handler execution fails
+Input:
+  scenario: execution-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 3
+    EventType: ExecutionFailed
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 2
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED

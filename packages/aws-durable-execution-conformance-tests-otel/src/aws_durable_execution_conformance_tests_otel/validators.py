@@ -185,15 +185,21 @@ def _parent_expectation_errors(
     parents = spans_by_id.get(parent_span_id, [])
     if not parents:
         return [f"{path}: parent span is not present in the trace"]
-    if len(parents) > 1:
-        return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
 
-    return _span_expectation_errors(
-        expected,
-        parents[0],
-        path=path,
-        feature_disparities=feature_disparities,
-    )
+    candidate_errors = [
+        _span_expectation_errors(
+            expected,
+            parent,
+            path=path,
+            feature_disparities=feature_disparities,
+        )
+        for parent in parents
+    ]
+    if any(not errors for errors in candidate_errors):
+        return []
+    if len(parents) > 1:
+        return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
+    return candidate_errors[0]
 
 
 def _link_expectation_errors(

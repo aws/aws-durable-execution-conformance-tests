@@ -1,0 +1,56 @@
+description: Execution view emits a timed-out workflow and its interrupted wait
+Input:
+  scenario: wait-interrupted
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: WaitStarted
+    SubType: Wait
+    Id: ${INTERRUPTED_WAIT}
+    Name: otel-interrupted-wait
+ExpectedResult:
+  ExecutionStatus: TIMED_OUT
+TelemetryAssertions:
+  minimum_spans: 3
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: TIMED_OUT
+    - select:
+        name: otel-interrupted-wait
+        attributes:
+          durable.operation.id: ${INTERRUPTED_WAIT}
+      expect:
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INTERRUPTED_WAIT}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.name: otel-interrupted-wait
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: TIMED_OUT

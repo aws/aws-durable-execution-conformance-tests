@@ -47,7 +47,7 @@ def test_execution_view_workflow_calls_supported_languages() -> None:
     assert "  pull_request:" in workflow
     assert "  workflow_dispatch:" in workflow
     assert workflow.count("suite: otel-execution") == 2
-    assert workflow.count("case_count: 3") == 2
+    assert workflow.count("case_count: 19") == 2
     for language in ("python", "typescript"):
         assert f"uses: ./.github/workflows/{LANGUAGE_WORKFLOWS[language].name}" in workflow
     assert f"uses: ./.github/workflows/{LANGUAGE_WORKFLOWS['java'].name}" not in workflow

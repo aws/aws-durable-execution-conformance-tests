@@ -8,7 +8,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
+from aws_durable_execution_conformance_tests.validate import (
+    parse_function_descriptions,
+    parse_not_implemented,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
@@ -36,7 +39,22 @@ EXPECTED_MAPPINGS = [
     ("OtelExecution1Success", "otel-execution-1"),
     ("OtelExecution2WaitResume", "otel-execution-2"),
     ("OtelExecution3Retry", "otel-execution-3"),
+    ("OtelExecution4TerminalFailure", "otel-execution-4"),
+    ("OtelExecution5ChildContext", "otel-execution-5"),
+    ("OtelExecution6Parallel", "otel-execution-6"),
+    ("OtelExecution7Map", "otel-execution-7"),
+    ("OtelExecution8HandledFailure", "otel-execution-8"),
+    ("OtelExecution9WaitForCondition", "otel-execution-9"),
+    ("OtelExecution10WaitForCallback", "otel-execution-10"),
+    ("OtelExecution11ChainedInvoke", "otel-execution-11"),
+    ("OtelExecution12ChildContextFailure", "otel-execution-12"),
+    ("OtelExecution13ParallelFailure", "otel-execution-13"),
+    ("OtelExecution14MapFailure", "otel-execution-14"),
+    ("OtelExecution16WaitForConditionFailure", "otel-execution-16"),
+    ("OtelExecution17WaitForCallbackFailure", "otel-execution-17"),
+    ("OtelExecution18ChainedInvokeFailure", "otel-execution-18"),
 ]
+EXECUTION_CASES = (*range(1, 15), 16, 17, 18)
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -59,35 +77,50 @@ def test_python_example_template_maps_every_otel_requirement() -> None:
     assert mappings == EXPECTED_MAPPINGS
 
 
+def test_python_example_declares_execution_plugin_lifecycle_gaps() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
+        "otel-execution-15": (
+            "ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally"
+        ),
+        "otel-execution-19": "ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY",
+    }
+
+
 def test_python_example_template_accepts_runner_parameters() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
 
     for parameter in REQUIRED_OTEL_PARAMETERS:
         assert f"  {parameter}:" in template
     assert "    NoEcho: true" in template
-    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
-    assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 2
+    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 4
+    assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 4
     for case_number in range(1, 20):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
-    for case_number in range(1, 4):
+    for case_number in EXECUTION_CASES:
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-execution-{case_number}"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-execution-11-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-execution-18-target"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
     assert "HasOtelCollectorLayer: !Not" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
     assert "/opt/collector-config/config-s3.yaml" in template
-    assert template.count("          OTEL_PLUGIN_MODE: execution") == 3
+    assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
     for logical_id, _description_id in EXPECTED_MAPPINGS:
         assert f"build-{logical_id}" in makefile
     assert "build-Otel11InvokeTarget" in makefile
     assert "build-Otel18InvokeTarget" in makefile
+    assert "build-OtelExecution11InvokeTarget" in makefile
+    assert "build-OtelExecution18InvokeTarget" in makefile
 
 
 def test_python_example_handlers_are_valid_python() -> None:

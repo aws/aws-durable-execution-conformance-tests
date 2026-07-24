@@ -7,11 +7,10 @@ AWS Durable Execution SDK for JavaScript and its OpenTelemetry plugin:
 - [`@aws/durable-execution-sdk-js-otel`](https://www.npmjs.com/package/@aws/durable-execution-sdk-js-otel)
 
 The project runs on Node.js 22 and bundles one CommonJS entry point per
-scenario. The template maps 19 invocation-view requirements and three
-execution-view requirements with `TestingMetadata.TestDescription`;
-`otel-invocation-11` and `otel-invocation-18` also deploy durable chained-invoke
-targets. The execution-view functions reuse scenario modules 1 through 3 and
-select `ExecutionOtelPlugin` through deployment configuration.
+scenario. The template covers 19 invocation-view and 19 execution-view
+requirements; chained-invoke cases 11 and 18 also deploy durable targets for
+both views. Execution-view functions reuse the scenario modules and select
+`ExecutionOtelPlugin` through deployment configuration.
 
 The OTel package's `InvocationOtelPlugin` API is newer than its latest npm
 artifact, so `scripts/install-sdk-main.sh` builds and installs both SDK packages
@@ -43,12 +42,32 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-execution-1` | `otel_1_success.handler` | Execution-view workflow, step, and attempt hierarchy. |
 | `otel-execution-2` | `otel_2_wait_resume.handler` | Execution-view hierarchy across a resumed invocation. |
 | `otel-execution-3` | `otel_3_retry.handler` | Execution-view hierarchy across retry attempts. |
+| `otel-execution-4` | `otel_4_terminal_failure.handler` | Failed workflow, step, and attempt hierarchy. |
+| `otel-execution-5` | `otel_5_child_context.handler` | Child-context and nested-step parentage. |
+| `otel-execution-6` | `otel_6_parallel.handler` | Parallel context, branch, step, and attempt parentage. |
+| `otel-execution-7` | `otel_7_map.handler` | Map context, iteration, step, and attempt parentage. |
+| `otel-execution-8` | `otel_8_handled_failure.handler` | Failed and recovery operations under a successful workflow. |
+| `otel-execution-9` | `otel_9_wait_for_condition.handler` | Condition polling attempts across invocations. |
+| `otel-execution-10` | `otel_10_wait_for_callback.handler` | Callback, submitter, and attempt parentage. |
+| `otel-execution-11` | `otel_11_chained_invoke.handler` | Source and target workflow roots for a chained invoke. |
+| `otel-execution-12` | `otel_12_child_context_failure.handler` | Failed child context under a failed workflow. |
+| `otel-execution-13` | `otel_13_parallel_failure.handler` | Failed parallel branch under its operation. |
+| `otel-execution-14` | `otel_14_map_failure.handler` | Failed map iteration under its operation. |
+| `otel-execution-15` | Not implemented | Requires a terminal plugin hook after a pending invocation times out externally. |
+| `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Failed condition operation and attempt. |
+| `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Failed callback telemetry under one workflow. |
+| `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Source and target failed workflow roots. |
+| `otel-execution-19` | Not implemented | Requires retaining the workflow after the handler invocation ends with `RETRY`. |
+
+Execution cases 15 and 19 remain declared under
+`TestingMetadata.NotImplemented` because the plugin does not receive a terminal
+callback for those service-driven lifecycle transitions.
 
 ## Run Against the S3 Collector
 
 The hosted workflow builds a custom OpenTelemetry Lambda collector extension
 with `awss3exporter`, publishes it in the test account, and creates a
-run-scoped S3 bucket. It then runs all 22 cases with the community
+run-scoped S3 bucket. It then evaluates all 38 requirements with the community
 JavaScript instrumentation layer and queries the exported OTLP objects through
 the conformance package's `collector` backend.
 

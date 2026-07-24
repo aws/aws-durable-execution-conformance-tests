@@ -1,0 +1,125 @@
+description: Execution view preserves all wait-for-condition attempts across invocations
+Input:
+  scenario: wait-for-condition
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 3
+    EventType: StepSucceeded
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 5
+    EventType: StepStarted
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: WaitForCondition
+    Id: ${CONDITION1}
+    Name: otel-condition
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 2
+TelemetryAssertions:
+  minimum_spans: 6
+  require_execution_correlation: true
+  minimum_invocations: 2
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-condition
+        attributes:
+          durable.operation.id: ${CONDITION1}
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.name: otel-condition
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-condition attempt 1
+        attributes:
+          durable.operation.id: ${CONDITION1}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.name: otel-condition
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-condition
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${CONDITION1}
+    - select:
+        name: otel-condition attempt 2
+        attributes:
+          durable.operation.id: ${CONDITION1}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: ${/^(?:OK|UNSET)$/}
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${CONDITION1}
+          durable.operation.type: STEP
+          durable.operation.subtype: WaitForCondition
+          durable.operation.name: otel-condition
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-condition
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${CONDITION1}

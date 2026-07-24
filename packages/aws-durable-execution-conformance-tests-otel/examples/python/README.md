@@ -10,8 +10,8 @@ The project is intentionally self-contained so this directory can move into the
 Python SDK's OpenTelemetry package once the suite is complete.
 
 The runner discovers each requirement mapping from
-`TestingMetadata.TestDescription`. Invocation and execution view functions for
-cases 1 through 3 reuse the same handler modules and select their plugin through
+`TestingMetadata.TestDescription`. The 19 invocation and 19 execution
+requirements reuse the same scenario handlers and select their plugin through
 deployment configuration.
 
 ## Scenarios
@@ -40,6 +40,26 @@ deployment configuration.
 | `otel-execution-1` | `otel_1_success.handler` | Verifies the execution-view workflow, step, and attempt hierarchy. |
 | `otel-execution-2` | `otel_2_wait_resume.handler` | Verifies the execution view across a resumed invocation. |
 | `otel-execution-3` | `otel_3_retry.handler` | Verifies the execution view across retry attempts. |
+| `otel-execution-4` | `otel_4_terminal_failure.handler` | Verifies the failed workflow, step, and attempt hierarchy. |
+| `otel-execution-5` | `otel_5_child_context.handler` | Verifies child-context and nested-step parentage. |
+| `otel-execution-6` | `otel_6_parallel.handler` | Verifies parallel context, branch, step, and attempt parentage. |
+| `otel-execution-7` | `otel_7_map.handler` | Verifies map context, iteration, step, and attempt parentage. |
+| `otel-execution-8` | `otel_8_handled_failure.handler` | Verifies failed and recovery operations under a successful workflow. |
+| `otel-execution-9` | `otel_9_wait_for_condition.handler` | Verifies condition polling attempts across invocations. |
+| `otel-execution-10` | `otel_10_wait_for_callback.handler` | Verifies callback, submitter, and attempt parentage. |
+| `otel-execution-11` | `otel_11_chained_invoke.handler` | Verifies source and target workflow roots for a chained invoke. |
+| `otel-execution-12` | `otel_12_child_context_failure.handler` | Verifies a failed child context under a failed workflow. |
+| `otel-execution-13` | `otel_13_parallel_failure.handler` | Verifies a failed parallel branch under its operation. |
+| `otel-execution-14` | `otel_14_map_failure.handler` | Verifies a failed map iteration under its operation. |
+| `otel-execution-15` | Not implemented | Requires a terminal plugin hook after a pending invocation times out externally. |
+| `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Verifies a failed condition operation and attempt. |
+| `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
+| `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
+| `otel-execution-19` | Not implemented | Requires retaining the workflow after the handler invocation ends with `RETRY`. |
+
+Execution cases 15 and 19 remain declared under
+`TestingMetadata.NotImplemented` because the plugin does not receive a terminal
+callback for those service-driven lifecycle transitions.
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages at the tested head of

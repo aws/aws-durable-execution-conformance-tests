@@ -1,0 +1,80 @@
+description: Execution view emits linked failed workflow roots for a chained invoke
+Input:
+  scenario: chained-invoke-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ChainedInvokeStarted
+    SubType: ChainedInvoke
+    Id: ${FAILED_INVOKE}
+    Name: otel-failed-invoke
+    ChainedInvokeStartedDetails:
+      DurableExecutionArn: ${TARGET_EXECUTION_ARN}
+  - EventId: 4
+    EventType: ChainedInvokeFailed
+    SubType: ChainedInvoke
+    Id: ${FAILED_INVOKE}
+    Name: otel-failed-invoke
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 6
+  require_execution_correlation: true
+  minimum_invocations: 3
+  allowed_execution_arns:
+    - ${EXECUTION_ARN}
+    - ${TARGET_EXECUTION_ARN}
+  span_assertions:
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Workflow
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ${/^(?:ERROR|UNSET)$/}
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: otel-failed-invoke
+        attributes:
+          durable.operation.id: ${FAILED_INVOKE}
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - attributes:
+              $any_of:
+                - faas.invocation_id: '*'
+                - aws.lambda.invocation_id: '*'
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_INVOKE}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.name: otel-failed-invoke
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED
