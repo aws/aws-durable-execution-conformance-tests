@@ -42,10 +42,13 @@ def main() -> None:
             config.TESTS_DIR,
             entry_points=entry_points,
         )
-        requirements = registry.discover_requirements(["otel"])
+        requirements = registry.discover_requirements(["otel-invocation", "otel-execution"])
 
-        assert "otel" in registry.suites
-        assert set(requirements) == {f"otel-{case_number}" for case_number in range(1, 23)}
+        assert {"otel-invocation", "otel-execution"} <= registry.suites.keys()
+        assert set(requirements) == {
+            *(f"otel-invocation-{case_number}" for case_number in range(1, 20)),
+            *(f"otel-execution-{case_number}" for case_number in range(1, 4)),
+        }
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 
     print("Verified wheel-only extension discovery and OTel requirement loading.")

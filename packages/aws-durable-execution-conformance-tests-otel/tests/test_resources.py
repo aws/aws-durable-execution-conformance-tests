@@ -5,6 +5,9 @@
 
 import json
 import re
+from copy import deepcopy
+
+import pytest
 
 from aws_durable_execution_conformance_tests.validate import (
     discover_test_files,
@@ -13,20 +16,39 @@ from aws_durable_execution_conformance_tests.validate import (
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 
 
-def test_extension_exposes_packaged_otel_requirements() -> None:
-    suite = OtelExtension().requirement_suites()[0]
-    requirements = discover_test_files(suite.root, suite="all")
-
-    assert suite.name == "otel"
-    assert set(requirements) == {f"otel-{case_number}" for case_number in range(1, 23)}
+def _requirements(suite_name: str) -> dict[str, str]:
+    suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
+    return discover_test_files(suites[suite_name].root, suite="all")
 
 
-def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
-    suite = OtelExtension().requirement_suites()[0]
-    requirements = discover_test_files(suite.root, suite="all")
+def test_extension_exposes_packaged_otel_view_requirements() -> None:
+    suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
+
+    assert set(suites) == {"otel-execution", "otel-invocation"}
+    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 20)}
+    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 4)}
+
+
+@pytest.mark.parametrize("case_number", range(1, 4))
+def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_number: int) -> None:
+    invocation = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
+    execution = load_yaml_file(_requirements("otel-execution")[f"otel-execution-{case_number}"])
+
+    comparable_invocation = deepcopy(invocation)
+    comparable_execution = deepcopy(execution)
+    for requirement in (comparable_invocation, comparable_execution):
+        requirement.pop("description")
+        requirement.pop("TelemetryAssertions")
+
+    assert comparable_invocation == comparable_execution
+    assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
+
+
+def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
+    requirements = _requirements("otel-invocation")
 
     for case_number in range(1, 20):
-        requirement = load_yaml_file(requirements[f"otel-{case_number}"])
+        requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
 
         assert assertions["require_execution_correlation"] is True
@@ -125,11 +147,10 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
 
 
 def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links() -> None:
-    suite = OtelExtension().requirement_suites()[0]
-    requirements = discover_test_files(suite.root, suite="all")
+    requirements = _requirements("otel-execution")
 
-    for case_number in range(20, 23):
-        requirement = load_yaml_file(requirements[f"otel-{case_number}"])
+    for case_number in range(1, 4):
+        requirement = load_yaml_file(requirements[f"otel-execution-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
         span_assertions = assertions["span_assertions"]
         workflow = next(item for item in span_assertions if item["select"]["name"] == "Workflow")

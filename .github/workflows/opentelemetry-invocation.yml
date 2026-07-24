@@ -1,0 +1,70 @@
+name: OpenTelemetry Invocation View
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/opentelemetry-invocation.yml
+      - .github/workflows/java-opentelemetry.yml
+      - .github/workflows/python-opentelemetry.yml
+      - .github/workflows/typescript-opentelemetry.yml
+      - packages/aws-durable-execution-conformance-tests/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/collector/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/python/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region
+        required: true
+        default: us-west-2
+        type: string
+      otlp_endpoint:
+        description: OTLP ingest endpoint for community-layer jobs
+        required: false
+        type: string
+      collector_query_endpoint:
+        description: Query endpoint for the deployed test collector
+        required: false
+        type: string
+      dash0_query_endpoint:
+        description: Dash0 trace API endpoint
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  java:
+    name: Java
+    uses: ./.github/workflows/java-opentelemetry.yml
+    with:
+      suite: otel-invocation
+      case_count: 19
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
+
+  python:
+    name: Python
+    uses: ./.github/workflows/python-opentelemetry.yml
+    with:
+      suite: otel-invocation
+      case_count: 19
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
+      collector_query_endpoint: ${{ inputs.collector_query_endpoint || '' }}
+      dash0_query_endpoint: ${{ inputs.dash0_query_endpoint || '' }}
+    secrets: inherit
+
+  typescript:
+    name: TypeScript
+    uses: ./.github/workflows/typescript-opentelemetry.yml
+    with:
+      suite: otel-invocation
+      case_count: 19
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit

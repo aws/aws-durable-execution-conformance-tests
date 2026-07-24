@@ -116,7 +116,7 @@ def test_unknown_runtime_is_actionable() -> None:
 
 def _args(exporter: str, backend: str) -> argparse.Namespace:
     return argparse.Namespace(
-        suite=["otel"],
+        suite=["otel-invocation"],
         language="python",
         region="us-west-2",
         otel_exporter=exporter,
@@ -210,7 +210,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
 
     errors = OtelExtension().validate_telemetry(
         ValidationContext(
-            description_id="otel-5",
+            description_id="otel-invocation-5",
             function_name="function",
             execution_arn="arn:execution",
             invocation_started_at_ms=1,

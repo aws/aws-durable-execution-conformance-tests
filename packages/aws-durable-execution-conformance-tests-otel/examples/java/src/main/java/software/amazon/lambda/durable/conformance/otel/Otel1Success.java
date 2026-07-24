@@ -6,7 +6,7 @@ package software.amazon.lambda.durable.conformance.otel;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Successful step scenario for OTel requirement otel-1. */
+/** Successful step scenario for OTel requirement otel-invocation-1. */
 public final class Otel1Success extends OtelConformanceHandler<String> {
 
     @Override

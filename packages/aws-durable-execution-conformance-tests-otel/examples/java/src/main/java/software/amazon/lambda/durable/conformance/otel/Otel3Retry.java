@@ -9,7 +9,7 @@ import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.config.StepConfig;
 import software.amazon.lambda.durable.retry.RetryStrategies;
 
-/** Retried step scenario for OTel requirement otel-3. */
+/** Retried step scenario for OTel requirement otel-invocation-3. */
 public final class Otel3Retry extends OtelConformanceHandler<String> {
 
     @Override

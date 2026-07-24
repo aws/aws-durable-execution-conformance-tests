@@ -1,8 +1,8 @@
 # Contributing OpenTelemetry Test Cases
 
-This guide covers changes to the `otel` conformance suite. Read the repository
-[contribution guide](../../CONTRIBUTING.md) first for the general development,
-security, and pull-request requirements.
+This guide covers changes to the `otel-invocation` and `otel-execution`
+conformance suites. Read the repository [contribution guide](../../CONTRIBUTING.md)
+first for the general development, security, and pull-request requirements.
 
 ## What Belongs in the Suite
 
@@ -27,9 +27,17 @@ synthetic telemetry in a test handler to make an unsupported behavior pass.
 
 ## Add a Requirement
 
-Add the next unused, sequential `otel-N.yaml` file under
-[`test-requirements/otel`](test-requirements/otel). Requirement IDs are global
-and must not be reused.
+Add invocation-view requirements as
+`test-requirements/otel-invocation/otel-invocation-N.yaml` and execution-view
+requirements as
+`test-requirements/otel-execution/otel-execution-N.yaml`. Requirement IDs are
+global and must not be reused.
+
+When both plugins cover a scenario, keep `Input`, `AsyncInvoke`,
+`ExpectedExecutionHistory`, and `ExpectedResult` identical between the paired
+case numbers. Only the human-readable description and `TelemetryAssertions`
+should differ. Reuse the same example workflow for both deployed functions and
+select the plugin in deployment configuration.
 
 An OTel requirement contains the normal execution expectations plus a
 `TelemetryAssertions` mapping:
@@ -155,7 +163,7 @@ repository. For Java, JavaScript/Node.js, and Python:
    `TestingMetadata.TestDescription`.
 2. Prefix the handler filename with the case ID and suffix the deployed
    `FunctionName` with it (for example, `otel_5_scenario.py` and
-   `${AWS::StackName}-otel-5`).
+   `${AWS::StackName}-otel-invocation-5`).
 3. Implement the `Input.scenario` contract with the SDK's public durable
    execution and OTel APIs.
 4. Accept the OTel template parameters documented in the package
@@ -230,7 +238,8 @@ OTEL_S3_PREFIX=durable-execution \
 otelcol-contrib --config collector/config.yaml
 ```
 
-Then run the conformance CLI with `--suite otel`,
+Then run the conformance CLI with
+`--suite otel-invocation otel-execution`,
 `--otel-exporter community`, `--otel-backend collector`, the collector's
 reachable OTLP endpoint, and `--otel-backend-endpoint s3://bucket/prefix`.
 The backend supports the exporter's `otlp_json` and `otlp_proto` marshalers,

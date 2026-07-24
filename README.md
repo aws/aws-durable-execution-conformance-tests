@@ -15,9 +15,10 @@ packages/
 ```
 
 The core distribution contains the runner, reports, and generic requirements.
-The optional OTel distribution contributes the `otel` suite through the core
-entry-point API and owns its protocol dependencies, exporter profiles, backend
-adapters, models, parsers, validators, and requirement resources.
+The optional OTel distribution contributes the `otel-invocation` and
+`otel-execution` suites through the core entry-point API and owns its protocol
+dependencies, exporter profiles, backend adapters, models, parsers, validators,
+and requirement resources.
 
 Installing only the core package does not install OpenTelemetry dependencies:
 
@@ -25,8 +26,8 @@ Installing only the core package does not install OpenTelemetry dependencies:
 pip install aws-durable-execution-conformance-tests
 ```
 
-Install the optional suite to make `--suite otel` available through the same
-CLI:
+Install the optional distribution to make both OTel suites available through
+the same CLI:
 
 ```bash
 pip install aws-durable-execution-conformance-tests-otel
@@ -89,7 +90,7 @@ combinations fail during argument validation, before SAM build or deployment.
 hatch run validate \
   --template path/to/template.yaml \
   --language python \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --otel-exporter community \
   --otel-backend collector \
   --otel-endpoint https://otel-collector.example/v1/traces \

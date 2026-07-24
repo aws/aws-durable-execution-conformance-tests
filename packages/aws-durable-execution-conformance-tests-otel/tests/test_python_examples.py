@@ -14,28 +14,28 @@ EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
-    ("Otel1Success", "otel-1"),
-    ("Otel2WaitResume", "otel-2"),
-    ("Otel3Retry", "otel-3"),
-    ("Otel4TerminalFailure", "otel-4"),
-    ("Otel5ChildContext", "otel-5"),
-    ("Otel6Parallel", "otel-6"),
-    ("Otel7Map", "otel-7"),
-    ("Otel8HandledFailure", "otel-8"),
-    ("Otel9WaitForCondition", "otel-9"),
-    ("Otel10WaitForCallback", "otel-10"),
-    ("Otel11ChainedInvoke", "otel-11"),
-    ("Otel12ChildContextFailure", "otel-12"),
-    ("Otel13ParallelFailure", "otel-13"),
-    ("Otel14MapFailure", "otel-14"),
-    ("Otel15WaitInterrupted", "otel-15"),
-    ("Otel16WaitForConditionFailure", "otel-16"),
-    ("Otel17WaitForCallbackFailure", "otel-17"),
-    ("Otel18ChainedInvokeFailure", "otel-18"),
-    ("Otel19ExecutionFailure", "otel-19"),
-    ("Otel20ExecutionSuccess", "otel-20"),
-    ("Otel21ExecutionWaitResume", "otel-21"),
-    ("Otel22ExecutionRetry", "otel-22"),
+    ("Otel1Success", "otel-invocation-1"),
+    ("Otel2WaitResume", "otel-invocation-2"),
+    ("Otel3Retry", "otel-invocation-3"),
+    ("Otel4TerminalFailure", "otel-invocation-4"),
+    ("Otel5ChildContext", "otel-invocation-5"),
+    ("Otel6Parallel", "otel-invocation-6"),
+    ("Otel7Map", "otel-invocation-7"),
+    ("Otel8HandledFailure", "otel-invocation-8"),
+    ("Otel9WaitForCondition", "otel-invocation-9"),
+    ("Otel10WaitForCallback", "otel-invocation-10"),
+    ("Otel11ChainedInvoke", "otel-invocation-11"),
+    ("Otel12ChildContextFailure", "otel-invocation-12"),
+    ("Otel13ParallelFailure", "otel-invocation-13"),
+    ("Otel14MapFailure", "otel-invocation-14"),
+    ("Otel15WaitInterrupted", "otel-invocation-15"),
+    ("Otel16WaitForConditionFailure", "otel-invocation-16"),
+    ("Otel17WaitForCallbackFailure", "otel-invocation-17"),
+    ("Otel18ChainedInvokeFailure", "otel-invocation-18"),
+    ("Otel19ExecutionFailure", "otel-invocation-19"),
+    ("OtelExecution1Success", "otel-execution-1"),
+    ("OtelExecution2WaitResume", "otel-execution-2"),
+    ("OtelExecution3Retry", "otel-execution-3"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -67,10 +67,12 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert "    NoEcho: true" in template
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
     assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 2
-    for case_number in range(1, 23):
-        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
+    for case_number in range(1, 20):
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
+    for case_number in range(1, 4):
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-execution-{case_number}"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
@@ -158,3 +160,4 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
     assert "delete-layer-version" in workflow
+    assert '--suite "$OTEL_SUITE"' in workflow

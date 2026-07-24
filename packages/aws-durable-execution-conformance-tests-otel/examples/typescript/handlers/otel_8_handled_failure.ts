@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
-/** Handled step failure scenario for OTel requirement otel-8. */
+/** Handled step failure scenario for OTel requirement otel-invocation-8. */
 
 import { createScenarioHandler } from "./common";
 

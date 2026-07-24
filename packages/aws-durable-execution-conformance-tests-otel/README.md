@@ -1,9 +1,9 @@
 # AWS Durable Execution OpenTelemetry Conformance
 
-Optional OpenTelemetry integration suite for
+Optional OpenTelemetry integration suites for
 `aws-durable-execution-conformance-tests`. Installing this distribution adds
-the `otel` suite to the existing runner through a Python entry point; it does
-not install a second conformance CLI.
+the `otel-invocation` and `otel-execution` suites to the existing runner through
+a Python entry point; it does not install a second conformance CLI.
 
 ## Install
 
@@ -14,7 +14,12 @@ pip install aws-durable-execution-conformance-tests-otel
 The package requires a compatible `>=0.2,<0.3` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
 validators, and requirement resources. Core `0.2.0` introduces the extension
-API used to discover this suite; core `0.1.x` cannot load it.
+API used to discover these suites; core `0.1.x` cannot load them.
+
+The suites pair the same execution scenarios with view-specific telemetry
+contracts. Invocation-view requirements assert spans emitted around each
+Lambda invocation. Execution-view requirements assert the terminal `Workflow`
+hierarchy and invocation links emitted across the durable execution.
 
 ## Run
 
@@ -22,7 +27,7 @@ API used to discover this suite; core `0.1.x` cannot load it.
 durable-execution-conformance \
   --template path/to/template.yaml \
   --language python \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --otel-exporter community \
   --otel-backend collector \
   --otel-endpoint https://otel-collector.example/v1/traces \
@@ -112,7 +117,7 @@ the Python SDK's OTel package when this suite stabilizes.
 ## Java Examples
 
 The self-contained [Java SAM project](examples/java/README.md) implements the
-same OTel requirements with the Java SDK and its OTel plugin. It builds one
+invocation-view requirements with the Java SDK and its OTel plugin. It builds one
 shaded JAR containing all handlers and attaches the
 `AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
 remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP

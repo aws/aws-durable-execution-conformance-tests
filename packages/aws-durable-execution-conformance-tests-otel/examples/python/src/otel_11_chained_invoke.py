@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Chained-invoke scenario for OTel requirement otel-11."""
+"""Chained-invoke scenario for OTel requirement otel-invocation-11."""
 
 from __future__ import annotations
 

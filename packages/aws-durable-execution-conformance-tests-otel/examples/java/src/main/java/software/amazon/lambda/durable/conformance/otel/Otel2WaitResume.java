@@ -7,7 +7,7 @@ import java.time.Duration;
 import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 
-/** Wait-and-resume scenario for OTel requirement otel-2. */
+/** Wait-and-resume scenario for OTel requirement otel-invocation-2. */
 public final class Otel2WaitResume extends OtelConformanceHandler<String> {
 
     @Override

@@ -17,8 +17,8 @@ PACKAGES = {
     ),
     "aws-durable-execution-conformance-tests-otel": (
         ROOT / "packages/aws-durable-execution-conformance-tests-otel/dist",
-        "aws_durable_execution_conformance_tests_otel/test_requirements/otel/otel-1.yaml",
-        "test-requirements/otel/otel-1.yaml",
+        "aws_durable_execution_conformance_tests_otel/test_requirements/otel-invocation/otel-invocation-1.yaml",
+        "test-requirements/otel-invocation/otel-invocation-1.yaml",
     ),
 }
 

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Successful execution scenario for OTel requirement otel-1."""
+"""Successful execution shared by OTel view case 1."""
 
 from __future__ import annotations
 
