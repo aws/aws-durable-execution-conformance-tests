@@ -122,7 +122,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     == {
                         "FAILED": "ERROR",
                         "PENDING": "UNSET",
-                        "RETRY": "ERROR",
+                        "RETRY": "UNSET",
                         "SUCCEEDED": "OK",
                     }[expected_attributes["durable.invocation.status"]]
                 )
