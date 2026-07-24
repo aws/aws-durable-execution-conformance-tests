@@ -1,7 +1,6 @@
 ---
 # 10.5: Multiple plugins
 description: Multiple registered plugins all receive lifecycle hooks
-optional: true
 handler: |
   A handler with a single step that returns a greeting string, configured with TWO
   instrumentation plugins registered together (in order A, B). Plugin A logs

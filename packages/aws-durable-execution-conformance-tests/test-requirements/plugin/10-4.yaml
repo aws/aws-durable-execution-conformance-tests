@@ -1,7 +1,6 @@
 ---
 # 10.4: Plugin error isolation
 description: Plugin exceptions are swallowed and never affect the execution outcome
-optional: true
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin whose EVERY hook first logs a line and then throws an

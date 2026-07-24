@@ -1,7 +1,6 @@
 ---
 # 10.7: Plugin sees terminal failure
 description: Plugin invocation-end hook receives FAILED status when execution fails
-optional: true
 handler: |
   A handler with a single step that always throws, configured with no retries
   (max attempts 1) and an instrumentation plugin. The plugin logs

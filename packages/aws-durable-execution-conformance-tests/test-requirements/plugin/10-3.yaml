@@ -1,7 +1,6 @@
 ---
 # 10.3: Plugin attempt hooks under retry
 description: Plugin attempt hooks fire per step attempt with attempt number and outcome
-optional: true
 handler: |
   A handler with a single step that fails on the first attempt and succeeds on the
   second, configured with a retry strategy (max attempts >= 2, ~1s delay) and an

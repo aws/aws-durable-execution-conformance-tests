@@ -1,7 +1,6 @@
 ---
 # 10.2: Plugin operation lifecycle hooks
 description: Plugin operation lifecycle hooks (step start and terminal end)
-optional: true
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin. The plugin, filtering to step-type operations only, logs

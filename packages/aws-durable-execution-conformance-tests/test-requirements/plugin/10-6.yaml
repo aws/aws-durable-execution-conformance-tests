@@ -1,7 +1,6 @@
 ---
 # 10.6: Plugin first-invocation flag across replay
 description: Plugin sees is-first-invocation true once, then false on replay
-optional: true
 handler: |
   A handler with a single 2-second wait, configured with an instrumentation
   plugin. The plugin logs `CONFPLUGIN invocation-start first=<is_first_invocation>`

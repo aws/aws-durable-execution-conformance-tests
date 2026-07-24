@@ -1,7 +1,6 @@
 ---
 # 10.1: Plugin invocation lifecycle hooks
 description: Plugin invocation lifecycle hooks (start and end on a single invocation)
-optional: true
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin registered through the SDK's plugin API. The step body
