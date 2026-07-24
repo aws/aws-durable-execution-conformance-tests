@@ -124,7 +124,7 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..19}; do
+          for case_number in {1..22}; do
             log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
@@ -531,7 +531,7 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..19}; do
+          for case_number in {1..22}; do
             log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 30m --format short || true

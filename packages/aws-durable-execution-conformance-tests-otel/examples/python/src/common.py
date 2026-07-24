@@ -5,8 +5,26 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
+
+from aws_durable_execution_sdk_python.plugin import DurableInstrumentationPlugin
+from aws_durable_execution_sdk_python_otel import (
+    ExecutionOtelPlugin,
+    InvocationOtelPlugin,
+    OtelPluginConfig,
+)
+
+
+def otel_plugin() -> DurableInstrumentationPlugin:
+    """Select the telemetry view configured for this deployed function."""
+
+    if os.environ.get("OTEL_PLUGIN_MODE") == "execution":
+        return ExecutionOtelPlugin(
+            OtelPluginConfig(use_default_tracer_provider=True),
+        )
+    return InvocationOtelPlugin()
 
 
 def require_scenario(event: Mapping[str, Any], expected: str) -> None:

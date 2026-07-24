@@ -33,6 +33,9 @@ EXPECTED_MAPPINGS = [
     ("Otel17WaitForCallbackFailure", "otel-17"),
     ("Otel18ChainedInvokeFailure", "otel-18"),
     ("Otel19ExecutionFailure", "otel-19"),
+    ("Otel20ExecutionSuccess", "otel-20"),
+    ("Otel21ExecutionWaitResume", "otel-21"),
+    ("Otel22ExecutionRetry", "otel-22"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -61,7 +64,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "    NoEcho: true" in template
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
     assert template.count("      CodeUri: dist/") == len(EXPECTED_MAPPINGS) + 2
-    for case_number in range(1, 20):
+    for case_number in range(1, 23):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
@@ -76,6 +79,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert template.count("          OTEL_PLUGIN_MODE: execution") == 3
 
 
 def test_typescript_template_handlers_have_sources() -> None:
@@ -102,6 +106,9 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_execution_success",
+        "otel_21_execution_wait_resume",
+        "otel_22_execution_retry",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules
@@ -124,6 +131,8 @@ def test_typescript_examples_build_sdk_packages_from_main() -> None:
     assert "--workspace packages/aws-durable-execution-sdk-js" in bootstrap
     assert "--workspace packages/aws-durable-execution-sdk-js-otel" in bootstrap
     assert "InvocationOtelPlugin({ useDefaultTracerProvider: true })" in common
+    assert "ExecutionOtelPlugin({ useDefaultTracerProvider: true })" in common
+    assert 'process.env.OTEL_PLUGIN_MODE === "execution"' in common
 
 
 def test_typescript_workflow_uses_current_adot_distro() -> None:

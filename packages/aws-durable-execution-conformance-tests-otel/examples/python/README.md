@@ -37,11 +37,15 @@ the template and source tree.
 | `otel-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
 | `otel-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
 | `otel-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
+| `otel-20` | `otel_1_success.handler` | Verifies the execution-view workflow, step, and attempt hierarchy. |
+| `otel-21` | `otel_2_wait_resume.handler` | Verifies the execution view across a resumed invocation. |
+| `otel-22` | `otel_3_retry.handler` | Verifies the execution view across retry attempts. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
-both packages directly from the SDK repository's `main` branch because the
-OpenTelemetry plugin is evolving quickly. Pin the two Git requirements to the
-same commit when a reproducible build is needed.
+both packages at the tested head of
+[Python SDK PR 576](https://github.com/aws/aws-durable-execution-sdk-python/pull/576),
+which introduces `ExecutionOtelPlugin`. Both Git requirements use the same
+commit so the core and OTel plugin APIs cannot drift.
 
 ## Run Against X-Ray
 

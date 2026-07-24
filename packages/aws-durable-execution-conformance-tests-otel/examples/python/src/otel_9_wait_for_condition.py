@@ -14,8 +14,7 @@ from aws_durable_execution_sdk_python.waits import (
     WaitForConditionConfig,
     WaitForConditionDecision,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 def increment_condition(
@@ -34,7 +33,7 @@ def stop_after_second_attempt(
     return WaitForConditionDecision.continue_waiting(Duration.from_seconds(1))
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> int:
     require_scenario(event, "wait-for-condition")
     return context.wait_for_condition(

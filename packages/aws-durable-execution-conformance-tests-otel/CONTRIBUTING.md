@@ -120,6 +120,12 @@ Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable
 across the complete exporter/backend support matrix.
 
+The catalog uses separate requirements when two public plugins intentionally
+produce different trace views. Invocation-view cases assert per-invocation
+operation hierarchy. Execution-view cases assert a terminal `Workflow` root,
+operations parented beneath it, attempts parented beneath their operation, and
+links from operation spans to the Lambda invocation that observed them.
+
 ## Add SDK Test Handlers
 
 The matching test handler and deployment template belong in each supported SDK
