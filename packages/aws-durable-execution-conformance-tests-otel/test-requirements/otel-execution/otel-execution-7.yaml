@@ -61,10 +61,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -86,10 +83,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -110,10 +104,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -135,10 +126,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -160,10 +148,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -184,10 +169,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -209,10 +191,7 @@ TelemetryAssertions:
         status: ${/^(?:OK|UNSET)$/}
         service_name: invocation
         links:
-          - attributes:
-              $any_of:
-                - faas.invocation_id: '*'
-                - aws.lambda.invocation_id: '*'
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

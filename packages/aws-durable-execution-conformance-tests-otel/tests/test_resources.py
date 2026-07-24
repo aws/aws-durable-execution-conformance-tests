@@ -191,16 +191,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
             assert expected["parent"]
-            assert expected["links"] == [
-                {
-                    "attributes": {
-                        "$any_of": [
-                            {"faas.invocation_id": "*"},
-                            {"aws.lambda.invocation_id": "*"},
-                        ]
-                    }
-                }
-            ]
+            assert expected["links"] == [{"name": "invocation"}]
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])
