@@ -18,8 +18,7 @@ from aws_durable_execution_sdk_python.retries import (
     RetryStrategyConfig,
     create_retry_strategy,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -27,7 +26,7 @@ def fail_terminally(_step_context: StepContext) -> None:
     raise RuntimeError("Intentional terminal failure")
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> None:
     require_scenario(event, "terminal-failure")
     retry_strategy = create_retry_strategy(

@@ -286,6 +286,32 @@ def test_span_links_accept_any_of_matchers() -> None:
     assert errors == []
 
 
+def test_linked_span_attributes_accept_any_of_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": [
+                        {
+                            "attributes": {
+                                "$any_of": [
+                                    {"faas.invocation_id": "*"},
+                                    {"aws.lambda.invocation_id": "*"},
+                                ]
+                            }
+                        }
+                    ]
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
 def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
     trace = _trace()
     root, child = trace.spans

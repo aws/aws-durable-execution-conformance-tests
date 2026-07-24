@@ -32,6 +32,9 @@ EXPECTED_MAPPINGS = [
     ("Otel17WaitForCallbackFailure", "otel-17"),
     ("Otel18ChainedInvokeFailure", "otel-18"),
     ("Otel19ExecutionFailure", "otel-19"),
+    ("Otel20ExecutionSuccess", "otel-20"),
+    ("Otel21ExecutionWaitResume", "otel-21"),
+    ("Otel22ExecutionRetry", "otel-22"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -63,7 +66,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert "    NoEcho: true" in template
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
     assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 2
-    for case_number in range(1, 20):
+    for case_number in range(1, 23):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
@@ -75,6 +78,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
     assert "/opt/collector-config/config-s3.yaml" in template
+    assert template.count("          OTEL_PLUGIN_MODE: execution") == 3
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
     for logical_id, _description_id in EXPECTED_MAPPINGS:
@@ -113,19 +117,25 @@ def test_python_example_handlers_are_valid_python() -> None:
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_python_examples_track_both_sdk_packages_from_main() -> None:
+def test_python_examples_pin_both_sdk_packages_to_execution_plugin_pr() -> None:
     requirements = (EXAMPLES_DIR / "src" / "requirements.txt").read_text(encoding="utf-8")
+    sdk_ref = "6ff4e2e8fecd4530e55959a479c20ca458d307e6"
 
     assert (
         "aws-durable-execution-sdk-python @ "
-        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
+        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
         "#subdirectory=packages/aws-durable-execution-sdk-python"
     ) in requirements
     assert (
         "aws-durable-execution-sdk-python-otel @ "
-        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
+        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
         "#subdirectory=packages/aws-durable-execution-sdk-python-otel"
     ) in requirements
+
+    common = (EXAMPLES_DIR / "src" / "common.py").read_text(encoding="utf-8")
+    assert "ExecutionOtelPlugin" in common
+    assert "InvocationOtelPlugin" in common
+    assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
 def test_python_s3_job_builds_and_queries_the_collector() -> None:

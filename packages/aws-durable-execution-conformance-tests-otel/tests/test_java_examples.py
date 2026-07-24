@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aws_durable_execution_conformance_tests.validate import (
     parse_function_descriptions,
+    parse_not_implemented,
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
@@ -57,6 +58,14 @@ def test_java_example_template_maps_every_otel_requirement() -> None:
     mappings = parse_function_descriptions(str(EXAMPLES_DIR / "template.yaml"))
 
     assert mappings == EXPECTED_MAPPINGS
+
+
+def test_java_example_declares_execution_view_plugin_gap() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
+        "otel-20": "ExecutionOtelPlugin is not available in the Java SDK",
+        "otel-21": "ExecutionOtelPlugin is not available in the Java SDK",
+        "otel-22": "ExecutionOtelPlugin is not available in the Java SDK",
+    }
 
 
 def test_java_example_template_accepts_runner_parameters() -> None:

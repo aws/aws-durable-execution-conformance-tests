@@ -98,10 +98,10 @@ temporary stack, bucket, and layer version afterward.
 
 The package includes a self-contained
 [Python SAM project](examples/python/README.md) that implements every OTel
-requirement with the Python SDK and its OTel plugin. Its runtime requirements
-track both packages directly from the SDK repository's `main` branch. The
-folder is structured to move into the Python SDK's OTel package when this suite
-stabilizes.
+requirement with the Python SDK and its OTel plugins. Its runtime requirements
+pin both packages to the tested head of Python SDK PR 576 while
+`ExecutionOtelPlugin` is under review. The folder is structured to move into
+the Python SDK's OTel package when this suite stabilizes.
 
 ## Java Examples
 
@@ -117,8 +117,9 @@ gRPC endpoint from the deployment environment.
 The self-contained
 [TypeScript SAM project](examples/typescript/README.md) implements all OTel
 requirements on Node.js 22. It builds the JavaScript SDK and OTel plugin from
-their `main` branch, bundles the handlers, and uses `InvocationOtelPlugin` with
-the tracer provider registered by `AWSOpenTelemetryDistroJs`.
+their `main` branch, bundles the handlers, and exercises both
+`InvocationOtelPlugin` and `ExecutionOtelPlugin` with the tracer provider
+registered by the Lambda instrumentation layer.
 
 ## Third-Party Plugins
 
