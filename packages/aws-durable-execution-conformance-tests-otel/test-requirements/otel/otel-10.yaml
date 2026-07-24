@@ -203,8 +203,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-callback
+          name: "${/^otel-callback(?: submitter|-submitter)$/}"
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${CALLBACK_CONTEXT}
-            durable.operation.subtype: WaitForCallback
+            durable.operation.id: ${SUBMITTER_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

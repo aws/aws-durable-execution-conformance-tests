@@ -149,12 +149,12 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-map-iteration-0
+          name: otel-map-step-0
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${ITERATION1}
-            durable.operation.type: CONTEXT
-            durable.operation.subtype: MapIteration
+            durable.operation.id: ${STEP1}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
     - select:
         name: otel-map-iteration-1
         attributes:
@@ -222,9 +222,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-map-iteration-1
+          name: otel-map-step-1
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${ITERATION2}
-            durable.operation.type: CONTEXT
-            durable.operation.subtype: MapIteration
+            durable.operation.id: ${STEP2}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

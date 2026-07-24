@@ -149,12 +149,12 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-parallel-branch-a
+          name: otel-parallel-step-a
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${BRANCH1}
-            durable.operation.type: CONTEXT
-            durable.operation.subtype: ParallelBranch
+            durable.operation.id: ${STEP1}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
     - select:
         name: otel-parallel-branch-b
         attributes:
@@ -222,9 +222,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-parallel-branch-b
+          name: otel-parallel-step-b
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${BRANCH2}
-            durable.operation.type: CONTEXT
-            durable.operation.subtype: ParallelBranch
+            durable.operation.id: ${STEP2}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
