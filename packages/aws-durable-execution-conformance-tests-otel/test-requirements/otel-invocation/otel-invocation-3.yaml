@@ -53,6 +53,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -68,6 +74,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
         name: otel-retry
         attributes:
@@ -84,6 +96,10 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.status: STARTED
           durable.operation.name: otel-retry
+        before:
+          name: otel-retry
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -107,6 +123,10 @@ TelemetryAssertions:
           durable.operation.name: otel-retry
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
+        before:
+          name: otel-retry attempt 2
+          attributes:
+            durable.attempt.number: 2
         parent:
           name: otel-retry
           kind: INTERNAL
@@ -134,6 +154,10 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-retry
           durable.attempt.number: 2
+        after:
+          name: otel-retry
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: invocation
           kind: INTERNAL
@@ -157,6 +181,10 @@ TelemetryAssertions:
           durable.operation.name: otel-retry
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-retry attempt 1
+          attributes:
+            durable.attempt.number: 1
         parent:
           name: otel-retry
           kind: INTERNAL

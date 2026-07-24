@@ -91,6 +91,11 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.name: otel-retry
           durable.attempt.outcome: FAILED
+        before:
+          name: otel-retry attempt 2
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-retry
           kind: INTERNAL
@@ -117,6 +122,11 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.name: otel-retry
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-retry attempt 1
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.attempt.outcome: FAILED
         parent:
           name: otel-retry
           kind: INTERNAL

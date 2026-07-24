@@ -48,6 +48,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -63,6 +69,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
         name: otel-wait
         attributes:
@@ -79,6 +91,10 @@ TelemetryAssertions:
           durable.operation.subtype: Wait
           durable.operation.status: STARTED
           durable.operation.name: otel-wait
+        before:
+          name: otel-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -103,6 +119,14 @@ TelemetryAssertions:
           durable.operation.subtype: Wait
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-wait
+        after:
+          name: otel-wait
+          attributes:
+            durable.operation.status: STARTED
+        before:
+          name: otel-after-resume
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
@@ -125,6 +149,10 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-after-resume
           durable.attempt.number: 1
+        after:
+          name: otel-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL

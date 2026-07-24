@@ -51,6 +51,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: FAILED
     - select:
         name: invocation
         status: ERROR
@@ -67,6 +73,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: FAILED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: FAILED
     - select:
         name: invocation
         attributes:
@@ -82,6 +94,12 @@ TelemetryAssertions:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: FAILED
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: FAILED
     - select:
         name: otel-failed-invoke
         attributes:
@@ -98,6 +116,10 @@ TelemetryAssertions:
           durable.operation.subtype: ChainedInvoke
           durable.operation.status: STARTED
           durable.operation.name: otel-failed-invoke
+        before:
+          name: otel-failed-invoke
+          attributes:
+            durable.operation.status: FAILED
         parent:
           name: invocation
           kind: INTERNAL
@@ -122,6 +144,10 @@ TelemetryAssertions:
           durable.operation.subtype: ChainedInvoke
           durable.operation.status: FAILED
           durable.operation.name: otel-failed-invoke
+        after:
+          name: otel-failed-invoke
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: invocation
           kind: INTERNAL

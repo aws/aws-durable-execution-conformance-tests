@@ -59,6 +59,10 @@ TelemetryAssertions:
           durable.operation.type: WAIT
           durable.operation.subtype: Wait
           durable.operation.name: otel-wait
+        before:
+          name: otel-after-resume
+          attributes:
+            durable.operation.id: ${STEP1}
         parent:
           name: Workflow
           kind: INTERNAL
@@ -84,6 +88,10 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.name: otel-after-resume
+        after:
+          name: otel-wait
+          attributes:
+            durable.operation.id: ${WAIT1}
         parent:
           name: Workflow
           kind: INTERNAL

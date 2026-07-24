@@ -69,6 +69,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: FAILED
     - select:
         name: invocation
         status: ERROR
@@ -85,6 +91,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: FAILED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
         name: otel-failed-callback
         status: UNSET
@@ -100,6 +112,9 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCallback
           durable.operation.status: STARTED
           durable.operation.name: otel-failed-callback
+        before:
+          name: otel-failed-callback
+          status: ERROR
         parent:
           name: invocation
           kind: INTERNAL
@@ -123,6 +138,9 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCallback
           durable.operation.status: STARTED
           durable.operation.name: otel-failed-callback
+        after:
+          name: otel-failed-callback
+          status: UNSET
         parent:
           name: invocation
           kind: INTERNAL
@@ -144,6 +162,10 @@ TelemetryAssertions:
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
           durable.operation.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+        before:
+          name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+          attributes:
+            durable.operation.status: FAILED
         parent:
           name: otel-failed-callback
           kind: INTERNAL
@@ -168,6 +190,10 @@ TelemetryAssertions:
           durable.operation.subtype: Callback
           durable.operation.status: FAILED
           durable.operation.name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+        after:
+          name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: otel-failed-callback
           kind: INTERNAL
