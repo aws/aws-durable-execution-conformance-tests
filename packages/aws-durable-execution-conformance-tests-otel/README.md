@@ -40,9 +40,13 @@ Credentials and OTLP headers remain in environment variables or the CI secret
 store; the runner redacts the secret parameter from commands and SAM output.
 
 `TelemetryAssertions.span_assertions` can select one or an exact number of
-canonical spans and assert any properties, nested attributes, and parent
-relationships. Complete-contract cases can require every plugin span and every
-attribute under a stable prefix to be asserted. See the
+canonical spans and assert any properties, nested attributes, parent
+relationships, and timestamp ordering. Every span must start at or before it
+ends, and every asserted parent must contain its child's complete timespan.
+`before`, `after`, and `inside` compare a selected span with one other span.
+`inside` can target a span that is not the selected span's parent.
+Complete-contract cases can require every plugin span and every attribute
+under a stable prefix to be asserted. See the
 [contribution guide](CONTRIBUTING.md#add-a-requirement) for the requirement
 syntax and supported span fields.
 

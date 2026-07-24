@@ -10,6 +10,7 @@ from typing import Any
 
 from aws_durable_execution_conformance_tests.history import get_regex_pattern
 from aws_durable_execution_conformance_tests_otel.model import (
+    Span,
     TelemetryQuery,
     Trace,
     span_to_dict,
@@ -27,6 +28,7 @@ _DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
     "durable.invocation.first",
     "durable.invocation.status",
 )
+_TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
 
 
 def _attribute_values(
@@ -169,8 +171,8 @@ def _span_expectation_errors(
 
 def _parent_expectation_errors(
     expected: Any,
-    span: Mapping[str, Any],
-    spans_by_id: Mapping[str, list[Mapping[str, Any]]],
+    span: Span,
+    spans_by_id: Mapping[str, list[tuple[Span, Mapping[str, Any]]]],
     *,
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
@@ -178,7 +180,7 @@ def _parent_expectation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
-    parent_span_id = span["parent_span_id"]
+    parent_span_id = span.parent_span_id
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
 
@@ -188,12 +190,27 @@ def _parent_expectation_errors(
     if len(parents) > 1:
         return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
 
-    return _span_expectation_errors(
+    parent, serialized_parent = parents[0]
+    errors = _span_expectation_errors(
         expected,
-        parents[0],
+        serialized_parent,
         path=path,
         feature_disparities=feature_disparities,
     )
+    if errors:
+        return errors
+
+    if span.start_time < parent.start_time:
+        errors.append(
+            f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
+            f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
+        )
+    if span.end_time > parent.end_time:
+        errors.append(
+            f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
+            f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
+        )
+    return errors
 
 
 def _link_expectation_errors(
@@ -261,6 +278,59 @@ def _link_expectation_errors(
     return errors
 
 
+def _temporal_relation_errors(
+    relation: str,
+    expected: Any,
+    selected_span: Span,
+    selected_span_index: int,
+    trace: Trace,
+    spans: Sequence[Mapping[str, Any]],
+    *,
+    path: str,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+
+    matches = [
+        span
+        for span_index, (span, serialized_span) in enumerate(zip(trace.spans, spans, strict=True))
+        if span_index != selected_span_index and _matches_span(expected, serialized_span, feature_disparities)
+    ]
+    if not matches:
+        return [f"{path} matched no spans"]
+    if len(matches) > 1:
+        return [f"{path} matched {len(matches)} spans; it must select exactly one"]
+
+    related_span = matches[0]
+    selected_description = f"{selected_span.name!r} ({selected_span.span_id})"
+    related_description = f"{related_span.name!r} ({related_span.span_id})"
+    if relation == "before" and selected_span.end_time > related_span.start_time:
+        return [
+            f"{path}: span {selected_description} ends at {selected_span.end_time.isoformat()}, "
+            f"after span {related_description} starts at {related_span.start_time.isoformat()}"
+        ]
+    if relation == "after" and selected_span.start_time < related_span.end_time:
+        return [
+            f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
+            f"before span {related_description} ends at {related_span.end_time.isoformat()}"
+        ]
+    if relation == "inside":
+        errors = []
+        if selected_span.start_time < related_span.start_time:
+            errors.append(
+                f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
+                f"before containing span {related_description} starts at {related_span.start_time.isoformat()}"
+            )
+        if selected_span.end_time > related_span.end_time:
+            errors.append(
+                f"{path}: span {selected_description} ends at {selected_span.end_time.isoformat()}, "
+                f"after containing span {related_description} ends at {related_span.end_time.isoformat()}"
+            )
+        return errors
+    return []
+
+
 def _span_assertion_errors(
     trace: Trace,
     raw_assertions: Any,
@@ -281,8 +351,10 @@ def _span_assertion_errors(
 
     spans = [span_to_dict(span) for span in trace.spans]
     spans_by_id: dict[str, list[Mapping[str, Any]]] = {}
-    for span in spans:
-        spans_by_id.setdefault(span["span_id"], []).append(span)
+    span_models_by_id: dict[str, list[tuple[Span, Mapping[str, Any]]]] = {}
+    for span, serialized_span in zip(trace.spans, spans, strict=True):
+        spans_by_id.setdefault(span.span_id, []).append(serialized_span)
+        span_models_by_id.setdefault(span.span_id, []).append((span, serialized_span))
 
     errors: list[str] = []
     covered_span_indexes: set[int] = set()
@@ -326,9 +398,13 @@ def _span_assertion_errors(
             errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
             continue
 
-        expected_properties = {key: value for key, value in expected.items() if key not in {"links", "parent"}}
+        expected_properties = {
+            key: value
+            for key, value in expected.items()
+            if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
+        }
         expected_attributes = expected.get("attributes")
-        for match_index, (_span_index, matched_span) in enumerate(matches):
+        for match_index, (span_index, matched_span) in enumerate(matches):
             expectation_path = f"{path}.expect"
             if expected_count > 1:
                 expectation_path = f"{expectation_path}[{match_index}]"
@@ -344,8 +420,8 @@ def _span_assertion_errors(
                 errors.extend(
                     _parent_expectation_errors(
                         expected["parent"],
-                        matched_span,
-                        spans_by_id,
+                        trace.spans[span_index],
+                        span_models_by_id,
                         path=f"{expectation_path}.parent",
                         feature_disparities=feature_disparities,
                     )
@@ -360,6 +436,20 @@ def _span_assertion_errors(
                         feature_disparities=feature_disparities,
                     )
                 )
+            for relation in _TEMPORAL_RELATION_KEYS:
+                if relation in expected:
+                    errors.extend(
+                        _temporal_relation_errors(
+                            relation,
+                            expected[relation],
+                            trace.spans[span_index],
+                            span_index,
+                            trace,
+                            spans,
+                            path=f"{expectation_path}.{relation}",
+                            feature_disparities=feature_disparities,
+                        )
+                    )
 
             if exact_attribute_prefixes and isinstance(expected_attributes, Mapping):
                 actual_attributes = matched_span["attributes"]
@@ -401,6 +491,13 @@ def validate_trace(
     inconsistent = [span.span_id for span in trace.spans if span.trace_id != trace.trace_id]
     if inconsistent:
         errors.append("Canonical trace contains spans with a different trace id: " + ", ".join(inconsistent))
+
+    for span in trace.spans:
+        if span.start_time > span.end_time:
+            errors.append(
+                f"Span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
+                f"after it ends at {span.end_time.isoformat()}"
+            )
 
     if assertions.get("require_execution_correlation", True):
         execution_values = _attribute_values(trace, _EXECUTION_ATTRIBUTE_KEYS)
