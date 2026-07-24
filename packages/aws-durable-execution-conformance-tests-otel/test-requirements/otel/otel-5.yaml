@@ -116,9 +116,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: otel-child-context
+          name: otel-child-step
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${CTX1}
-            durable.operation.type: CONTEXT
-            durable.operation.subtype: RunInChildContext
+            durable.operation.id: ${STEP1}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

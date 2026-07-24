@@ -75,9 +75,19 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
             assert expected["kind"] == "INTERNAL"
             assert "span.name" not in expected["attributes"]
             assert "span.kind" not in expected["attributes"]
+            expected_attributes = expected["attributes"]
+            if "durable.attempt.outcome" in expected_attributes:
+                assert expected["parent"] == {
+                    "name": expected_attributes["durable.operation.name"],
+                    "kind": "INTERNAL",
+                    "attributes": {
+                        "durable.operation.id": expected_attributes["durable.operation.id"],
+                        "durable.operation.type": expected_attributes["durable.operation.type"],
+                        "durable.operation.subtype": expected_attributes["durable.operation.subtype"],
+                    },
+                }
             if selected_name == "invocation":
                 selector_attributes = span_assertion["select"]["attributes"]
-                expected_attributes = expected["attributes"]
                 assert isinstance(expected_attributes["durable.invocation.first"], bool)
                 assert expected_attributes["durable.invocation.status"] in {
                     "FAILED",

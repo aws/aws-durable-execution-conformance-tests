@@ -83,7 +83,9 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
         parent:
-          name: invocation
+          name: otel-terminal-failure
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${FAILED_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

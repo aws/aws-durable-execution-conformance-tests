@@ -108,10 +108,12 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
         parent:
-          name: invocation
+          name: otel-retry
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${RETRY_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
     - select:
         name: otel-retry
         attributes:
@@ -156,7 +158,9 @@ TelemetryAssertions:
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
         parent:
-          name: invocation
+          name: otel-retry
           kind: INTERNAL
           attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${RETRY_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
