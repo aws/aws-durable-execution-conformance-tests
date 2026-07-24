@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for posting and minimizing AI review summaries."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+POST_SUMMARY_SCRIPT = REPOSITORY_ROOT / "scripts" / "post_ai_review_summary.sh"
+
+MOCK_GH = """\
+#!/usr/bin/env python3
+
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+repository = os.environ["GITHUB_REPOSITORY"]
+pr_number = os.environ["PR_NUMBER"]
+
+if f"repos/{repository}/pulls/{pr_number}" in args:
+    print("expected-head-sha")
+    raise SystemExit
+
+if f"repos/{repository}/issues/{pr_number}/comments" in args:
+    body = next(argument.removeprefix("body=") for argument in args if argument.startswith("body="))
+    Path(os.environ["MOCK_POSTED_BODY"]).write_text(body, encoding="utf-8")
+    print("NEW_COMMENT")
+    raise SystemExit
+
+if "--paginate" in args:
+    sys.stdout.write(Path(os.environ["MOCK_COMMENTS"]).read_text(encoding="utf-8"))
+    raise SystemExit
+
+comment_id = next(argument.removeprefix("id=") for argument in args if argument.startswith("id="))
+with Path(os.environ["MOCK_MINIMIZED_IDS"]).open("a", encoding="utf-8") as minimized_ids:
+    minimized_ids.write(f"{comment_id}\\n")
+
+if comment_id == os.environ["MOCK_FAIL_ID"]:
+    raise SystemExit(1)
+
+print('{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}')
+"""
+
+
+def _comment(
+    comment_id: str,
+    body: str,
+    *,
+    author: str = "github-actions",
+    minimized: bool = False,
+) -> dict[str, object]:
+    return {
+        "id": comment_id,
+        "body": body,
+        "isMinimized": minimized,
+        "author": {"login": author},
+    }
+
+
+def _page(
+    comments: list[dict[str, object]],
+    *,
+    has_next_page: bool = False,
+) -> dict[str, object]:
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "comments": {
+                        "nodes": comments,
+                        "pageInfo": {
+                            "hasNextPage": has_next_page,
+                            "endCursor": "next-page" if has_next_page else None,
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("reviewer", "marker", "title", "other_marker", "other_title"),
+    [
+        (
+            "claude",
+            "<!-- ai-pr-review:claude -->",
+            "Claude AI review",
+            "<!-- ai-pr-review:codex -->",
+            "Codex AI review",
+        ),
+        (
+            "codex",
+            "<!-- ai-pr-review:codex -->",
+            "Codex AI review",
+            "<!-- ai-pr-review:claude -->",
+            "Claude AI review",
+        ),
+    ],
+)
+def test_post_summary_minimizes_only_exact_same_reviewer_comments(
+    tmp_path: Path,
+    reviewer: str,
+    marker: str,
+    title: str,
+    other_marker: str,
+    other_title: str,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    mock_gh = bin_dir / "gh"
+    mock_gh.write_text(MOCK_GH, encoding="utf-8")
+    mock_gh.chmod(0o755)
+
+    comments_file = tmp_path / "comments.json"
+    pages = [
+        _page(
+            [
+                _comment("OLD_MARKER", f"{marker}\n## {title}\n\nOld marker summary"),
+                _comment("MARKER_PREFIX", f"{marker} extra\n## {title}"),
+                _comment("NEW_COMMENT", f"{marker}\n## {title}\n\nCurrent summary"),
+                _comment("OTHER_AI", f"{other_marker}\n## {other_title}"),
+            ],
+            has_next_page=True,
+        ),
+        _page(
+            [
+                _comment("OLD_LEGACY", f"## {title}\n\nOld legacy summary"),
+                _comment("HEADER_PREFIX", f"## {title}er metrics"),
+                _comment("HUMAN", f"{marker}\n## {title}", author="alice"),
+                _comment("MINIMIZED", f"{marker}\n## {title}", minimized=True),
+                _comment("NOT_FIRST_LINE", f"Context\n## {title}"),
+            ]
+        ),
+    ]
+    comments_file.write_text(
+        "".join(f"{json.dumps(page)}\n" for page in pages),
+        encoding="utf-8",
+    )
+
+    summary_file = tmp_path / "summary.md"
+    summary_file.write_text("No actionable findings.", encoding="utf-8")
+    posted_body = tmp_path / "posted-body.md"
+    minimized_ids = tmp_path / "minimized-ids.txt"
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{environment['PATH']}",
+            "GH_TOKEN": "test-token",
+            "GITHUB_REPOSITORY": "example/repository",
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_SERVER_URL": "https://github.example",
+            "PR_NUMBER": "42",
+            "RUNNER_TEMP": str(tmp_path),
+            "MOCK_COMMENTS": str(comments_file),
+            "MOCK_POSTED_BODY": str(posted_body),
+            "MOCK_MINIMIZED_IDS": str(minimized_ids),
+            "MOCK_FAIL_ID": "OLD_MARKER",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            POST_SUMMARY_SCRIPT,
+            reviewer,
+            "expected-head-sha",
+            str(summary_file),
+        ],
+        check=False,
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert minimized_ids.read_text(encoding="utf-8").splitlines() == [
+        "OLD_MARKER",
+        "OLD_LEGACY",
+    ]
+    assert f"::warning::Failed to minimize previous {title} comment (OLD_MARKER)." in result.stdout
+    assert f"Minimized 1 previous {title} comment(s)." in result.stdout
+    assert posted_body.read_text(encoding="utf-8") == (
+        f"{marker}\n"
+        f"## {title}\n\n"
+        "No actionable findings.\n\n"
+        "Reviewed commit `expected-head-sha`. "
+        "[Workflow run](https://github.example/example/repository/actions/runs/123)"
+    )

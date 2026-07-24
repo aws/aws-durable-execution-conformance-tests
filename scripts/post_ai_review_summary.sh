@@ -73,6 +73,7 @@ repository="${GITHUB_REPOSITORY#*/}"
 comments_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-comments.XXXXXX")"
 trap 'rm -f "$comments_file"' EXIT
 
+# shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
 gh api graphql \
   --paginate \
   -F owner="$owner" \
@@ -110,7 +111,8 @@ previous_comment_count=0
 while IFS= read -r comment_id; do
   [[ -n "$comment_id" ]] || continue
 
-  gh api graphql \
+  # shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
+  if gh api graphql \
     -F id="$comment_id" \
     -f query='
       mutation($id: ID!) {
@@ -125,8 +127,11 @@ while IFS= read -r comment_id; do
           }
         }
       }
-    ' > /dev/null
-  previous_comment_count=$((previous_comment_count + 1))
+    ' > /dev/null; then
+    previous_comment_count=$((previous_comment_count + 1))
+  else
+    echo "::warning::Failed to minimize previous $title comment ($comment_id)."
+  fi
 done < <(
   jq -rs \
     --arg current_id "$new_comment_id" \
@@ -138,9 +143,10 @@ done < <(
       | select(.id != $current_id)
       | select(.isMinimized == false)
       | select(.author.login == "github-actions")
+      | (.body | split("\n")[0]) as $first_line
       | select(
-          (.body | startswith($marker))
-          or (.body | startswith($legacy_header))
+          $first_line == $marker
+          or $first_line == $legacy_header
         )
       | .id
     ' \
