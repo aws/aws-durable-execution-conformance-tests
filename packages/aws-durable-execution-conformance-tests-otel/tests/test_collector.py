@@ -27,7 +27,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     PollingPolicy,
 )
 
-COLLECTOR_DIR = Path(__file__).resolve().parents[1] / "examples" / "collector"
+COLLECTOR_DIR = Path(__file__).resolve().parents[1] / "collector"
 
 
 class _Body:
@@ -297,7 +297,7 @@ def test_collector_factory_requires_an_s3_backend_location() -> None:
         )
 
 
-def test_custom_collector_layer_includes_the_s3_exporter_and_config() -> None:
+def test_shared_collector_layer_includes_the_s3_exporter_and_config() -> None:
     config = (COLLECTOR_DIR / "config.yaml").read_text(encoding="utf-8")
     build_script = (COLLECTOR_DIR / "build-lambda-layer.sh").read_text(encoding="utf-8")
     component = (COLLECTOR_DIR / "lambda" / "awss3.go").read_text(encoding="utf-8")

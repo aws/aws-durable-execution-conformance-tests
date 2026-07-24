@@ -65,14 +65,16 @@ workflow discovers the latest Python layer from the ADOT release.
 The `collector` backend reads trace files written by the OpenTelemetry
 Collector Contrib
 [`awss3exporter`](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/awss3exporter).
-This repository does not implement an exporter. Start `otelcol-contrib` with
-the included [configuration](examples/collector/config.yaml):
+This repository does not implement an exporter. The shared collector assets
+live outside the SDK examples so those examples can consume the same builder
+after they move to their SDK repositories. Start `otelcol-contrib` with the
+included [configuration](collector/config.yaml):
 
 ```bash
 AWS_REGION=us-west-2 \
 OTEL_S3_BUCKET=example-telemetry \
 OTEL_S3_PREFIX=durable-execution \
-otelcol-contrib --config examples/collector/config.yaml
+otelcol-contrib --config collector/config.yaml
 ```
 
 The sample receives OTLP over HTTP or gRPC and uses the exporter's
@@ -85,8 +87,8 @@ the bucket and `s3:GetObject` under the prefix; the collector identity needs
 write access.
 
 The stock OpenTelemetry Lambda collector layer does not include
-`awss3exporter`. The included
-[`build-lambda-layer.sh`](examples/collector/build-lambda-layer.sh) adds that
+`awss3exporter`. The shared
+[`build-lambda-layer.sh`](collector/build-lambda-layer.sh) adds that
 upstream component to a pinned `opentelemetry-lambda` checkout and builds a
 custom extension layer containing `config-s3.yaml`. Separate Python, Java, and
 TypeScript hosted workflows publish temporary language-compatible layer

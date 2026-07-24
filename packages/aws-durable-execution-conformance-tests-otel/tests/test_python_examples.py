@@ -12,6 +12,7 @@ from aws_durable_execution_conformance_tests.validate import parse_function_desc
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
+COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -136,7 +137,7 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
     assert "github.base_ref == 'main'" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
-    assert "build-lambda-layer.sh" in workflow
+    assert COLLECTOR_BUILD_SCRIPT in workflow
     assert "--compatible-runtimes python3.13" in workflow
     assert "--language python" in workflow
     assert "--otel-exporter community" in workflow

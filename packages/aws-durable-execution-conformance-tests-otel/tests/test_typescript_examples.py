@@ -13,6 +13,7 @@ from aws_durable_execution_conformance_tests.validate import parse_function_desc
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
+COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-1"),
     ("Otel2WaitResume", "otel-2"),
@@ -141,7 +142,7 @@ def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
     assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
-    assert "build-lambda-layer.sh" in workflow
+    assert COLLECTOR_BUILD_SCRIPT in workflow
     assert "--otel-exporter community" in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow

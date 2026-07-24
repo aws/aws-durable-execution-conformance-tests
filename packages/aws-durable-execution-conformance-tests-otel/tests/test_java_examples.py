@@ -14,6 +14,7 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
+COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
@@ -150,7 +151,7 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
-    assert "build-lambda-layer.sh" in workflow
+    assert COLLECTOR_BUILD_SCRIPT in workflow
     assert "--compatible-runtimes java21" in workflow
     assert "--language java" in workflow
     assert "--otel-exporter community" in workflow

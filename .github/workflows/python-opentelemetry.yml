@@ -394,7 +394,7 @@ jobs:
 
       - name: Build S3 collector Lambda layer
         run: |
-          bash packages/aws-durable-execution-conformance-tests-otel/examples/collector/build-lambda-layer.sh \
+          bash packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh \
             "$OTEL_LAMBDA_CHECKOUT" \
             "$RUNNER_TEMP/opentelemetry-s3-collector-layer.zip"
 
