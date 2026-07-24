@@ -175,6 +175,13 @@ def test_absence_entries_are_not_ordered():
     assert not LogExpectation.from_dict({"pattern": "x", "max_count": 0}).is_ordered
 
 
+def test_zero_minimum_entries_are_not_ordered():
+    # max_count-only is a pure upper bound (zero required) — position-neutral.
+    assert not LogExpectation.from_dict({"pattern": "x", "max_count": 1}).is_ordered
+    assert not LogExpectation.from_dict({"pattern": "x", "min_count": 0, "max_count": 2}).is_ordered
+    assert LogExpectation.from_dict({"pattern": "x", "min_count": 1}).is_ordered
+
+
 def test_unordered_flag():
     exp = LogExpectation.from_dict({"pattern": "x", "unordered": True})
     assert not exp.is_ordered
@@ -250,15 +257,51 @@ def test_min_and_max_count_constraints_on_ordered_entry():
     assert not too_many.success
 
 
-def test_exact_count_is_strict_over_remainder():
+def test_exact_count_is_global():
     validator = CloudWatchLogValidator()
-    # Strictness guard: a later duplicate of an earlier pattern still counts
-    # against an exact-count entry ("executed exactly once" stays strong).
+    # Cardinality is global: a later duplicate of an earlier pattern still
+    # counts against an exact-count entry ("executed exactly once" stays strong).
     result = validator.validate(
         [{"pattern": "a", "count": 1}, {"pattern": "b", "count": 1}],
         _events("a", "b", "a"),
     )
     assert not result.success
+
+
+def test_duplicate_before_first_anchor_fails_global_count():
+    validator = CloudWatchLogValidator()
+    # Reviewer counterexample: end,start,end with start(1), end(1) must FAIL —
+    # the duplicated 'end' before the first anchor is counted globally.
+    result = validator.validate(
+        [{"pattern": "start", "count": 1}, {"pattern": "end", "count": 1}],
+        _events("end", "start", "end"),
+    )
+    assert not result.success
+    assert any("exactly 1" in e for e in result.errors)
+
+
+def test_out_of_order_with_correct_counts_fails_ordering():
+    validator = CloudWatchLogValidator()
+    # Counts are satisfied globally (1 each) but the order is wrong: the
+    # ordering check must catch it with a distinct error.
+    result = validator.validate(
+        [{"pattern": "start", "count": 1}, {"pattern": "end", "count": 1}],
+        _events("end", "start"),
+    )
+    assert not result.success
+    assert any("out of order" in e for e in result.errors)
+
+
+def test_max_only_entry_is_position_neutral():
+    validator = CloudWatchLogValidator()
+    # Reviewer counterexample: optional(max_count=1), end(1) vs end,optional
+    # must PASS — a max-only entry permits zero matches and must not consume
+    # an ordered anchor.
+    result = validator.validate(
+        [{"pattern": "optional", "max_count": 1}, {"pattern": "end", "count": 1}],
+        _events("end", "optional"),
+    )
+    assert result.success, result.errors
 
 
 def test_repeating_sequences_use_distinct_patterns():

@@ -74,19 +74,29 @@ class LogExpectation:
         )
 
     @property
-    def is_absence(self) -> bool:
-        """True when the entry asserts the pattern does NOT appear.
+    def min_required(self) -> int:
+        """Minimum number of matches this entry requires.
 
-        Absence entries (``count: 0`` or ``max_count: 0``) are checked over
-        the whole log stream and are exempt from ordering — a pattern that
-        never appears cannot anchor a position.
+        ``count`` wins; else ``min_count``; a ``max_count``-only entry is a
+        pure upper bound (zero required); no constraint at all means one.
         """
-        return self.count == 0 or self.max_count == 0
+        if self.count is not None:
+            return self.count
+        if self.min_count is not None:
+            return self.min_count
+        if self.max_count is not None:
+            return 0
+        return 1
 
     @property
     def is_ordered(self) -> bool:
-        """True when the entry participates in the ordered sequential scan."""
-        return not (self.unordered or self.is_absence)
+        """True when the entry participates in the ordered sequential scan.
+
+        Entries whose minimum requirement is zero (absence assertions like
+        ``count: 0``, or ``max_count``-only upper bounds) cannot anchor a
+        position and are checked globally, as are ``unordered: true`` entries.
+        """
+        return not self.unordered and self.min_required > 0
 
 
 @dataclass(frozen=True)
@@ -283,21 +293,22 @@ class CloudWatchLogRetriever:
 class CloudWatchLogValidator:
     """Matches expected log patterns against actual CloudWatch log events.
 
-    Entries in ``ExpectedLogs`` are matched **in list order by default**
-    (sequential scan):
+    Entries in ``ExpectedLogs`` are matched **in list order by default**.
+    Cardinality and ordering are validated independently:
 
-    - Log events are sorted by ``(timestamp, ingestionTime)`` before matching.
-    - Each *ordered* entry starts scanning after the previous ordered entry's
-      last consumed match; its count constraints are evaluated over the
-      remainder of the stream from that position onward. After a successful
-      match, the scan position advances past the match that satisfied the
-      entry's minimum requirement (``count``, else ``min_count``, else 1).
-    - *Absence* entries (``count: 0`` / ``max_count: 0``) and entries marked
-      ``unordered: true`` are counted over the whole stream and do not
-      affect the scan position.
+    - **Cardinality**: every entry's ``count``/``min_count``/``max_count``
+      constraints are evaluated over the WHOLE stream (sorted by timestamp),
+      so duplicates anywhere — including before the first ordered anchor —
+      are always counted.
+    - **Ordering**: each *ordered* entry must additionally find its minimum
+      required matches at/after the scan position left by the previous
+      ordered entry; the position then advances past the match that satisfied
+      that minimum. Entries with a zero minimum requirement (``count: 0``
+      absence assertions, ``max_count``-only upper bounds) and entries marked
+      ``unordered: true`` are position-neutral.
 
-    With a single positive entry this degenerates to a global count, so
-    specs written against the previous (unordered) semantics keep working.
+    With a single positive entry this reduces to a global count, so specs
+    written against the previous (unordered) semantics keep working.
     """
 
     def validate(
@@ -334,18 +345,23 @@ class CloudWatchLogValidator:
                 errors.append(f"ExpectedLogs[{i}]: invalid entry — {e}")
                 continue
 
+            # Cardinality: always checked over the whole stream.
+            global_matches = self._match_indices(expectation, messages, start=0)
+            errors.extend(self._check_count(expectation, len(global_matches), index=i))
+
+            # Ordering: ordered entries must find their minimum required
+            # matches at/after the current scan position.
             if expectation.is_ordered:
-                match_indices = self._match_indices(expectation, messages, start=scan_pos)
-                entry_errors = self._check_count(expectation, len(match_indices), index=i, scan_pos=scan_pos)
-                errors.extend(entry_errors)
-                if match_indices:
-                    required = expectation.count or expectation.min_count or 1
-                    consumed = min(required, len(match_indices))
-                    scan_pos = match_indices[consumed - 1] + 1
-            else:
-                match_indices = self._match_indices(expectation, messages, start=0)
-                entry_errors = self._check_count(expectation, len(match_indices), index=i)
-                errors.extend(entry_errors)
+                required = expectation.min_required
+                post_matches = [idx for idx in global_matches if idx >= scan_pos]
+                if len(post_matches) < required:
+                    errors.append(
+                        f"ExpectedLogs[{i}] pattern={expectation.pattern!r}: expected at least "
+                        f"{required} match(es) at/after ordered position {scan_pos}, got "
+                        f"{len(post_matches)} (log lines out of order)"
+                    )
+                else:
+                    scan_pos = post_matches[required - 1] + 1
 
         return LogMatchResult(
             success=len(errors) == 0,
@@ -383,12 +399,10 @@ class CloudWatchLogValidator:
         expectation: LogExpectation,
         actual_count: int,
         index: int,
-        scan_pos: int | None = None,
     ) -> list[str]:
         """Check whether actual_count satisfies the expectation's count constraints."""
         errors: list[str] = []
         label = f"ExpectedLogs[{index}] pattern={expectation.pattern!r}"
-        where = f" at/after ordered position {scan_pos}" if scan_pos else ""
 
         has_constraint = (
             expectation.count is not None or expectation.min_count is not None or expectation.max_count is not None
@@ -396,7 +410,7 @@ class CloudWatchLogValidator:
 
         if expectation.count is not None:
             if actual_count != expectation.count:
-                errors.append(f"{label}: expected exactly {expectation.count} match(es){where}, got {actual_count}")
+                errors.append(f"{label}: expected exactly {expectation.count} match(es), got {actual_count}")
         else:
             min_c = expectation.min_count
             max_c = expectation.max_count
@@ -406,9 +420,9 @@ class CloudWatchLogValidator:
                 min_c = 1
 
             if min_c is not None and actual_count < min_c:
-                errors.append(f"{label}: expected at least {min_c} match(es){where}, got {actual_count}")
+                errors.append(f"{label}: expected at least {min_c} match(es), got {actual_count}")
             if max_c is not None and actual_count > max_c:
-                errors.append(f"{label}: expected at most {max_c} match(es){where}, got {actual_count}")
+                errors.append(f"{label}: expected at most {max_c} match(es), got {actual_count}")
 
         return errors
 
