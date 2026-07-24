@@ -24,7 +24,7 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: FAILED
+          durable.invocation.status: RETRY
       expect:
         status: ERROR
         service_name: invocation
@@ -33,4 +33,4 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: FAILED
+          durable.invocation.status: RETRY
