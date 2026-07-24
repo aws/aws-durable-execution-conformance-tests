@@ -29,6 +29,7 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         name="root",
         start_time=now,
         end_time=now,
+        kind="SERVER",
         status="OK",
         service_name="service",
         attributes={
@@ -44,6 +45,7 @@ def _trace(execution_arn: str = "arn:test") -> Trace:
         name="child",
         start_time=now,
         end_time=now,
+        kind="INTERNAL",
         status="OK",
         service_name="service",
         attributes={
@@ -133,6 +135,7 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     "parent_span_id": "2" * 16,
                     "parent": {
                         "name": "root",
+                        "kind": "SERVER",
                         "status": "OK",
                         "parent_span_id": None,
                         "attributes": {
@@ -141,6 +144,7 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                         },
                     },
                     "name": "child",
+                    "kind": "INTERNAL",
                     "start_time": "*",
                     "end_time": "*",
                     "status": "OK",
@@ -155,8 +159,12 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
                     },
                     "links": [
                         {
-                            "trace_id": "1" * 32,
-                            "span_id": "2" * 16,
+                            "name": "root",
+                            "kind": "SERVER",
+                            "status": "OK",
+                            "attributes": {
+                                "durable.execution.arn": "arn:test",
+                            },
                         }
                     ],
                 },
@@ -166,6 +174,94 @@ def test_asserts_any_property_and_nested_metadata_on_one_span() -> None:
     )
 
     assert errors == []
+
+
+def test_span_names_accept_regex_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "${/^chi(?:ld|rp)$/}"},
+                "expect": {
+                    "name": "${/^child$/}",
+                    "parent": {"name": "${/^root$/}"},
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_span_links_accept_any_of_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": {
+                        "$any_of": [
+                            [],
+                            [
+                                {
+                                    "name": "root",
+                                    "attributes": {
+                                        "durable.execution.arn": "arn:test",
+                                    },
+                                }
+                            ],
+                        ]
+                    }
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    missing_link = replace(
+        child,
+        links=(SpanLink(trace_id=child.trace_id, span_id="9" * 16),),
+    )
+
+    errors = validate_trace(
+        trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": [
+                        {
+                            "name": "not-root",
+                            "attributes": {"missing.key": "value"},
+                        }
+                    ]
+                },
+            }
+        },
+        _query(),
+    )
+    missing_errors = validate_trace(
+        replace(trace, spans=(root, missing_link)),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"links": [{"name": "root"}]},
+            }
+        },
+        _query(),
+    )
+
+    assert "span_assertions[0].expect.links[0].name: expected 'not-root'" in errors
+    assert "span_assertions[0].expect.links[0].attributes.missing.key: property is missing" in errors
+    assert missing_errors == ["span_assertions[0].expect.links[0]: linked span is not present in the trace"]
 
 
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
@@ -295,6 +391,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
         name=child.name,
         start_time=child.start_time,
         end_time=child.end_time,
+        kind=child.kind,
         status=child.status,
         service_name=child.service_name,
         attributes=child.attributes,
@@ -360,8 +457,13 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
                 {
                     "select": {"name": "child"},
                     "expect": {
+                        "name": "not-child",
+                        "kind": "SERVER",
                         "status": "ERROR",
-                        "attributes": {"missing.key": "value"},
+                        "service_name": "not-service",
+                        "attributes": {
+                            "missing.key": "value",
+                        },
                         "links": [],
                     },
                 },
@@ -372,7 +474,10 @@ def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
 
     assert "span_assertions[0].select matched no spans" in errors
     assert "span_assertions[1].select matched 2 spans; it must select exactly one" in errors
+    assert "span_assertions[2].expect.name: expected 'not-child'" in errors
+    assert "span_assertions[2].expect.kind: expected 'SERVER'" in errors
     assert "span_assertions[2].expect.status: expected 'ERROR'" in errors
+    assert "span_assertions[2].expect.service_name: expected 'not-service'" in errors
     assert "span_assertions[2].expect.attributes.missing.key: property is missing" in errors
     assert "span_assertions[2].expect.links: expected 0 item(s), found 1" in errors
 
@@ -418,6 +523,50 @@ def test_unset_status_disparity_applies_to_span_selectors() -> None:
             assertions,
             _query(),
             feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_unset_status_disparity_applies_to_status_matchers() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {"status": "${/^(?:ERROR|UNSET)$/}"},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.status: value 'OK' does not match regex pattern '^(?:ERROR|UNSET)$'",
+    ]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+        )
+        == []
+    )
+
+
+def test_span_link_disparity_skips_link_expectations() -> None:
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {"links": []},
+        }
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[0].expect.links: expected 0 item(s), found 1",
+    ]
+    assert (
+        validate_trace(
+            _trace(),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.SPAN_LINKS}),
         )
         == []
     )

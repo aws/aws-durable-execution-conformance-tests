@@ -8,9 +8,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from aws_durable_execution_conformance_tests.validate import (
-    parse_function_descriptions,
-)
+from aws_durable_execution_conformance_tests.validate import parse_function_descriptions
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 EXPECTED_MAPPINGS = [

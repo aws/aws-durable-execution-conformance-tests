@@ -1,4 +1,4 @@
-description: OpenTelemetry emits failed map iterations under the completed coordinator
+description: OpenTelemetry emits failed map iterations with the map operation as parent
 Input:
   scenario: map-failure
 AsyncInvoke: true
@@ -15,13 +15,13 @@ ExpectedExecutionHistory:
     SubType: MapIteration
     Id: ${FAILED_ITERATION}
     ParentId: ${MAP1}
-    Name: otel-failed-map-item-0
+    Name: otel-failed-map-iteration-0
   - EventId: 4
     EventType: ContextFailed
     SubType: MapIteration
     Id: ${FAILED_ITERATION}
     ParentId: ${MAP1}
-    Name: otel-failed-map-item-0
+    Name: otel-failed-map-iteration-0
   - EventId: 5
     EventType: ContextSucceeded
     SubType: Map
@@ -43,15 +43,26 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
       expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
     - select:
         name: otel-failed-map
         attributes:
           durable.operation.id: ${MAP1}
       expect:
         status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${MAP1}
@@ -61,23 +72,28 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-map
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-failed-map-item-0
+        name: otel-failed-map-iteration-0
         attributes:
           durable.operation.id: ${FAILED_ITERATION}
       expect:
         status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_ITERATION}
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
           durable.operation.status: STARTED
-          durable.operation.name: otel-failed-map-item-0
+          durable.operation.name: otel-failed-map-iteration-0
         parent:
           name: otel-failed-map
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${MAP1}
             durable.operation.type: CONTEXT

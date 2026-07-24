@@ -41,9 +41,17 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
       expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
     - select:
         name: otel-handled-failure
         attributes:
@@ -51,6 +59,9 @@ TelemetryAssertions:
           durable.operation.status: FAILED
       expect:
         status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_STEP}
@@ -61,6 +72,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -69,6 +81,9 @@ TelemetryAssertions:
           durable.attempt.outcome: FAILED
       expect:
         status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_STEP}
@@ -80,6 +95,7 @@ TelemetryAssertions:
           durable.attempt.outcome: FAILED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -88,6 +104,10 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.status: SUCCEEDED
       expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RECOVERY_STEP}
@@ -98,6 +118,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -105,6 +126,10 @@ TelemetryAssertions:
         attributes:
           durable.attempt.outcome: SUCCEEDED
       expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RECOVERY_STEP}
@@ -116,5 +141,6 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}

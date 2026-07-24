@@ -3,7 +3,7 @@ Input:
   scenario: wait-for-callback
 AsyncInvoke: true
 CallbackActions:
-  - CallbackName: otel-callback create callback id
+  - CallbackName: "${/^otel-callback(?: create callback id|-callback)$/}"
     Operation: success
     Payload: callback-complete
     Delay: 1
@@ -20,24 +20,19 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${CALLBACK1}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: otel-callback create callback id
+    Name: "${/^otel-callback(?: create callback id|-callback)$/}"
   - EventId: 4
     EventType: StepStarted
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: otel-callback submitter
+    Name: "${/^otel-callback(?: submitter|-submitter)$/}"
   - EventId: 5
     EventType: StepSucceeded
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: otel-callback submitter
-  - EventId: 7
-    EventType: CallbackSucceeded
-    SubType: Callback
-    Id: ${CALLBACK1}
-    ParentId: ${CALLBACK_CONTEXT}
+    Name: "${/^otel-callback(?: submitter|-submitter)$/}"
   - EventId: 8
     EventType: ContextSucceeded
     SubType: WaitForCallback
@@ -60,16 +55,47 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
     - select:
         name: otel-callback
         attributes:
           durable.operation.subtype: WaitForCallback
       count: 2
       expect:
+        status: "${/^(?:OK|UNSET)$/}"
+        service_name: invocation
+        links:
+          $any_of:
+            - []
+            - - name: otel-callback
+                attributes:
+                  durable.operation.id: ${CALLBACK_CONTEXT}
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK_CONTEXT}
@@ -79,77 +105,106 @@ TelemetryAssertions:
           durable.operation.name: otel-callback
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-callback create callback id
+        name: "${/^otel-callback(?: create callback id|-callback)$/}"
         attributes:
           durable.operation.status: STARTED
       expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: otel-callback create callback id
+          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
-        name: otel-callback create callback id
+        name: "${/^otel-callback(?: create callback id|-callback)$/}"
         attributes:
           durable.operation.status: SUCCEEDED
       expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: "${/^otel-callback(?: create callback id|-callback)$/}"
+            attributes:
+              durable.operation.id: ${CALLBACK1}
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-callback create callback id
+          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
-        name: otel-callback submitter
+        name: "${/^otel-callback(?: submitter|-submitter)$/}"
         attributes:
           durable.operation.status: SUCCEEDED
       count: 2
       expect:
+        status: OK
+        service_name: invocation
+        links:
+          $any_of:
+            - []
+            - - name: "${/^otel-callback(?: submitter|-submitter)$/}"
+                attributes:
+                  durable.operation.id: ${SUBMITTER_STEP}
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-callback submitter
+          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)$/}"
           durable.attempt.number: 1
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback
     - select:
-        name: otel-callback submitter attempt 1
+        name: "${/^otel-callback(?: submitter|-submitter) attempt 1$/}"
         attributes:
           durable.attempt.number: 1
       expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-callback submitter
+          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)$/}"
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
           name: otel-callback
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}
             durable.operation.subtype: WaitForCallback

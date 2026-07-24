@@ -110,9 +110,10 @@ for the template parameter contract and the prototype OpenTelemetry Collector
 Contrib `awss3exporter` configuration.
 
 The self-contained
+[Java examples](packages/aws-durable-execution-conformance-tests-otel/examples/java/README.md)
+and
 [Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
-map the current OTel requirements to handlers built from the Python SDK and
-OTel plugin `main` branch.
+map the current OTel requirements to deployable SDK handlers.
 
 ## Extension API
 

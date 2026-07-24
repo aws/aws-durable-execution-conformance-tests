@@ -37,24 +37,60 @@ TelemetryAssertions:
   span_assertions:
     - select:
         name: invocation
+        status: UNSET
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-      count: 2
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+    - select:
+        name: invocation
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: FAILED
     - select:
         name: invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
       expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
     - select:
         name: otel-failed-invoke
         attributes:
           durable.operation.status: STARTED
       expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_INVOKE}
@@ -64,6 +100,7 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-invoke
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -72,6 +109,12 @@ TelemetryAssertions:
           durable.operation.status: FAILED
       expect:
         status: ERROR
+        service_name: invocation
+        links:
+          - name: otel-failed-invoke
+            attributes:
+              durable.operation.id: ${FAILED_INVOKE}
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_INVOKE}
@@ -81,5 +124,6 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-invoke
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}

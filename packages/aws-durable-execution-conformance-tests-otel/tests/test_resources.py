@@ -48,6 +48,62 @@ def test_expanded_catalog_exercises_span_hierarchy_assertions() -> None:
         assert actual_scopes == expected_scopes
         assert assertions["exact_attribute_prefixes"] == ["durable."]
         assert assertions["span_assertions"]
+        for span_assertion in assertions["span_assertions"]:
+            selected_name = span_assertion["select"]["name"]
+            expected = span_assertion["expect"]
+            assert "name" not in expected
+            assert expected["status"] in {
+                "ERROR",
+                "OK",
+                "UNSET",
+                "${/^(?:OK|UNSET)$/}",
+            }
+            assert expected["service_name"] == "invocation"
+            links = expected["links"]
+            if isinstance(links, dict):
+                assert set(links) == {"$any_of"}
+                assert links["$any_of"][0] == []
+                links = links["$any_of"][1]
+            assert isinstance(links, list)
+            assert len(links) <= 1
+            if links:
+                linked_span = links[0]
+                assert linked_span["name"]
+                assert linked_span["attributes"]["durable.operation.id"]
+                assert "trace_id" not in linked_span
+                assert "span_id" not in linked_span
+            assert expected["kind"] == "INTERNAL"
+            assert "span.name" not in expected["attributes"]
+            assert "span.kind" not in expected["attributes"]
+            if selected_name == "invocation":
+                selector_attributes = span_assertion["select"]["attributes"]
+                expected_attributes = expected["attributes"]
+                assert isinstance(expected_attributes["durable.invocation.first"], bool)
+                assert expected_attributes["durable.invocation.status"] in {
+                    "FAILED",
+                    "PENDING",
+                    "RETRY",
+                    "SUCCEEDED",
+                }
+                assert (
+                    expected["status"]
+                    == {
+                        "FAILED": "ERROR",
+                        "PENDING": "UNSET",
+                        "RETRY": "ERROR",
+                        "SUCCEEDED": "OK",
+                    }[expected_attributes["durable.invocation.status"]]
+                )
+                assert (
+                    selector_attributes["durable.invocation.first"] == expected_attributes["durable.invocation.first"]
+                )
+                assert (
+                    selector_attributes["durable.invocation.status"] == expected_attributes["durable.invocation.status"]
+                )
+            if parent := expected.get("parent"):
+                assert parent["kind"] == "INTERNAL"
+                assert "span.name" not in parent["attributes"]
+                assert "span.kind" not in parent["attributes"]
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])

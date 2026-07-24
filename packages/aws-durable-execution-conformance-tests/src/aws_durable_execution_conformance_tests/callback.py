@@ -40,7 +40,8 @@ class CallbackAction:
 
     Attributes:
         callback_name: Name to match against CallbackStarted events.
-            Use "*" to match any callback.
+            Use "*" to match any callback or ``${/pattern/}`` for a
+            regular-expression match.
         operation: One of "success", "failure", or "heartbeat".
         payload: Data to send with the callback. For success, this is
             serialized as JSON. For failure, it should contain ErrorType,

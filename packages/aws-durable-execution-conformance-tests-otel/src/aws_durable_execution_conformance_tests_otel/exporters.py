@@ -47,7 +47,7 @@ class AdotExporterProfile:
 
     _WRAPPERS: ClassVar[dict[str, str]] = {
         "python": "/opt/otel-instrument",
-        "java": "/opt/otel-handler",
+        "java": "/opt/otel-instrument",
         "javascript": "/opt/otel-handler",
     }
 

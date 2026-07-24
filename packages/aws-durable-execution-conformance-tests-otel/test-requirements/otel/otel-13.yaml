@@ -1,4 +1,4 @@
-description: OpenTelemetry emits failed parallel branches under the completed coordinator
+description: OpenTelemetry emits failed parallel branches with the parallel operation as parent
 Input:
   scenario: parallel-failure
 AsyncInvoke: true
@@ -43,15 +43,26 @@ TelemetryAssertions:
         name: invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
       expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
     - select:
         name: otel-failed-parallel
         attributes:
           durable.operation.id: ${PARALLEL1}
       expect:
         status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${PARALLEL1}
@@ -61,6 +72,7 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-parallel
         parent:
           name: invocation
+          kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -69,6 +81,9 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_BRANCH}
       expect:
         status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_BRANCH}
@@ -78,6 +93,7 @@ TelemetryAssertions:
           durable.operation.name: otel-failed-parallel-branch
         parent:
           name: otel-failed-parallel
+          kind: INTERNAL
           attributes:
             durable.operation.id: ${PARALLEL1}
             durable.operation.type: CONTEXT

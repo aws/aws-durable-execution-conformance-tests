@@ -61,10 +61,15 @@ def _query() -> TelemetryQuery:
     [
         (
             XRayBackend,
-            frozenset({BackendFeatureDisparity.UNSET_STATUS}),
+            frozenset(
+                {
+                    BackendFeatureDisparity.SPAN_LINKS,
+                    BackendFeatureDisparity.UNSET_STATUS,
+                }
+            ),
         ),
-        (DatadogBackend, frozenset()),
-        (Dash0Backend, frozenset()),
+        (DatadogBackend, frozenset({BackendFeatureDisparity.SPAN_LINKS})),
+        (Dash0Backend, frozenset({BackendFeatureDisparity.SPAN_LINKS})),
         (CollectorBackend, frozenset()),
     ],
 )

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
+from aws_durable_execution_conformance_tests.history import get_regex_pattern
 from aws_durable_execution_conformance_tests_otel.model import (
     TelemetryQuery,
     Trace,
@@ -42,6 +43,11 @@ def _is_sequence(value: Any) -> bool:
 def _matches(expected: Any, actual: Any) -> bool:
     if expected == "*":
         return True
+    if pattern := get_regex_pattern(expected):
+        return bool(pattern.search(str(actual)))
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        return _is_sequence(alternatives) and any(_matches(alternative, actual) for alternative in alternatives)
     if isinstance(expected, Mapping):
         return isinstance(actual, Mapping) and all(
             key in actual and _matches(value, actual[key]) for key, value in expected.items()
@@ -64,7 +70,7 @@ def _matches_span_status(
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> bool:
     return _matches(expected, actual) or (
-        BackendFeatureDisparity.UNSET_STATUS in feature_disparities and expected == "UNSET" and actual == "OK"
+        BackendFeatureDisparity.UNSET_STATUS in feature_disparities and actual == "OK" and _matches(expected, "UNSET")
     )
 
 
@@ -92,6 +98,17 @@ def _expectation_errors(
 ) -> list[str]:
     if expected == "*":
         return []
+    if pattern := get_regex_pattern(expected):
+        if pattern.search(str(actual)):
+            return []
+        return [f"{path}: value {actual!r} does not match regex pattern {pattern.pattern!r}"]
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of: expected a non-empty sequence"]
+        if any(_matches(alternative, actual) for alternative in alternatives):
+            return []
+        return [f"{path}: value {actual!r} does not match any allowed value"]
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
             return [f"{path}: expected a mapping"]
@@ -171,6 +188,71 @@ def _parent_expectation_errors(
     )
 
 
+def _link_expectation_errors(
+    expected: Any,
+    span: Mapping[str, Any],
+    spans_by_id: Mapping[str, list[Mapping[str, Any]]],
+    *,
+    path: str,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    if BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
+        return []
+
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of: expected a non-empty sequence"]
+        if any(
+            not _link_expectation_errors(
+                alternative,
+                span,
+                spans_by_id,
+                path=path,
+                feature_disparities=feature_disparities,
+            )
+            for alternative in alternatives
+        ):
+            return []
+        return [f"{path}: linked spans do not match any allowed value"]
+
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence"]
+
+    links = span["links"]
+    if len(expected) != len(links):
+        return [f"{path}: expected {len(expected)} item(s), found {len(links)}"]
+
+    errors: list[str] = []
+    for index, (expected_span, link) in enumerate(zip(expected, links, strict=True)):
+        link_path = f"{path}[{index}]"
+        if not isinstance(expected_span, Mapping):
+            errors.append(f"{link_path} must be a mapping")
+            continue
+
+        linked_spans = [
+            candidate for candidate in spans_by_id.get(link["span_id"], []) if candidate["trace_id"] == link["trace_id"]
+        ]
+        if not linked_spans:
+            errors.append(f"{link_path}: linked span is not present in the trace")
+            continue
+        if len(linked_spans) > 1:
+            errors.append(
+                f"{link_path}: linked span id matched {len(linked_spans)} spans; it must identify exactly one"
+            )
+            continue
+
+        errors.extend(
+            _span_expectation_errors(
+                expected_span,
+                linked_spans[0],
+                path=link_path,
+                feature_disparities=feature_disparities,
+            )
+        )
+    return errors
+
+
 def _span_assertion_errors(
     trace: Trace,
     raw_assertions: Any,
@@ -236,7 +318,7 @@ def _span_assertion_errors(
             errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
             continue
 
-        expected_properties = {key: value for key, value in expected.items() if key != "parent"}
+        expected_properties = {key: value for key, value in expected.items() if key not in {"links", "parent"}}
         expected_attributes = expected.get("attributes")
         for match_index, (_span_index, matched_span) in enumerate(matches):
             expectation_path = f"{path}.expect"
@@ -257,6 +339,16 @@ def _span_assertion_errors(
                         matched_span,
                         spans_by_id,
                         path=f"{expectation_path}.parent",
+                        feature_disparities=feature_disparities,
+                    )
+                )
+            if "links" in expected:
+                errors.extend(
+                    _link_expectation_errors(
+                        expected["links"],
+                        matched_span,
+                        spans_by_id,
+                        path=f"{expectation_path}.links",
                         feature_disparities=feature_disparities,
                     )
                 )

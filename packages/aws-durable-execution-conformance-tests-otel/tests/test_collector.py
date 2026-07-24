@@ -192,6 +192,7 @@ def test_collector_reads_otlp_protobuf_files() -> None:
     span.trace_id = bytes.fromhex("4" * 32)
     span.span_id = bytes.fromhex("5" * 16)
     span.name = "protobuf span"
+    span.kind = 1
     span.start_time_unix_nano = 1_000_000_000
     span.end_time_unix_nano = 2_000_000_000
     execution_attr = span.attributes.add()
@@ -219,6 +220,7 @@ def test_collector_reads_otlp_protobuf_files() -> None:
 
     assert trace.trace_id == "4" * 32
     assert trace.spans[0].name == "protobuf span"
+    assert trace.spans[0].kind == "INTERNAL"
 
 
 def test_collector_factory_requires_an_s3_backend_location() -> None:
