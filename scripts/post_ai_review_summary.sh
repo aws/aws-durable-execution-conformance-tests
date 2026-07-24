@@ -32,6 +32,16 @@ esac
 : "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL must be set}"
 : "${PR_NUMBER:?PR_NUMBER must be set}"
 
+current_inline_comment_marker="${CURRENT_INLINE_COMMENT_MARKER:-}"
+inline_comment_marker_pattern="^<!-- ai-pr-review:inline:${reviewer}:[0-9]+:[0-9]+:(primary|retry) -->$"
+if [[
+  -n "$current_inline_comment_marker" &&
+  ! "$current_inline_comment_marker" =~ $inline_comment_marker_pattern
+]]; then
+  echo "invalid current inline comment marker: $current_inline_comment_marker" >&2
+  exit 2
+fi
+
 if [[ ! -r "$summary_file" ]]; then
   echo "AI review summary is not readable: $summary_file" >&2
   exit 2
@@ -71,7 +81,36 @@ fi
 owner="${GITHUB_REPOSITORY%%/*}"
 repository="${GITHUB_REPOSITORY#*/}"
 comments_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-comments.XXXXXX")"
-trap 'rm -f "$comments_file"' EXIT
+inline_comments_file=""
+cleanup_temp_files() {
+  rm -f "$comments_file"
+  if [[ -n "$inline_comments_file" ]]; then
+    rm -f "$inline_comments_file"
+  fi
+}
+trap cleanup_temp_files EXIT
+
+minimize_comment() {
+  local comment_id="$1"
+
+  # shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
+  gh api graphql \
+    -F id="$comment_id" \
+    -f query='
+      mutation($id: ID!) {
+        minimizeComment(
+          input: {
+            subjectId: $id,
+            classifier: OUTDATED
+          }
+        ) {
+          minimizedComment {
+            isMinimized
+          }
+        }
+      }
+    ' > /dev/null
+}
 
 # shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
 if ! gh api graphql \
@@ -107,53 +146,118 @@ if ! gh api graphql \
     }
   ' > "$comments_file"; then
   echo "::warning::Failed to list previous $title comments for cleanup."
+else
+  previous_comment_count=0
+  while IFS= read -r comment_id; do
+    [[ -n "$comment_id" ]] || continue
+
+    if minimize_comment "$comment_id"; then
+      previous_comment_count=$((previous_comment_count + 1))
+    else
+      echo "::warning::Failed to minimize previous $title comment ($comment_id)."
+    fi
+  done < <(
+    jq -rs \
+      --arg current_id "$new_comment_id" \
+      --arg marker "$marker" \
+      --arg legacy_header "## $title" \
+      '
+        .[]
+        | .data.repository.pullRequest.comments.nodes[]
+        | select(.id != $current_id)
+        | select(.isMinimized == false)
+        | select(.author.login == "github-actions")
+        | (.body | split("\n")[0]) as $first_line
+        | select(
+            $first_line == $marker
+            or $first_line == $legacy_header
+          )
+        | .id
+      ' \
+      "$comments_file"
+  )
+
+  echo "Minimized $previous_comment_count previous $title comment(s)."
+fi
+
+if [[ -z "$current_inline_comment_marker" ]]; then
   exit 0
 fi
 
-previous_comment_count=0
-while IFS= read -r comment_id; do
-  [[ -n "$comment_id" ]] || continue
+inline_comments_file="$(
+  mktemp "${RUNNER_TEMP:-/tmp}/ai-review-inline-comments.XXXXXX"
+)"
 
-  # shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
-  if gh api graphql \
-    -F id="$comment_id" \
-    -f query='
-      mutation($id: ID!) {
-        minimizeComment(
-          input: {
-            subjectId: $id,
-            classifier: OUTDATED
-          }
-        ) {
-          minimizedComment {
-            isMinimized
+# shellcheck disable=SC2016 # GraphQL variables are intentionally literal.
+if ! gh api graphql \
+  --paginate \
+  -F owner="$owner" \
+  -F repository="$repository" \
+  -F number="$PR_NUMBER" \
+  -f query='
+    query(
+      $owner: String!,
+      $repository: String!,
+      $number: Int!,
+      $endCursor: String
+    ) {
+      repository(owner: $owner, name: $repository) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $endCursor) {
+            nodes {
+              comments(first: 1) {
+                nodes {
+                  id
+                  body
+                  isMinimized
+                  replyTo {
+                    id
+                  }
+                  author {
+                    login
+                  }
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
           }
         }
       }
-    ' > /dev/null; then
-    previous_comment_count=$((previous_comment_count + 1))
+    }
+  ' > "$inline_comments_file"; then
+  echo "::warning::Failed to list previous $title inline comments for cleanup."
+  exit 0
+fi
+
+previous_inline_comment_count=0
+while IFS= read -r comment_id; do
+  [[ -n "$comment_id" ]] || continue
+
+  if minimize_comment "$comment_id"; then
+    previous_inline_comment_count=$((previous_inline_comment_count + 1))
   else
-    echo "::warning::Failed to minimize previous $title comment ($comment_id)."
+    echo "::warning::Failed to minimize previous $title inline comment ($comment_id)."
   fi
 done < <(
   jq -rs \
-    --arg current_id "$new_comment_id" \
-    --arg marker "$marker" \
-    --arg legacy_header "## $title" \
+    --arg current_marker "$current_inline_comment_marker" \
+    --arg marker_pattern "$inline_comment_marker_pattern" \
     '
       .[]
-      | .data.repository.pullRequest.comments.nodes[]
-      | select(.id != $current_id)
+      | .data.repository.pullRequest.reviewThreads.nodes[]
+      | .comments.nodes[]
+      | select(.replyTo == null)
       | select(.isMinimized == false)
       | select(.author.login == "github-actions")
       | (.body | split("\n")[0]) as $first_line
-      | select(
-          $first_line == $marker
-          or $first_line == $legacy_header
-        )
+      | select($first_line != $current_marker)
+      | select($first_line | test($marker_pattern))
       | .id
     ' \
-    "$comments_file"
+    "$inline_comments_file"
 )
 
-echo "Minimized $previous_comment_count previous $title comment(s)."
+echo "Minimized $previous_inline_comment_count previous $title inline comment(s)."
