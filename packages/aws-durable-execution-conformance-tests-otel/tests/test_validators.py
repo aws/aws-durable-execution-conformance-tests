@@ -79,7 +79,7 @@ def test_validates_stable_cross_invocation_invariants() -> None:
     assert errors == []
 
 
-def test_counts_canonical_invocation_spans_when_invocation_ids_are_incomplete() -> None:
+def test_distinguishes_invocation_ids_from_canonical_invocation_spans() -> None:
     trace = _trace()
     root, child = trace.spans
     first_invocation = replace(
@@ -107,10 +107,17 @@ def test_counts_canonical_invocation_spans_when_invocation_ids_are_incomplete() 
         attributes={"faas.invocation_id": "invocation-2"},
     )
 
+    incomplete_identity_trace = replace(trace, spans=(first_invocation, resumed_invocation, handler))
+
+    assert validate_trace(
+        incomplete_identity_trace,
+        {"minimum_invocations": 2},
+        _query(),
+    ) == ["Expected at least 2 distinct Lambda invocation IDs, found 1"]
     assert (
         validate_trace(
-            replace(trace, spans=(first_invocation, resumed_invocation, handler)),
-            {"minimum_invocations": 2},
+            incomplete_identity_trace,
+            {"minimum_invocation_spans": 2},
             _query(),
         )
         == []
@@ -137,9 +144,9 @@ def test_does_not_count_noncanonical_spans_named_invocation() -> None:
 
     assert validate_trace(
         replace(trace, spans=(durable_invocation, application_span)),
-        {"minimum_invocations": 2},
+        {"minimum_invocation_spans": 2},
         _query(),
-    ) == ["Expected telemetry from at least 2 Lambda invocations, found 1"]
+    ) == ["Expected at least 2 canonical durable invocation spans, found 1"]
 
 
 def test_reports_correlation_mismatches() -> None:
