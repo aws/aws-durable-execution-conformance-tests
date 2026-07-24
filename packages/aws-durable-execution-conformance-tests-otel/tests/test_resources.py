@@ -170,10 +170,19 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         assert len(workflows) == len(expected_workflow_statuses)
         for workflow in workflows:
             execution_arn = workflow["select"]["attributes"]["durable.execution.arn"]
+            execution_status = expected_workflow_statuses[execution_arn]
             assert workflow["expect"]["parent_span_id"] is None
+            assert (
+                workflow["expect"]["status"]
+                == {
+                    "SUCCEEDED": "${/^(?:OK|UNSET)$/}",
+                    "FAILED": "ERROR",
+                    "TIMED_OUT": "ERROR",
+                }[execution_status]
+            )
             assert workflow["expect"]["attributes"] == {
                 "durable.execution.arn": execution_arn,
-                "durable.execution.status": expected_workflow_statuses[execution_arn],
+                "durable.execution.status": execution_status,
             }
 
         descendants = [item for item in span_assertions if item not in workflows]
