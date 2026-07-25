@@ -91,7 +91,6 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
     EVENT_POLL_INTERVAL_SECONDS = 1.0
     EVENT_POLL_TIMEOUT_SECONDS = 10.0
-    EVENT_SETTLE_SECONDS = 2.0
 
     def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
         self._cfn_client = cloudformation_client
@@ -212,7 +211,9 @@ class CloudWatchLogRetriever:
         CloudWatch's JSON filter matches ``durableExecutionArn`` or
         ``executionArn`` on structured Lambda log records. Filtering on both
         field names keeps concurrent executions of the same function isolated
-        without relying on Logs Insights indexing.
+        without relying on Logs Insights indexing. The method polls through a
+        bounded ingestion window because ``FilterLogEvents`` has no signal that
+        all matching records are available.
 
         Args:
             log_group_name: The full log group name.
@@ -237,10 +238,7 @@ class CloudWatchLogRetriever:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        poll_started_at = time.monotonic()
-        deadline = poll_started_at + self.EVENT_POLL_TIMEOUT_SECONDS
-        latest_events: list[dict] = []
-        latest_change_at = poll_started_at
+        deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
         while True:
             events = self.get_log_events(
                 log_group_name=log_group_name,
@@ -249,14 +247,8 @@ class CloudWatchLogRetriever:
                 filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
-            now = time.monotonic()
-            if events != latest_events:
-                latest_events = events
-                latest_change_at = now
-            if latest_events and now - latest_change_at >= self.EVENT_SETTLE_SECONDS:
-                return latest_events
-            if now >= deadline:
-                return latest_events
+            if time.monotonic() >= deadline:
+                return events
             time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
 
 

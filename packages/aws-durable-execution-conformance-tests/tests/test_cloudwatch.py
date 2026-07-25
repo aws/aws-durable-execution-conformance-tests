@@ -46,14 +46,7 @@ def test_queries_logs_for_one_durable_execution(
         "timestamp": 1_500_000,
         "message": f'{{"executionArn":"{execution_arn}","message":"step executed"}}',
     }
-    logs_client = _LogsClient(
-        [
-            {"events": []},
-            {"events": [event]},
-            {"events": [event]},
-            {"events": [event]},
-        ]
-    )
+    logs_client = _LogsClient([{"events": []}] + [{"events": [event]}] * 10)
     clock = _Clock()
     monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
@@ -77,25 +70,16 @@ def test_queries_logs_for_one_durable_execution(
         "endTime": 2_000_456,
         "filterPattern": f'{{ ($.durableExecutionArn = "{execution_arn}") || ($.executionArn = "{execution_arn}") }}',
     }
-    assert logs_client.filter_log_events_calls == [expected_call] * 4
+    assert logs_client.filter_log_events_calls == [expected_call] * 11
 
 
-def test_waits_for_all_execution_log_events_to_stabilize(
+def test_polls_through_partial_execution_log_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first_event = {"timestamp": 1_500_000, "message": "first"}
     second_event = {"timestamp": 1_600_000, "message": "second"}
     complete_events = [first_event, second_event]
-    logs_client = _LogsClient(
-        [
-            {"events": []},
-            {"events": [first_event]},
-            {"events": [first_event]},
-            {"events": complete_events},
-            {"events": complete_events},
-            {"events": complete_events},
-        ]
-    )
+    logs_client = _LogsClient([{"events": []}] + [{"events": [first_event]}] * 3 + [{"events": complete_events}] * 7)
     clock = _Clock()
     monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
@@ -113,7 +97,7 @@ def test_waits_for_all_execution_log_events_to_stabilize(
     )
 
     assert events == complete_events
-    assert len(logs_client.filter_log_events_calls) == 6
+    assert len(logs_client.filter_log_events_calls) == 11
 
 
 def test_returns_empty_execution_logs_at_poll_timeout(
