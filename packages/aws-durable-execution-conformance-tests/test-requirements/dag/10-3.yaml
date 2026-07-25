@@ -1,0 +1,126 @@
+---
+# 10.3: DAG per-task conditional execution (WithRunIf)
+description: DAG where per-task runIf predicates skip non-matching branches with no events
+handler: |
+  A DAG named "runif" with a classify root task and three branch tasks (publish,
+  review, block), each depending on classify and each guarded by a per-task runIf
+  predicate that runs the branch only when classify's result equals the branch's
+  own name. classify returns "review". Only the review branch's predicate is
+  satisfied, so classify and review run and succeed while publish and block are
+  SKIPPED and emit no events. All non-skipped tasks succeed, so the DAG completes
+  with reason ALL_COMPLETED. The handler returns a summary with the completion
+  reason, per-task terminal statuses, the [succeeded, failed, skipped, total]
+  counts, and the name of the branch that ran.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag). classify runs first inside a DagTask, its step succeeds
+    returning "review", and the DagTask checkpoints ContextSucceeded. The runIf
+    predicates are then evaluated: publish and block do not match and are skipped,
+    emitting no events; review matches and runs its step, which succeeds returning
+    "review", wrapped in DagTask ContextStarted/ContextSucceeded. Finally the DAG
+    checkpoints ContextSucceeded (SubType Dag) and the invocation completes
+    returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      classify: SUCCEEDED
+      review: SUCCEEDED
+      publish: SKIPPED
+      block: SKIPPED
+    counts:
+      - 2
+      - 0
+      - 2
+      - 4
+    branch: review
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: runif
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 3
+    Id: ${T_CLASSIFY}
+    Name: classify
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${S_CLASSIFY}
+    Name: classify
+    ParentId: ${T_CLASSIFY}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${S_CLASSIFY}
+    Name: classify
+    ParentId: ${T_CLASSIFY}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"review"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 6
+    Id: ${T_CLASSIFY}
+    Name: classify
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 7
+    Id: ${T_REVIEW}
+    Name: review
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_REVIEW}
+    Name: review
+    ParentId: ${T_REVIEW}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_REVIEW}
+    Name: review
+    ParentId: ${T_REVIEW}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"review"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 10
+    Id: ${T_REVIEW}
+    Name: review
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 11
+    Id: ${DAG}
+    Name: runif
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

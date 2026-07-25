@@ -1,0 +1,163 @@
+---
+# 10.2: DAG trigger-rule compensation (COMPLETED_WITH_FAILURES)
+description: DAG saga where an upstream failure drives trigger-rule compensation
+handler: |
+  A DAG named "compensation" with four tasks: charge (root) and three tasks that
+  depend on charge with different trigger rules. charge always fails ("payment
+  declined"). fulfill uses the default trigger (all dependencies succeeded), so
+  because charge failed it is SKIPPED and emits no events. refund uses the
+  AllFailed trigger, so it runs because charge failed and returns "refunded".
+  audit uses the AllDone trigger, so it runs regardless and returns "logged".
+  charge exhausts the default retry policy before failing terminally. Because a
+  task failed but the DAG still ran its compensating tasks to completion, the DAG
+  completes with reason COMPLETED_WITH_FAILURES (the container does not throw).
+  The handler returns a summary with the completion reason, per-task terminal
+  statuses, and the [succeeded, failed, skipped, total] counts.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag). charge runs first: ContextStarted (SubType DagTask) then its
+    inner step is attempted and fails, retrying under the default retry policy
+    across suspend/resume boundaries until the attempts are exhausted, at which
+    point the charge DagTask checkpoints ContextFailed. The skipped fulfill task
+    emits no events at all. refund (AllFailed trigger) then runs its step and
+    succeeds, and audit (AllDone trigger) runs its step and succeeds, each wrapped
+    in DagTask ContextStarted/ContextSucceeded. Finally the DAG checkpoints
+    ContextSucceeded (SubType Dag) with reason COMPLETED_WITH_FAILURES and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+AsyncConfig:
+  NoProgressTimeoutSeconds: 90
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: COMPLETED_WITH_FAILURES
+    statuses:
+      charge: FAILED
+      fulfill: SKIPPED
+      refund: SUCCEEDED
+      audit: SUCCEEDED
+    counts:
+      - 2
+      - 1
+      - 1
+      - 4
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: compensation
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 3
+    Id: ${T_CHARGE}
+    Name: charge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${S_CHARGE}
+    Name: charge
+    ParentId: ${T_CHARGE}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 5
+    Id: ${S_CHARGE}
+    Name: charge
+    ParentId: ${T_CHARGE}
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: ContextFailed
+    SubType: DagTask
+    EventId: 21
+    Id: ${T_CHARGE}
+    Name: charge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextFailedDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 22
+    Id: ${T_REFUND}
+    Name: refund
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 23
+    Id: ${S_REFUND}
+    Name: refund
+    ParentId: ${T_REFUND}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 24
+    Id: ${S_REFUND}
+    Name: refund
+    ParentId: ${T_REFUND}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"refunded"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 25
+    Id: ${T_REFUND}
+    Name: refund
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 26
+    Id: ${T_AUDIT}
+    Name: audit
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 27
+    Id: ${S_AUDIT}
+    Name: audit
+    ParentId: ${T_AUDIT}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 28
+    Id: ${S_AUDIT}
+    Name: audit
+    ParentId: ${T_AUDIT}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"logged"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 29
+    Id: ${T_AUDIT}
+    Name: audit
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 30
+    Id: ${DAG}
+    Name: compensation
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 31
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
