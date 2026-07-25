@@ -1,0 +1,150 @@
+---
+# 10.9: DAG task that is itself a nested DAG / sub-dag (flat nested Dag container)
+description: DAG with a nested sub-DAG task between an upstream and a downstream step
+handler: |
+  A DAG named "outerdag" with three tasks in a linear chain: pre -> sub -> post.
+  pre is a step task (root) that returns 1. sub is a nested DAG task that depends
+  on pre; the sub-DAG is a tiny 2-node graph n1 -> n2 where n1 (root) returns 2
+  and n2 (depends on n1) returns n1+3 (=5). post is a step task that depends on
+  sub and returns the nested DAG's n2 result times ten (5*10 = 50). Max-
+  concurrency is 1 at both DAG levels, so tasks run in a deterministic
+  topological order. Every task succeeds, so both the nested and outer DAGs
+  complete with reason ALL_COMPLETED. The handler returns a summary: the
+  completion reason, per-task terminal statuses, the [succeeded, failed, skipped,
+  total] counts, and the downstream result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the outer DAG container. Each task delegates to its native
+    operation checkpointed directly under the outer Dag container (flat, name-
+    based). pre runs first and succeeds returning 1 (StepStarted / StepSucceeded,
+    SubType Step, ParentId = the outer Dag op). sub then runs: the SDK checkpoints
+    ContextStarted (SubType Dag, Name = sub, ParentId = the outer Dag op) for the
+    nested DAG container, runs n1 and n2 as steps whose ParentId is the nested Dag
+    op (returning 2 and 5), and checkpoints ContextSucceeded (SubType Dag) for the
+    nested container. post then runs its step directly under the outer Dag
+    container and succeeds returning 50. Finally the outer DAG checkpoints
+    ContextSucceeded (SubType Dag) and the invocation completes returning the
+    summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      pre: SUCCEEDED
+      sub: SUCCEEDED
+      post: SUCCEEDED
+    counts:
+      - 3
+      - 0
+      - 0
+      - 3
+    post: 50
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: outerdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_PRE}
+    Name: pre
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_PRE}
+    Name: pre
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 5
+    Id: ${DAG_SUB}
+    Name: sub
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${S_N1}
+    Name: n1
+    ParentId: ${DAG_SUB}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${S_N1}
+    Name: n1
+    ParentId: ${DAG_SUB}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '2'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_N2}
+    Name: n2
+    ParentId: ${DAG_SUB}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_N2}
+    Name: n2
+    ParentId: ${DAG_SUB}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '5'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 10
+    Id: ${DAG_SUB}
+    Name: sub
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 11
+    Id: ${S_POST}
+    Name: post
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 12
+    Id: ${S_POST}
+    Name: post
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '50'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 13
+    Id: ${DAG}
+    Name: outerdag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 14
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

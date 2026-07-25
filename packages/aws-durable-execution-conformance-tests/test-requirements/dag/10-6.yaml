@@ -1,0 +1,159 @@
+---
+# 10.6: DAG task that is a map over a fixed item list (flat map container under the DAG)
+description: DAG with a map task over a fixed item list feeding a downstream aggregation
+  step
+handler: |
+  A DAG named "mapdag" with two tasks: squares -> sum. squares is a map task
+  (root) over the fixed item list [1, 2]; each item runs a single step that
+  returns item*item, producing [1, 4]. sum is a step task that depends on
+  squares and returns the sum of the map's successful results (1 + 4 = 5).
+  Max-concurrency is 1 both at the DAG level and inside the map, so items are
+  processed sequentially in index order, producing a deterministic history.
+  Every task succeeds, so the DAG completes with reason ALL_COMPLETED. The
+  handler returns a summary: the completion reason, per-task terminal statuses,
+  the [succeeded, failed, skipped, total] counts, and the aggregation result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. Each task delegates to its native
+    operation checkpointed directly under the Dag container (flat, name-based).
+    squares runs first: the SDK checkpoints ContextStarted (SubType Map,
+    Name = squares, ParentId = the Dag op) for the map container. For item 0 it
+    checkpoints ContextStarted (SubType MapIteration, ParentId = the map op),
+    runs the inner step (StepStarted / StepSucceeded, ParentId = the iteration)
+    returning 1, and checkpoints ContextSucceeded for the iteration. It repeats
+    for item 1 returning 4, then checkpoints ContextSucceeded (SubType Map) for
+    the map container. sum then runs its step directly under the Dag container
+    and succeeds returning 5. Finally the DAG checkpoints ContextSucceeded
+    (SubType Dag) and the invocation completes returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      squares: SUCCEEDED
+      sum: SUCCEEDED
+    counts:
+      - 2
+      - 0
+      - 0
+      - 2
+    sum: 5
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: mapdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 3
+    Id: ${CTX_M}
+    Name: squares
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 4
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 8
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 9
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 10
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '4'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 11
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '4'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 12
+    Id: ${CTX_M}
+    Name: squares
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 13
+    Id: ${S_SUM}
+    Name: sum
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 14
+    Id: ${S_SUM}
+    Name: sum
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '5'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 15
+    Id: ${DAG}
+    Name: mapdag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 16
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
