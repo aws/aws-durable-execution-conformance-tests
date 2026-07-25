@@ -310,6 +310,8 @@ def _temporal_relation_errors(
     linked_only = expected.get("$linked", False)
     if "$linked" in expected and linked_only is not True:
         return [f"{path}.$linked must be true"]
+    if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
+        return []
     selector = {key: value for key, value in expected.items() if key != "$linked"}
     linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [

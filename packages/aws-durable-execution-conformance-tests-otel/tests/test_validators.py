@@ -202,6 +202,36 @@ def test_inside_can_select_a_linked_span_among_duplicate_matches() -> None:
     assert ambiguous_errors == ["span_assertions[0].expect.inside matched 2 spans; it must select exactly one"]
 
 
+def test_span_link_disparity_skips_linked_temporal_relations() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    trace_without_links = replace(trace, spans=(root, replace(child, links=())))
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "inside": {
+                    "$linked": True,
+                    "name": "root",
+                }
+            },
+        }
+    }
+
+    assert validate_trace(trace_without_links, assertions, _query()) == [
+        "span_assertions[0].expect.inside matched no spans"
+    ]
+    assert (
+        validate_trace(
+            trace_without_links,
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.SPAN_LINKS}),
+        )
+        == []
+    )
+
+
 def test_reports_timestamp_and_parent_containment_violations() -> None:
     trace = _trace()
     root, child = trace.spans
