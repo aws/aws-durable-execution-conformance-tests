@@ -1,14 +1,15 @@
 ---
-# 3.17: Child context with print only (verify no re-execution on replay)
-description: Child context with print only (verify no re-execution on replay)
+# 3.17: Child context with durable logger only (verify no re-execution on replay)
+description: Child context with durable logger only (verify no re-execution on replay)
 handler: |
-  A child context that only prints to raw stdout (no durable operation inside),
-  followed by a wait that causes a replay. Verifies the print is only executed once
-  and not re-executed during replay.
+  A child context that only logs through `child_context.logger` (no durable operation
+  inside), with replay logging enabled so unexpected re-execution remains observable,
+  followed by a wait that causes a replay. Verifies the log is emitted once and the
+  child body is not re-executed during replay.
   The child context returns the input string.
 invocations: |
-  - Handler invokes a child context that only prints to raw stdout and returns the input (no durable operation inside), followed by a wait. SDK checkpoints ContextStarted, child prints input to stdout and returns, SDK checkpoints ContextSucceeded, WaitStarted, invocation completes, execution suspends.
-  - Replay 1: Re-invoked because wait completed. SDK skips the completed child context and returns its cached result without re-executing the print. WaitSucceeded, execution succeeds.
+  - Handler invokes a child context that logs the input and returns it (no durable operation inside), followed by a wait. SDK checkpoints ContextStarted, child logs the input and returns, SDK checkpoints ContextSucceeded, WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed. SDK skips the completed child context and returns its cached result without emitting the log again. WaitSucceeded, execution succeeds.
 Variables:
   INPUT_1: ${GEN_STR:8}
 Input: ${INPUT_1}
@@ -55,6 +56,6 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # Child executes once (first invocation), not re-executed on replay
+  # Replay logging makes an incorrect second child execution fail this count
   - pattern: ${INPUT_1}
     count: 1

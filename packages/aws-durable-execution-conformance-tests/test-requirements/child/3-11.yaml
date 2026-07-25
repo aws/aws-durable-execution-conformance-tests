@@ -5,10 +5,11 @@ handler: |
   A child context where the step returns a small value, but the child context function
   builds a large result (>256KB) from it. The child context return value exceeds the
   checkpoint size limit, triggering ReplayChildren mode.
-  The child context body prints the input string to raw stdout outside of the step.
+  The child context body logs the input through `child_context.logger` outside of the
+  step, with replay logging enabled so re-execution remains observable.
 invocations: |
-  - Handler invokes a child context with a step that returns a small value, but the child context body builds a large result exceeding the checkpoint size limit. ContextStarted, StepStarted, StepSucceeded (small result), ContextSucceeded (ReplayChildren=true, empty payload), WaitStarted, invocation completes, execution suspends.
-  - Replay 1: Re-invoked because wait completed. SDK re-executes the child context in ReplaySucceededContext mode to reconstruct the large result. WaitSucceeded, execution succeeds.
+  - Handler invokes a child context that logs the input and runs a step returning a small value, then builds a large result exceeding the checkpoint size limit. ContextStarted, StepStarted, StepSucceeded (small result), ContextSucceeded (ReplayChildren=true, empty payload), WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked because wait completed. SDK re-executes the child context in ReplaySucceededContext mode, logs the input again, and reconstructs the large result. WaitSucceeded, execution succeeds.
 Variables:
   INPUT_1: ${GEN_STR:8}
 Input: ${INPUT_1}
@@ -66,6 +67,6 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # Child context body executes twice: once on first invocation, once on replay
+  # Replay logging shows both child executions: first invocation and replay
   - pattern: ${INPUT_1}
     count: 2

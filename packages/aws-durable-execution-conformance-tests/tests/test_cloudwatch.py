@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
 from aws_durable_execution_conformance_tests.cloudwatch import (
@@ -17,40 +18,38 @@ from aws_durable_execution_conformance_tests.cloudwatch import (
 
 
 class _LogsClient:
-    def __init__(self, query_results: list[dict[str, Any]]) -> None:
-        self._query_results = iter(query_results)
-        self.start_query_calls: list[dict[str, Any]] = []
-        self.get_query_results_calls: list[dict[str, Any]] = []
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = iter(responses)
+        self.filter_log_events_calls: list[dict[str, Any]] = []
 
-    def start_query(self, **kwargs: Any) -> dict[str, str]:
-        self.start_query_calls.append(kwargs)
-        return {"queryId": "query-123"}
+    def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
+        self.filter_log_events_calls.append(kwargs)
+        return next(self._responses)
 
-    def get_query_results(self, **kwargs: Any) -> dict[str, Any]:
-        self.get_query_results_calls.append(kwargs)
-        return next(self._query_results)
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def test_queries_logs_for_one_durable_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     execution_arn = "arn:aws:lambda:us-west-2:123456789012:function:test:$LATEST/durable-execution/execution/name"
-    logs_client = _LogsClient(
-        [
-            {"status": "Running"},
-            {
-                "status": "Complete",
-                "results": [
-                    [
-                        {"field": "@timestamp", "value": "2026-07-23 22:32:33.000"},
-                        {"field": "@message", "value": "step executed"},
-                        {"field": "@ptr", "value": "pointer"},
-                    ]
-                ],
-            },
-        ]
-    )
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _seconds: None)
+    event = {
+        "timestamp": 1_500_000,
+        "message": f'{{"executionArn":"{execution_arn}","message":"step executed"}}',
+    }
+    logs_client = _LogsClient([{"events": []}] + [{"events": [event]}] * 10)
+    clock = _Clock()
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
@@ -64,40 +63,83 @@ def test_queries_logs_for_one_durable_execution(
         wait_seconds=0,
     )
 
-    assert events == [
-        {
-            "timestamp": "2026-07-23 22:32:33.000",
-            "message": "step executed",
-        }
-    ]
-    assert logs_client.start_query_calls == [
-        {
-            "queryLanguage": "CWLI",
-            "logGroupName": "/aws/lambda/test",
-            "startTime": 1000,
-            "endTime": 2001,
-            "queryString": (
-                "fields @timestamp, @message\n"
-                f'| filter coalesce(durableExecutionArn, executionArn) like "{execution_arn}"\n'
-                "| sort @timestamp asc"
-            ),
-            "limit": 10_000,
-        }
-    ]
-    assert logs_client.get_query_results_calls == [
-        {"queryId": "query-123"},
-        {"queryId": "query-123"},
-    ]
+    assert events == [event]
+    expected_call = {
+        "logGroupName": "/aws/lambda/test",
+        "startTime": 1_000_123,
+        "endTime": 2_000_456,
+        "filterPattern": f'{{ ($.durableExecutionArn = "{execution_arn}") || ($.executionArn = "{execution_arn}") }}',
+    }
+    assert logs_client.filter_log_events_calls == [expected_call] * 11
 
 
-def test_raises_when_logs_insights_query_fails() -> None:
-    logs_client = _LogsClient([{"status": "Failed"}])
+def test_polls_through_partial_execution_log_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_event = {"timestamp": 1_500_000, "message": "first"}
+    second_event = {"timestamp": 1_600_000, "message": "second"}
+    complete_events = [first_event, second_event]
+    logs_client = _LogsClient([{"events": []}] + [{"events": [first_event]}] * 3 + [{"events": complete_events}] * 7)
+    clock = _Clock()
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
     )
 
-    with pytest.raises(CloudWatchLogError, match="status Failed"):
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        end_time_ms=2_000,
+        wait_seconds=0,
+    )
+
+    assert events == complete_events
+    assert len(logs_client.filter_log_events_calls) == 11
+
+
+def test_returns_empty_execution_logs_at_poll_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    logs_client = _LogsClient([{"events": []}, {"events": []}, {"events": []}])
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 2.0)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+    )
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        end_time_ms=2_000,
+        wait_seconds=0,
+    )
+
+    assert events == []
+    assert len(logs_client.filter_log_events_calls) == 3
+
+
+def test_raises_when_filter_log_events_fails() -> None:
+    class _FailingLogsClient:
+        def filter_log_events(self, **_kwargs: Any) -> dict[str, Any]:
+            raise ClientError(
+                {"Error": {"Code": "InvalidParameterException", "Message": "failed"}},
+                "FilterLogEvents",
+            )
+
+    logs_client = _FailingLogsClient()
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+    )
+
+    with pytest.raises(CloudWatchLogError, match="filter-log-events failed"):
         retriever.get_execution_log_events(
             log_group_name="/aws/lambda/test",
             execution_arn="arn:execution",
