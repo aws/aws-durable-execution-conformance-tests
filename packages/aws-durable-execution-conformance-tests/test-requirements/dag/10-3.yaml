@@ -13,13 +13,14 @@ handler: |
   counts, and the name of the branch that ran.
 invocations: |
   - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
-    (SubType Dag). classify runs first inside a DagTask, its step succeeds
-    returning "review", and the DagTask checkpoints ContextSucceeded. The runIf
-    predicates are then evaluated: publish and block do not match and are skipped,
-    emitting no events; review matches and runs its step, which succeeds returning
-    "review", wrapped in DagTask ContextStarted/ContextSucceeded. Finally the DAG
-    checkpoints ContextSucceeded (SubType Dag) and the invocation completes
-    returning the summary.
+    (SubType Dag). Each non-skipped task delegates to its native operation
+    checkpointed directly under the Dag container (flat, name-based). classify
+    runs first: its step succeeds returning "review" (StepStarted / StepSucceeded,
+    SubType Step, ParentId = the Dag op). The runIf predicates are then evaluated:
+    publish and block do not match and are skipped, emitting no events; review
+    matches and runs its step directly under the Dag container, which succeeds
+    returning "review". Finally the DAG checkpoints ContextSucceeded (SubType Dag)
+    and the invocation completes returning the summary.
 AsyncInvoke: true
 Input: {}
 ExpectedResult:
@@ -45,82 +46,50 @@ ExpectedExecutionHistory:
     Name: runif
     EventTimestamp: '*'
     ContextStartedDetails: {}
-  - EventType: ContextStarted
-    SubType: DagTask
+  - EventType: StepStarted
+    SubType: Step
     EventId: 3
-    Id: ${T_CLASSIFY}
+    Id: ${S_CLASSIFY}
     Name: classify
     ParentId: ${DAG}
     EventTimestamp: '*'
-    ContextStartedDetails: {}
-  - EventType: StepStarted
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
     SubType: Step
     EventId: 4
     Id: ${S_CLASSIFY}
     Name: classify
-    ParentId: ${T_CLASSIFY}
-    EventTimestamp: '*'
-    StepStartedDetails: {}
-  - EventType: StepSucceeded
-    SubType: Step
-    EventId: 5
-    Id: ${S_CLASSIFY}
-    Name: classify
-    ParentId: ${T_CLASSIFY}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '"review"'
-  - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 6
-    Id: ${T_CLASSIFY}
-    Name: classify
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 7
-    Id: ${T_REVIEW}
-    Name: review
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 8
+    EventId: 5
     Id: ${S_REVIEW}
     Name: review
-    ParentId: ${T_REVIEW}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 9
+    EventId: 6
     Id: ${S_REVIEW}
     Name: review
-    ParentId: ${T_REVIEW}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '"review"'
   - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 10
-    Id: ${T_REVIEW}
-    Name: review
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextSucceeded
     SubType: Dag
-    EventId: 11
+    EventId: 7
     Id: ${DAG}
     Name: runif
     EventTimestamp: '*'
     ContextSucceededDetails: '*'
   - EventType: InvocationCompleted
-    EventId: 12
+    EventId: 8
     EventTimestamp: '*'
     InvocationCompletedDetails: {}

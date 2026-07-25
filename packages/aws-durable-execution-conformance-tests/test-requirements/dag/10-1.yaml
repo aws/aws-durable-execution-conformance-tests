@@ -13,12 +13,12 @@ handler: |
   and the merge result.
 invocations: |
   - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
-    (SubType Dag) for the DAG container. For each task in topological order it
-    checkpoints ContextStarted (SubType DagTask, ParentId = the Dag op), runs the
-    task's inner step (StepStarted/StepSucceeded, ParentId = the DagTask op), and
-    checkpoints ContextSucceeded (SubType DagTask). After fetch, ta, tb and merge
-    all succeed it checkpoints ContextSucceeded (SubType Dag) and the invocation
-    completes returning the summary.
+    (SubType Dag) for the DAG container. Each task delegates to its native
+    operation checkpointed directly under the Dag container (flat, name-based):
+    in topological order fetch, ta, tb and merge each checkpoint StepStarted /
+    StepSucceeded (SubType Step, Name = the task name, ParentId = the Dag op).
+    After all four steps succeed the SDK checkpoints ContextSucceeded (SubType
+    Dag) and the invocation completes returning the summary.
 AsyncInvoke: true
 Input: {}
 ExpectedResult:
@@ -44,150 +44,86 @@ ExpectedExecutionHistory:
     Name: diamond
     EventTimestamp: '*'
     ContextStartedDetails: {}
-  - EventType: ContextStarted
-    SubType: DagTask
+  - EventType: StepStarted
+    SubType: Step
     EventId: 3
-    Id: ${T_FETCH}
+    Id: ${S_FETCH}
     Name: fetch
     ParentId: ${DAG}
     EventTimestamp: '*'
-    ContextStartedDetails: {}
-  - EventType: StepStarted
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
     SubType: Step
     EventId: 4
     Id: ${S_FETCH}
     Name: fetch
-    ParentId: ${T_FETCH}
-    EventTimestamp: '*'
-    StepStartedDetails: {}
-  - EventType: StepSucceeded
-    SubType: Step
-    EventId: 5
-    Id: ${S_FETCH}
-    Name: fetch
-    ParentId: ${T_FETCH}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '10'
-  - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 6
-    Id: ${T_FETCH}
-    Name: fetch
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 7
-    Id: ${T_TA}
-    Name: ta
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 8
+    EventId: 5
     Id: ${S_TA}
     Name: ta
-    ParentId: ${T_TA}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 9
+    EventId: 6
     Id: ${S_TA}
     Name: ta
-    ParentId: ${T_TA}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '11'
-  - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 10
-    Id: ${T_TA}
-    Name: ta
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 11
-    Id: ${T_TB}
-    Name: tb
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 12
+    EventId: 7
     Id: ${S_TB}
     Name: tb
-    ParentId: ${T_TB}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 13
+    EventId: 8
     Id: ${S_TB}
     Name: tb
-    ParentId: ${T_TB}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '20'
-  - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 14
-    Id: ${T_TB}
-    Name: tb
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 15
-    Id: ${T_MERGE}
-    Name: merge
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 16
+    EventId: 9
     Id: ${S_MERGE}
     Name: merge
-    ParentId: ${T_MERGE}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 17
+    EventId: 10
     Id: ${S_MERGE}
     Name: merge
-    ParentId: ${T_MERGE}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '31'
   - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 18
-    Id: ${T_MERGE}
-    Name: merge
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextSucceeded
     SubType: Dag
-    EventId: 19
+    EventId: 11
     Id: ${DAG}
     Name: diamond
     EventTimestamp: '*'
     ContextSucceededDetails: '*'
   - EventType: InvocationCompleted
-    EventId: 20
+    EventId: 12
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
