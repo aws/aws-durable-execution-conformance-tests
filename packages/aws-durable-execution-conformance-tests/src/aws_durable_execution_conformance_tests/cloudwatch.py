@@ -91,6 +91,7 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
     EVENT_POLL_INTERVAL_SECONDS = 1.0
     EVENT_POLL_TIMEOUT_SECONDS = 10.0
+    EVENT_SETTLE_SECONDS = 2.0
 
     def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
         self._cfn_client = cloudformation_client
@@ -236,8 +237,10 @@ class CloudWatchLogRetriever:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
-        previous_events: list[dict] = []
+        poll_started_at = time.monotonic()
+        deadline = poll_started_at + self.EVENT_POLL_TIMEOUT_SECONDS
+        latest_events: list[dict] = []
+        latest_change_at = poll_started_at
         while True:
             events = self.get_log_events(
                 log_group_name=log_group_name,
@@ -246,11 +249,14 @@ class CloudWatchLogRetriever:
                 filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
-            if events and events == previous_events:
-                return events
-            previous_events = events
-            if time.monotonic() >= deadline:
-                return previous_events
+            now = time.monotonic()
+            if events != latest_events:
+                latest_events = events
+                latest_change_at = now
+            if latest_events and now - latest_change_at >= self.EVENT_SETTLE_SECONDS:
+                return latest_events
+            if now >= deadline:
+                return latest_events
             time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
 
 
