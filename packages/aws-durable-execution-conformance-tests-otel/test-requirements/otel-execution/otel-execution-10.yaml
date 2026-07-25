@@ -109,6 +109,7 @@ TelemetryAssertions:
             durable.operation.id: ${CALLBACK_CONTEXT}
     - select:
         name: '${/^otel-callback(?: submitter|-submitter)$/}'
+        status: OK
         attributes:
           durable.operation.id: ${SUBMITTER_STEP}
       expect:
@@ -131,7 +132,6 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}
-      count: 2
     - select:
         name: '${/^otel-callback(?: submitter|-submitter) attempt 1$/}'
         attributes:

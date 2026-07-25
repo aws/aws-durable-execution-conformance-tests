@@ -203,18 +203,13 @@ TelemetryAssertions:
             durable.operation.subtype: WaitForCallback
     - select:
         name: "${/^otel-callback(?: submitter|-submitter)$/}"
+        status: OK
         attributes:
           durable.operation.status: SUCCEEDED
-      count: 2
       expect:
         status: OK
         service_name: invocation
-        links:
-          $any_of:
-            - []
-            - - name: "${/^otel-callback(?: submitter|-submitter)$/}"
-                attributes:
-                  durable.operation.id: ${SUBMITTER_STEP}
+        links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -226,6 +221,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
         parent:
           name: otel-callback
+          status: UNSET
           kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_CONTEXT}

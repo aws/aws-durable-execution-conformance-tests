@@ -111,6 +111,7 @@ TelemetryAssertions:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
         name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
+        status: OK
         attributes:
           durable.operation.id: ${CALLBACK_SUBMITTER}
       expect:
@@ -133,7 +134,6 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
-      count: 2
     - select:
         name: '${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}'
         attributes:

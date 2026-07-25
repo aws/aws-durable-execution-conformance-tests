@@ -71,6 +71,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         assert assertions["exact_attribute_prefixes"] == ["durable."]
         assert assertions["span_assertions"]
         for span_assertion in assertions["span_assertions"]:
+            assert "count" not in span_assertion
             selected_name = span_assertion["select"]["name"]
             expected = span_assertion["expect"]
             assert "name" not in expected
@@ -153,6 +154,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         requirement = load_yaml_file(requirements[f"otel-execution-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
         span_assertions = assertions["span_assertions"]
+        assert all("count" not in assertion for assertion in span_assertions)
         workflows = [item for item in span_assertions if item["select"]["name"] == "Workflow"]
         expected_workflow_statuses = {
             "${EXECUTION_ARN}": requirement["ExpectedResult"]["ExecutionStatus"],
@@ -206,6 +208,44 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         assert telemetry_placeholders <= history_placeholders | {
             "EXECUTION_ARN",
             "TARGET_EXECUTION_ARN",
+        }
+
+
+@pytest.mark.parametrize(
+    ("case_number", "submitter_name", "operation_id"),
+    [
+        (10, "${/^otel-callback(?: submitter|-submitter)$/}", "${SUBMITTER_STEP}"),
+        (17, "${/^otel-failed-callback(?: submitter|-submitter)$/}", "${CALLBACK_SUBMITTER}"),
+    ],
+)
+@pytest.mark.parametrize("suite_name", ["otel-invocation", "otel-execution"])
+def test_callback_submitter_assertions_emit_once_without_retry(
+    suite_name: str,
+    case_number: int,
+    submitter_name: str,
+    operation_id: str,
+) -> None:
+    requirement = load_yaml_file(_requirements(suite_name)[f"{suite_name}-{case_number}"])
+    submitter_assertions = [
+        assertion
+        for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+        if assertion["select"]["name"] == submitter_name
+        and assertion["expect"]["attributes"]["durable.operation.id"] == operation_id
+    ]
+
+    assert len(submitter_assertions) == 1
+    submitter_assertion = submitter_assertions[0]
+    assert submitter_assertion["select"]["status"] == "OK"
+    assert submitter_assertion["expect"]["status"] == "OK"
+
+    if suite_name == "otel-invocation":
+        assert submitter_assertion["expect"]["links"] == []
+        assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
+    else:
+        assert submitter_assertion["expect"]["links"] == [{"name": "invocation"}]
+        assert submitter_assertion["expect"]["inside"] == {
+            "$linked": True,
+            "name": "invocation",
         }
 
 
