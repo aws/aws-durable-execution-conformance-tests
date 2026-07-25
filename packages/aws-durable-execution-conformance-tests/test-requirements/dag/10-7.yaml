@@ -1,0 +1,161 @@
+---
+# 10.7: DAG task that is a parallel of two named branches (flat parallel container)
+description: DAG with a parallel task of two named branches feeding a downstream join
+  step
+handler: |
+  A DAG named "paralleldag" with two tasks: fork -> join. fork is a parallel
+  task (root) with two named branches, "left" and "right", each running a single
+  step that returns a constant string ("L" for left, "R" for right). join is a
+  step task that depends on fork and returns the fork's successful results joined
+  by a hyphen ("L-R"). Max-concurrency is 1 both at the DAG level and inside the
+  parallel, so branches execute sequentially in index order, producing a
+  deterministic history. Every task succeeds, so the DAG completes with reason
+  ALL_COMPLETED. The handler returns a summary: the completion reason, per-task
+  terminal statuses, the [succeeded, failed, skipped, total] counts, and the
+  join result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. Each task delegates to its native
+    operation checkpointed directly under the Dag container (flat, name-based).
+    fork runs first: the SDK checkpoints ContextStarted (SubType Parallel,
+    Name = fork, ParentId = the Dag op) for the parallel container. For branch 0
+    it checkpoints ContextStarted (SubType ParallelBranch, ParentId = the
+    parallel op), runs the inner step (StepStarted / StepSucceeded, ParentId =
+    the branch) returning "L", and checkpoints ContextSucceeded for the branch.
+    It repeats for branch 1 returning "R", then checkpoints ContextSucceeded
+    (SubType Parallel) for the parallel container. join then runs its step
+    directly under the Dag container and succeeds returning "L-R". Finally the
+    DAG checkpoints ContextSucceeded (SubType Dag) and the invocation completes
+    returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      fork: SUCCEEDED
+      join: SUCCEEDED
+    counts:
+      - 2
+      - 0
+      - 0
+      - 2
+    join: L-R
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: paralleldag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 3
+    Id: ${CTX_P}
+    Name: fork
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${STEP1}
+    ParentId: ${CTX_B1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"L"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"L"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 9
+    Id: ${STEP2}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 10
+    Id: ${STEP2}
+    ParentId: ${CTX_B2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"R"'
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 11
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"R"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 12
+    Id: ${CTX_P}
+    Name: fork
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 13
+    Id: ${S_JOIN}
+    Name: join
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 14
+    Id: ${S_JOIN}
+    Name: join
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"L-R"'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 15
+    Id: ${DAG}
+    Name: paralleldag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 16
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

@@ -1,0 +1,154 @@
+---
+# 10.5: DAG task that is a runInChildContext (flat child container under the DAG)
+description: DAG with a runInChildContext task nested between an upstream and a downstream
+  step
+handler: |
+  A DAG named "childdag" with three tasks in a linear chain: seed -> group ->
+  done. seed is a step task (root) that returns 1. group is a runInChildContext
+  task that depends on seed; inside its child context it runs two sequential
+  steps, inner-a (returns seed+1 = 2) and inner-b (returns seed+2 = 3), and
+  returns their sum (5). done is a step task that depends on group and returns
+  group*2 (=10). Max-concurrency is 1 so ready tasks run in a deterministic
+  topological order (seed, group, done). Every task succeeds, so the DAG
+  completes with reason ALL_COMPLETED. The handler returns a summary: the
+  completion reason, per-task terminal statuses, the [succeeded, failed,
+  skipped, total] counts, the child result, and the downstream result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. Each task delegates to its native
+    operation checkpointed directly under the Dag container (flat, name-based).
+    seed runs first and succeeds returning 1 (StepStarted / StepSucceeded,
+    SubType Step, ParentId = the Dag op). group then runs: the SDK checkpoints
+    ContextStarted (SubType RunInChildContext, Name = group, ParentId = the Dag
+    op) for the child container, runs inner-a and inner-b as steps whose ParentId
+    is the child container, and checkpoints ContextSucceeded (SubType
+    RunInChildContext) carrying 5. done then runs its step directly under the Dag
+    container and succeeds returning 10. Finally the DAG checkpoints
+    ContextSucceeded (SubType Dag) and the invocation completes returning the
+    summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      seed: SUCCEEDED
+      group: SUCCEEDED
+      done: SUCCEEDED
+    counts:
+      - 3
+      - 0
+      - 0
+      - 3
+    group: 5
+    done: 10
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: childdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_SEED}
+    Name: seed
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_SEED}
+    Name: seed
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX_GROUP}
+    Name: group
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${S_A}
+    Name: inner-a
+    ParentId: ${CTX_GROUP}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${S_A}
+    Name: inner-a
+    ParentId: ${CTX_GROUP}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '2'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_B}
+    Name: inner-b
+    ParentId: ${CTX_GROUP}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_B}
+    Name: inner-b
+    ParentId: ${CTX_GROUP}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '3'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 10
+    Id: ${CTX_GROUP}
+    Name: group
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '5'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 11
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 12
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '10'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 13
+    Id: ${DAG}
+    Name: childdag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 14
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

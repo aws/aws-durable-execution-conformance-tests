@@ -1,0 +1,124 @@
+---
+# 10.8: DAG task that is a waitForCondition (flat WaitForCondition op under the DAG)
+description: DAG with a waitForCondition task that polls to a threshold, then feeds a
+  downstream step
+handler: |
+  A DAG named "wfcdag" with two tasks: poll -> done. poll is a waitForCondition
+  task (root) whose check starts from an initial state of 0 and increments the
+  state by 1 on each poll. The wait strategy continues while the state is below 2
+  and stops once it reaches 2, so the condition completes after a deterministic
+  number of polls, returning 2. done is a step task that depends on poll and
+  returns poll*5 (=10), proving the DAG resumes across the suspend/resume
+  boundary introduced by the wait. Max-concurrency is 1. Every task succeeds, so
+  the DAG completes with reason ALL_COMPLETED. The handler returns a summary: the
+  completion reason, per-task terminal statuses, the [succeeded, failed, skipped,
+  total] counts, the final poll state, and the downstream result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. poll delegates to its native
+    waitForCondition operation checkpointed directly under the Dag container
+    (flat, name-based): the SDK checkpoints StepStarted (SubType WaitForCondition,
+    Name = poll, ParentId = the Dag op), runs the first check (state 0 -> 1), the
+    wait strategy returns continue, StepSucceeded is checkpointed carrying the new
+    state, and the invocation suspends (InvocationCompleted).
+  - Replay: re-invoked after the delay. The second check (1 -> 2) reaches the
+    threshold, the wait strategy stops, and the terminal StepSucceeded is
+    checkpointed carrying the final state 2. done then runs its step directly
+    under the Dag container and succeeds returning 10. Finally the DAG checkpoints
+    ContextSucceeded (SubType Dag) and the invocation completes returning the
+    summary.
+AsyncInvoke: true
+AsyncConfig:
+  NoProgressTimeoutSeconds: 90
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      poll: SUCCEEDED
+      done: SUCCEEDED
+    counts:
+      - 2
+      - 0
+      - 0
+      - 2
+    poll: 2
+    done: 10
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: wfcdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 3
+    Id: ${W_POLL}
+    Name: poll
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 4
+    Id: ${W_POLL}
+    Name: poll
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: StepStarted
+    SubType: WaitForCondition
+    EventId: 6
+    Id: ${W_POLL}
+    Name: poll
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: WaitForCondition
+    EventId: 7
+    Id: ${W_POLL}
+    Name: poll
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '2'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '10'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 10
+    Id: ${DAG}
+    Name: wfcdag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
