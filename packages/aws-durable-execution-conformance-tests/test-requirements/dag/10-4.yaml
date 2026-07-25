@@ -1,0 +1,159 @@
+---
+# 10.4: DAG in-graph Wait task (suspend and resume)
+description: DAG with an in-graph Wait task that suspends the invocation and resumes it
+handler: |
+  A DAG named "waitresume" with three tasks in a linear chain: start -> pause ->
+  finish. start is a step task that returns "started". pause is a Wait task
+  (5 seconds) that depends on start, so it suspends the whole invocation without
+  compute charges until the wait elapses, then resumes in a fresh invocation.
+  finish is a step task that depends on pause and returns "resumed", proving the
+  DAG ran to completion across the suspend/resume boundary. All tasks succeed, so
+  the DAG completes with reason ALL_COMPLETED. The handler returns a summary with
+  the completion reason, per-task terminal statuses, the [succeeded, failed,
+  skipped, total] counts, and the post-resume marker.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag). start runs first inside a DagTask, its step succeeds returning
+    "started", and the DagTask checkpoints ContextSucceeded. pause then runs
+    inside a DagTask: the SDK checkpoints WaitStarted (SubType Wait, ParentId =
+    the pause DagTask op) and the invocation suspends (InvocationCompleted). When
+    the wait elapses the invocation resumes, checkpoints WaitSucceeded, and the
+    pause DagTask checkpoints ContextSucceeded. finish then runs its step, which
+    succeeds returning "resumed", wrapped in DagTask ContextStarted/
+    ContextSucceeded. Finally the DAG checkpoints ContextSucceeded (SubType Dag)
+    and the invocation completes returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      start: SUCCEEDED
+      pause: SUCCEEDED
+      finish: SUCCEEDED
+    counts:
+      - 3
+      - 0
+      - 0
+      - 3
+    marker: resumed
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: waitresume
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 3
+    Id: ${T_START}
+    Name: start
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${S_START}
+    Name: start
+    ParentId: ${T_START}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${S_START}
+    Name: start
+    ParentId: ${T_START}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"started"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 6
+    Id: ${T_START}
+    Name: start
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 7
+    Id: ${T_PAUSE}
+    Name: pause
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 8
+    Id: ${W_PAUSE}
+    Name: pause
+    ParentId: ${T_PAUSE}
+    EventTimestamp: '*'
+    WaitStartedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 10
+    Id: ${W_PAUSE}
+    Name: pause
+    ParentId: ${T_PAUSE}
+    EventTimestamp: '*'
+    WaitSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 11
+    Id: ${T_PAUSE}
+    Name: pause
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 12
+    Id: ${T_FINISH}
+    Name: finish
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 13
+    Id: ${S_FINISH}
+    Name: finish
+    ParentId: ${T_FINISH}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 14
+    Id: ${S_FINISH}
+    Name: finish
+    ParentId: ${T_FINISH}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"resumed"'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 15
+    Id: ${T_FINISH}
+    Name: finish
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 16
+    Id: ${DAG}
+    Name: waitresume
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 17
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

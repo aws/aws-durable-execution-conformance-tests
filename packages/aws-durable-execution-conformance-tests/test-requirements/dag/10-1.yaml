@@ -1,0 +1,193 @@
+---
+# 10.1: DAG diamond fan-out/fan-in (all tasks complete)
+description: DAG diamond fan-out/fan-in where a root task feeds two parallel tasks that merge
+handler: |
+  A DAG named "diamond" with four tasks forming a diamond dependency graph:
+  fetch (root) -> {ta, tb} -> merge. fetch returns 10; ta depends on fetch and
+  returns fetch+1 (=11); tb depends on fetch and returns fetch*2 (=20); merge
+  depends on both ta and tb and returns ta+tb (=31). Max-concurrency is 1 so the
+  ready tasks run sequentially in a deterministic topological order
+  (fetch, ta, tb, merge). Every task succeeds, so the DAG completes with reason
+  ALL_COMPLETED. The handler returns a summary: the completion reason, the
+  per-task terminal statuses, the [succeeded, failed, skipped, total] counts,
+  and the merge result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. For each task in topological order it
+    checkpoints ContextStarted (SubType DagTask, ParentId = the Dag op), runs the
+    task's inner step (StepStarted/StepSucceeded, ParentId = the DagTask op), and
+    checkpoints ContextSucceeded (SubType DagTask). After fetch, ta, tb and merge
+    all succeed it checkpoints ContextSucceeded (SubType Dag) and the invocation
+    completes returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      fetch: SUCCEEDED
+      ta: SUCCEEDED
+      tb: SUCCEEDED
+      merge: SUCCEEDED
+    counts:
+      - 4
+      - 0
+      - 0
+      - 4
+    merge: 31
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: diamond
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 3
+    Id: ${T_FETCH}
+    Name: fetch
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${S_FETCH}
+    Name: fetch
+    ParentId: ${T_FETCH}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${S_FETCH}
+    Name: fetch
+    ParentId: ${T_FETCH}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '10'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 6
+    Id: ${T_FETCH}
+    Name: fetch
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 7
+    Id: ${T_TA}
+    Name: ta
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_TA}
+    Name: ta
+    ParentId: ${T_TA}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_TA}
+    Name: ta
+    ParentId: ${T_TA}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '11'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 10
+    Id: ${T_TA}
+    Name: ta
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 11
+    Id: ${T_TB}
+    Name: tb
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 12
+    Id: ${S_TB}
+    Name: tb
+    ParentId: ${T_TB}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 13
+    Id: ${S_TB}
+    Name: tb
+    ParentId: ${T_TB}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '20'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 14
+    Id: ${T_TB}
+    Name: tb
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: DagTask
+    EventId: 15
+    Id: ${T_MERGE}
+    Name: merge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 16
+    Id: ${S_MERGE}
+    Name: merge
+    ParentId: ${T_MERGE}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 17
+    Id: ${S_MERGE}
+    Name: merge
+    ParentId: ${T_MERGE}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '31'
+  - EventType: ContextSucceeded
+    SubType: DagTask
+    EventId: 18
+    Id: ${T_MERGE}
+    Name: merge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 19
+    Id: ${DAG}
+    Name: diamond
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 20
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
