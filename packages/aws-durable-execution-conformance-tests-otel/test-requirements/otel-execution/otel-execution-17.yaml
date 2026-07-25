@@ -114,7 +114,7 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${CALLBACK_SUBMITTER}
       expect:
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links:
           - name: invocation
@@ -140,7 +140,7 @@ TelemetryAssertions:
           durable.operation.id: ${CALLBACK_SUBMITTER}
           durable.attempt.outcome: SUCCEEDED
       expect:
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links:
           - name: invocation

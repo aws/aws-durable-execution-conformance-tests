@@ -58,7 +58,7 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${INVOKE1}
       expect:
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links:
           - name: invocation

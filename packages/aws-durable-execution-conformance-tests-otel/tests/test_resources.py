@@ -78,7 +78,6 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 "ERROR",
                 "OK",
                 "UNSET",
-                "${/^(?:OK|UNSET)$/}",
             }
             assert expected["service_name"] == "invocation"
             links = expected["links"]
@@ -142,6 +141,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         telemetry_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", telemetry_json))
         history_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", history_json))
 
+        assert "${/^(?:OK|UNSET)$/}" not in telemetry_json
         assert '"*"' not in telemetry_json
         assert telemetry_placeholders <= history_placeholders | {"EXECUTION_ARN"}
 
@@ -202,6 +202,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         telemetry_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", telemetry_json))
         history_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", history_json))
 
+        assert "${/^(?:OK|UNSET)$/}" not in telemetry_json
         assert telemetry_placeholders <= history_placeholders | {
             "EXECUTION_ARN",
             "TARGET_EXECUTION_ARN",

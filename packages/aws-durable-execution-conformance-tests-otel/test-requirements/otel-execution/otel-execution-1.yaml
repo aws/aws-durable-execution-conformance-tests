@@ -39,7 +39,7 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${STEP1}
       expect:
-        status: "${/^(?:OK|UNSET)$/}"
+        status: OK
         service_name: invocation
         links:
           - name: invocation
@@ -64,7 +64,7 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${STEP1}
       expect:
-        status: "${/^(?:OK|UNSET)$/}"
+        status: OK
         service_name: invocation
         links:
           - name: invocation

@@ -104,7 +104,7 @@ TelemetryAssertions:
         attributes:
           durable.operation.id: ${RECOVERY_STEP}
       expect:
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links:
           - name: invocation
@@ -134,7 +134,7 @@ TelemetryAssertions:
           durable.operation.id: ${RECOVERY_STEP}
           durable.attempt.outcome: SUCCEEDED
       expect:
-        status: ${/^(?:OK|UNSET)$/}
+        status: OK
         service_name: invocation
         links:
           - name: invocation
