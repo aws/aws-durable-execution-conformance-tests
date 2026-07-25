@@ -73,8 +73,10 @@ The currently supported telemetry assertions are:
 `span_assertions` accepts one mapping or a list of mappings. Each `select`
 mapping matches exactly one span by default. Set `count` to an exact positive
 number for repeated spans such as invocation or continuation spans. The
-corresponding `expect` mapping is applied to every match and is otherwise a
-partial assertion, so unlisted properties and metadata are ignored:
+assertions are evaluated in order, and a span selected by one assertion is not
+available to later selectors. The corresponding `expect` mapping is applied to
+every match and is otherwise a partial assertion, so unlisted properties and
+metadata are ignored:
 
 ```yaml
 TelemetryAssertions:

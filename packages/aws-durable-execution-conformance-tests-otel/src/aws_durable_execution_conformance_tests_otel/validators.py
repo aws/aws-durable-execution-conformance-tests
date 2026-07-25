@@ -100,6 +100,31 @@ def _matches_span(
     )
 
 
+def _select_span_matches(
+    selector: Mapping[str, Any],
+    spans: Sequence[Mapping[str, Any]],
+    used_span_indexes: Collection[int],
+    expected_count: int,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[tuple[int, Mapping[str, Any]]]:
+    exact_matches = [
+        (span_index, span)
+        for span_index, span in enumerate(spans)
+        if span_index not in used_span_indexes and _matches_span(selector, span, ())
+    ]
+    if exact_matches or BackendFeatureDisparity.UNSET_STATUS not in feature_disparities:
+        return exact_matches
+
+    # Status normalization can collapse distinct UNSET and OK selectors. Allocate
+    # only the requested unused fallback spans so later selectors can claim the rest.
+    fallback_matches = [
+        (span_index, span)
+        for span_index, span in enumerate(spans)
+        if span_index not in used_span_indexes and _matches_span(selector, span, feature_disparities)
+    ]
+    return fallback_matches[:expected_count]
+
+
 def _expectation_errors(
     expected: Any,
     actual: Any,
@@ -382,6 +407,7 @@ def _span_assertion_errors(
 
     errors: list[str] = []
     covered_span_indexes: set[int] = set()
+    used_span_indexes: set[int] = set()
     for index, assertion in enumerate(span_assertions):
         path = f"span_assertions[{index}]"
         if not isinstance(assertion, Mapping):
@@ -406,12 +432,13 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer")
             continue
 
-        matches = [
-            (span_index, span)
-            for span_index, span in enumerate(spans)
-            if _matches_span(selector, span, feature_disparities)
-        ]
-        covered_span_indexes.update(span_index for span_index, _span in matches)
+        matches = _select_span_matches(
+            selector,
+            spans,
+            used_span_indexes,
+            expected_count,
+            feature_disparities,
+        )
         if not matches and expected_count == 1:
             errors.append(f"{path}.select matched no spans")
             continue
@@ -421,6 +448,9 @@ def _span_assertion_errors(
         if len(matches) != expected_count:
             errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
             continue
+        matched_span_indexes = {span_index for span_index, _span in matches}
+        covered_span_indexes.update(matched_span_indexes)
+        used_span_indexes.update(matched_span_indexes)
 
         expected_properties = {
             key: value

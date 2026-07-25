@@ -304,8 +304,23 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
         span_id="4" * 16,
         name="sibling",
     )
+    invalid_after = replace(
+        child,
+        span_id="5" * 16,
+        name="invalid-after",
+    )
+    invalid_before = replace(
+        child,
+        span_id="6" * 16,
+        name="invalid-before",
+    )
+    invalid_link = replace(
+        child,
+        span_id="7" * 16,
+        name="invalid-link",
+    )
     errors = validate_trace(
-        replace(trace, spans=(root, child, sibling)),
+        replace(trace, spans=(root, child, sibling, invalid_after, invalid_before, invalid_link)),
         {
             "span_assertions": [
                 {
@@ -313,15 +328,15 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
                     "expect": {"inside": "root"},
                 },
                 {
-                    "select": {"name": "child"},
+                    "select": {"name": "invalid-after"},
                     "expect": {"after": {"name": "missing"}},
                 },
                 {
-                    "select": {"name": "child"},
-                    "expect": {"before": {"service_name": "service"}},
+                    "select": {"name": "invalid-before"},
+                    "expect": {"before": {"name": "${/^(?:root|sibling)$/}"}},
                 },
                 {
-                    "select": {"name": "child"},
+                    "select": {"name": "invalid-link"},
                     "expect": {"inside": {"$linked": False, "name": "root"}},
                 },
             ]
@@ -596,14 +611,26 @@ def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
 
 
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    repeated_root = replace(
+        root,
+        span_id="4" * 16,
+        name="repeated",
+    )
+    repeated_child = replace(
+        child,
+        span_id="5" * 16,
+        name="repeated",
+    )
     errors = validate_trace(
-        _trace(),
+        replace(trace, spans=(root, child, repeated_root, repeated_child)),
         {
             "require_all_spans": True,
             "exact_attribute_prefixes": ["durable."],
             "span_assertions": [
                 {
-                    "select": {"status": "OK"},
+                    "select": {"name": "repeated"},
                     "count": 2,
                     "expect": {
                         "service_name": "service",
@@ -715,6 +742,11 @@ def test_scopes_complete_span_coverage_to_multiple_executions() -> None:
 def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     trace = _trace()
     root, child = trace.spans
+    invalid_parent_child = replace(
+        child,
+        span_id="4" * 16,
+        name="invalid-parent-child",
+    )
     external_child = Span(
         trace_id=child.trace_id,
         span_id=child.span_id,
@@ -730,7 +762,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     )
 
     errors = validate_trace(
-        trace,
+        replace(trace, spans=(root, child, invalid_parent_child)),
         {
             "span_assertions": [
                 {
@@ -747,7 +779,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
                     },
                 },
                 {
-                    "select": {"name": "child"},
+                    "select": {"name": "invalid-parent-child"},
                     "expect": {"parent": "root"},
                 },
             ]
@@ -891,6 +923,64 @@ def test_unset_status_disparity_applies_to_span_selectors() -> None:
         )
         == []
     )
+
+
+def test_unset_status_disparity_prefers_exact_then_allocates_unused_ok_spans() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    native_trace = replace(
+        trace,
+        spans=(
+            replace(root, name="callback", status="UNSET"),
+            replace(child, name="callback"),
+        ),
+    )
+    normalized_trace = replace(
+        trace,
+        spans=(
+            replace(root, name="callback"),
+            replace(child, name="callback"),
+        ),
+    )
+    assertions = {
+        "span_assertions": [
+            {
+                "select": {"name": "callback", "status": "UNSET"},
+                "expect": {"status": "UNSET"},
+            },
+            {
+                "select": {"name": "callback", "status": "OK"},
+                "expect": {"status": "OK"},
+            },
+        ]
+    }
+    disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+
+    assert validate_trace(native_trace, assertions, _query(), feature_disparities=disparities) == []
+    assert validate_trace(normalized_trace, assertions, _query()) == [
+        "span_assertions[0].select matched no spans",
+        "span_assertions[1].select matched 2 spans; it must select exactly one",
+    ]
+    assert validate_trace(normalized_trace, assertions, _query(), feature_disparities=disparities) == []
+
+
+def test_span_selectors_do_not_reuse_consumed_spans() -> None:
+    assertions = {
+        "span_assertions": [
+            {
+                "select": {"name": "root"},
+                "expect": {},
+            },
+            {
+                "select": {"name": "root"},
+                "expect": {},
+            },
+        ]
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[1].select matched no spans",
+    ]
 
 
 def test_unset_status_disparity_applies_to_status_matchers() -> None:
