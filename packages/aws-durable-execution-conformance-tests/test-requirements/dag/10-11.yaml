@@ -1,0 +1,190 @@
+---
+# 10.11: DAG task that is a callback (callback container + inner WaitForCallback under the DAG)
+description: DAG with a callback task completed by an external system between two
+  steps
+handler: |
+  A DAG named "callbackdag" with three tasks in a linear chain: pre -> cb ->
+  post. pre is a step task (root) that returns "ready". cb is a callback task
+  that depends on pre; its submitter receives the generated callback id and does
+  nothing durable, so the task suspends until an external system completes the
+  callback with a success payload, which becomes cb's result. post is a step task
+  that depends on cb; it normalizes the callback result (stripping a single pair
+  of surrounding double-quote characters if the SDK's default callback
+  deserialization leaves the raw payload text) and returns it with "_done"
+  appended, proving the DAG resumes across the suspend/resume boundary the
+  callback introduces. Max-concurrency is 1 so ready tasks run in a deterministic
+  topological order. Every task succeeds, so the DAG completes with reason
+  ALL_COMPLETED. The handler returns a summary: the completion reason, per-task
+  terminal statuses, the [succeeded, failed, skipped, total] counts, the
+  normalized callback payload, and the downstream result.
+
+  Scope note: whether a callback payload is deserialized raw or parsed by default
+  is base-SDK callback behavior that the DAG contract reuses verbatim and does not
+  redefine, so the handler normalizes it and the scenario asserts payload identity
+  rather than per-language encoding. The container payloads carrying the
+  un-normalized value are therefore not pinned; the payload itself is asserted on
+  the transport-level CallbackSucceeded event and end-to-end in the result.
+invocations: |
+  - Fresh invoke: the SDK checkpoints ContextStarted (SubType Dag) for the DAG
+    container. Each task delegates to its native operation checkpointed directly
+    under the Dag container (flat, name-based). pre runs first and succeeds
+    returning "ready" (StepStarted / StepSucceeded, SubType Step, ParentId = the
+    Dag op). cb then runs: because a callback cannot take an explicit operation
+    id directly, the task materializes as a callback container (ContextStarted,
+    SubType Callback, Name = cb, ParentId = the Dag op) whose body runs the
+    native wait-for-callback operation (ContextStarted, SubType WaitForCallback,
+    Name = cb, ParentId = the callback container). Inside that, the SDK creates
+    the inner callback (CallbackStarted, ParentId = the wait-for-callback op) and
+    runs the submitter as a step (StepStarted / StepSucceeded, ParentId = the
+    wait-for-callback op). The invocation then completes and execution suspends
+    waiting for the callback.
+  - Replay 1: the external system completed the callback with a success payload.
+    The SDK checkpoints CallbackSucceeded carrying the payload, then
+    ContextSucceeded for the wait-for-callback op and ContextSucceeded for the
+    callback container. post then runs its step directly under the Dag container
+    and succeeds, the DAG checkpoints ContextSucceeded (SubType Dag) and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+Variables:
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: {}
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      pre: SUCCEEDED
+      cb: SUCCEEDED
+      post: SUCCEEDED
+    counts:
+      - 3
+      - 0
+      - 0
+      - 3
+    cb: ${CB_PAYLOAD}
+    post: ${CB_PAYLOAD}_done
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: callbackdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_PRE}
+    Name: pre
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_PRE}
+    Name: pre
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"ready"'
+  - EventType: ContextStarted
+    SubType: Callback
+    EventId: 5
+    Id: ${CTX_CB}
+    Name: cb
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 6
+    Id: ${CTX_WFC}
+    Name: cb
+    ParentId: ${CTX_CB}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 7
+    Id: ${CB1}
+    ParentId: ${CTX_WFC}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_SUB}
+    ParentId: ${CTX_WFC}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_SUB}
+    ParentId: ${CTX_WFC}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 11
+    Id: ${CB1}
+    ParentId: ${CTX_WFC}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 12
+    Id: ${CTX_WFC}
+    Name: cb
+    ParentId: ${CTX_CB}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Callback
+    EventId: 13
+    Id: ${CTX_CB}
+    Name: cb
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 14
+    Id: ${S_POST}
+    Name: post
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 15
+    Id: ${S_POST}
+    Name: post
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 16
+    Id: ${DAG}
+    Name: callbackdag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 17
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

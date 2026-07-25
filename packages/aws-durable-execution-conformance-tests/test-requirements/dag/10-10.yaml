@@ -1,0 +1,127 @@
+---
+# 10.10: DAG task that is an invoke of another function (flat ChainedInvoke op under the DAG)
+description: DAG with an invoke task that calls an echo target function between two
+  steps
+handler: |
+  A DAG named "invokedag" with three tasks in a linear chain: prep -> call ->
+  done. prep is a step task (root) that returns 21. call is an invoke task that
+  depends on prep; it invokes an echo target function (whose name comes from the
+  TARGET_FUNCTION_NAME environment variable) with prep's result as the payload,
+  and the echo target returns whatever it receives, so call resolves to 21. done
+  is a step task that depends on call and returns call*2 (=42), proving the DAG
+  resumes across the suspend/resume boundary the chained invoke introduces.
+  Max-concurrency is 1 so ready tasks run in a deterministic topological order.
+  Every task succeeds, so the DAG completes with reason ALL_COMPLETED. The
+  handler returns a summary: the completion reason, per-task terminal statuses,
+  the [succeeded, failed, skipped, total] counts, the invoke result, and the
+  downstream result.
+invocations: |
+  - Fresh invoke: the SDK checkpoints ContextStarted (SubType Dag) for the DAG
+    container. Each task delegates to its native operation checkpointed directly
+    under the Dag container (flat, name-based). prep runs first and succeeds
+    returning 21 (StepStarted / StepSucceeded, SubType Step, ParentId = the Dag
+    op). call then runs: the SDK checkpoints ChainedInvokeStarted (Name = call,
+    ParentId = the Dag op) carrying the payload 21, the invocation completes, and
+    execution suspends waiting for the target function.
+  - Replay 1: the target function echoed the payload. The SDK checkpoints
+    ChainedInvokeSucceeded carrying 21, done then runs its step directly under
+    the Dag container and succeeds returning 42, the DAG checkpoints
+    ContextSucceeded (SubType Dag) and the invocation completes returning the
+    summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      prep: SUCCEEDED
+      call: SUCCEEDED
+      done: SUCCEEDED
+    counts:
+      - 3
+      - 0
+      - 0
+      - 3
+    call: 21
+    done: 42
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: invokedag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_PREP}
+    Name: prep
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_PREP}
+    Name: prep
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '21'
+  - EventType: ChainedInvokeStarted
+    EventId: 5
+    Id: ${INV}
+    Name: call
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ChainedInvokeStartedDetails:
+      FunctionName: '*'
+      Input:
+        Payload: '21'
+      ExecutedVersion: '*'
+      DurableExecutionArn: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ChainedInvokeSucceeded
+    EventId: 7
+    Id: ${INV}
+    Name: call
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    ChainedInvokeSucceededDetails:
+      Result:
+        Payload: '21'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${S_DONE}
+    Name: done
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '42'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 10
+    Id: ${DAG}
+    Name: invokedag
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

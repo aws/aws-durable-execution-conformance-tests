@@ -6,8 +6,12 @@ handler: |
   A DAG named "paralleldag" with two tasks: fork -> join. fork is a parallel
   task (root) with two named branches, "left" and "right", each running a single
   step that returns a constant string ("L" for left, "R" for right). join is a
-  step task that depends on fork and returns the fork's successful results joined
-  by a hyphen ("L-R"). Max-concurrency is 1 both at the DAG level and inside the
+  step task that depends on fork and reads only the parallel task's aggregate
+  result, returning "<succeeded>/<branch count>" (= "2/2"). A step task cannot
+  read another operation's value in every SDK (a step is a leaf operation), so
+  the cross-language contract asserts only the aggregate the parallel result
+  exposes everywhere; reading child values is covered by the map scenario (10-6).
+  Max-concurrency is 1 both at the DAG level and inside the
   parallel, so branches execute sequentially in index order, producing a
   deterministic history. Every task succeeds, so the DAG completes with reason
   ALL_COMPLETED. The handler returns a summary: the completion reason, per-task
@@ -24,7 +28,7 @@ invocations: |
     the branch) returning "L", and checkpoints ContextSucceeded for the branch.
     It repeats for branch 1 returning "R", then checkpoints ContextSucceeded
     (SubType Parallel) for the parallel container. join then runs its step
-    directly under the Dag container and succeeds returning "L-R". Finally the
+    directly under the Dag container and succeeds returning "2/2". Finally the
     DAG checkpoints ContextSucceeded (SubType Dag) and the invocation completes
     returning the summary.
 AsyncInvoke: true
@@ -41,7 +45,7 @@ ExpectedResult:
       - 0
       - 0
       - 2
-    join: L-R
+    join: 2/2
 ExpectedExecutionHistory:
   - EventType: ContextStarted
     SubType: Dag
@@ -147,7 +151,7 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
-        Payload: '"L-R"'
+        Payload: '"2/2"'
   - EventType: ContextSucceeded
     SubType: Dag
     EventId: 15
