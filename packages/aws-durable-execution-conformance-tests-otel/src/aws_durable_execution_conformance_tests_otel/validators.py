@@ -307,10 +307,17 @@ def _temporal_relation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    linked_only = expected.get("$linked", False)
+    if "$linked" in expected and linked_only is not True:
+        return [f"{path}.$linked must be true"]
+    selector = {key: value for key, value in expected.items() if key != "$linked"}
+    linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
         for span_index, (span, serialized_span) in enumerate(zip(trace.spans, spans, strict=True))
-        if span_index != selected_span_index and _matches_span(expected, serialized_span, feature_disparities)
+        if span_index != selected_span_index
+        and (not linked_only or (span.trace_id, span.span_id) in linked_span_keys)
+        and _matches_span(selector, serialized_span, feature_disparities)
     ]
     if not matches:
         return [f"{path} matched no spans"]

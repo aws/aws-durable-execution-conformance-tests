@@ -145,6 +145,63 @@ def test_asserts_before_after_non_parent_inside_and_parent_containment() -> None
     assert errors == []
 
 
+def test_inside_can_select_a_linked_span_among_duplicate_matches() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    first_invocation = replace(
+        root,
+        name="invocation",
+        span_id="4" * 16,
+    )
+    linked_invocation = replace(
+        root,
+        name="invocation",
+        span_id="5" * 16,
+    )
+    linked_child = replace(
+        child,
+        links=(
+            SpanLink(
+                trace_id=linked_invocation.trace_id,
+                span_id=linked_invocation.span_id,
+            ),
+        ),
+    )
+    linked_trace = replace(
+        trace,
+        spans=(first_invocation, linked_invocation, linked_child),
+    )
+
+    errors = validate_trace(
+        linked_trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "inside": {
+                        "$linked": True,
+                        "name": "invocation",
+                    }
+                },
+            }
+        },
+        _query(),
+    )
+    ambiguous_errors = validate_trace(
+        linked_trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"inside": {"name": "invocation"}},
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+    assert ambiguous_errors == ["span_assertions[0].expect.inside matched 2 spans; it must select exactly one"]
+
+
 def test_reports_timestamp_and_parent_containment_violations() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -233,6 +290,10 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
                     "select": {"name": "child"},
                     "expect": {"before": {"service_name": "service"}},
                 },
+                {
+                    "select": {"name": "child"},
+                    "expect": {"inside": {"$linked": False, "name": "root"}},
+                },
             ]
         },
         _query(),
@@ -242,6 +303,7 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
         "span_assertions[0].expect.inside must be a mapping",
         "span_assertions[1].expect.after matched no spans",
         "span_assertions[2].expect.before matched 2 spans; it must select exactly one",
+        "span_assertions[3].expect.inside.$linked must be true",
     ]
 
 

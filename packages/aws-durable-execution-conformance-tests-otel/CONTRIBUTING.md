@@ -122,7 +122,9 @@ can also select exactly one other span with `before`, `after`, or `inside`.
 These relationships require the selected span's end to be at or before the
 other span's start, its start to be at or after the other span's end, or its
 complete timespan to be contained by the other span, respectively. `inside`
-is independent of `parent_span_id` and can target a non-parent span:
+is independent of `parent_span_id` and can target a non-parent span. Add
+`$linked: true` to a temporal selector to restrict it to spans linked by the
+selected span:
 
 ```yaml
 TelemetryAssertions:
@@ -133,6 +135,7 @@ TelemetryAssertions:
       after:
         name: first attempt
       inside:
+        $linked: true
         name: retry window
 ```
 

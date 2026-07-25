@@ -67,6 +67,9 @@ TelemetryAssertions:
         service_name: invocation
         links:
           - name: invocation
+        inside:
+          $linked: true
+          name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -89,6 +92,9 @@ TelemetryAssertions:
         service_name: invocation
         links:
           - name: invocation
+        inside:
+          $linked: true
+          name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -110,6 +116,9 @@ TelemetryAssertions:
         service_name: invocation
         links:
           - name: invocation
+        inside:
+          $linked: true
+          name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -133,6 +142,9 @@ TelemetryAssertions:
         service_name: invocation
         links:
           - name: invocation
+        inside:
+          $linked: true
+          name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

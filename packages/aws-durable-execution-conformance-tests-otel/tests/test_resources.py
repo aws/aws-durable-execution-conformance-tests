@@ -192,6 +192,10 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             assert expected["kind"] == "INTERNAL"
             assert expected["parent"]
             assert expected["links"] == [{"name": "invocation"}]
+            assert expected["inside"] == {
+                "$linked": True,
+                "name": "invocation",
+            }
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])

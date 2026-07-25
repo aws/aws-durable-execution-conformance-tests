@@ -50,6 +50,7 @@ relationships, and timestamp ordering. Every span must start at or before it
 ends, and every asserted parent must contain its child's complete timespan.
 `before`, `after`, and `inside` compare a selected span with one other span.
 `inside` can target a span that is not the selected span's parent.
+`$linked: true` restricts the relation to spans linked by the selected span.
 Complete-contract cases can require every plugin span and every attribute
 under a stable prefix to be asserted. See the
 [contribution guide](CONTRIBUTING.md#add-a-requirement) for the requirement
