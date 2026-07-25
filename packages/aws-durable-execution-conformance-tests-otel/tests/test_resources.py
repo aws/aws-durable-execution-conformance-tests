@@ -6,6 +6,7 @@
 import json
 import re
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -15,10 +16,19 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+
 
 def _requirements(suite_name: str) -> dict[str, str]:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
     return discover_test_files(suites[suite_name].root, suite="all")
+
+
+@pytest.mark.parametrize("language", ["java", "python", "typescript"])
+def test_example_templates_do_not_use_top_level_testing_metadata(language: str) -> None:
+    template = (EXAMPLES_DIR / language / "template.yaml").read_text(encoding="utf-8")
+
+    assert all(not line.startswith("TestingMetadata:") for line in template.splitlines())
 
 
 def test_extension_exposes_packaged_otel_view_requirements() -> None:

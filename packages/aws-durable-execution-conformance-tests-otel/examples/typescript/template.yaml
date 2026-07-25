@@ -2,13 +2,6 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: TypeScript SDK examples for the durable execution OTel conformance suite
 
-TestingMetadata:
-  NotImplemented:
-    - id: otel-execution-15
-      reason: ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally
-    - id: otel-execution-19
-      reason: ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY
-
 Parameters:
   LambdaExecutionRoleArn:
     Type: String
@@ -96,6 +89,11 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-invocation-1
+      NotImplemented:
+        - id: otel-execution-15
+          reason: ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally
+        - id: otel-execution-19
+          reason: ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY
     Properties:
       CodeUri: dist/
       Handler: otel_1_success.handler

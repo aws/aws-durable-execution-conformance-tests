@@ -2,47 +2,6 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Java SDK examples for the durable execution OTel conformance suite
 
-TestingMetadata:
-  NotImplemented:
-    - id: otel-execution-1
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-2
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-3
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-4
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-5
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-6
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-7
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-8
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-9
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-10
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-11
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-12
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-13
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-14
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-15
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-16
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-17
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-18
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-    - id: otel-execution-19
-      reason: ExecutionOtelPlugin is not available in the Java SDK
-
 Parameters:
   LambdaExecutionRoleArn:
     Type: String
@@ -127,6 +86,45 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-invocation-1
+      NotImplemented:
+        - id: otel-execution-1
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-2
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-3
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-4
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-5
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-6
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-7
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-8
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-9
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-10
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-11
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-12
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-13
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-14
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-15
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-16
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-17
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-18
+          reason: ExecutionOtelPlugin is not available in the Java SDK
+        - id: otel-execution-19
+          reason: ExecutionOtelPlugin is not available in the Java SDK
     Properties:
       CodeUri: .
       Handler: software.amazon.lambda.durable.conformance.otel.Otel1Success

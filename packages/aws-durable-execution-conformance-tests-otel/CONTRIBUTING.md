@@ -172,8 +172,8 @@ repository. For Java, JavaScript/Node.js, and Python:
 4. Accept the OTel template parameters documented in the package
    [README](README.md).
 5. Exercise the scenario with the S3 collector before using a hosted backend.
-6. Declare a missing handler under `TestingMetadata.NotImplemented`; its
-   `reason` may be empty.
+6. Declare a missing handler under any function resource's
+   `TestingMetadata.NotImplemented`; its `reason` may be empty.
 
 Use the same scenario semantics in every SDK. Runtime setup can differ, but the
 observable execution and telemetry behavior must satisfy the same requirement.

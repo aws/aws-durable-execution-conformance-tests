@@ -196,16 +196,19 @@ def parse_not_implemented(template_path: str) -> dict[str, str]:
     """Parse declared intentional SDK gaps from a SAM template.
 
     A ``NotImplemented`` block declares requirement IDs this SDK's template
-    intentionally does not satisfy, each with a human-readable reason. It may
-    appear as a top-level ``TestingMetadata`` block (sibling of ``Resources``)
-    and/or under any function resource's ``TestingMetadata`` -- a not-implemented
-    ID has no function to attach to, so the top-level form is expected, but both
-    are supported. Each entry is a mapping ``{ id: <requirement id>, reason: <str> }``::
+    intentionally does not satisfy, each with a human-readable reason. Put it
+    under any function resource's ``TestingMetadata`` so the SAM template
+    remains valid for deployment. The legacy top-level form is also parsed for
+    compatibility, but CloudFormation rejects it. Each entry is a mapping
+    ``{ id: <requirement id>, reason: <str> }``::
 
-        TestingMetadata:
-          NotImplemented:
-            - id: "8-13"
-              reason: "toleratedFailurePercentage rejected at build() in this SDK"
+        Resources:
+          ParallelBasic:
+            Type: AWS::Serverless::Function
+            TestingMetadata:
+              NotImplemented:
+                - id: "8-13"
+                  reason: "toleratedFailurePercentage rejected at build() in this SDK"
 
     Args:
         template_path: Path to the SAM template file.
@@ -236,7 +239,7 @@ def parse_not_implemented(template_path: str) -> dict[str, str]:
                 continue
             result[description_id] = str(entry.get("reason") or "")
 
-    # Top-level TestingMetadata block.
+    # Legacy top-level form, which is not valid for CloudFormation deployment.
     _ingest(template.get("TestingMetadata", {}))
 
     # Per-resource TestingMetadata blocks.
