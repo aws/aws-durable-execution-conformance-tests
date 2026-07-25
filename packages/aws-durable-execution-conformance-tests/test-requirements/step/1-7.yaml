@@ -32,12 +32,14 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Logger.info called once at step start
-  - pattern: 'Greeting step started for: ${INPUT_1}'
+  - match:
+      message: '/Greeting step started for: ${INPUT_1}/'
     count: 1
   # Logger.info called once at step completion
-  - pattern: 'Greeting step completed with: Hello, ${INPUT_1}!'
+  - match:
+      message: '/Greeting step completed with: Hello, ${INPUT_1}!/'
     count: 1
   # No errors expected
-  - pattern: \[ERROR\]
-    match: regex
+  - match:
+      message: '/\[ERROR\]/'
     count: 0

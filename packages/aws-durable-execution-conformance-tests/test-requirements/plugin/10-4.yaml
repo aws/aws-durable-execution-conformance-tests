@@ -39,18 +39,25 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Invocation hooks both ran (each logged before throwing)
-  - pattern: CONFPLUGIN faulty invocation-start
+  - match:
+      message: CONFPLUGIN faulty invocation-start
     count: 1
-  - pattern: CONFPLUGIN faulty invocation-end
+  - match:
+      message: CONFPLUGIN faulty invocation-end
     count: 1
-    after: CONFPLUGIN faulty invocation-start
+    after:
+      - message: CONFPLUGIN faulty invocation-start
   # Operation and attempt hooks also ran exactly once; dispatch model
   # varies per SDK, so no ordering is asserted
-  - pattern: CONFPLUGIN faulty operation-start
+  - match:
+      message: CONFPLUGIN faulty operation-start
     count: 1
-  - pattern: CONFPLUGIN faulty operation-end
+  - match:
+      message: CONFPLUGIN faulty operation-end
     count: 1
-  - pattern: CONFPLUGIN faulty attempt-start
+  - match:
+      message: CONFPLUGIN faulty attempt-start
     count: 1
-  - pattern: CONFPLUGIN faulty attempt-end
+  - match:
+      message: CONFPLUGIN faulty attempt-end
     count: 1

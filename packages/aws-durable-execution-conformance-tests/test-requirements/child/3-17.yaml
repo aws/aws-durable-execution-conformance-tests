@@ -57,5 +57,6 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Replay logging makes an incorrect second child execution fail this count
-  - pattern: ${INPUT_1}
+  - match:
+      message: '/${INPUT_1}/'
     count: 1

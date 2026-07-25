@@ -44,10 +44,13 @@ ExpectedLogs:
   # Both operation hooks fire exactly once and carry the operation id the
   # history checkpointed (${ID1}); dispatch may be async, so no ordering
   # is asserted (no before/after)
-  - pattern: CONFPLUGIN operation-start op=${ID1}
+  - match:
+      message: CONFPLUGIN operation-start op=${ID1}
     count: 1
-  - pattern: CONFPLUGIN operation-end op=${ID1} status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN operation-end op=${ID1} status=SUCCEEDED
     count: 1
   # The step never reaches a FAILED terminal status
-  - pattern: CONFPLUGIN operation-end op=${ID1} status=FAILED
+  - match:
+      message: CONFPLUGIN operation-end op=${ID1} status=FAILED
     count: 0

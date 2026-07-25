@@ -39,16 +39,22 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Invocation-start hook fires (synchronously) before handler code runs
-  - pattern: CONFPLUGIN invocation-start first=true
+  - match:
+      message: CONFPLUGIN invocation-start first=true
     count: 1
   # Handler step body runs between the two invocation hooks
-  - pattern: 'Greeting step running for: ${INPUT_1}'
+  - match:
+      message: '/Greeting step running for: ${INPUT_1}/'
     count: 1
-    after: CONFPLUGIN invocation-start first=true
+    after:
+      - message: CONFPLUGIN invocation-start first=true
   # Invocation-end hook fires last, with the terminal status
-  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN invocation-end status=SUCCEEDED
     count: 1
-    after: 'Greeting step running for: ${INPUT_1}'
+    after:
+      - message: '/Greeting step running for: ${INPUT_1}/'
   # Single invocation: no replay invocation-start may appear
-  - pattern: CONFPLUGIN invocation-start first=false
+  - match:
+      message: CONFPLUGIN invocation-start first=false
     count: 0

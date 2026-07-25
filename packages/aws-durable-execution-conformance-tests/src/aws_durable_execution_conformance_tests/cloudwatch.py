@@ -9,6 +9,7 @@ and validating them against expected log patterns from YAML specs.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -39,45 +40,67 @@ class CloudWatchLogError(Exception):
 
 @dataclass(frozen=True)
 class LogExpectation:
-    """A single expected log entry from the YAML spec.
+    """A single expected log entry from the YAML spec (v3 schema).
 
     Cardinality (``count``/``min_count``/``max_count``) is always evaluated
-    over the whole log stream. Ordering is asserted only where an entry
-    declares ``before``/``after`` — each contains the ``pattern`` text of
-    another entry in the list (placeholders substituted).
+    over the whole log stream. Ordering is asserted only via ``before``/
+    ``after`` anchor matchers.
 
     Attributes:
-        pattern: The string or regex pattern to search for.
-        match: Matching mode — "contains" (default), "exact", or "regex".
-        count: If set, the exact number of matching log lines expected.
+        match: Field-name -> expected-value map. Values are matched EXACTLY
+            (whitespace-stripped for strings) after placeholder substitution;
+            a ``/…/``-delimited string value is a regex search instead.
+            Multiple fields are ANDed. Fields come from the log record's
+            JSON object (Lambda envelope + SDK enrichment); a non-JSON line
+            exposes only ``message`` = the raw line.
+        count: If set, the exact number of matching log records expected.
         min_count: If set, the minimum number of matches required.
         max_count: If set, the maximum number of matches allowed.
-        before: Pattern of another entry; all of this entry's matches must
-            occur at-or-before all matches of the referenced entry.
-        after: Pattern of another entry; all of this entry's matches must
-            occur at-or-after all matches of the referenced entry.
+        before: Anchor matcher(s); all of this entry's matches must occur
+            at-or-before all records matching every anchor.
+        after: Anchor matcher(s); all of this entry's matches must occur
+            at-or-after all records matching every anchor.
     """
 
-    pattern: str
-    match: str = "contains"
+    match: dict[str, Any]
     count: int | None = None
     min_count: int | None = None
     max_count: int | None = None
-    before: str | None = None
-    after: str | None = None
+    before: tuple[dict[str, Any], ...] = ()
+    after: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LogExpectation:
         """Build a LogExpectation from a YAML dict entry."""
+        match = data["match"]
+        if not isinstance(match, dict) or not match:
+            msg = "'match' must be a non-empty field->value mapping"
+            raise TypeError(msg)
         return cls(
-            pattern=data["pattern"],
-            match=data.get("match", "contains"),
+            match=match,
             count=data.get("count"),
             min_count=data.get("min_count"),
             max_count=data.get("max_count"),
-            before=data.get("before"),
-            after=data.get("after"),
+            before=_anchor_tuple(data.get("before")),
+            after=_anchor_tuple(data.get("after")),
         )
+
+    @property
+    def label(self) -> str:
+        """Human-readable identity for error messages."""
+        return ", ".join(f"{k}={v!r}" for k, v in self.match.items())
+
+
+def _anchor_tuple(raw: Any) -> tuple[dict[str, Any], ...]:
+    """Normalize a before/after value into a tuple of matcher dicts."""
+    if raw is None:
+        return ()
+    if isinstance(raw, dict):
+        return (raw,)
+    if isinstance(raw, list) and all(isinstance(item, dict) for item in raw):
+        return tuple(raw)
+    msg = "'before'/'after' must be a matcher mapping or a list of matcher mappings"
+    raise TypeError(msg)
 
 
 @dataclass(frozen=True)
@@ -102,6 +125,7 @@ class CloudWatchLogRetriever:
 
     # Default wait before querying logs to allow propagation
     DEFAULT_WAIT_SECONDS = 5
+
     EVENT_POLL_INTERVAL_SECONDS = 1.0
     EVENT_POLL_TIMEOUT_SECONDS = 10.0
 
@@ -221,16 +245,18 @@ class CloudWatchLogRetriever:
     ) -> list[dict]:
         """Fetch log events associated with one durable execution.
 
-        CloudWatch's JSON filter matches ``durableExecutionArn`` or
-        ``executionArn`` on structured Lambda log records. Filtering on both
-        field names keeps concurrent executions of the same function isolated
-        without relying on Logs Insights indexing. The method polls through a
-        bounded ingestion window because ``FilterLogEvents`` has no signal that
-        all matching records are available.
+        Events are retrieved via ``filter_log_events`` (near-real-time,
+        unlike the Logs Insights query engine whose indexing of fresh log
+        groups can lag by tens of minutes or more) and attributed
+        client-side: structured records carrying ``durableExecutionArn`` or
+        ``executionArn`` are kept only when they match ``execution_arn``;
+        records with no ARN field (plain stdout lines) cannot be attributed
+        and are kept — they are already scoped by the per-function log
+        group and the invocation time window.
 
         Args:
             log_group_name: The full log group name.
-            execution_arn: Durable execution ARN to filter on.
+            execution_arn: Durable execution ARN to filter attributed records on.
             start_time_ms: Start of the time range in epoch milliseconds.
             end_time_ms: End of the time range in epoch milliseconds.
                          Defaults to current time if not provided.
@@ -240,29 +266,38 @@ class CloudWatchLogRetriever:
             A list of log event dicts, each with at least a "message" key.
 
         Raises:
-            CloudWatchLogError: If fetching log events fails.
+            CloudWatchLogError: If retrieval fails.
         """
-        escaped_execution_arn = execution_arn.replace("\\", "\\\\").replace('"', '\\"')
-        filter_pattern = (
-            f'{{ ($.durableExecutionArn = "{escaped_execution_arn}") || ($.executionArn = "{escaped_execution_arn}") }}'
-        )
         if wait_seconds is None:
             wait_seconds = self.DEFAULT_WAIT_SECONDS
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
+        # FilterLogEvents has no signal that all matching records have been
+        # ingested, so poll through a bounded ingestion window (upstream #35)
+        # and attribute client-side: unlike a server-side JSON filter
+        # pattern, this keeps plain stdout lines (which carry no ARN field
+        # and are already scoped by log group + time window).
         deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
         while True:
-            events = self.get_log_events(
+            all_events: list[dict] = self.get_log_events(
                 log_group_name=log_group_name,
                 start_time_ms=start_time_ms,
                 end_time_ms=end_time_ms,
-                filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
             if time.monotonic() >= deadline:
-                return events
+                return [evt for evt in all_events if _attributed_to_execution(evt.get("message", ""), execution_arn)]
             time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
+
+
+def _attributed_to_execution(raw_line: str, execution_arn: str) -> bool:
+    """True unless the record is attributed to a DIFFERENT execution."""
+    record = _parse_record(raw_line)
+    record_arn = record.get("durableExecutionArn", record.get("executionArn"))
+    if record_arn is None:
+        return True
+    return execution_arn in str(record_arn)
 
 
 # endregion
@@ -272,24 +307,20 @@ class CloudWatchLogRetriever:
 
 
 class CloudWatchLogValidator:
-    """Matches expected log patterns against actual CloudWatch log events.
+    """Matches expected log records against actual CloudWatch log events.
 
-    Cardinality and ordering are independent:
+    v3 semantics:
 
-    - **Cardinality**: every entry's ``count``/``min_count``/``max_count``
-      constraints are evaluated over the WHOLE stream. There is no implicit
-      list-order chain — an entry without ``before``/``after`` asserts
-      counts only.
-    - **Ordering**: an entry with ``after: <pattern>`` (or ``before``)
-      requires all of its matches to occur at-or-after (at-or-before) all
-      matches of the entry whose ``pattern`` equals the referenced text.
-      Events are compared by ``(timestamp, ingestionTime)``; events sharing
-      an identical key are treated as CONCURRENT and satisfy either
-      direction — CloudWatch provides no sub-millisecond order, so ties are
-      never treated as violations.
-    - References must name the ``pattern`` of another entry in the same
-      list (after placeholder substitution); dangling or self references
-      are validation errors.
+    - Each event's raw line is JSON-parsed into a field map (Lambda
+      envelope + SDK enrichment); non-JSON lines expose only ``message``.
+    - ``match`` asserts field values EXACTLY (strings whitespace-stripped,
+      ``/…/`` values as regex search, multiple fields ANDed).
+    - Cardinality is always global over the whole (timestamp-sorted) stream.
+    - ``before``/``after`` anchors are independent matchers: all of the
+      entry's matches must occur at-or-before / at-or-after ALL records
+      matching every anchor. Identical ``(timestamp, ingestionTime)`` sort
+      keys are CONCURRENT and satisfy either direction. An anchor matching
+      zero records is a validation error (typo guard).
     """
 
     def validate(
@@ -298,79 +329,55 @@ class CloudWatchLogValidator:
         actual_events: list[dict],
         context: PlaceholderContext | None = None,
     ) -> LogMatchResult:
-        """Validate actual log events against expected log patterns.
+        """Validate actual log events against expected log entries.
 
         Args:
             expected_logs: Raw dicts from the YAML ExpectedLogs section.
             actual_events: Log event dicts from CloudWatch (each has a "message" key).
             context: Optional PlaceholderContext for substituting placeholders
-                in log patterns before matching.
+                in matcher values before matching.
 
         Returns:
             LogMatchResult with success flag and any errors.
         """
         errors: list[str] = []
         sorted_events = sorted(actual_events, key=self._event_sort_key)
-        messages = [evt.get("message", "") for evt in sorted_events]
         keys = [self._event_sort_key(evt) for evt in sorted_events]
+        records = [_parse_record(evt.get("message", "")) for evt in sorted_events]
 
-        # Parse all entries first so before/after can reference any entry.
-        expectations: list[LogExpectation | None] = []
         for i, raw in enumerate(expected_logs):
             resolved_raw: dict[str, Any] = raw
             if context is not None:
                 resolved_raw = context.substitute(raw)
+
             try:
-                expectations.append(LogExpectation.from_dict(resolved_raw))
+                expectation = LogExpectation.from_dict(resolved_raw)
             except (KeyError, TypeError) as e:
                 errors.append(f"ExpectedLogs[{i}]: invalid entry — {e}")
-                expectations.append(None)
-
-        by_pattern: dict[str, LogExpectation] = {}
-        for exp in expectations:
-            if exp is not None and exp.pattern not in by_pattern:
-                by_pattern[exp.pattern] = exp
-
-        match_cache: dict[tuple[str, str], list[int]] = {}
-
-        def matches_of(exp: LogExpectation) -> list[int]:
-            cache_key = (exp.pattern, exp.match)
-            if cache_key not in match_cache:
-                match_cache[cache_key] = self._match_indices(exp, messages, start=0)
-            return match_cache[cache_key]
-
-        for i, exp in enumerate(expectations):
-            if exp is None:
                 continue
 
-            own_matches = matches_of(exp)
-            errors.extend(self._check_count(exp, len(own_matches), index=i))
+            label = f"ExpectedLogs[{i}] match({expectation.label})"
 
-            for field_name, ref in (("after", exp.after), ("before", exp.before)):
-                if ref is None:
-                    continue
-                label = f"ExpectedLogs[{i}] pattern={exp.pattern!r}"
-                if ref == exp.pattern:
-                    errors.append(f"{label}: {field_name} must not reference the entry's own pattern")
-                    continue
-                ref_exp = by_pattern.get(ref)
-                if ref_exp is None:
-                    errors.append(f"{label}: {field_name}={ref!r} does not match the pattern of any other entry")
-                    continue
+            own_matches = _matching_indices(expectation.match, records)
+            errors.extend(self._check_count(expectation, len(own_matches), index=i))
 
-                ref_matches = matches_of(ref_exp)
-                if not own_matches or not ref_matches:
-                    # Missing matches are reported by each entry's own
-                    # cardinality checks; the ordering constraint is vacuous.
-                    continue
-
-                if field_name == "after":
-                    # All own matches at-or-after all referenced matches
-                    # (identical sort keys = concurrent = satisfied).
-                    if keys[own_matches[0]] < keys[ref_matches[-1]]:
-                        errors.append(f"{label}: expected all matches after {ref!r} (log lines out of order)")
-                elif keys[own_matches[-1]] > keys[ref_matches[0]]:
-                    errors.append(f"{label}: expected all matches before {ref!r} (log lines out of order)")
+            for direction, anchors in (("after", expectation.after), ("before", expectation.before)):
+                for anchor in anchors:
+                    anchor_matches = _matching_indices(anchor, records)
+                    if not anchor_matches:
+                        errors.append(f"{label}: {direction} anchor {anchor!r} matched no log records")
+                        continue
+                    if not own_matches:
+                        # Missing own matches are reported by the cardinality
+                        # check; the ordering constraint is vacuous.
+                        continue
+                    if direction == "after":
+                        # All own matches at-or-after all anchor matches
+                        # (identical sort keys = concurrent = satisfied).
+                        if keys[own_matches[0]] < keys[anchor_matches[-1]]:
+                            errors.append(f"{label}: expected all matches after {anchor!r} (log records out of order)")
+                    elif keys[own_matches[-1]] > keys[anchor_matches[0]]:
+                        errors.append(f"{label}: expected all matches before {anchor!r} (log records out of order)")
 
         return LogMatchResult(
             success=len(errors) == 0,
@@ -395,15 +402,6 @@ class CloudWatchLogValidator:
         return (ts_key, evt.get("ingestionTime", 0))
 
     @staticmethod
-    def _match_indices(expectation: LogExpectation, messages: list[str], start: int) -> list[int]:
-        """Return indices (>= start) of messages matching the expectation's pattern."""
-        return [
-            idx
-            for idx in range(start, len(messages))
-            if _matches(expectation.pattern, messages[idx], expectation.match)
-        ]
-
-    @staticmethod
     def _check_count(
         expectation: LogExpectation,
         actual_count: int,
@@ -411,7 +409,7 @@ class CloudWatchLogValidator:
     ) -> list[str]:
         """Check whether actual_count satisfies the expectation's count constraints."""
         errors: list[str] = []
-        label = f"ExpectedLogs[{index}] pattern={expectation.pattern!r}"
+        label = f"ExpectedLogs[{index}] match({expectation.label})"
 
         has_constraint = (
             expectation.count is not None or expectation.min_count is not None or expectation.max_count is not None
@@ -436,15 +434,45 @@ class CloudWatchLogValidator:
         return errors
 
 
-def _matches(pattern: str, message: str, mode: str) -> bool:
-    """Check if a message matches a pattern using the given mode."""
-    match mode:
-        case "exact":
-            return message.strip() == pattern
-        case "regex":
-            return re.search(pattern, message) is not None
-        case _:
-            return pattern in message
+def _parse_record(raw_line: str) -> dict[str, Any]:
+    """Parse a raw log line into an assertable field map.
+
+    JSON object lines (the Lambda structured envelope, optionally enriched
+    by the SDK logger) expose their top-level keys as fields. Non-JSON
+    lines (plain stdout/println) expose only ``message`` = the raw line.
+    """
+    stripped = raw_line.strip()
+    if stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    return {"message": stripped}
+
+
+def _matching_indices(matcher: dict[str, Any], records: list[dict[str, Any]]) -> list[int]:
+    """Indices of records satisfying every field constraint in the matcher."""
+    return [idx for idx, record in enumerate(records) if _record_matches(matcher, record)]
+
+
+def _record_matches(matcher: dict[str, Any], record: dict[str, Any]) -> bool:
+    return all(field in record and _value_matches(expected, record[field]) for field, expected in matcher.items())
+
+
+def _value_matches(expected: Any, actual: Any) -> bool:
+    """Match one field value: exact by default, ``/…/`` string = regex search."""
+    if isinstance(expected, str):
+        actual_str = str(actual).strip()
+        if len(expected) >= 2 and expected.startswith("/") and expected.endswith("/"):
+            return re.search(expected[1:-1], actual_str) is not None
+        return actual_str == expected.strip()
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return expected is actual
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return float(expected) == float(actual)
+    return str(expected) == str(actual)
 
 
 # endregion

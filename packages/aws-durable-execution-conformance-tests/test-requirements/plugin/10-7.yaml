@@ -38,12 +38,16 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Invocation starts normally
-  - pattern: CONFPLUGIN invocation-start first=true
+  - match:
+      message: CONFPLUGIN invocation-start first=true
     count: 1
   # Invocation-end hook fires with the FAILED terminal status
-  - pattern: CONFPLUGIN invocation-end status=FAILED
+  - match:
+      message: CONFPLUGIN invocation-end status=FAILED
     count: 1
-    after: CONFPLUGIN invocation-start first=true
+    after:
+      - message: CONFPLUGIN invocation-start first=true
   # The invocation never reports success
-  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN invocation-end status=SUCCEEDED
     count: 0

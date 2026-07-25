@@ -39,13 +39,18 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Plugin A: start observed before its own end
-  - pattern: CONFPLUGIN-A invocation-start
+  - match:
+      message: CONFPLUGIN-A invocation-start
     count: 1
-  - pattern: CONFPLUGIN-A invocation-end status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN-A invocation-end status=SUCCEEDED
     count: 1
-    after: CONFPLUGIN-A invocation-start
+    after:
+      - message: CONFPLUGIN-A invocation-start
   # Plugin B: both hooks fired; cross-plugin ordering not asserted
-  - pattern: CONFPLUGIN-B invocation-start
+  - match:
+      message: CONFPLUGIN-B invocation-start
     count: 1
-  - pattern: CONFPLUGIN-B invocation-end status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN-B invocation-end status=SUCCEEDED
     count: 1

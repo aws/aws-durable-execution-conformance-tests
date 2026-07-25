@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for CloudWatch log retrieval and validation."""
+"""Tests for CloudWatch log retrieval and validation (v3 schema)."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
 
 import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
 from aws_durable_execution_conformance_tests.cloudwatch import (
@@ -18,140 +18,104 @@ from aws_durable_execution_conformance_tests.cloudwatch import (
     LogExpectation,
 )
 
+# region Retriever
+
 
 class _LogsClient:
-    def __init__(self, responses: list[dict[str, Any]]) -> None:
-        self._responses = iter(responses)
-        self.filter_log_events_calls: list[dict[str, Any]] = []
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        self._pages = pages
+        self._i = 0
+        self.filter_calls: list[dict[str, Any]] = []
 
     def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
-        self.filter_log_events_calls.append(kwargs)
-        return next(self._responses)
+        self.filter_calls.append(kwargs)
+        page = self._pages[min(self._i, len(self._pages) - 1)]
+        self._i += 1
+        return page
 
 
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 0.0
+def _expire_poll_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advance time.monotonic() by 100s per call so the bounded ingestion
+    polling window expires right after the first fetch."""
+    clock = {"t": 0.0}
 
-    def monotonic(self) -> float:
-        return self.now
+    def _monotonic() -> float:
+        clock["t"] += 100.0
+        return clock["t"]
 
-    def sleep(self, seconds: float) -> None:
-        self.now += seconds
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", _monotonic)
 
 
-def test_queries_logs_for_one_durable_execution(
+def test_execution_log_events_keeps_unattributed_and_matching_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    execution_arn = "arn:aws:lambda:us-west-2:123456789012:function:test:$LATEST/durable-execution/execution/name"
-    event = {
-        "timestamp": 1_500_000,
-        "message": f'{{"executionArn":"{execution_arn}","message":"step executed"}}',
-    }
-    logs_client = _LogsClient([{"events": []}] + [{"events": [event]}] * 10)
-    clock = _Clock()
-    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
-    retriever = CloudWatchLogRetriever(
-        cloudformation_client=object(),
-        logs_client=logs_client,
-    )
+    execution_arn = "arn:aws:lambda:us-west-2:1:function:f:$LATEST/durable-execution/x/e1"
+    other_arn = "arn:aws:lambda:us-west-2:1:function:f:$LATEST/durable-execution/x/e2"
+    events = [
+        {"message": "CONFPLUGIN invocation-start first=true", "timestamp": 1},
+        {"message": json.dumps({"message": "enriched mine", "executionArn": execution_arn}), "timestamp": 2},
+        {"message": json.dumps({"message": "enriched other", "durableExecutionArn": other_arn}), "timestamp": 3},
+        {"message": json.dumps({"message": "no arn field", "level": "INFO"}), "timestamp": 4},
+    ]
+    logs_client = _LogsClient([{"events": events}])
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+    _expire_poll_deadline(monkeypatch)
+    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=logs_client)
 
-    events = retriever.get_execution_log_events(
+    result = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test",
         execution_arn=execution_arn,
-        start_time_ms=1_000_123,
-        end_time_ms=2_000_456,
-        wait_seconds=0,
-    )
-
-    assert events == [event]
-    expected_call = {
-        "logGroupName": "/aws/lambda/test",
-        "startTime": 1_000_123,
-        "endTime": 2_000_456,
-        "filterPattern": f'{{ ($.durableExecutionArn = "{execution_arn}") || ($.executionArn = "{execution_arn}") }}',
-    }
-    assert logs_client.filter_log_events_calls == [expected_call] * 11
-
-
-def test_polls_through_partial_execution_log_results(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    first_event = {"timestamp": 1_500_000, "message": "first"}
-    second_event = {"timestamp": 1_600_000, "message": "second"}
-    complete_events = [first_event, second_event]
-    logs_client = _LogsClient([{"events": []}] + [{"events": [first_event]}] * 3 + [{"events": complete_events}] * 7)
-    clock = _Clock()
-    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
-    retriever = CloudWatchLogRetriever(
-        cloudformation_client=object(),
-        logs_client=logs_client,
-    )
-
-    events = retriever.get_execution_log_events(
-        log_group_name="/aws/lambda/test",
-        execution_arn="arn:execution",
         start_time_ms=1_000,
         end_time_ms=2_000,
         wait_seconds=0,
     )
 
-    assert events == complete_events
-    assert len(logs_client.filter_log_events_calls) == 11
+    kept = [evt["message"] for evt in result]
+    assert "CONFPLUGIN invocation-start first=true" in kept  # plain stdout kept
+    assert any("enriched mine" in m for m in kept)  # own execution kept
+    assert not any("enriched other" in m for m in kept)  # other execution dropped
+    assert any("no arn field" in m for m in kept)  # unattributed JSON kept
+    assert logs_client.filter_calls[0]["logGroupName"] == "/aws/lambda/test"
+    assert logs_client.filter_calls[0]["startTime"] == 1_000
 
 
-def test_returns_empty_execution_logs_at_poll_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock = _Clock()
-    logs_client = _LogsClient([{"events": []}, {"events": []}, {"events": []}])
-    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
-    monkeypatch.setattr(CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 2.0)
-    retriever = CloudWatchLogRetriever(
-        cloudformation_client=object(),
-        logs_client=logs_client,
+def test_execution_log_events_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    logs_client = _LogsClient(
+        [
+            {"events": [{"message": "a", "timestamp": 1}], "nextToken": "t1"},
+            {"events": [{"message": "b", "timestamp": 2}]},
+        ]
     )
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+    _expire_poll_deadline(monkeypatch)
+    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=logs_client)
 
-    events = retriever.get_execution_log_events(
+    result = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test",
-        execution_arn="arn:execution",
-        start_time_ms=1_000,
-        end_time_ms=2_000,
+        execution_arn="arn:whatever",
+        start_time_ms=0,
+        end_time_ms=10,
         wait_seconds=0,
     )
 
-    assert events == []
-    assert len(logs_client.filter_log_events_calls) == 3
+    assert [evt["message"] for evt in result] == ["a", "b"]
+    assert logs_client.filter_calls[1]["nextToken"] == "t1"
 
 
-def test_raises_when_filter_log_events_fails() -> None:
-    class _FailingLogsClient:
-        def filter_log_events(self, **_kwargs: Any) -> dict[str, Any]:
-            raise ClientError(
-                {"Error": {"Code": "InvalidParameterException", "Message": "failed"}},
-                "FilterLogEvents",
-            )
+def test_get_log_group_name_raises_on_empty_physical_id() -> None:
+    class _Cfn:
+        def describe_stack_resource(self, **kwargs):
+            return {"StackResourceDetail": {"PhysicalResourceId": ""}}
 
-    logs_client = _FailingLogsClient()
-    retriever = CloudWatchLogRetriever(
-        cloudformation_client=object(),
-        logs_client=logs_client,
-    )
-
-    with pytest.raises(CloudWatchLogError, match="filter-log-events failed"):
-        retriever.get_execution_log_events(
-            log_group_name="/aws/lambda/test",
-            execution_arn="arn:execution",
-            start_time_ms=1_000,
-            end_time_ms=2_000,
-            wait_seconds=0,
-        )
+    retriever = CloudWatchLogRetriever(cloudformation_client=_Cfn(), logs_client=object())
+    with pytest.raises(CloudWatchLogError, match="Empty physical resource ID"):
+        retriever.get_log_group_name("stack", "Fn")
 
 
-# region Validator (global cardinality + before/after ordering)
+# endregion
+
+
+# region Validator (v3: structured matchers + before/after anchors)
 
 
 def _events(*messages: str) -> list[dict]:
@@ -159,192 +123,176 @@ def _events(*messages: str) -> list[dict]:
     return [{"message": msg, "timestamp": 1000 + i, "ingestionTime": 2000 + i} for i, msg in enumerate(messages)]
 
 
-def _validator():
+def _validator() -> CloudWatchLogValidator:
     return CloudWatchLogValidator()
 
 
-# --- LogExpectation parsing ---
+# --- Entry parsing ---
 
 
-def test_from_dict_defaults():
-    exp = LogExpectation.from_dict({"pattern": "foo"})
-    assert exp.match == "contains"
-    assert exp.count is None
-    assert exp.before is None
-    assert exp.after is None
+def test_from_dict_requires_match_mapping():
+    with pytest.raises(TypeError):
+        LogExpectation.from_dict({"match": "not-a-dict"})
+    with pytest.raises(TypeError):
+        LogExpectation.from_dict({"match": {}})
+    with pytest.raises(KeyError):
+        LogExpectation.from_dict({"count": 1})
 
 
-def test_from_dict_before_after():
-    exp = LogExpectation.from_dict({"pattern": "b", "after": "a", "before": "c"})
-    assert exp.after == "a"
-    assert exp.before == "c"
+def test_from_dict_anchor_normalization():
+    exp = LogExpectation.from_dict({"match": {"message": "b"}, "after": {"message": "a"}})
+    assert exp.after == ({"message": "a"},)
+    exp = LogExpectation.from_dict({"match": {"message": "c"}, "after": [{"message": "a"}, {"message": "b"}]})
+    assert len(exp.after) == 2
+    with pytest.raises(TypeError):
+        LogExpectation.from_dict({"match": {"message": "b"}, "after": "a-plain-string"})
 
 
 def test_invalid_entry_reports_error():
-    result = _validator().validate([{"match": "contains"}], _events("x"))
+    result = _validator().validate([{"count": 1}], _events("x"))
     assert not result.success
     assert "invalid entry" in result.errors[0]
+
+
+# --- Field extraction + exact matching ---
+
+
+def test_plain_line_exposes_only_message_exact():
+    v = _validator()
+    assert v.validate([{"match": {"message": "hello world"}}], _events("hello world")).success
+    # exact: substring must NOT match (the n=1 vs n=12 hazard)
+    assert not v.validate([{"match": {"message": "attempt-start n=1"}}], _events("attempt-start n=12")).success
+    # whitespace stripped
+    assert v.validate([{"match": {"message": "hello"}}], _events("  hello\n")).success
+
+
+def test_json_line_exposes_fields():
+    line = json.dumps({"message": "Greeting step completed", "level": "INFO", "operationId": "abc123", "attempt": 1})
+    v = _validator()
+    assert v.validate(
+        [{"match": {"message": "Greeting step completed", "operationId": "abc123", "attempt": 1, "level": "INFO"}}],
+        _events(line),
+    ).success
+    # wrong field value fails
+    assert not v.validate([{"match": {"operationId": "other"}}], _events(line)).success
+    # missing field fails
+    assert not v.validate([{"match": {"nonexistent": "x"}}], _events(line)).success
+
+
+def test_regex_value_matching():
+    v = _validator()
+    assert v.validate([{"match": {"message": "/attempt-start n=\\d+/"}}], _events("attempt-start n=7")).success
+    assert v.validate([{"match": {"message": "/ERROR/"}, "count": 0}], _events("all fine")).success
+    assert not v.validate([{"match": {"message": "/ERROR/"}, "count": 0}], _events("ERROR boom")).success
 
 
 # --- Cardinality (always global) ---
 
 
 def test_default_requires_at_least_one_match():
-    assert _validator().validate([{"pattern": "hit"}], _events("hit")).success
-    assert not _validator().validate([{"pattern": "miss"}], _events("hit")).success
+    assert _validator().validate([{"match": {"message": "hit"}}], _events("hit")).success
+    assert not _validator().validate([{"match": {"message": "miss"}}], _events("hit")).success
 
 
 def test_exact_count_is_global():
-    # A duplicate anywhere in the stream counts against an exact-count entry.
     result = _validator().validate(
-        [{"pattern": "a", "count": 1}, {"pattern": "b", "count": 1}],
+        [{"match": {"message": "a"}, "count": 1}, {"match": {"message": "b"}, "count": 1}],
         _events("a", "b", "a"),
     )
     assert not result.success
 
 
-def test_duplicate_anywhere_fails_global_count():
-    # end,start,end with start(1), end(1): the duplicated 'end' fails globally.
-    result = _validator().validate(
-        [{"pattern": "start", "count": 1}, {"pattern": "end", "count": 1}],
-        _events("end", "start", "end"),
-    )
-    assert not result.success
-    assert any("exactly 1" in e for e in result.errors)
-
-
 def test_min_and_max_count_constraints():
     events = _events("x", "x", "x")
-    assert _validator().validate([{"pattern": "x", "min_count": 2, "max_count": 3}], events).success
-    assert not _validator().validate([{"pattern": "x", "min_count": 4}], events).success
-    assert not _validator().validate([{"pattern": "x", "max_count": 2}], events).success
+    assert _validator().validate([{"match": {"message": "x"}, "min_count": 2, "max_count": 3}], events).success
+    assert not _validator().validate([{"match": {"message": "x"}, "min_count": 4}], events).success
+    assert not _validator().validate([{"match": {"message": "x"}, "max_count": 2}], events).success
 
 
-def test_entries_without_before_after_assert_counts_only():
-    # No implicit list-order chain: reversed emission order still passes.
+def test_entries_without_anchors_assert_counts_only():
     result = _validator().validate(
-        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1}],
+        [{"match": {"message": "first"}, "count": 1}, {"match": {"message": "second"}, "count": 1}],
         _events("second", "first"),
     )
     assert result.success, result.errors
 
 
-def test_absence_entry():
-    assert _validator().validate([{"pattern": "ERROR", "count": 0}], _events("ok")).success
-    assert not _validator().validate([{"pattern": "ERROR", "count": 0}], _events("ERROR boom")).success
-
-
-def test_max_only_entry_permits_zero_matches():
-    result = _validator().validate(
-        [{"pattern": "optional", "max_count": 1}, {"pattern": "end", "count": 1}],
-        _events("end"),
-    )
-    assert result.success, result.errors
-
-
-# --- Ordering via before/after ---
+# --- Ordering via before/after anchors ---
 
 
 def test_after_satisfied_in_emission_order():
-    result = _validator().validate(
-        [
-            {"pattern": "start", "count": 1},
-            {"pattern": "end", "count": 1, "after": "start"},
-        ],
-        _events("start", "end"),
-    )
-    assert result.success, result.errors
+    spec = [
+        {"match": {"message": "start"}, "count": 1},
+        {"match": {"message": "end"}, "count": 1, "after": {"message": "start"}},
+    ]
+    assert _validator().validate(spec, _events("start", "end")).success
 
 
 def test_after_violated_reports_out_of_order():
-    result = _validator().validate(
-        [
-            {"pattern": "start", "count": 1},
-            {"pattern": "end", "count": 1, "after": "start"},
-        ],
-        _events("end", "start"),
-    )
+    spec = [
+        {"match": {"message": "start"}, "count": 1},
+        {"match": {"message": "end"}, "count": 1, "after": {"message": "start"}},
+    ]
+    result = _validator().validate(spec, _events("end", "start"))
     assert not result.success
     assert any("out of order" in e for e in result.errors)
 
 
-def test_before_field_mirror_semantics():
+def test_before_mirror_semantics():
     spec = [
-        {"pattern": "start", "count": 1, "before": "end"},
-        {"pattern": "end", "count": 1},
+        {"match": {"message": "start"}, "count": 1, "before": {"message": "end"}},
+        {"match": {"message": "end"}, "count": 1},
     ]
     assert _validator().validate(spec, _events("start", "end")).success
     assert not _validator().validate(spec, _events("end", "start")).success
 
 
-def test_after_chain_three_entries():
+def test_after_multiple_anchors_all_required():
     spec = [
-        {"pattern": "a", "count": 1},
-        {"pattern": "b", "count": 1, "after": "a"},
-        {"pattern": "c", "count": 1, "after": "b"},
+        {"match": {"message": "c"}, "count": 1, "after": [{"message": "a"}, {"message": "b"}]},
     ]
     assert _validator().validate(spec, _events("a", "b", "c")).success
+    assert _validator().validate(spec, _events("b", "a", "c")).success
     assert not _validator().validate(spec, _events("a", "c", "b")).success
 
 
-def test_after_requires_all_matches_after_reference():
-    # One of the two 'end' matches precedes 'start': violation.
-    result = _validator().validate(
-        [
-            {"pattern": "start", "count": 1},
-            {"pattern": "end", "count": 2, "after": "start"},
-        ],
-        _events("end", "start", "end"),
-    )
-    assert not result.success
+def test_after_requires_all_own_matches_after_anchor():
+    spec = [
+        {"match": {"message": "end"}, "count": 2, "after": {"message": "start"}},
+    ]
+    assert not _validator().validate(spec, _events("end", "start", "end")).success
 
 
 def test_same_timestamp_ties_are_concurrent():
-    # CloudWatch has no sub-millisecond order: identical sort keys satisfy
-    # either direction, so adjacent same-ms hook lines never flake.
     events = [
         {"message": "end", "timestamp": 5, "ingestionTime": 0},
         {"message": "start", "timestamp": 5, "ingestionTime": 0},
     ]
-    result = _validator().validate(
-        [
-            {"pattern": "start", "count": 1},
-            {"pattern": "end", "count": 1, "after": "start"},
-        ],
-        events,
-    )
-    assert result.success, result.errors
+    spec = [
+        {"match": {"message": "start"}, "count": 1},
+        {"match": {"message": "end"}, "count": 1, "after": {"message": "start"}},
+    ]
+    assert _validator().validate(spec, events).success
 
 
-def test_dangling_reference_is_an_error():
+def test_zero_match_anchor_is_an_error():
     result = _validator().validate(
-        [{"pattern": "end", "count": 1, "after": "nonexistent"}],
+        [{"match": {"message": "end"}, "count": 1, "after": {"message": "nonexistent"}}],
         _events("end"),
     )
     assert not result.success
-    assert any("does not match the pattern of any other entry" in e for e in result.errors)
+    assert any("matched no log records" in e for e in result.errors)
 
 
-def test_self_reference_is_an_error():
-    result = _validator().validate(
-        [{"pattern": "x", "count": 1, "after": "x"}],
-        _events("x"),
-    )
-    assert not result.success
-    assert any("own pattern" in e for e in result.errors)
-
-
-def test_ordering_vacuous_when_reference_has_no_matches():
-    # The referenced entry's own count check reports the miss; the
-    # ordering constraint itself is vacuous.
-    result = _validator().validate(
-        [
-            {"pattern": "start", "count": 0},
-            {"pattern": "end", "count": 1, "after": "start"},
-        ],
-        _events("end"),
-    )
-    assert result.success, result.errors
+def test_anchor_on_json_field():
+    lines = [
+        json.dumps({"message": "hook fired", "operationId": "op1"}),
+        json.dumps({"message": "hook done", "operationId": "op1"}),
+    ]
+    spec = [
+        {"match": {"message": "hook done"}, "count": 1, "after": {"operationId": "op1", "message": "hook fired"}},
+    ]
+    assert _validator().validate(spec, _events(*lines)).success
 
 
 # --- Event sorting ---
@@ -355,11 +303,11 @@ def test_events_sorted_by_timestamp_before_matching():
         {"message": "second", "timestamp": 2, "ingestionTime": 0},
         {"message": "first", "timestamp": 1, "ingestionTime": 0},
     ]
-    result = _validator().validate(
-        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
-        events,
-    )
-    assert result.success, result.errors
+    spec = [
+        {"match": {"message": "first"}, "count": 1},
+        {"match": {"message": "second"}, "count": 1, "after": {"message": "first"}},
+    ]
+    assert _validator().validate(spec, events).success
 
 
 def test_equal_timestamps_tiebreak_by_ingestion_time():
@@ -367,44 +315,23 @@ def test_equal_timestamps_tiebreak_by_ingestion_time():
         {"message": "second", "timestamp": 5, "ingestionTime": 20},
         {"message": "first", "timestamp": 5, "ingestionTime": 10},
     ]
-    result = _validator().validate(
-        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
-        events,
-    )
-    assert result.success, result.errors
+    spec = [
+        {"match": {"message": "first"}, "count": 1},
+        {"match": {"message": "second"}, "count": 1, "after": {"message": "first"}},
+    ]
+    assert _validator().validate(spec, events).success
 
 
-def test_string_timestamps_from_logs_insights_sort_correctly():
-    # The Logs Insights path yields string @timestamp values and no
-    # ingestionTime; before/after ordering must still work.
+def test_string_timestamps_sort_correctly():
     events = [
         {"message": "second", "timestamp": "2026-07-23 22:32:34.000"},
         {"message": "first", "timestamp": "2026-07-23 22:32:33.000"},
     ]
-    result = _validator().validate(
-        [{"pattern": "first", "count": 1}, {"pattern": "second", "count": 1, "after": "first"}],
-        events,
-    )
-    assert result.success, result.errors
-
-
-# --- Match modes ---
-
-
-def test_exact_and_regex_modes():
-    result = _validator().validate(
-        [
-            {"pattern": "hello", "match": "exact"},
-            {"pattern": r"wor\w+", "match": "regex"},
-        ],
-        _events("hello", "world"),
-    )
-    assert result.success, result.errors
-
-
-def test_exact_mode_strips_message_whitespace():
-    result = _validator().validate([{"pattern": "hello", "match": "exact"}], _events("  hello\n"))
-    assert result.success, result.errors
+    spec = [
+        {"match": {"message": "first"}, "count": 1},
+        {"match": {"message": "second"}, "count": 1, "after": {"message": "first"}},
+    ]
+    assert _validator().validate(spec, events).success
 
 
 # endregion

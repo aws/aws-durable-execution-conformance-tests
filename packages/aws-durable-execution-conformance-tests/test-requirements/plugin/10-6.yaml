@@ -42,13 +42,18 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # First invocation reports first=true, exactly once across the execution
-  - pattern: CONFPLUGIN invocation-start first=true
+  - match:
+      message: CONFPLUGIN invocation-start first=true
     count: 1
   # Replay invocation reports first=false, after the first invocation
-  - pattern: CONFPLUGIN invocation-start first=false
+  - match:
+      message: CONFPLUGIN invocation-start first=false
     count: 1
-    after: CONFPLUGIN invocation-start first=true
+    after:
+      - message: CONFPLUGIN invocation-start first=true
   # Terminal invocation-end carries SUCCEEDED, exactly once, last
-  - pattern: CONFPLUGIN invocation-end status=SUCCEEDED
+  - match:
+      message: CONFPLUGIN invocation-end status=SUCCEEDED
     count: 1
-    after: CONFPLUGIN invocation-start first=false
+    after:
+      - message: CONFPLUGIN invocation-start first=false

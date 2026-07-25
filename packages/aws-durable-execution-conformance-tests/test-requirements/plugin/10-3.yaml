@@ -68,18 +68,26 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Attempt 1 starts, fails — both lines carry the history-checkpointed id
-  - pattern: CONFPLUGIN attempt-start n=1 op=${ID1}
+  - match:
+      message: CONFPLUGIN attempt-start n=1 op=${ID1}
     count: 1
-  - pattern: CONFPLUGIN attempt-end n=1 outcome=FAILED op=${ID1}
+  - match:
+      message: CONFPLUGIN attempt-end n=1 outcome=FAILED op=${ID1}
     count: 1
-    after: CONFPLUGIN attempt-start n=1 op=${ID1}
+    after:
+      - message: CONFPLUGIN attempt-start n=1 op=${ID1}
   # Attempt 2 starts after attempt 1 ended, succeeds
-  - pattern: CONFPLUGIN attempt-start n=2 op=${ID1}
+  - match:
+      message: CONFPLUGIN attempt-start n=2 op=${ID1}
     count: 1
-    after: CONFPLUGIN attempt-end n=1 outcome=FAILED op=${ID1}
-  - pattern: CONFPLUGIN attempt-end n=2 outcome=SUCCEEDED op=${ID1}
+    after:
+      - message: CONFPLUGIN attempt-end n=1 outcome=FAILED op=${ID1}
+  - match:
+      message: CONFPLUGIN attempt-end n=2 outcome=SUCCEEDED op=${ID1}
     count: 1
-    after: CONFPLUGIN attempt-start n=2 op=${ID1}
+    after:
+      - message: CONFPLUGIN attempt-start n=2 op=${ID1}
   # Exactly two attempts: no third attempt may start
-  - pattern: CONFPLUGIN attempt-start n=3
+  - match:
+      message: '/CONFPLUGIN attempt-start n=3/'
     count: 0

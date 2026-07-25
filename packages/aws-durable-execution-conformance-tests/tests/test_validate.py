@@ -251,32 +251,21 @@ Resources:
 # region End-to-end ExpectedLogs validation
 
 
-def _insights_row(timestamp: str, message: str) -> list[dict[str, str]]:
-    return [
-        {"field": "@timestamp", "value": timestamp},
-        {"field": "@message", "value": message},
-        {"field": "@ptr", "value": "ptr"},
-    ]
-
-
 class _StubCfnClient:
     def describe_stack_resource(self, **kwargs):
         return {"StackResourceDetail": {"PhysicalResourceId": "my-stack-PluginFn-abc123"}}
 
 
 class _StubLogsClient:
-    """Stub Logs Insights client returning one completed query."""
+    """Stub filter_log_events client returning one page of events."""
 
-    def __init__(self, rows: list[list[dict[str, str]]]) -> None:
-        self._rows = rows
-        self.queries: list[dict] = []
+    def __init__(self, events: list[dict]) -> None:
+        self._events = events
+        self.filter_calls: list[dict] = []
 
-    def start_query(self, **kwargs):
-        self.queries.append(kwargs)
-        return {"queryId": "q-1"}
-
-    def get_query_results(self, **kwargs):
-        return {"status": "Complete", "results": self._rows}
+    def filter_log_events(self, **kwargs):
+        self.filter_calls.append(kwargs)
+        return {"events": self._events}
 
 
 def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
@@ -287,9 +276,13 @@ def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
     from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
     monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
 
-    rows = [_insights_row(f"2026-07-23 22:32:3{i}.000", msg) for i, msg in enumerate(messages_in_order)]
-    logs_client = _StubLogsClient(rows)
+    events = [
+        {"message": msg, "timestamp": 1_000_000 + i, "ingestionTime": 1_000_100 + i}
+        for i, msg in enumerate(messages_in_order)
+    ]
+    logs_client = _StubLogsClient(events)
     description_data = {
         "Variables": {"INPUT_1": "abc123XY"},
         "ExpectedLogs": expected_logs,
@@ -310,48 +303,45 @@ def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
 
 
 def test_e2e_expected_logs_ordered_pass(monkeypatch) -> None:
-    """Full path: CFN log-group resolution -> Insights query -> placeholder
-    substitution -> before/after ordering. Mirrors a plugin-suite spec."""
+    """Full path: CFN log-group resolution -> filter_log_events retrieval ->
+    placeholder substitution -> exact matchers + after anchors."""
     errors, logs_client = _run_expected_logs(
         monkeypatch,
         expected_logs=[
-            {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
+            {"match": {"message": "CONFPLUGIN invocation-start first=true"}, "count": 1},
             {
-                "pattern": "Greeting step running for: ${INPUT_1}",
+                "match": {"message": "Greeting step running for: ${INPUT_1}"},
                 "count": 1,
-                "after": "CONFPLUGIN invocation-start first=true",
+                "after": {"message": "CONFPLUGIN invocation-start first=true"},
             },
             {
-                "pattern": "CONFPLUGIN invocation-end status=SUCCEEDED",
+                "match": {"message": "CONFPLUGIN invocation-end status=SUCCEEDED"},
                 "count": 1,
-                "after": "Greeting step running for: ${INPUT_1}",
+                "after": {"message": "Greeting step running for: ${INPUT_1}"},
             },
-            {"pattern": "CONFPLUGIN invocation-start first=false", "count": 0},
-            {"pattern": "concurrent-hook", "count": 1},
+            {"match": {"message": "CONFPLUGIN invocation-start first=false"}, "count": 0},
         ],
         messages_in_order=[
-            "concurrent-hook",
             "CONFPLUGIN invocation-start first=true",
             "Greeting step running for: abc123XY",
             "CONFPLUGIN invocation-end status=SUCCEEDED",
         ],
     )
     assert errors == []
-    # The Insights query is scoped to the execution ARN
-    assert "durable-execution/execution/e1" in logs_client.queries[0]["queryString"]
+    # Retrieval is scoped by log group + invocation time window
+    assert logs_client.filter_calls[0]["logGroupName"] == "/aws/lambda/my-stack-PluginFn-abc123"
+    assert logs_client.filter_calls[0]["startTime"] == 1_000_000
 
 
 def test_e2e_expected_logs_ordered_violation_fails(monkeypatch) -> None:
-    """Same path, but the terminal line precedes the start line: the
-    explicit after constraint must reject it."""
     errors, _ = _run_expected_logs(
         monkeypatch,
         expected_logs=[
-            {"pattern": "CONFPLUGIN invocation-start first=true", "count": 1},
+            {"match": {"message": "CONFPLUGIN invocation-start first=true"}, "count": 1},
             {
-                "pattern": "CONFPLUGIN invocation-end status=SUCCEEDED",
+                "match": {"message": "CONFPLUGIN invocation-end status=SUCCEEDED"},
                 "count": 1,
-                "after": "CONFPLUGIN invocation-start first=true",
+                "after": {"message": "CONFPLUGIN invocation-start first=true"},
             },
         ],
         messages_in_order=[
