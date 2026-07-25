@@ -237,6 +237,7 @@ class CloudWatchLogRetriever:
             time.sleep(wait_seconds)
 
         deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
+        previous_events: list[dict] = []
         while True:
             events = self.get_log_events(
                 log_group_name=log_group_name,
@@ -245,8 +246,11 @@ class CloudWatchLogRetriever:
                 filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
-            if events or time.monotonic() >= deadline:
+            if events and events == previous_events:
                 return events
+            previous_events = events
+            if time.monotonic() >= deadline:
+                return previous_events
             time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
 
 
