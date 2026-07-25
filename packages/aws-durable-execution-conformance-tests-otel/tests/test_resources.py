@@ -184,20 +184,40 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             execution_arn = workflow["select"]["attributes"]["durable.execution.arn"]
             execution_status = expected_workflow_statuses[execution_arn]
             assert workflow["expect"]["parent_span_id"] is None
-            assert (
-                workflow["expect"]["status"]
-                == {
-                    "SUCCEEDED": "OK",
-                    "FAILED": "ERROR",
-                    "TIMED_OUT": "ERROR",
-                }[execution_status]
-            )
-            assert workflow["expect"]["attributes"] == {
-                "durable.execution.arn": execution_arn,
-                "durable.execution.status": execution_status,
-            }
+            if case_number in {15, 19}:
+                assert workflow["expect"]["status"] == "UNSET"
+                assert workflow["expect"]["attributes"] == {
+                    "durable.execution.arn": execution_arn,
+                }
+            else:
+                assert (
+                    workflow["expect"]["status"]
+                    == {
+                        "SUCCEEDED": "OK",
+                        "FAILED": "ERROR",
+                    }[execution_status]
+                )
+                assert workflow["expect"]["attributes"] == {
+                    "durable.execution.arn": execution_arn,
+                    "durable.execution.status": execution_status,
+                }
 
-        descendants = [item for item in span_assertions if item not in workflows]
+        invocations = [item for item in span_assertions if item["select"]["name"] == "Invocation"]
+        assert len(invocations) == (1 if case_number in {15, 19} else 0)
+        for invocation in invocations:
+            invocation_status = "PENDING" if case_number == 15 else "RETRY"
+            expected = invocation["expect"]
+            assert expected["status"] == "UNSET"
+            assert expected["links"] == []
+            assert expected["kind"] == "INTERNAL"
+            assert expected["attributes"] == {
+                "durable.execution.arn": "${EXECUTION_ARN}",
+                "durable.invocation.first": True,
+                "durable.invocation.status": invocation_status,
+            }
+            assert invocation["select"]["attributes"] == expected["attributes"]
+
+        descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
         assert bool(descendants) is (case_number != 19)
         for descendant in descendants:
             expected = descendant["expect"]

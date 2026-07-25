@@ -51,11 +51,13 @@ EXPECTED_MAPPINGS = [
     ("OtelExecution12ChildContextFailure", "otel-execution-12"),
     ("OtelExecution13ParallelFailure", "otel-execution-13"),
     ("OtelExecution14MapFailure", "otel-execution-14"),
+    ("OtelExecution15WaitInterrupted", "otel-execution-15"),
     ("OtelExecution16WaitForConditionFailure", "otel-execution-16"),
     ("OtelExecution17WaitForCallbackFailure", "otel-execution-17"),
     ("OtelExecution18ChainedInvokeFailure", "otel-execution-18"),
+    ("OtelExecution19ExecutionFailure", "otel-execution-19"),
 ]
-EXECUTION_CASES = (*range(1, 15), 16, 17, 18)
+EXECUTION_CASES = tuple(range(1, 20))
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -75,13 +77,8 @@ def test_typescript_example_template_maps_every_otel_requirement() -> None:
     assert parse_function_descriptions(str(EXAMPLES_DIR / "template.yaml")) == EXPECTED_MAPPINGS
 
 
-def test_typescript_example_declares_execution_plugin_lifecycle_gaps() -> None:
-    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
-        "otel-execution-15": (
-            "ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally"
-        ),
-        "otel-execution-19": "ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY",
-    }
+def test_typescript_example_declares_no_execution_plugin_gaps() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
 def test_typescript_example_template_accepts_runner_parameters() -> None:

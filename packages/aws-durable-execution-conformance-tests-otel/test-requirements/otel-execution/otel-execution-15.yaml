@@ -1,4 +1,4 @@
-description: Execution view emits a timed-out workflow and its interrupted wait
+description: Execution view emits an incomplete workflow and its interrupted wait
 Input:
   scenario: wait-interrupted
 AsyncInvoke: true
@@ -22,19 +22,33 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         parent_span_id: null
-        status: ERROR
+        status: UNSET
         service_name: invocation
         links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.execution.status: TIMED_OUT
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
     - select:
         name: otel-interrupted-wait
         attributes:
           durable.operation.id: ${INTERRUPTED_WAIT}
       expect:
-        status: ${/^(?:ERROR|UNSET)$/}
+        status: UNSET
         service_name: invocation
         links:
           - name: invocation
@@ -53,4 +67,3 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
-            durable.execution.status: TIMED_OUT

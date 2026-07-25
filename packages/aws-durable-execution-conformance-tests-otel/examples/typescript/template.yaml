@@ -89,11 +89,6 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-invocation-1
-      NotImplemented:
-        - id: otel-execution-15
-          reason: ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally
-        - id: otel-execution-19
-          reason: ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY
     Properties:
       CodeUri: dist/
       Handler: otel_1_success.handler
@@ -531,6 +526,20 @@ Resources:
         Variables:
           OTEL_PLUGIN_MODE: execution
 
+  OtelExecution15WaitInterrupted:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-15
+    Properties:
+      CodeUri: dist/
+      Handler: otel_15_wait_interrupted.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-15"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
   OtelExecution16WaitForConditionFailure:
     Type: AWS::Serverless::Function
     TestingMetadata:
@@ -580,6 +589,20 @@ Resources:
       CodeUri: dist/
       Handler: otel_18_chained_invoke_failure.targetHandler
       FunctionName: !Sub "${AWS::StackName}-otel-execution-18-target"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_PLUGIN_MODE: execution
+
+  OtelExecution19ExecutionFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-execution-19
+    Properties:
+      CodeUri: dist/
+      Handler: otel_19_execution_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-execution-19"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:

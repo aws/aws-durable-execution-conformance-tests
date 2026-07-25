@@ -1,4 +1,4 @@
-description: Execution view emits a terminal failed workflow when handler execution fails
+description: Execution view emits an incomplete workflow when handler execution retries
 Input:
   scenario: execution-failure
 AsyncInvoke: true
@@ -19,10 +19,24 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
         parent_span_id: null
-        status: ERROR
+        status: UNSET
         service_name: invocation
         links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.execution.status: FAILED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: RETRY
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: RETRY
