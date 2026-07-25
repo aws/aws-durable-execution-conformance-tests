@@ -15,13 +15,14 @@ handler: |
   statuses, and the [succeeded, failed, skipped, total] counts.
 invocations: |
   - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
-    (SubType Dag). charge runs first: ContextStarted (SubType DagTask) then its
-    inner step is attempted and fails, retrying under the default retry policy
-    across suspend/resume boundaries until the attempts are exhausted, at which
-    point the charge DagTask checkpoints ContextFailed. The skipped fulfill task
-    emits no events at all. refund (AllFailed trigger) then runs its step and
-    succeeds, and audit (AllDone trigger) runs its step and succeeds, each wrapped
-    in DagTask ContextStarted/ContextSucceeded. Finally the DAG checkpoints
+    (SubType Dag). Each task delegates to its native operation checkpointed
+    directly under the Dag container (flat, name-based). charge runs first: its
+    step is attempted and fails, retrying under the default retry policy across
+    suspend/resume boundaries until the attempts are exhausted and the charge
+    step checkpoints a terminal StepFailed (SubType Step, ParentId = the Dag op).
+    The skipped fulfill task emits no events at all. refund (AllFailed trigger)
+    then runs its step directly under the Dag container and succeeds, and audit
+    (AllDone trigger) runs its step and succeeds. Finally the DAG checkpoints
     ContextSucceeded (SubType Dag) with reason COMPLETED_WITH_FAILURES and the
     invocation completes returning the summary.
 AsyncInvoke: true
@@ -50,114 +51,66 @@ ExpectedExecutionHistory:
     Name: compensation
     EventTimestamp: '*'
     ContextStartedDetails: {}
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 3
-    Id: ${T_CHARGE}
-    Name: charge
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 4
+    EventId: 3
     Id: ${S_CHARGE}
     Name: charge
-    ParentId: ${T_CHARGE}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepFailed
     SubType: Step
-    EventId: 5
+    EventId: 19
     Id: ${S_CHARGE}
     Name: charge
-    ParentId: ${T_CHARGE}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepFailedDetails: '*'
-  - EventType: ContextFailed
-    SubType: DagTask
-    EventId: 21
-    Id: ${T_CHARGE}
-    Name: charge
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextFailedDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 22
-    Id: ${T_REFUND}
-    Name: refund
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 23
+    EventId: 20
     Id: ${S_REFUND}
     Name: refund
-    ParentId: ${T_REFUND}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 24
+    EventId: 21
     Id: ${S_REFUND}
     Name: refund
-    ParentId: ${T_REFUND}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '"refunded"'
-  - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 25
-    Id: ${T_REFUND}
-    Name: refund
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextStarted
-    SubType: DagTask
-    EventId: 26
-    Id: ${T_AUDIT}
-    Name: audit
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextStartedDetails: {}
   - EventType: StepStarted
     SubType: Step
-    EventId: 27
+    EventId: 22
     Id: ${S_AUDIT}
     Name: audit
-    ParentId: ${T_AUDIT}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepStartedDetails: {}
   - EventType: StepSucceeded
     SubType: Step
-    EventId: 28
+    EventId: 23
     Id: ${S_AUDIT}
     Name: audit
-    ParentId: ${T_AUDIT}
+    ParentId: ${DAG}
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
         Payload: '"logged"'
   - EventType: ContextSucceeded
-    SubType: DagTask
-    EventId: 29
-    Id: ${T_AUDIT}
-    Name: audit
-    ParentId: ${DAG}
-    EventTimestamp: '*'
-    ContextSucceededDetails: '*'
-  - EventType: ContextSucceeded
     SubType: Dag
-    EventId: 30
+    EventId: 24
     Id: ${DAG}
     Name: compensation
     EventTimestamp: '*'
     ContextSucceededDetails: '*'
   - EventType: InvocationCompleted
-    EventId: 31
+    EventId: 25
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
