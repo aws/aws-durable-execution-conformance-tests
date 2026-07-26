@@ -24,3 +24,6 @@ target/
 # SAM build artifacts
 .aws-sam/
 **/template.generated.json
+
+# Conformance run artifacts (captured execution histories + reports)
+packages/aws-durable-execution-conformance-tests/output/
