@@ -347,9 +347,13 @@ def test_10_15_parses_as_outcome_only_large_payload() -> None:
     assert data["AsyncInvoke"] is True
     assert "ExpectedExecutionHistory" not in data
 
-    # ExpectedEventCount must be MEASURED, not derived, so it is absent for now.
-    assert "ExpectedEventCount" not in data
-    assert _validate_event_count(data, _events(999)) == []
+    # ExpectedEventCount was MEASURED on the first cloud run rather than derived:
+    # all four SDKs emitted exactly 26 events for this graph, and the envelope
+    # strategy costs no more operations than the re-execute one.
+    assert data["ExpectedEventCount"] == 26
+    # ...and it is enforced: the measured count passes, anything else fails.
+    assert _validate_event_count(data, _events(26)) == []
+    assert _validate_event_count(data, _events(999)) != []
 
     # The digest equality is the single language-neutral assertion.
     result = data["ExpectedResult"]["Result"]
