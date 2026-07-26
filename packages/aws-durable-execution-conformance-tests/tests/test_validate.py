@@ -9,18 +9,17 @@ pure-function tests for ``validate`` belong here too.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from aws_durable_execution_conformance_tests.callback import CallbackAction
+from aws_durable_execution_conformance_tests.history import load_yaml_file
 from aws_durable_execution_conformance_tests.validate import (
     _validate_event_count,
     discover_suites,
+    discover_test_files,
     find_matching_action,
     parse_not_implemented,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # --- discover_suites --------------------------------------------------------
 
@@ -312,3 +311,50 @@ def test_event_count_zero_is_asserted_not_skipped() -> None:
 def test_event_count_non_dict_description_is_noop() -> None:
     """Legacy bare-list history form never carries the key: no assertion."""
     assert _validate_event_count([{"EventId": 2}], _events(3)) == []
+
+
+# --- 10-15 large-payload scenario loads and parses -------------------------
+#
+# The runner discovers requirements by file stem and parses them with
+# load_yaml_file. These tests confirm the new outcome-only large-payload
+# scenario is discoverable in the dag suite and that its parsed shape matches
+# the contract: an async, outcome-only description whose digest-equality result
+# is the single language-neutral assertion, deliberately carrying NEITHER an
+# ExpectedExecutionHistory (the container payload diverges across SDKs) NOR an
+# ExpectedEventCount (must be MEASURED from the first cloud history, not
+# derived). If either key were added prematurely, or the digest constants
+# drifted, these assertions catch it before a cloud run.
+
+_REQUIREMENTS_DIR = (
+    Path(__file__).resolve().parents[1] / "test-requirements"
+)
+
+
+def test_dag_suite_discovers_10_15() -> None:
+    """The dag suite exposes the new 10-15 requirement by its file stem."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+
+    assert "10-15" in files
+    assert files["10-15"].endswith("dag/10-15.yaml")
+
+
+def test_10_15_parses_as_outcome_only_large_payload() -> None:
+    """10-15 loads and matches the contract's outcome-only large-payload shape."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+    data = load_yaml_file(files["10-15"])
+
+    # Async, outcome-only: a result is asserted but no full history is pinned.
+    assert data["AsyncInvoke"] is True
+    assert "ExpectedExecutionHistory" not in data
+
+    # ExpectedEventCount must be MEASURED, not derived, so it is absent for now.
+    assert "ExpectedEventCount" not in data
+    assert _validate_event_count(data, _events(999)) == []
+
+    # The digest equality is the single language-neutral assertion.
+    result = data["ExpectedResult"]["Result"]
+    assert result["reason"] == "ALL_COMPLETED"
+    assert result["counts"] == [8, 0, 0, 8]
+    assert result["digestBefore"] == "8:409600:abcdefgh"
+    assert result["digestAfter"] == "8:409600:abcdefgh"
+    assert result["match"] is True
