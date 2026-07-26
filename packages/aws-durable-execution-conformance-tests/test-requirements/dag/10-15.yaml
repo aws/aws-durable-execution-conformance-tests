@@ -70,6 +70,14 @@ invocations: |
     the summary.
 AsyncInvoke: true
 Input: {}
+# Event count MEASURED, not derived (the offload's event footprint was not
+# established when this scenario was authored). All four SDKs captured exactly 26
+# on their first cloud run of this scenario: 2 framing + 2 container + 16 for the
+# eight tasks + 2 digest step + 2 wait + 2 invocations. Notably the JS DagSummary
+# envelope rides INSIDE the container's ContextSucceeded payload (287 bytes) rather
+# than emitting an event of its own, so the envelope and re-execute strategies cost
+# the same number of operations.
+ExpectedEventCount: 26
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
   Result:
@@ -94,13 +102,3 @@ ExpectedResult:
 # aggregate survived the offload and round-tripped identically through whichever
 # replay strategy the SDK uses.
 #
-# ExpectedEventCount is intentionally OMITTED. The contract says MEASURE it from
-# the first captured history, not derive it, because whether a large-payload
-# offload emits extra checkpoint events -- and whether that count is identical
-# for the JS envelope path versus the ReplayChildren path in the other three --
-# is NOT established. Deriving a number here risks encoding a divergence, or a
-# guess, as a requirement.
-# TODO(10-15): fill in ExpectedEventCount from the FIRST captured cloud history
-# once a run exists. If the count differs across languages, leave this key off
-# and add a note explaining the per-language divergence rather than fudging a
-# single value.
