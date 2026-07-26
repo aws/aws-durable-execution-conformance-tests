@@ -518,6 +518,40 @@ def _validate_execution_result(
     return errors
 
 
+def _validate_event_count(description_data: Any, actual_events: list[dict[str, Any]]) -> list[str]:
+    """Validate the optional ``ExpectedEventCount`` assertion.
+
+    ``ExpectedEventCount`` asserts that the execution produced exactly ``value``
+    events (``len(actual_events) == value``). It is the direct guard against a
+    wrapper-per-task regression (a flat ``N+1`` operation model degrading to
+    ``2N+1``) that the ``EventId``-keyed history matcher cannot see: that matcher
+    looks expected events up by id and silently ignores any extra events.
+
+    The key is optional and independent of ``ExpectedExecutionHistory`` -- it
+    works with or without a full history. When it is absent (as in every
+    existing non-DAG suite) this returns no errors and the description behaves
+    exactly as before.
+
+    Args:
+        description_data: Parsed YAML test description. A non-dict description
+            (the legacy bare-list history form) never carries the key.
+        actual_events: The full list of events from the execution history.
+
+    Returns:
+        A list of error strings. Empty list means the assertion passed or was
+        not requested.
+    """
+    if not isinstance(description_data, dict):
+        return []
+    expected_count: Any = description_data.get("ExpectedEventCount")
+    if expected_count is None:
+        return []
+    actual_count: int = len(actual_events)
+    if actual_count != expected_count:
+        return [f"Expected ExpectedEventCount={expected_count}, got {actual_count}"]
+    return []
+
+
 # endregion
 
 
@@ -937,31 +971,42 @@ def validate_description(
     # --- Save history to output/<description_id>.json before asserting ---
     save_execution_history(description_id, history, output_dir=output_dir)
 
-    # --- Assert execution history ---
+    actual_events = history.get("Events", history.get("events", []))
+
+    # --- Assert execution history (optional) ---
+    # ExpectedExecutionHistory is optional. When present it is matched by
+    # EventId; when absent history matching is skipped and status, result, logs
+    # and the event count below are still validated. This lets order-invariant
+    # scenarios (e.g. concurrent DAGs) assert an outcome without pinning event
+    # ids or ordering.
     expected_events = (
         description_data.get("ExpectedExecutionHistory") if isinstance(description_data, dict) else description_data
     )
-    if not expected_events:
+    resolved_placeholders: dict[str, Any] = {}
+    if expected_events:
+        matcher = EventHistoryMatcher(context=context)
+        match_result = matcher.match(expected_events, actual_events)
+        if not match_result.success:
+            return DescriptionResult(
+                description_id=description_id,
+                function_name=function_name,
+                passed=False,
+                optional=is_optional,
+                errors=match_result.errors,
+                placeholders=match_result.resolved_placeholders,
+            )
+        resolved_placeholders = match_result.resolved_placeholders
+
+    # --- Assert event count (optional) ---
+    count_errors: list[str] = _validate_event_count(description_data, actual_events)
+    if count_errors:
         return DescriptionResult(
             description_id=description_id,
             function_name=function_name,
             passed=False,
             optional=is_optional,
-            errors=["No ExpectedExecutionHistory found in description file"],
-        )
-
-    actual_events = history.get("Events", history.get("events", []))
-    matcher = EventHistoryMatcher(context=context)
-    match_result = matcher.match(expected_events, actual_events)
-
-    if not match_result.success:
-        return DescriptionResult(
-            description_id=description_id,
-            function_name=function_name,
-            passed=False,
-            optional=is_optional,
-            errors=match_result.errors,
-            placeholders=match_result.resolved_placeholders,
+            errors=count_errors,
+            placeholders=resolved_placeholders,
         )
 
     # --- Assert expected result (status + result) ---
@@ -980,7 +1025,7 @@ def validate_description(
                 passed=False,
                 optional=is_optional,
                 errors=result_errors,
-                placeholders=match_result.resolved_placeholders,
+                placeholders=resolved_placeholders,
             )
 
     # --- Assert expected logs (if specified) ---
@@ -1000,7 +1045,7 @@ def validate_description(
             passed=False,
             optional=is_optional,
             errors=log_errors,
-            placeholders=match_result.resolved_placeholders,
+            placeholders=resolved_placeholders,
         )
 
     return DescriptionResult(
@@ -1009,7 +1054,7 @@ def validate_description(
         passed=True,
         optional=is_optional,
         errors=[],
-        placeholders=match_result.resolved_placeholders,
+        placeholders=resolved_placeholders,
         execution_arn=execution_arn,
         invocation_started_at_ms=invocation_start_ms,
         invocation_finished_at_ms=int(time.time() * 1000),
@@ -1146,6 +1191,25 @@ def _validate_description_async(
             passed=False,
             optional=is_optional,
             errors=async_result.errors,
+            placeholders=async_result.placeholders,
+        )
+
+    # --- Assert event count (optional) ---
+    # ExpectedEventCount is checked against the re-fetched final history (the
+    # authoritative record that is also saved to output/), so the count matches
+    # exactly what a reviewer sees on disk. Works with or without
+    # ExpectedExecutionHistory; a no-op when the key is absent.
+    final_events: list[dict[str, Any]] = (final_history or {}).get(
+        "Events", (final_history or {}).get("events", [])
+    )
+    count_errors: list[str] = _validate_event_count(description_data, final_events)
+    if count_errors:
+        return DescriptionResult(
+            description_id=description_id,
+            function_name=function_name,
+            passed=False,
+            optional=is_optional,
+            errors=count_errors,
             placeholders=async_result.placeholders,
         )
 

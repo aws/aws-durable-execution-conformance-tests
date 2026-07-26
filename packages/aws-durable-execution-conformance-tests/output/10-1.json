@@ -1,0 +1,187 @@
+{
+    "ResponseMetadata": {
+        "RequestId": "7148b592-1a7d-47cc-820c-e8d99c2aefc8",
+        "HTTPStatusCode": 200,
+        "HTTPHeaders": {
+            "date": "Sat, 25 Jul 2026 05:10:28 GMT",
+            "content-type": "application/json",
+            "content-length": "3035",
+            "connection": "keep-alive",
+            "x-amzn-requestid": "7148b592-1a7d-47cc-820c-e8d99c2aefc8"
+        },
+        "RetryAttempts": 0
+    },
+    "Events": [
+        {
+            "EventType": "ExecutionStarted",
+            "EventId": 1,
+            "Id": "8a669877-193c-357c-92b2-c13ac020c1b4",
+            "Name": "2c11ea57-2579-4321-bdf9-4f68f1a25e22",
+            "EventTimestamp": "2026-07-24 22:10:24.645000-07:00",
+            "ExecutionStartedDetails": {
+                "Input": {
+                    "Payload": "{}",
+                    "Truncated": false
+                },
+                "ExecutionTimeout": 300
+            }
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "Dag",
+            "EventId": 2,
+            "Id": "c4ca4238a0b92382",
+            "Name": "diamond",
+            "EventTimestamp": "2026-07-24 22:10:26.436000-07:00",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 3,
+            "Id": "b722a40eadf94bf7",
+            "Name": "fetch",
+            "EventTimestamp": "2026-07-24 22:10:26.487000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 4,
+            "Id": "b722a40eadf94bf7",
+            "Name": "fetch",
+            "EventTimestamp": "2026-07-24 22:10:26.513000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "10",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 5,
+            "Id": "d613bb21166bc859",
+            "Name": "ta",
+            "EventTimestamp": "2026-07-24 22:10:26.544000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 6,
+            "Id": "d613bb21166bc859",
+            "Name": "ta",
+            "EventTimestamp": "2026-07-24 22:10:26.568000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "11",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 7,
+            "Id": "9997600b32b9e7df",
+            "Name": "tb",
+            "EventTimestamp": "2026-07-24 22:10:26.600000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 8,
+            "Id": "9997600b32b9e7df",
+            "Name": "tb",
+            "EventTimestamp": "2026-07-24 22:10:26.624000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "20",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 9,
+            "Id": "83b64de52c8e6707",
+            "Name": "merge",
+            "EventTimestamp": "2026-07-24 22:10:26.667000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 10,
+            "Id": "83b64de52c8e6707",
+            "Name": "merge",
+            "EventTimestamp": "2026-07-24 22:10:26.703000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "31",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "Dag",
+            "EventId": 11,
+            "Id": "c4ca4238a0b92382",
+            "Name": "diamond",
+            "EventTimestamp": "2026-07-24 22:10:26.734000-07:00",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 12,
+            "EventTimestamp": "2026-07-24 22:10:26.749000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:24.695000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:26.745000-07:00",
+                "RequestId": "0173300b-f14b-4e03-b135-f7e11684a8bb"
+            }
+        },
+        {
+            "EventType": "ExecutionSucceeded",
+            "EventId": 13,
+            "Id": "8a669877-193c-357c-92b2-c13ac020c1b4",
+            "Name": "2c11ea57-2579-4321-bdf9-4f68f1a25e22",
+            "EventTimestamp": "2026-07-24 22:10:26.749000-07:00",
+            "ExecutionSucceededDetails": {
+                "Result": {
+                    "Payload": "{\"reason\":\"ALL_COMPLETED\",\"statuses\":{\"fetch\":\"SUCCEEDED\",\"merge\":\"SUCCEEDED\",\"ta\":\"SUCCEEDED\",\"tb\":\"SUCCEEDED\"},\"counts\":[4,0,0,4],\"merge\":31}",
+                    "Truncated": false
+                }
+            }
+        }
+    ]
+}

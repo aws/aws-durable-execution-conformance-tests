@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from aws_durable_execution_conformance_tests.callback import CallbackAction
 from aws_durable_execution_conformance_tests.validate import (
+    _validate_event_count,
     discover_suites,
     find_matching_action,
     parse_not_implemented,
@@ -246,3 +247,68 @@ Resources:
 """,
     )
     assert parse_not_implemented(template) == {"8-13": "gap"}
+
+
+# --- _validate_event_count (ExpectedEventCount) -----------------------------
+#
+# ExpectedEventCount is the direct guard against a wrapper-per-task regression
+# (flat N+1 -> 2N+1 operations) that the EventId-keyed history matcher cannot
+# see. The cases below mirror the four the guard must cover: the count matches,
+# the count mismatches, the history is omitted (no assertion requested), and
+# the history is omitted but the count is present (assertion still enforced).
+
+
+def _events(n: int) -> list[dict]:
+    """Build a list of n minimal event dicts."""
+    return [{"EventId": i} for i in range(1, n + 1)]
+
+
+def test_event_count_matches() -> None:
+    """Matching count with a full history present yields no errors."""
+    description = {
+        "ExpectedEventCount": 5,
+        "ExpectedExecutionHistory": [{"EventId": 2}],
+    }
+    assert _validate_event_count(description, _events(5)) == []
+
+
+def test_event_count_mismatches() -> None:
+    """A mismatched count reports the expected and actual values."""
+    description = {"ExpectedEventCount": 5}
+    errors = _validate_event_count(description, _events(3))
+    assert len(errors) == 1
+    assert "ExpectedEventCount=5" in errors[0]
+    assert "got 3" in errors[0]
+
+
+def test_event_count_history_omitted_no_count_is_noop() -> None:
+    """History omitted and no count key: no assertion, behaves as before.
+
+    This is the additive guarantee for the nine existing non-DAG suites, none
+    of which carry ExpectedEventCount.
+    """
+    assert _validate_event_count({}, _events(9)) == []
+    assert _validate_event_count({"ExpectedResult": {"ExecutionStatus": "SUCCEEDED"}}, _events(9)) == []
+
+
+def test_event_count_history_omitted_with_count_present() -> None:
+    """Count present without any ExpectedExecutionHistory is still enforced."""
+    matching = {"ExpectedEventCount": 17}
+    assert _validate_event_count(matching, _events(17)) == []
+
+    mismatching = {"ExpectedEventCount": 17}
+    errors = _validate_event_count(mismatching, _events(19))
+    assert len(errors) == 1
+    assert "ExpectedEventCount=17" in errors[0]
+    assert "got 19" in errors[0]
+
+
+def test_event_count_zero_is_asserted_not_skipped() -> None:
+    """An explicit 0 is a real assertion, not treated as absent."""
+    assert _validate_event_count({"ExpectedEventCount": 0}, []) == []
+    assert len(_validate_event_count({"ExpectedEventCount": 0}, _events(1))) == 1
+
+
+def test_event_count_non_dict_description_is_noop() -> None:
+    """Legacy bare-list history form never carries the key: no assertion."""
+    assert _validate_event_count([{"EventId": 2}], _events(3)) == []

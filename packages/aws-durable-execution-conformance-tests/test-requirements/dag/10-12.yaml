@@ -1,0 +1,104 @@
+---
+# 10.12: DAG runIf abort — a throwing predicate aborts the DAG with a typed error
+description: DAG where a task's runIf predicate throws, aborting the whole DAG with a typed
+  predicate error instead of failing the task or driving compensation
+handler: |
+  A DAG named "abortdag" with three step tasks: gate -> guarded -> refund.
+  gate is the root step and returns 1. guarded is a step that depends on gate;
+  its runIf predicate throws (any error, message "predicate boom") before the
+  body runs, so guarded's body -- which would return "ran" -- MUST NOT be
+  invoked. refund is a step wired with an ordering-only edge .after(guarded) and
+  an ALL_FAILED trigger rule that returns "refunded"; it MUST NOT run.
+  Max-concurrency is 1, so this scenario keeps full, ordered history assertions.
+
+  A runIf predicate is specified as synchronous, deterministic and pure and is
+  re-evaluated on every replay, so a throw is a defect in deterministic code,
+  not a business outcome. The contract therefore ABORTS: the offending task gets
+  no terminal state (neither FAILED nor SKIPPED), the scheduler starts no further
+  tasks, and the dag() operation fails with a typed predicate error
+  (DagPredicateError; DagPredicateException in Java) naming the task and carrying
+  the original error as its cause. Crucially, refund's ALL_FAILED compensation
+  MUST NOT fire -- a predicate defect must never drive a refund. The DAG
+  container checkpoints a failure so the abort is durable and visible in the
+  history, and the execution fails.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag) for the DAG container. gate runs first as a step directly under
+    the Dag container (StepStarted / StepSucceeded, SubType Step, Name gate,
+    ParentId = the Dag op) and succeeds returning 1. guarded then becomes ready
+    and the scheduler evaluates its runIf, which throws. The scheduler aborts
+    without starting guarded's body or any further task, so there are no events
+    for guarded or refund. The SDK checkpoints ContextFailed (SubType Dag) for
+    the container carrying the typed predicate error, the invocation completes,
+    and the execution fails.
+
+  # The failure payload's error TYPE string differs per language
+  # (DagPredicateError in TS/Python/Go vs the fully-qualified
+  # software.amazon.lambda.durable.dag.DagPredicateException in Java), so the
+  # error detail is wildcarded on both ContextFailed and ExecutionFailed below:
+  # the scenario asserts the event SHAPE and topology, not the error token.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: FAILED
+# Event-count arithmetic (flat N+1 model), verified against the final-js
+# histories (10-1 confirms the framing/Dag/step terms; 8-7 confirms a
+# container failure emits ContextFailed then InvocationCompleted then
+# ExecutionFailed):
+#   framing   ExecutionStarted + ExecutionFailed            = 2
+#   Dag       ContextStarted + ContextFailed (SubType Dag)  = 2
+#   gate      StepStarted + StepSucceeded                   = 2
+#   guarded/refund: never start (abort)                     = 0
+#   invocations: single invocation (runIf throws synchronously during
+#                scheduling; no suspend) -> InvocationCompleted = 1
+#   total = 2 + 2 + 2 + 0 + 1 = 7
+ExpectedEventCount: 7
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: abortdag
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_GATE}
+    Name: gate
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_GATE}
+    Name: gate
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '1'
+  # DAG container checkpoints a failure. Error detail is wildcarded because the
+  # typed predicate error token differs per language (see handler note); only
+  # the ContextFailed/Dag shape and topology are asserted.
+  - EventType: ContextFailed
+    SubType: Dag
+    EventId: 5
+    Id: ${DAG}
+    Name: abortdag
+    EventTimestamp: '*'
+    ContextFailedDetails:
+      Error: {}
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  # Uncaught typed predicate error propagates; error token wildcarded.
+  - EventType: ExecutionFailed
+    EventId: 7
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

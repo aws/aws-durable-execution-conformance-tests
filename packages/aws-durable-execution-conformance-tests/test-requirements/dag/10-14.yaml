@@ -1,0 +1,75 @@
+---
+# 10.14: DAG concurrent suspend — inverted readiness across a suspend boundary
+description: DAG with unbounded concurrency where two wait tasks are in flight across a suspend
+  and downstream tasks become ready in the reverse of registration order across invocations
+handler: |
+  A DAG named "suspenddag" with six tasks and max-concurrency UNSET:
+    root -> {slow, fast}; slow ~> afterSlow; fast ~> afterFast;
+    {afterSlow, afterFast} -> merge   (~> is an ordering-only edge).
+  root is a step that returns 1. slow is a WAIT task of 8 seconds depending on
+  root; fast is a WAIT task of 2 seconds depending on root; slow is REGISTERED
+  FIRST. afterSlow is a step with an ordering-only edge .after(slow) that returns
+  "S"; afterFast is a step with an ordering-only edge .after(fast) that returns
+  "F"; afterSlow is REGISTERED FIRST, so afterFast becomes ready first -- one
+  invocation earlier than afterSlow. merge depends on [afterSlow, afterFast] and
+  returns deps.afterSlow + deps.afterFast (= "SF"). Every task succeeds, so the
+  DAG completes with reason ALL_COMPLETED. The handler returns a summary: the
+  completion reason, per-task terminal statuses, the [succeeded, failed, skipped,
+  total] counts, and the merge result.
+
+  Both waits start in the first invocation, so the invocation suspends with two
+  wait tasks in flight and resumes twice; the downstream pair therefore starts in
+  the reverse of registration order across different invocations. This is the
+  replay-flip case no other scenario covers. Timers (8s vs 2s), not races, decide
+  the order, so the outcome is deterministic even though start order is inverted.
+  No peak-concurrency assertion is possible here (the waits are not user code)
+  and none is needed -- the suspend boundary is the point.
+
+  This scenario asserts OUTCOME ONLY (status, result value, per-task
+  statuses/counts, and the total event count via ExpectedEventCount); it pins NO
+  event ids, no ordering and no full history. A counter-based id regression
+  cannot survive the inverted readiness across the suspend: on resume it mints
+  different ids, the SDK's replay-consistency check fails, and the execution
+  FAILS rather than returning this result -- so no event-id assertion is needed.
+invocations: |
+  - Fresh invoke: the SDK checkpoints ContextStarted (SubType Dag). root runs and
+    succeeds; slow (wait 8s) and fast (wait 2s) both become ready and start (two
+    waits in flight). The invocation completes and the execution suspends.
+  - Resume 1 (fast's 2s timer fires first): fast's wait succeeds, afterFast
+    becomes ready and runs returning "F"; slow's wait is still in flight, so the
+    invocation completes and the execution suspends again.
+  - Resume 2 (slow's 8s timer fires): slow's wait succeeds, afterSlow runs
+    returning "S", merge then runs returning "SF", the SDK checkpoints
+    ContextSucceeded (SubType Dag) and the invocation completes returning the
+    summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      root: SUCCEEDED
+      slow: SUCCEEDED
+      fast: SUCCEEDED
+      afterSlow: SUCCEEDED
+      afterFast: SUCCEEDED
+      merge: SUCCEEDED
+    counts:
+      - 6
+      - 0
+      - 0
+      - 6
+    merge: SF
+# Event-count arithmetic (flat N+1 model), verified against the final-js
+# building blocks: 10-4 confirms a wait task = WaitStarted + WaitSucceeded and
+# that each suspend adds exactly one InvocationCompleted (1 wait -> 2
+# invocations); 10-1 confirms the step / Dag / framing terms.
+#   framing  ExecutionStarted + ExecutionSucceeded          = 2
+#   Dag      ContextStarted + ContextSucceeded (SubType Dag)  = 2
+#   4 step tasks (root, afterSlow, afterFast, merge) x 2     = 8
+#   2 wait tasks (slow, fast) x (WaitStarted + WaitSucceeded) = 4
+#   invocations: initial + 2 resumes (contract: "resumes twice") ->
+#                3 x InvocationCompleted                      = 3
+#   total = 2 + 2 + 8 + 4 + 3 = 19
+ExpectedEventCount: 19
