@@ -1,0 +1,584 @@
+{
+    "ResponseMetadata": {
+        "RequestId": "0863e532-26c9-41a5-b86d-f4f6de8ad0b9",
+        "HTTPStatusCode": 200,
+        "HTTPHeaders": {
+            "date": "Sat, 25 Jul 2026 05:10:45 GMT",
+            "content-type": "application/json",
+            "content-length": "50945",
+            "connection": "keep-alive",
+            "x-amzn-requestid": "0863e532-26c9-41a5-b86d-f4f6de8ad0b9"
+        },
+        "RetryAttempts": 0
+    },
+    "Events": [
+        {
+            "EventType": "ExecutionStarted",
+            "EventId": 1,
+            "Id": "1580514a-3807-33be-9db6-7bf16814f275",
+            "Name": "c32b0198-643f-4d60-ac1d-007da5877cdc",
+            "EventTimestamp": "2026-07-24 22:10:28.854000-07:00",
+            "ExecutionStartedDetails": {
+                "Input": {
+                    "Payload": "{}",
+                    "Truncated": false
+                },
+                "ExecutionTimeout": 300
+            }
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "Dag",
+            "EventId": 2,
+            "Id": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "Name": "paralleldag",
+            "EventTimestamp": "2026-07-24 22:10:32.310000-07:00",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "Parallel",
+            "EventId": 3,
+            "Id": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "Name": "fork",
+            "EventTimestamp": "2026-07-24 22:10:32.410000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "ParallelBranch",
+            "EventId": 4,
+            "Id": "cd5c68c5dd2e2753a7b6fa921f15828620c88d92197593a82f93525eb58a2e7e",
+            "Name": "left",
+            "EventTimestamp": "2026-07-24 22:10:32.410000-07:00",
+            "ParentId": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 5,
+            "Id": "16a64f0a41c1097b975bd17f0b4698d974a79a8bfc830e0f4c1c7588665764a2",
+            "EventTimestamp": "2026-07-24 22:10:32.410000-07:00",
+            "ParentId": "cd5c68c5dd2e2753a7b6fa921f15828620c88d92197593a82f93525eb58a2e7e",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 6,
+            "Id": "16a64f0a41c1097b975bd17f0b4698d974a79a8bfc830e0f4c1c7588665764a2",
+            "EventTimestamp": "2026-07-24 22:10:32.410000-07:00",
+            "ParentId": "cd5c68c5dd2e2753a7b6fa921f15828620c88d92197593a82f93525eb58a2e7e",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "\"L\"",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "ParallelBranch",
+            "EventId": 7,
+            "Id": "cd5c68c5dd2e2753a7b6fa921f15828620c88d92197593a82f93525eb58a2e7e",
+            "Name": "left",
+            "EventTimestamp": "2026-07-24 22:10:32.477000-07:00",
+            "ParentId": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Payload": "\"L\"",
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "ParallelBranch",
+            "EventId": 8,
+            "Id": "e52cfb5fd91aa286be0b8f29a37b562a6c25d40e245834b5419098d799ea0231",
+            "Name": "right",
+            "EventTimestamp": "2026-07-24 22:10:32.525000-07:00",
+            "ParentId": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 9,
+            "Id": "bf831431fb7747b46a7a6cf7668f6c9f62a2557f3de0bb1a1d1765a766a3a5d5",
+            "EventTimestamp": "2026-07-24 22:10:32.551000-07:00",
+            "ParentId": "e52cfb5fd91aa286be0b8f29a37b562a6c25d40e245834b5419098d799ea0231",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 10,
+            "Id": "bf831431fb7747b46a7a6cf7668f6c9f62a2557f3de0bb1a1d1765a766a3a5d5",
+            "EventTimestamp": "2026-07-24 22:10:32.551000-07:00",
+            "ParentId": "e52cfb5fd91aa286be0b8f29a37b562a6c25d40e245834b5419098d799ea0231",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "\"R\"",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "ParallelBranch",
+            "EventId": 11,
+            "Id": "e52cfb5fd91aa286be0b8f29a37b562a6c25d40e245834b5419098d799ea0231",
+            "Name": "right",
+            "EventTimestamp": "2026-07-24 22:10:32.581000-07:00",
+            "ParentId": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Payload": "\"R\"",
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "Parallel",
+            "EventId": 12,
+            "Id": "106443a7bd98a3dfc7d2d36cd568f7602690a7ac5ca60711152fbbe2961b8a27",
+            "Name": "fork",
+            "EventTimestamp": "2026-07-24 22:10:32.801000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Payload": "{\"size\":2,\"succeeded\":2,\"failed\":0,\"skipped\":0,\"completionStatus\":\"ALL_COMPLETED\",\"statuses\":[\"SUCCEEDED\",\"SUCCEEDED\"]}",
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 13,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:32.838000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 14,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:32.982000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1,
+                    "NextAttemptDelaySeconds": 3
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 15,
+            "EventTimestamp": "2026-07-24 22:10:33.030000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:28.896000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:33.026000-07:00",
+                "RequestId": "b2e22d0e-b8f1-4b90-aeae-e493cf7fccc7"
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 16,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:36.096000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 17,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:36.123000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 2,
+                    "NextAttemptDelaySeconds": 1
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 18,
+            "EventTimestamp": "2026-07-24 22:10:36.149000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:36.017000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:36.145000-07:00",
+                "RequestId": "ada4e828-5a76-4f5a-814f-fedcdbe4cd5a"
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 19,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:37.241000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 20,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:37.272000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 3,
+                    "NextAttemptDelaySeconds": 1
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 21,
+            "EventTimestamp": "2026-07-24 22:10:37.290000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:37.169000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:37.286000-07:00",
+                "RequestId": "e0d6e4c7-87cb-4a85-ab13-ac243e9f74f7"
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 22,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:38.365000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 23,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:38.411000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 4,
+                    "NextAttemptDelaySeconds": 1
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 24,
+            "EventTimestamp": "2026-07-24 22:10:38.427000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:38.307000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:38.424000-07:00",
+                "RequestId": "b2f3c76a-de16-4d05-bfeb-462abc60ff1a"
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 25,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:39.482000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 26,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:39.482000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 5,
+                    "NextAttemptDelaySeconds": 5
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 27,
+            "EventTimestamp": "2026-07-24 22:10:39.510000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:39.439000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:39.505000-07:00",
+                "RequestId": "31ca94a2-3b64-49e8-8421-adf50b353649"
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 28,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:44.556000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepFailed",
+            "SubType": "Step",
+            "EventId": 29,
+            "Id": "5a5272b163ebdac75ceb852d3e8d4d512669b0b04168b579c4d32d48900feace",
+            "Name": "join",
+            "EventTimestamp": "2026-07-24 22:10:44.587000-07:00",
+            "ParentId": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "StepFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "Nested CONTEXT operation is not supported on left from within a Step execution.",
+                        "ErrorType": "java.lang.IllegalStateException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"validateCurrentThreadType\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":209,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"waitForOperationCompletion\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"get\",\"fileName\":\"ChildContextOperation.java\",\"lineNumber\":226,\"className\":\"software.amazon.lambda.durable.operation.ChildContextOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"accept\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline$3$1\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"forEachRemaining\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.ArrayList$ArrayListSpliterator\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"copyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"wrapAndCopyInto\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluateSequential\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReduceOps$ReduceOp\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"evaluate\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.AbstractPipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"collect\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.stream.ReferencePipeline\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$handleRequest$6\",\"fileName\":\"DagParallel.java\",\"lineNumber\":49,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$step$1\",\"fileName\":\"DagContextImpl.java\",\"lineNumber\":113,\"className\":\"software.amazon.lambda.durable.dag.internal.DagContextImpl\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$executeStepLogic$0\",\"fileName\":\"StepOperation.java\",\"lineNumber\":117,\"className\":\"software.amazon.lambda.durable.operation.StepOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$runUserHandler$0\",\"fileName\":\"BaseDurableOperation.java\",\"lineNumber\":294,\"className\":\"software.amazon.lambda.durable.operation.BaseDurableOperation\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncRun\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"suppressed\":[],\"localizedMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\"}",
+                        "StackTrace": [
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226",
+                            "software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226",
+                            "java.util.stream.ReferencePipeline$3$1|accept|null|-1",
+                            "java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1",
+                            "java.util.stream.AbstractPipeline|copyInto|null|-1",
+                            "java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1",
+                            "java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1",
+                            "java.util.stream.AbstractPipeline|evaluate|null|-1",
+                            "java.util.stream.ReferencePipeline|collect|null|-1",
+                            "dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49",
+                            "software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113",
+                            "software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117",
+                            "software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294",
+                            "java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 6
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "Dag",
+            "EventId": 30,
+            "Id": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "Name": "paralleldag",
+            "EventTimestamp": "2026-07-24 22:10:44.798000-07:00",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Payload": "{\"tasks\":[{\"name\":\"fork\",\"status\":\"SUCCEEDED\",\"skipReason\":null,\"resultKind\":\"PLAIN\",\"result\":{\"size\":2,\"succeeded\":2,\"failed\":0,\"skipped\":0,\"completionStatus\":\"ALL_COMPLETED\",\"statuses\":[\"SUCCEEDED\",\"SUCCEEDED\"]},\"resultType\":\"software.amazon.lambda.durable.model.ParallelResult\",\"error\":null,\"startedAt\":null,\"completedAt\":null},{\"name\":\"join\",\"status\":\"FAILED\",\"skipReason\":null,\"resultKind\":\"PLAIN\",\"result\":null,\"resultType\":null,\"error\":{\"errorType\":\"java.lang.IllegalStateException\",\"errorMessage\":\"Nested CONTEXT operation is not supported on left from within a Step execution.\",\"stackTrace\":[\"software.amazon.lambda.durable.operation.BaseDurableOperation|validateCurrentThreadType|BaseDurableOperation.java|209\",\"software.amazon.lambda.durable.operation.BaseDurableOperation|waitForOperationCompletion|BaseDurableOperation.java|226\",\"software.amazon.lambda.durable.operation.ChildContextOperation|get|ChildContextOperation.java|226\",\"java.util.stream.ReferencePipeline$3$1|accept|null|-1\",\"java.util.ArrayList$ArrayListSpliterator|forEachRemaining|null|-1\",\"java.util.stream.AbstractPipeline|copyInto|null|-1\",\"java.util.stream.AbstractPipeline|wrapAndCopyInto|null|-1\",\"java.util.stream.ReduceOps$ReduceOp|evaluateSequential|null|-1\",\"java.util.stream.AbstractPipeline|evaluate|null|-1\",\"java.util.stream.ReferencePipeline|collect|null|-1\",\"dag.DagParallel|lambda$handleRequest$6|DagParallel.java|49\",\"software.amazon.lambda.durable.dag.internal.DagContextImpl|lambda$step$1|DagContextImpl.java|113\",\"software.amazon.lambda.durable.operation.StepOperation|lambda$executeStepLogic$0|StepOperation.java|117\",\"software.amazon.lambda.durable.operation.BaseDurableOperation|lambda$runUserHandler$0|BaseDurableOperation.java|294\",\"java.util.concurrent.CompletableFuture$AsyncRun|run|null|-1\",\"java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1\",\"java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1\",\"java.lang.Thread|run|null|-1\"]},\"startedAt\":null,\"completedAt\":null}],\"completionReason\":\"COMPLETED_WITH_FAILURES\",\"totalCount\":2}",
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 31,
+            "EventTimestamp": "2026-07-24 22:10:44.834000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:44.522000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:44.829000-07:00",
+                "RequestId": "aa85cb15-8edf-46a1-8517-e570ee09166f"
+            }
+        },
+        {
+            "EventType": "ExecutionFailed",
+            "EventId": 32,
+            "Id": "1580514a-3807-33be-9db6-7bf16814f275",
+            "Name": "c32b0198-643f-4d60-ac1d-007da5877cdc",
+            "EventTimestamp": "2026-07-24 22:10:44.834000-07:00",
+            "ExecutionFailedDetails": {
+                "Error": {
+                    "Payload": {
+                        "ErrorMessage": "No value present",
+                        "ErrorType": "java.util.NoSuchElementException",
+                        "ErrorData": "{\"cause\":null,\"stackTrace\":[{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"orElseThrow\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.Optional\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"handleRequest\",\"fileName\":\"DagParallel.java\",\"lineNumber\":58,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"handleRequest\",\"fileName\":\"DagParallel.java\",\"lineNumber\":28,\"className\":\"dag.DagParallel\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":null,\"moduleVersion\":null,\"methodName\":\"lambda$execute$0\",\"fileName\":\"DurableExecutor.java\",\"lineNumber\":77,\"className\":\"software.amazon.lambda.durable.execution.DurableExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.CompletableFuture$AsyncSupply\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"runWorker\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.util.concurrent.ThreadPoolExecutor$Worker\",\"nativeMethod\":false},{\"classLoaderName\":null,\"moduleName\":\"java.base\",\"moduleVersion\":\"21.0.11\",\"methodName\":\"run\",\"fileName\":null,\"lineNumber\":-1,\"className\":\"java.lang.Thread\",\"nativeMethod\":false}],\"message\":\"No value present\",\"suppressed\":[],\"localizedMessage\":\"No value present\"}",
+                        "StackTrace": [
+                            "java.util.Optional|orElseThrow|null|-1",
+                            "dag.DagParallel|handleRequest|DagParallel.java|58",
+                            "dag.DagParallel|handleRequest|DagParallel.java|28",
+                            "software.amazon.lambda.durable.execution.DurableExecutor|lambda$execute$0|DurableExecutor.java|77",
+                            "java.util.concurrent.CompletableFuture$AsyncSupply|run|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor|runWorker|null|-1",
+                            "java.util.concurrent.ThreadPoolExecutor$Worker|run|null|-1",
+                            "java.lang.Thread|run|null|-1"
+                        ]
+                    },
+                    "Truncated": false
+                }
+            }
+        }
+    ]
+}

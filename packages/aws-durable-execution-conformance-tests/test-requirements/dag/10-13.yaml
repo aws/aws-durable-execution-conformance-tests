@@ -1,0 +1,74 @@
+---
+# 10.13: DAG concurrent overlap — real task overlap inside one invocation
+description: DAG with unbounded concurrency where two sibling tasks genuinely overlap in one
+  invocation and downstream tasks become ready in the reverse of registration order
+handler: |
+  A DAG named "overlapdag" with six step tasks and max-concurrency UNSET, so the
+  scheduler runs every ready task concurrently:
+    root -> {slow, fast}; slow -> afterSlow; fast -> afterFast;
+    {afterSlow, afterFast} -> merge.
+  root returns 1. slow and fast both depend on root; slow sleeps ~2s in-body (a
+  plain in-body sleep, NOT a durable wait op) and returns "S", fast sleeps
+  ~200ms in-body and returns "F". slow is REGISTERED FIRST. afterSlow depends on
+  slow and returns deps.slow + "s" (= "Ss"); afterFast depends on fast and
+  returns deps.fast + "f" (= "Ff"); afterSlow is REGISTERED FIRST, so once slow
+  and fast finish, afterFast becomes ready -- and therefore starts -- before
+  afterSlow, inverting registration order versus start order. merge depends on
+  [afterSlow, afterFast] and returns deps.afterSlow + deps.afterFast (= "SsFf").
+
+  A shared in-memory counter is incremented on entry to slow and fast and
+  decremented on exit, tracking the maximum observed value; because slow and
+  fast interleave at their in-body sleep the peak observed concurrency is 2.
+  Every task succeeds, so the DAG completes with reason ALL_COMPLETED. The
+  handler returns a summary: the completion reason, per-task terminal statuses,
+  the [succeeded, failed, skipped, total] counts, the merge result, and the peak
+  observed concurrency.
+
+  This scenario is deliberately order-invariant: it asserts OUTCOME ONLY (status,
+  result value, per-task statuses/counts, observed peak concurrency, and the
+  total event count via ExpectedEventCount) and pins NO event ids, no ordering
+  and no full history. That is exactly what makes it a name-based-id regression
+  detector: under out-of-order completion a counter-based id scheme hands out
+  different ids on the next invocation, the SDK's replay-consistency check fails,
+  and the execution FAILS rather than returning this result -- so no event-id
+  assertion is needed. peakConcurrency guards against a future change silently
+  serialising the scheduler (which would make the scenario vacuous).
+invocations: |
+  - Handler invokes the DAG operation with concurrency unbounded. root runs and
+    succeeds; slow and fast then run concurrently and overlap at their in-body
+    sleeps, so the peak observed concurrency is 2. afterFast becomes ready before
+    afterSlow (inverted registration order) and both run; merge runs last. The
+    in-body sleeps are ordinary async waits, not durable wait operations, so
+    nothing checkpoints a wait and the whole DAG completes in a SINGLE
+    invocation. The SDK checkpoints ContextSucceeded (SubType Dag) and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      root: SUCCEEDED
+      slow: SUCCEEDED
+      fast: SUCCEEDED
+      afterSlow: SUCCEEDED
+      afterFast: SUCCEEDED
+      merge: SUCCEEDED
+    counts:
+      - 6
+      - 0
+      - 0
+      - 6
+    merge: SsFf
+    peakConcurrency: 2
+# Event-count arithmetic (flat N+1 model), verified against the final-js
+# histories: 10-1 is the pure-step reference (4 steps -> 13 events =
+# 2 framing + 2 Dag + 2*4 steps + 1 invocation), which this scales to 6 steps:
+#   framing  ExecutionStarted + ExecutionSucceeded         = 2
+#   Dag      ContextStarted + ContextSucceeded (SubType Dag) = 2
+#   6 step tasks x (StepStarted + StepSucceeded)           = 12
+#   invocations: in-body sleeps are NOT durable waits, so no suspend ->
+#                a single invocation -> InvocationCompleted = 1
+#   total = 2 + 2 + 12 + 1 = 17
+ExpectedEventCount: 17

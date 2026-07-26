@@ -1,0 +1,212 @@
+{
+    "ResponseMetadata": {
+        "RequestId": "7dab492e-fe76-4dbd-99b7-5e5d66ebf7cc",
+        "HTTPStatusCode": 200,
+        "HTTPHeaders": {
+            "date": "Sat, 25 Jul 2026 05:10:31 GMT",
+            "content-type": "application/json",
+            "content-length": "3492",
+            "connection": "keep-alive",
+            "x-amzn-requestid": "7dab492e-fe76-4dbd-99b7-5e5d66ebf7cc"
+        },
+        "RetryAttempts": 0
+    },
+    "Events": [
+        {
+            "EventType": "ExecutionStarted",
+            "EventId": 1,
+            "Id": "5e3870da-7992-33e5-a4ea-a7f9f5cd5fad",
+            "Name": "2ebd0501-30ba-4f1b-8e0a-ff07b620d37f",
+            "EventTimestamp": "2026-07-24 22:10:27.065000-07:00",
+            "ExecutionStartedDetails": {
+                "Input": {
+                    "Payload": "{}",
+                    "Truncated": false
+                },
+                "ExecutionTimeout": 300
+            }
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "Dag",
+            "EventId": 2,
+            "Id": "c4ca4238a0b92382",
+            "Name": "childdag",
+            "EventTimestamp": "2026-07-24 22:10:28.868000-07:00",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 3,
+            "Id": "3ec71bc2ebec7c21",
+            "Name": "seed",
+            "EventTimestamp": "2026-07-24 22:10:28.905000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 4,
+            "Id": "3ec71bc2ebec7c21",
+            "Name": "seed",
+            "EventTimestamp": "2026-07-24 22:10:28.928000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "1",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextStarted",
+            "SubType": "RunInChildContext",
+            "EventId": 5,
+            "Id": "2d4cbd0c84cffc12",
+            "Name": "group",
+            "EventTimestamp": "2026-07-24 22:10:28.959000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "ContextStartedDetails": {}
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 6,
+            "Id": "dedbbf82f7cc9693",
+            "Name": "inner-a",
+            "EventTimestamp": "2026-07-24 22:10:28.984000-07:00",
+            "ParentId": "2d4cbd0c84cffc12",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 7,
+            "Id": "dedbbf82f7cc9693",
+            "Name": "inner-a",
+            "EventTimestamp": "2026-07-24 22:10:29.045000-07:00",
+            "ParentId": "2d4cbd0c84cffc12",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "2",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 8,
+            "Id": "fd6fe2ef6c819a52",
+            "Name": "inner-b",
+            "EventTimestamp": "2026-07-24 22:10:29.074000-07:00",
+            "ParentId": "2d4cbd0c84cffc12",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 9,
+            "Id": "fd6fe2ef6c819a52",
+            "Name": "inner-b",
+            "EventTimestamp": "2026-07-24 22:10:29.120000-07:00",
+            "ParentId": "2d4cbd0c84cffc12",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "3",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "RunInChildContext",
+            "EventId": 10,
+            "Id": "2d4cbd0c84cffc12",
+            "Name": "group",
+            "EventTimestamp": "2026-07-24 22:10:29.151000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Payload": "5",
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "StepStarted",
+            "SubType": "Step",
+            "EventId": 11,
+            "Id": "3845424e4f56200c",
+            "Name": "done",
+            "EventTimestamp": "2026-07-24 22:10:29.199000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepStartedDetails": {}
+        },
+        {
+            "EventType": "StepSucceeded",
+            "SubType": "Step",
+            "EventId": 12,
+            "Id": "3845424e4f56200c",
+            "Name": "done",
+            "EventTimestamp": "2026-07-24 22:10:29.222000-07:00",
+            "ParentId": "c4ca4238a0b92382",
+            "StepSucceededDetails": {
+                "Result": {
+                    "Payload": "10",
+                    "Truncated": false
+                },
+                "RetryDetails": {
+                    "CurrentAttempt": 1
+                }
+            }
+        },
+        {
+            "EventType": "ContextSucceeded",
+            "SubType": "Dag",
+            "EventId": 13,
+            "Id": "c4ca4238a0b92382",
+            "Name": "childdag",
+            "EventTimestamp": "2026-07-24 22:10:29.253000-07:00",
+            "ContextSucceededDetails": {
+                "Result": {
+                    "Truncated": false
+                }
+            }
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 14,
+            "EventTimestamp": "2026-07-24 22:10:29.268000-07:00",
+            "InvocationCompletedDetails": {
+                "StartTimestamp": "2026-07-24 22:10:27.107000-07:00",
+                "EndTimestamp": "2026-07-24 22:10:29.263000-07:00",
+                "RequestId": "ca730619-7643-4811-a04d-7a3f593acc34"
+            }
+        },
+        {
+            "EventType": "ExecutionSucceeded",
+            "EventId": 15,
+            "Id": "5e3870da-7992-33e5-a4ea-a7f9f5cd5fad",
+            "Name": "2ebd0501-30ba-4f1b-8e0a-ff07b620d37f",
+            "EventTimestamp": "2026-07-24 22:10:29.268000-07:00",
+            "ExecutionSucceededDetails": {
+                "Result": {
+                    "Payload": "{\"reason\":\"ALL_COMPLETED\",\"statuses\":{\"done\":\"SUCCEEDED\",\"group\":\"SUCCEEDED\",\"seed\":\"SUCCEEDED\"},\"counts\":[3,0,0,3],\"group\":5,\"done\":10}",
+                    "Truncated": false
+                }
+            }
+        }
+    ]
+}
