@@ -21,7 +21,7 @@ from google.protobuf.message import DecodeError
 from aws_durable_execution_conformance_tests_otel.backends._common import (
     matching_trace,
 )
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
+from aws_durable_execution_conformance_tests_otel.model import Span, TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.normalizers import (
     normalize_otlp_json,
     normalize_otlp_protobuf,
@@ -87,13 +87,12 @@ def _merge_trace_files(
     *,
     bucket: str,
 ) -> list[Trace]:
-    spans: dict[str, dict[str, Any]] = {}
+    spans: dict[str, list[Span]] = {}
     log_trace_ids: dict[str, list[str]] = {}
     source_keys: dict[str, list[str]] = {}
     for key, traces in files:
         for trace in traces:
-            by_span = spans.setdefault(trace.trace_id, {})
-            by_span.update({span.span_id: span for span in trace.spans})
+            spans.setdefault(trace.trace_id, []).extend(trace.spans)
             logs = log_trace_ids.setdefault(trace.trace_id, [])
             logs.extend(value for value in trace.log_trace_ids if value not in logs)
             keys = source_keys.setdefault(trace.trace_id, [])
@@ -102,14 +101,14 @@ def _merge_trace_files(
     return [
         Trace(
             trace_id=trace_id,
-            spans=tuple(by_span.values()),
+            spans=tuple(trace_spans),
             log_trace_ids=tuple(log_trace_ids[trace_id]),
             raw_artifact={
                 "s3_bucket": bucket,
                 "s3_keys": source_keys[trace_id],
             },
         )
-        for trace_id, by_span in spans.items()
+        for trace_id, trace_spans in spans.items()
     ]
 
 

@@ -374,6 +374,50 @@ def test_counts_every_canonical_invocation_span_occurrence() -> None:
     )
 
 
+def test_asserts_duplicate_trace_and_span_ids_individually() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_child = replace(
+        child,
+        status="ERROR",
+        attributes={
+            **child.attributes,
+            "faas.invocation_id": "invocation-3",
+        },
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child, replayed_child)),
+        {
+            "span_assertions": [
+                {
+                    "select": {
+                        "name": "child",
+                        "attributes": {"faas.invocation_id": "invocation-2"},
+                    },
+                    "expect": {
+                        "span_id": child.span_id,
+                        "status": "OK",
+                    },
+                },
+                {
+                    "select": {
+                        "name": "child",
+                        "attributes": {"faas.invocation_id": "invocation-3"},
+                    },
+                    "expect": {
+                        "span_id": replayed_child.span_id,
+                        "status": "ERROR",
+                    },
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
 def test_does_not_count_noncanonical_spans_named_invocation() -> None:
     trace = _trace()
     root, child = trace.spans
