@@ -24,6 +24,10 @@ def test_language_workflows_run_one_parameterized_suite() -> None:
         assert "OTEL_SUITE: ${{ inputs.suite }}" in workflow
         assert '--suite "$OTEL_SUITE"' in workflow
         assert "--suite otel-invocation otel-execution" not in workflow
+        assert "  xray:" in workflow
+        assert "    name: ADOT + X-Ray" in workflow
+        assert "  s3_collector:" in workflow
+        assert "    name: Community layer + S3 collector" in workflow
 
 
 def test_invocation_view_workflow_calls_every_language() -> None:
@@ -31,6 +35,7 @@ def test_invocation_view_workflow_calls_every_language() -> None:
 
     assert "name: OpenTelemetry Invocation View" in workflow
     assert "  pull_request:" in workflow
+    assert "    branches: [main]" in workflow
     assert "  workflow_dispatch:" in workflow
     assert workflow.count("suite: otel-invocation") == 3
     assert workflow.count("case_count: 19") == 3
@@ -45,6 +50,7 @@ def test_execution_view_workflow_calls_supported_languages() -> None:
 
     assert "name: OpenTelemetry Execution View" in workflow
     assert "  pull_request:" in workflow
+    assert "    branches: [main]" in workflow
     assert "  workflow_dispatch:" in workflow
     assert workflow.count("suite: otel-execution") == 2
     assert workflow.count("case_count: 19") == 2

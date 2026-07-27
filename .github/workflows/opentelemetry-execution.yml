@@ -2,6 +2,7 @@ name: OpenTelemetry Execution View
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - .github/workflows/opentelemetry-execution.yml
       - .github/workflows/python-opentelemetry.yml
