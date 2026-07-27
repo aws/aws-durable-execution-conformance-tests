@@ -500,10 +500,10 @@ def test_10_17_pins_nested_offload_outcome_and_outer_envelope() -> None:
     # Async, and now carrying a pinned history for the outer container event.
     assert data["AsyncInvoke"] is True
 
-    # No event count is pinned: no cloud run exists yet, so any count would be a
-    # guess and must be MEASURED first. The key must be ABSENT so the scenario
-    # cannot silently acquire a derived value.
-    assert "ExpectedEventCount" not in data
+    # The event count is now pinned, and it was MEASURED rather than derived:
+    # the first cloud run of this scenario captured exactly 24 events in all
+    # four SDKs (js, python, java, go — independent runs, identical count).
+    assert data["ExpectedEventCount"] == 24
 
     # Exactly ONE event is pinned: the converged OUTER container envelope
     # (ContextSucceeded Dag for "outernested"). No inner-container event, no
