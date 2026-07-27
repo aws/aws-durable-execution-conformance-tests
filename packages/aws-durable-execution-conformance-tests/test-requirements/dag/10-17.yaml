@@ -100,13 +100,22 @@ invocations: |
     and the invocation completes returning the summary.
 AsyncInvoke: true
 Input: {}
-# The per-event history and event COUNT are NOT pinned, but the OUTER container
-# envelope now IS — these are independent decisions, for the reasons below.
+# The per-event history is NOT pinned, but the event COUNT and the OUTER
+# container envelope ARE — these are independent decisions, for the reasons
+# below.
 #
-# 1. No cloud run of this scenario exists yet, so any ExpectedEventCount would
-#    be a guess. It MUST be MEASURED on the first cloud run before it is added,
-#    exactly as 10-15's count (26) was measured rather than derived. So this
-#    file pins NO ExpectedEventCount and NO full per-event history.
+# 1. The event count is MEASURED, not derived, exactly as 10-15's (26) was.
+#    The first cloud run of this scenario captured exactly 24 events in ALL FOUR
+#    SDKs (TypeScript, Python, Java, Go — independent runs, identical count):
+#    2 framing (ExecutionStarted + ExecutionSucceeded) + 4 container
+#    (ContextStarted/ContextSucceeded x outer + inner, both SubType Dag)
+#    + 12 for the six inner step tasks + 2 for the digestAfter step
+#    + 2 wait (WaitStarted + WaitSucceeded) + 2 InvocationCompleted (the wait
+#    suspends, so there are two invocations) = 24. The converged aggregate
+#    envelope rides INSIDE each container's ContextSucceeded payload rather
+#    than emitting an event of its own, so pinning that payload (below) adds
+#    no events. The full per-event history stays unpinned: only the single
+#    outer ContextSucceeded is asserted (see below).
 #
 # 2. The graph shape has CONVERGED across all four SDKs (confirmed by re-reading
 #    all four handlers, not assumed). TypeScript, Python, Java and Go now ALL
@@ -129,6 +138,7 @@ Input: {}
 # asserted there too, which together prove the inner per-task detail survived
 # the offload of BOTH containers — the behaviour the nested-offload contract
 # requires.
+ExpectedEventCount: 24
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
   # The shared, language-neutral outcome. Confirmed identical across all four
@@ -166,7 +176,8 @@ ExpectedResult:
 # StepStarted/StepSucceeded pairs(4..15); ContextSucceeded Dag inner(16);
 # ContextSucceeded Dag outernested(17). The orchestrator confirms/adjusts this
 # single id against the first measured cloud history — nothing else depends on
-# it, and NO ExpectedEventCount is pinned until that run exists.
+# it. The total event count IS pinned (24, measured on the first cloud run of
+# this scenario in all four SDKs) -- see ExpectedEventCount above.
 ExpectedExecutionHistory:
   - EventType: ContextSucceeded
     SubType: Dag
