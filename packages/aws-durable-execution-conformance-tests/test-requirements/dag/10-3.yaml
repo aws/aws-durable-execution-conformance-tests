@@ -38,6 +38,12 @@ ExpectedResult:
       - 2
       - 4
     branch: review
+# Direct op-count guard (flat N+1): EXACT total event count, MEASURED from the
+# real captured cloud histories and identical across all four SDKs over two
+# rounds. Fails directly on a reintroduced per-task wrapper op (2N+1) or any
+# stray trailing op the EventId-keyed matcher would otherwise ignore. Also pins
+# that the two runIf-skipped branches emit NO events (a skip must be silent).
+ExpectedEventCount: 9
 ExpectedExecutionHistory:
   - EventType: ContextStarted
     SubType: Dag

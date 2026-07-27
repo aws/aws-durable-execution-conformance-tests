@@ -455,3 +455,113 @@ def test_10_16_pins_retry_outcome_and_container_envelope() -> None:
     assert tasks["after"]["status"] == "SUCCEEDED"
     assert tasks["after"]["result"] == 6
     assert tasks["after"]["skipReason"] is None
+
+
+# --- 10-17 nested-DAG large-payload scenario loads and pins the outer envelope -
+#
+# 10-17 covers the untested intersection of NESTING and LARGE PAYLOADS: a nested
+# DAG whose inner aggregate exceeds the 256KB limit, so BOTH the inner and the
+# outer container offload, and both are replayed across a suspend. The decisive
+# proof is the digest equality (digestBefore == digestAfter == "6:307200:abcdef"
+# with match: true), which shows the inner per-task detail survived the offload
+# of both containers; innerReason / innerCounts are the canonical inner-aggregate
+# fields asserted alongside it. All four SDK handlers return this identical
+# outcome (verified by reading them).
+#
+# The graph shape has now CONVERGED: TypeScript, Python, Java and Go all keep
+# digestBefore/wait/digestAfter at the handler level, so the outer "outernested"
+# container holds exactly ONE task (the nested "inner" dag) in every SDK. With
+# one shared shape the OUTER container envelope is language-neutral and is PINNED
+# (like 10-15 / 10-16): totalCount == successCount == 1, ALL_COMPLETED, and —
+# because the outer embeds the inner's ~307KB result in full and so offloads —
+# `tasks` DROPPED (its absence is the offload signal) plus the convergence-
+# deleted fields absent. Only the single outer ContextSucceeded event is pinned;
+# its EventId (17) is DERIVED from the flat name-based model, not measured.
+#
+# It still pins NO ExpectedEventCount, because no cloud run exists yet so any
+# count would be a guess (it must be MEASURED first, exactly as 10-15's 26 was).
+# These tests confirm the scenario is discoverable, that it pins the shared
+# outcome and the converged outer envelope, and that it carries NO event count.
+
+
+def test_dag_suite_discovers_10_17() -> None:
+    """The dag suite exposes the new 10-17 requirement by its file stem."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+
+    assert "10-17" in files
+    assert files["10-17"].endswith("dag/10-17.yaml")
+
+
+def test_10_17_pins_nested_offload_outcome_and_outer_envelope() -> None:
+    """10-17 pins the shared digest outcome and the converged offloaded OUTER envelope."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+    data = load_yaml_file(files["10-17"])
+
+    # Async, and now carrying a pinned history for the outer container event.
+    assert data["AsyncInvoke"] is True
+
+    # No event count is pinned: no cloud run exists yet, so any count would be a
+    # guess and must be MEASURED first. The key must be ABSENT so the scenario
+    # cannot silently acquire a derived value.
+    assert "ExpectedEventCount" not in data
+
+    # Exactly ONE event is pinned: the converged OUTER container envelope
+    # (ContextSucceeded Dag for "outernested"). No inner-container event, no
+    # per-event topology.
+    history = data["ExpectedExecutionHistory"]
+    ctx_succeeded = [
+        e
+        for e in history
+        if e.get("EventType") == "ContextSucceeded" and e.get("SubType") == "Dag"
+    ]
+    assert len(ctx_succeeded) == 1
+    event = ctx_succeeded[0]
+    assert event["EventId"] == 17
+    assert event["Name"] == "outernested"
+
+    # The payload is JSON-decoded via ${JSON}, then the converged aggregate
+    # envelope is pinned. The outer holds exactly ONE task (the nested "inner"
+    # dag) in all four SDKs, so totalCount == successCount == 1. It offloads
+    # (embeds the inner ~307KB result), so `tasks` is DROPPED — its absence is
+    # the offload signal — and the convergence-deleted fields are absent.
+    envelope = event["ContextSucceededDetails"]["Result"]["Payload"]["${JSON}"]
+    assert envelope["type"] == "DagResult"
+    assert envelope["totalCount"] == 1
+    assert envelope["successCount"] == 1
+    assert envelope["failureCount"] == 0
+    assert envelope["skippedCount"] == 0
+    assert envelope["completionReason"] == "ALL_COMPLETED"
+    assert envelope["startedTaskNames"] == []
+    assert envelope["failedTaskNames"] == []
+    assert envelope["tasks"] == "${ABSENT}"
+    assert envelope["completedCount"] == "${ABSENT}"
+    assert envelope["terminalTaskNames"] == "${ABSENT}"
+    assert envelope["summary"] == "${ABSENT}"
+
+    # The decisive, language-neutral outcome — identical across all four SDKs.
+    assert data["ExpectedResult"]["ExecutionStatus"] == "SUCCEEDED"
+    result = data["ExpectedResult"]["Result"]
+    assert result["reason"] == "ALL_COMPLETED"
+    # innerReason would read ALL_COMPLETED even under the bug (from a fabricated
+    # result), which is why the digest — not the reason — is the decisive check.
+    assert result["innerReason"] == "ALL_COMPLETED"
+    # innerCounts is [total, failed, skipped, succeeded]; the inner aggregate is
+    # the canonical part restored from the offloaded inner envelope.
+    assert result["innerCounts"] == [6, 0, 0, 6]
+    # Digest equality is the proof the inner per-task detail survived the offload
+    # of BOTH containers: it is recomputed from the replayed inner DagResult and
+    # must equal the pre-suspend value byte-for-byte.
+    assert result["digestBefore"] == "6:307200:abcdef"
+    assert result["digestAfter"] == "6:307200:abcdef"
+    assert result["match"] is True
+
+    # The result is EXACTLY the six shared fields — the runner compares the
+    # execution result by strict equality, so no extra key may leak in.
+    assert set(result) == {
+        "reason",
+        "innerReason",
+        "innerCounts",
+        "digestBefore",
+        "digestAfter",
+        "match",
+    }

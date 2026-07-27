@@ -36,6 +36,18 @@ ExpectedResult:
       - 0
       - 4
     merge: 31
+# Direct op-count guard (flat N+1 model): the EXACT total event count, MEASURED
+# from the real captured cloud histories and identical across all four SDKs
+# (js/python/java/go) over two independent rounds. This is the direct backstop
+# for the EventId-keyed matcher, which ignores any unmatched/extra actual event:
+# it fails immediately if a per-task wrapper op reappears (the 2N+1 regression)
+# or if any stray op is appended past the last pinned EventId.
+#   framing ExecutionStarted + ExecutionSucceeded = 2
+#   Dag     ContextStarted + ContextSucceeded     = 2
+#   4 steps x (StepStarted + StepSucceeded)        = 8
+#   single invocation InvocationCompleted          = 1
+#   total = 13
+ExpectedEventCount: 13
 ExpectedExecutionHistory:
   - EventType: ContextStarted
     SubType: Dag

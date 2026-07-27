@@ -45,6 +45,11 @@ ExpectedResult:
       - 3
     call: 21
     done: 42
+# Direct op-count guard (flat N+1): EXACT total event count, MEASURED from the
+# real captured cloud histories and identical across all four SDKs over two
+# rounds. Fails directly on a reintroduced per-task wrapper op (2N+1) or any
+# stray trailing op the EventId-keyed matcher would otherwise ignore.
+ExpectedEventCount: 12
 ExpectedExecutionHistory:
   - EventType: ContextStarted
     SubType: Dag
