@@ -1,0 +1,122 @@
+---
+# 10.16: DAG retry — a task retries inside a DAG and its result flows downstream
+description: DAG where a task fails twice then succeeds under a per-task retry strategy, and a
+  dependent task consumes the recovered result — proving retry works inside a DAG
+handler: |
+  A DAG named "retrydag" with max-concurrency 1 (a single deterministic lane) and
+  two step tasks:
+
+    1. flaky  — a root step carrying a per-task retry strategy that allows at
+       least three attempts with no backoff worth waiting on. Its body reads the
+       1-based attempt number from its step context. On attempts 1 and 2 it
+       throws; on the third attempt it returns the attempt number (3). This is
+       an ordinary per-task step retry — the DAG container adds nothing to it and
+       (correctly) cannot itself be retried, because a child context has no retry.
+    2. after  — a step depending on flaky that returns flaky's result doubled
+       (6). This proves a retried task's result flows downstream to a dependent
+       task exactly like a first-try result would.
+
+  The handler returns { "flaky": <flaky result>, "after": <after result> } — the
+  canonical shared expectation across all four SDKs is { "flaky": 3, "after": 6 }.
+  Each SDK exposes the attempt counter under its own name (JS/Python
+  stepContext.attempt, Java StepContext.getAttempt(), Go StepContext.Attempt()),
+  all 1-based at runtime, all succeeding on the third attempt, so all four return
+  the same numbers.
+
+  The point of the scenario: flaky must end SUCCEEDED, not FAILED, and after must
+  RUN rather than be SKIPPED. A retry that is broken inside a DAG — dead in half
+  the SDKs before the DagConfig default-retry removal, and never covered by any
+  scenario — would leave flaky FAILED and after SKIPPED, which both the pinned
+  result below and the pinned container envelope catch.
+invocations: |
+  - The handler invokes the DAG. With max-concurrency 1 flaky runs first. It
+    throws on attempt 1; the SDK checkpoints the step's terminal-for-now failure
+    with retry scheduled and the invocation suspends for the (floored ~1s) retry
+    delay. On resume it throws again on attempt 2 and suspends once more. On the
+    third resume attempt 3 succeeds and the step is checkpointed SUCCEEDED with
+    result 3. after then becomes ready and runs in the same invocation, reading
+    flaky's result and returning 6. The DAG resolves; the SDK checkpoints the
+    container ContextSucceeded (SubType Dag) with reason ALL_COMPLETED and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+AsyncConfig:
+  NoProgressTimeoutSeconds: 90
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  # Only reachable if flaky SUCCEEDED (so it returned its attempt number, 3) and
+  # after RAN rather than skipping (so it returned 3 * 2 = 6). This is the
+  # language-neutral proof of the scenario's point.
+  Result:
+    flaky: 3
+    after: 6
+# This scenario pins ONLY the container envelope (the single ContextSucceeded Dag
+# event), NOT a full event history and NO ExpectedEventCount. A retried step's
+# event sequence and total event count are a platform detail that moves with
+# attempt counts and may differ per language, so enumerating them would make the
+# scenario brittle without adding value. The matcher keys expected events by
+# EventId and IGNORES every actual event not listed here, so pinning just the one
+# container event asserts the converged envelope while leaving the noisy retry /
+# suspend / resume events unpinned.
+#
+# The ContextSucceeded EventId below (13) is DERIVED from the converged flat,
+# name-based model shared by the DAG suite (cf. 10-1 framing arithmetic, 10-2's
+# under-DAG step events, and step/1-11's 3-events-per-failed-attempt retry
+# footprint): ExecutionStarted(1), ContextStarted Dag(2); flaky attempt 1
+# StepStarted(3)/StepFailed(4)/InvocationCompleted(5); attempt 2
+# StepStarted(6)/StepFailed(7)/InvocationCompleted(8); attempt 3
+# StepStarted(9)/StepSucceeded(10); after StepStarted(11)/StepSucceeded(12);
+# ContextSucceeded Dag(13). The orchestrator confirms this id against the first
+# measured cloud history and adjusts the single value if a language's retry
+# modeling shifts it — nothing else in this file depends on it.
+ExpectedExecutionHistory:
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 13
+    Id: ${DAG}
+    Name: retrydag
+    EventTimestamp: '*'
+    # Pin the converged, customer-facing DAG container envelope (the DagResult
+    # rendered in the AWS console) so the four SDKs cannot silently drift. The
+    # payload is carried on the wire as a JSON string, so ${JSON} decodes it
+    # before structural matching. Only timestamps are wildcarded; field names,
+    # statuses, resultKinds, results, counts, completionReason and
+    # failedTaskNames are all pinned.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            totalCount: 2
+            successCount: 2
+            failureCount: 0
+            skippedCount: 0
+            completionReason: ALL_COMPLETED
+            startedTaskNames: []
+            failedTaskNames: []
+            # Fields the envelope convergence deleted from the old JS shape stay
+            # gone; assert they are genuinely absent, not merely unpinned.
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}
+            # Registration order: flaky, then after. flaky ends SUCCEEDED (result
+            # 3) despite its two failed attempts, and after ran (result 6) rather
+            # than being skipped — which is exactly what a broken retry inside a
+            # DAG would break.
+            tasks:
+              - name: flaky
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result: 3
+                error: null
+                startedAt: '*'
+                completedAt: '*'
+              - name: after
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result: 6
+                error: null
+                startedAt: '*'
+                completedAt: '*'

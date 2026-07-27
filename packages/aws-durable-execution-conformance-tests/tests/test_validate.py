@@ -387,3 +387,71 @@ def test_10_15_pins_offloaded_envelope_large_payload() -> None:
     assert result["digestBefore"] == "8:409600:abcdefgh"
     assert result["digestAfter"] == "8:409600:abcdefgh"
     assert result["match"] is True
+
+
+# --- 10-16 DAG retry scenario loads and pins the container envelope --------
+#
+# 10-16 proves per-task retry works INSIDE a DAG (flaky fails twice then
+# succeeds; after consumes the recovered result). It deliberately pins ONLY the
+# container envelope (the single ContextSucceeded Dag event) and sets NO
+# ExpectedEventCount, because a retried step's event sequence / count is a
+# platform detail that moves with attempt counts and may differ per language.
+# These tests confirm the scenario is discoverable, that its outcome and
+# converged envelope are pinned as the contract requires, and that it does NOT
+# pin a full history or an event count.
+
+
+def test_dag_suite_discovers_10_16() -> None:
+    """The dag suite exposes the new 10-16 requirement by its file stem."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+
+    assert "10-16" in files
+    assert files["10-16"].endswith("dag/10-16.yaml")
+
+
+def test_10_16_pins_retry_outcome_and_container_envelope() -> None:
+    """10-16 pins {flaky:3, after:6} and the converged ALL_COMPLETED envelope."""
+    files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
+    data = load_yaml_file(files["10-16"])
+
+    # Outcome: only reachable if flaky SUCCEEDED (returned attempt 3) and after
+    # ran (returned 3 * 2 = 6) rather than being skipped.
+    assert data["ExpectedResult"]["ExecutionStatus"] == "SUCCEEDED"
+    assert data["ExpectedResult"]["Result"] == {"flaky": 3, "after": 6}
+
+    # A retried step's event sequence differs per language and moves with attempt
+    # counts, so the scenario must NOT pin an event count.
+    assert "ExpectedEventCount" not in data
+
+    # Exactly one event is pinned: the container envelope (ContextSucceeded Dag).
+    history = data["ExpectedExecutionHistory"]
+    assert len(history) == 1
+    event = history[0]
+    assert event["EventType"] == "ContextSucceeded"
+    assert event["SubType"] == "Dag"
+    assert event["Name"] == "retrydag"
+
+    # The converged DagResult envelope: 2/2/0/0, ALL_COMPLETED, no failed tasks,
+    # and the convergence-deleted fields asserted absent.
+    envelope = event["ContextSucceededDetails"]["Result"]["Payload"]["${JSON}"]
+    assert envelope["type"] == "DagResult"
+    assert envelope["totalCount"] == 2
+    assert envelope["successCount"] == 2
+    assert envelope["failureCount"] == 0
+    assert envelope["skippedCount"] == 0
+    assert envelope["completionReason"] == "ALL_COMPLETED"
+    assert envelope["failedTaskNames"] == []
+    assert envelope["completedCount"] == "${ABSENT}"
+    assert envelope["terminalTaskNames"] == "${ABSENT}"
+    assert envelope["summary"] == "${ABSENT}"
+
+    # Both tasks SUCCEEDED with their results; flaky recovered rather than
+    # failing, and after ran rather than skipping.
+    tasks = {t["name"]: t for t in envelope["tasks"]}
+    assert set(tasks) == {"flaky", "after"}
+    assert tasks["flaky"]["status"] == "SUCCEEDED"
+    assert tasks["flaky"]["result"] == 3
+    assert tasks["flaky"]["skipReason"] is None
+    assert tasks["after"]["status"] == "SUCCEEDED"
+    assert tasks["after"]["result"] == 6
+    assert tasks["after"]["skipReason"] is None
