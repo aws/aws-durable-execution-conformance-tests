@@ -186,6 +186,40 @@ def test_regex_value_matching():
     assert not v.validate([{"match": {"message": "/ERROR/"}, "count": 0}], _events("ERROR boom")).success
 
 
+def test_plugin_json_nested_in_runtime_envelope():
+    """A plugin printing JSON through a wrapping runtime (Node.js JSON log
+    format) nests its object as a string in the envelope's message field:
+    inner fields must be merged and assertable."""
+    inner = {"plugin": "CONFPLUGIN", "hook": "attempt-end", "n": 1, "outcome": "FAILED", "op": "abc123"}
+    envelope = json.dumps(
+        {"timestamp": "2026-07-27T18:00:00Z", "level": "INFO", "requestId": "r-1", "message": json.dumps(inner)}
+    )
+    v = _validator()
+    assert v.validate(
+        [{"match": {"plugin": "CONFPLUGIN", "hook": "attempt-end", "n": 1, "outcome": "FAILED", "op": "abc123"}}],
+        _events(envelope),
+    ).success
+    # envelope fields still visible when not shadowed by inner keys
+    assert v.validate([{"match": {"level": "INFO", "hook": "attempt-end"}}], _events(envelope)).success
+
+
+def test_plugin_json_printed_raw_is_assertable():
+    """Runtimes that do not wrap stdout (println/print) yield the plugin
+    JSON as the whole line."""
+    line = json.dumps({"plugin": "CONFPLUGIN-A", "hook": "invocation-start", "first": True})
+    v = _validator()
+    assert v.validate(
+        [{"match": {"plugin": "CONFPLUGIN-A", "hook": "invocation-start", "first": True}}], _events(line)
+    ).success
+    assert not v.validate([{"match": {"first": False}}], _events(line)).success
+
+
+def test_non_json_message_string_stays_plain():
+    envelope = json.dumps({"level": "INFO", "message": "CONFPLUGIN invocation-start first=true"})
+    v = _validator()
+    assert v.validate([{"match": {"message": "CONFPLUGIN invocation-start first=true"}}], _events(envelope)).success
+
+
 # --- Cardinality (always global) ---
 
 

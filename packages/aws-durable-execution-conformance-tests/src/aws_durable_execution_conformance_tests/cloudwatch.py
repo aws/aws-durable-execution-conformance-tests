@@ -438,18 +438,35 @@ def _parse_record(raw_line: str) -> dict[str, Any]:
     """Parse a raw log line into an assertable field map.
 
     JSON object lines (the Lambda structured envelope, optionally enriched
-    by the SDK logger) expose their top-level keys as fields. Non-JSON
-    lines (plain stdout/println) expose only ``message`` = the raw line.
+    by the SDK logger) expose their top-level keys as fields. When the
+    envelope's ``message`` value is itself a JSON object string (a plugin
+    printing JSON through a runtime that wraps stdout, e.g. the Node.js
+    JSON log format), the inner object's fields are merged in (inner keys
+    win) so plugin-emitted fields are assertable uniformly across runtimes.
+    Non-JSON lines (plain stdout/println) expose only ``message`` = the
+    raw line.
     """
-    stripped = raw_line.strip()
-    if stripped.startswith("{"):
-        try:
-            parsed = json.loads(stripped)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            return parsed
-    return {"message": stripped}
+    record = _parse_json_object(raw_line)
+    if record is None:
+        return {"message": raw_line.strip()}
+    inner = record.get("message")
+    if isinstance(inner, str):
+        inner_record = _parse_json_object(inner)
+        if inner_record is not None:
+            record = {**record, **inner_record}
+    return record
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    """Parse text as a JSON object, returning None for anything else."""
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _matching_indices(matcher: dict[str, Any], records: list[dict[str, Any]]) -> list[int]:

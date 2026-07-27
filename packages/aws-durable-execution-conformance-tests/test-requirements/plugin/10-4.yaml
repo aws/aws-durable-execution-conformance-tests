@@ -4,10 +4,10 @@ description: Plugin exceptions are swallowed and never affect the execution outc
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin whose EVERY hook first logs a line and then throws an
-  error. Hook log lines: `CONFPLUGIN faulty invocation-start`,
-  `CONFPLUGIN faulty invocation-end`, `CONFPLUGIN faulty operation-start`,
-  `CONFPLUGIN faulty operation-end`, `CONFPLUGIN faulty attempt-start`,
-  `CONFPLUGIN faulty attempt-end` (operation/attempt hooks filter to step-type
+  error. Each hook logs a JSON object
+  `{"plugin": "CONFPLUGIN-FAULTY", "hook": "<hook name>"}` to plain stdout with
+  hook names invocation-start, invocation-end, operation-start, operation-end,
+  attempt-start, attempt-end (operation/attempt hooks filter to step-type
   operations). The SDK must catch and ignore every plugin exception: the
   execution result and history are identical to running without the plugin.
 invocations: |
@@ -40,24 +40,31 @@ ExpectedExecutionHistory:
 ExpectedLogs:
   # Invocation hooks both ran (each logged before throwing)
   - match:
-      message: CONFPLUGIN faulty invocation-start
+      plugin: CONFPLUGIN-FAULTY
+      hook: invocation-start
     count: 1
   - match:
-      message: CONFPLUGIN faulty invocation-end
+      plugin: CONFPLUGIN-FAULTY
+      hook: invocation-end
     count: 1
     after:
-      - message: CONFPLUGIN faulty invocation-start
+      - plugin: CONFPLUGIN-FAULTY
+        hook: invocation-start
   # Operation and attempt hooks also ran exactly once; dispatch model
   # varies per SDK, so no ordering is asserted
   - match:
-      message: CONFPLUGIN faulty operation-start
+      plugin: CONFPLUGIN-FAULTY
+      hook: operation-start
     count: 1
   - match:
-      message: CONFPLUGIN faulty operation-end
+      plugin: CONFPLUGIN-FAULTY
+      hook: operation-end
     count: 1
   - match:
-      message: CONFPLUGIN faulty attempt-start
+      plugin: CONFPLUGIN-FAULTY
+      hook: attempt-start
     count: 1
   - match:
-      message: CONFPLUGIN faulty attempt-end
+      plugin: CONFPLUGIN-FAULTY
+      hook: attempt-end
     count: 1

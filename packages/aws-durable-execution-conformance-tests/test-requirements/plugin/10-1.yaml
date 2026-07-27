@@ -4,10 +4,9 @@ description: Plugin invocation lifecycle hooks (start and end on a single invoca
 handler: |
   A handler with a single step that returns a greeting string, configured with an
   instrumentation plugin registered through the SDK's plugin API. The step body
-  logs `Greeting step running for: <input>` before returning. The plugin logs
-  `CONFPLUGIN invocation-start first=<is_first_invocation>` from its
-  invocation-start hook and `CONFPLUGIN invocation-end status=<status>` from its
-  invocation-end hook (boolean lowercase, status as the enum token, e.g. SUCCEEDED).
+  logs `Greeting step running for: <input>` before returning. The plugin logs a JSON object to plain stdout from each hook:
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>}`
+  and `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "status": "<status enum token>"}`.
 invocations: |
   - Handler invokes `context.step(greet(event))`, the step logs its running line
     and succeeds on first attempt, execution succeeds in a single invocation. The
@@ -40,21 +39,29 @@ ExpectedExecutionHistory:
 ExpectedLogs:
   # Invocation-start hook fires (synchronously) before handler code runs
   - match:
-      message: CONFPLUGIN invocation-start first=true
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: true
     count: 1
   # Handler step body runs between the two invocation hooks
   - match:
       message: '/Greeting step running for: ${INPUT_1}/'
     count: 1
     after:
-      - message: CONFPLUGIN invocation-start first=true
+      - plugin: CONFPLUGIN
+        hook: invocation-start
+        first: true
   # Invocation-end hook fires last, with the terminal status
   - match:
-      message: CONFPLUGIN invocation-end status=SUCCEEDED
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      status: SUCCEEDED
     count: 1
     after:
       - message: '/Greeting step running for: ${INPUT_1}/'
   # Single invocation: no replay invocation-start may appear
   - match:
-      message: CONFPLUGIN invocation-start first=false
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: false
     count: 0

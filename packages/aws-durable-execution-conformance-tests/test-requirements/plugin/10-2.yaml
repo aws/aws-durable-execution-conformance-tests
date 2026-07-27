@@ -3,12 +3,10 @@
 description: Plugin operation lifecycle hooks (step start and terminal end)
 handler: |
   A handler with a single step that returns a greeting string, configured with an
-  instrumentation plugin. The plugin, filtering to step-type operations only, logs
-  `CONFPLUGIN operation-start op=<operation_id>` from its operation-start hook and
-  `CONFPLUGIN operation-end op=<operation_id> status=<status>` from its
-  operation-end hook, where `<operation_id>` is the operation id received in the
-  hook's info parameter (status as the operation-status enum token, e.g.
-  SUCCEEDED). The logged id must equal the id the execution history checkpointed
+  instrumentation plugin. The plugin, filtering to step-type operations only, logs a JSON object to plain stdout from each hook:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>"}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`,
+  where `op` is the operation id received in the hook's info parameter. The logged id must equal the id the execution history checkpointed
   for the step.
 invocations: |
   - Handler invokes `context.step(greet(event))`, step succeeds on first attempt.
@@ -45,12 +43,20 @@ ExpectedLogs:
   # history checkpointed (${ID1}); dispatch may be async, so no ordering
   # is asserted (no before/after)
   - match:
-      message: CONFPLUGIN operation-start op=${ID1}
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
     count: 1
   - match:
-      message: CONFPLUGIN operation-end op=${ID1} status=SUCCEEDED
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: SUCCEEDED
     count: 1
   # The step never reaches a FAILED terminal status
   - match:
-      message: CONFPLUGIN operation-end op=${ID1} status=FAILED
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: FAILED
     count: 0

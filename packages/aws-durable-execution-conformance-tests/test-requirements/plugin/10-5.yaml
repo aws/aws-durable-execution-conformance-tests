@@ -3,10 +3,9 @@
 description: Multiple registered plugins all receive lifecycle hooks
 handler: |
   A handler with a single step that returns a greeting string, configured with TWO
-  instrumentation plugins registered together (in order A, B). Plugin A logs
-  `CONFPLUGIN-A invocation-start` / `CONFPLUGIN-A invocation-end status=<status>`;
-  plugin B logs `CONFPLUGIN-B invocation-start` /
-  `CONFPLUGIN-B invocation-end status=<status>`. Hooks across multiple plugins
+  instrumentation plugins registered together (in order A, B). Each plugin logs JSON objects to plain
+  stdout: `{"plugin": "<CONFPLUGIN-A|CONFPLUGIN-B>", "hook": "invocation-start"}` and
+  `{"plugin": "<CONFPLUGIN-A|CONFPLUGIN-B>", "hook": "invocation-end", "status": "<status>"}`. Hooks across multiple plugins
   may be dispatched concurrently, so no cross-plugin ordering is asserted; only
   plugin A's start-before-end ordering is asserted, plugin B's hooks are
   asserted by count alone.
@@ -40,17 +39,24 @@ ExpectedExecutionHistory:
 ExpectedLogs:
   # Plugin A: start observed before its own end
   - match:
-      message: CONFPLUGIN-A invocation-start
+      plugin: CONFPLUGIN-A
+      hook: invocation-start
     count: 1
   - match:
-      message: CONFPLUGIN-A invocation-end status=SUCCEEDED
+      plugin: CONFPLUGIN-A
+      hook: invocation-end
+      status: SUCCEEDED
     count: 1
     after:
-      - message: CONFPLUGIN-A invocation-start
+      - plugin: CONFPLUGIN-A
+        hook: invocation-start
   # Plugin B: both hooks fired; cross-plugin ordering not asserted
   - match:
-      message: CONFPLUGIN-B invocation-start
+      plugin: CONFPLUGIN-B
+      hook: invocation-start
     count: 1
   - match:
-      message: CONFPLUGIN-B invocation-end status=SUCCEEDED
+      plugin: CONFPLUGIN-B
+      hook: invocation-end
+      status: SUCCEEDED
     count: 1
