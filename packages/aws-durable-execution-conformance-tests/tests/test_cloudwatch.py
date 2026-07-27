@@ -228,21 +228,69 @@ def test_regex_value_matching():
     assert not v.validate([{"match": {"message": "/ERROR/"}, "count": 0}], _events("ERROR boom")).success
 
 
-def test_plugin_json_nested_in_runtime_envelope():
-    """A plugin printing JSON through a wrapping runtime (Node.js JSON log
-    format) nests its object as a string in the envelope's message field:
-    inner fields must be merged and assertable."""
-    inner = {"plugin": "CONFPLUGIN", "hook": "attempt-end", "n": 1, "outcome": "FAILED", "op": "abc123"}
-    envelope = json.dumps(
-        {"timestamp": "2026-07-27T18:00:00Z", "level": "INFO", "requestId": "r-1", "message": json.dumps(inner)}
+def test_retrieval_pipeline_contract_top_level_arn_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retrieval-level contract: the execution-scoped CloudWatch filter
+    matches TOP-LEVEL ARN fields, so plugin records must be raw top-level
+    JSON. A plugin JSON object nested inside a runtime envelope's message
+    string is never retrieved — which is why the Node.js handlers emit via
+    process.stdout.write instead of console.log."""
+    arn = "arn:aws:lambda:us-west-2:1:function:f:$LATEST/durable-execution/x/e1"
+
+    class _FilteringLogsClient:
+        """Simulates CloudWatch's server-side JSON filter pattern."""
+
+        def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
+            assert "filterPattern" in kwargs  # retrieval must be execution-scoped
+            events = [
+                # raw top-level plugin record -> matched by the filter
+                {
+                    "message": json.dumps(
+                        {"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": True, "durableExecutionArn": arn}
+                    ),
+                    "timestamp": 1,
+                },
+                # plugin JSON nested in an envelope message -> NOT matched (no top-level ARN)
+                {
+                    "message": json.dumps(
+                        {
+                            "level": "INFO",
+                            "message": json.dumps(
+                                {
+                                    "plugin": "CONFPLUGIN",
+                                    "hook": "invocation-end",
+                                    "status": "SUCCEEDED",
+                                    "durableExecutionArn": arn,
+                                }
+                            ),
+                        }
+                    ),
+                    "timestamp": 2,
+                },
+            ]
+            kept = []
+            for evt in events:
+                try:
+                    rec = json.loads(str(evt["message"]))
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and arn in (str(rec.get("durableExecutionArn")), str(rec.get("executionArn"))):
+                    kept.append(evt)
+            return {"events": kept}
+
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
+    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=_FilteringLogsClient())
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test", execution_arn=arn, start_time_ms=0, end_time_ms=10, wait_seconds=0
     )
+
     v = _validator()
-    assert v.validate(
-        [{"match": {"plugin": "CONFPLUGIN", "hook": "attempt-end", "n": 1, "outcome": "FAILED", "op": "abc123"}}],
-        _events(envelope),
-    ).success
-    # envelope fields still visible when not shadowed by inner keys
-    assert v.validate([{"match": {"level": "INFO", "hook": "attempt-end"}}], _events(envelope)).success
+    # the top-level record survives retrieval and matches
+    assert v.validate([{"match": {"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": True}}], events).success
+    # the nested record was never retrieved: asserting it must fail
+    assert not v.validate([{"match": {"plugin": "CONFPLUGIN", "hook": "invocation-end"}}], events).success
 
 
 def test_plugin_json_printed_raw_is_assertable():

@@ -426,23 +426,18 @@ class CloudWatchLogValidator:
 def _parse_record(raw_line: str) -> dict[str, Any]:
     """Parse a raw log line into an assertable field map.
 
-    JSON object lines (the Lambda structured envelope, optionally enriched
-    by the SDK logger) expose their top-level keys as fields. When the
-    envelope's ``message`` value is itself a JSON object string (a plugin
-    printing JSON through a runtime that wraps stdout, e.g. the Node.js
-    JSON log format), the inner object's fields are merged in (inner keys
-    win) so plugin-emitted fields are assertable uniformly across runtimes.
-    Non-JSON lines (plain stdout/println) expose only ``message`` = the
-    raw line.
+    JSON object lines expose their top-level keys as fields; non-JSON
+    lines (plain stdout/println) expose only ``message`` = the raw line.
+
+    Only top-level fields are considered: the execution-scoped retrieval
+    filter matches top-level ARN fields, so a JSON object nested inside a
+    runtime envelope's ``message`` string would never be retrieved in the
+    first place. Emitters must write raw top-level JSON (the Node.js
+    handlers use ``process.stdout.write`` for exactly this reason).
     """
     record = _parse_json_object(raw_line)
     if record is None:
         return {"message": raw_line.strip()}
-    inner = record.get("message")
-    if isinstance(inner, str):
-        inner_record = _parse_json_object(inner)
-        if inner_record is not None:
-            record = {**record, **inner_record}
     return record
 
 
