@@ -35,6 +35,21 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.execution.status: SUCCEEDED
     - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+    - select:
         name: otel-success
         attributes:
           durable.operation.id: ${STEP1}

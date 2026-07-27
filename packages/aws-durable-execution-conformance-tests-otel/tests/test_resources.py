@@ -158,10 +158,14 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
 
 
 def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links() -> None:
-    requirements = _requirements("otel-execution")
+    execution_requirements = _requirements("otel-execution")
+    invocation_requirements = _requirements("otel-invocation")
 
     for case_number in range(1, 20):
-        requirement = load_yaml_file(requirements[f"otel-execution-{case_number}"])
+        requirement = load_yaml_file(execution_requirements[f"otel-execution-{case_number}"])
+        invocation_requirement = load_yaml_file(
+            invocation_requirements[f"otel-invocation-{case_number}"],
+        )
         assertions = requirement["TelemetryAssertions"]
         span_assertions = assertions["span_assertions"]
         assert all("count" not in assertion for assertion in span_assertions)
@@ -203,19 +207,34 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
                 }
 
         invocations = [item for item in span_assertions if item["select"]["name"] == "Invocation"]
-        assert len(invocations) == (1 if case_number in {15, 19} else 0)
-        for invocation in invocations:
-            invocation_status = "PENDING" if case_number == 15 else "RETRY"
+        expected_invocations = [
+            item
+            for item in invocation_requirement["TelemetryAssertions"]["span_assertions"]
+            if item["select"]["name"] == "invocation"
+        ]
+        assert len(invocations) == len(expected_invocations)
+        for invocation, expected_invocation in zip(invocations, expected_invocations, strict=True):
+            expected_attributes = expected_invocation["expect"]["attributes"]
+            invocation_status = expected_attributes["durable.invocation.status"]
+            assert invocation["select"] == {
+                "name": "Invocation",
+                "attributes": expected_attributes,
+            }
             expected = invocation["expect"]
-            assert expected["status"] == "UNSET"
+            assert expected["status"] == ("ERROR" if invocation_status == "FAILED" else "UNSET")
             assert expected["links"] == []
             assert expected["kind"] == "INTERNAL"
-            assert expected["attributes"] == {
-                "durable.execution.arn": "${EXECUTION_ARN}",
-                "durable.invocation.first": True,
-                "durable.invocation.status": invocation_status,
-            }
+            assert expected["service_name"] == "invocation"
+            assert expected["attributes"] == expected_attributes
             assert invocation["select"]["attributes"] == expected["attributes"]
+            for relation in ("before", "after"):
+                expected_relation = expected_invocation["expect"].get(relation)
+                if expected_relation:
+                    expected_relation = deepcopy(expected_relation)
+                    expected_relation["name"] = "Invocation"
+                    assert expected[relation] == expected_relation
+                else:
+                    assert relation not in expected
 
         descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
         assert bool(descendants) is (case_number != 19)
@@ -282,7 +301,7 @@ def test_callback_submitter_assertions_emit_once_without_retry(
 @pytest.mark.parametrize(
     ("suite_name", "ordered_cases"),
     [
-        ("otel-execution", {2, 3, 8, 9}),
+        ("otel-execution", {2, 3, 8, 9, 10, 11, 17, 18}),
         ("otel-invocation", {2, 3, 8, 9, 10, 11, 17, 18}),
     ],
 )
