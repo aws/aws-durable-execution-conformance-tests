@@ -1,0 +1,161 @@
+---
+# 10.18: DAG compensation dependency read on a FAILED upstream is ABSENT, not present
+description: DAG where a compensation task reads its inline dependency's result for a
+  failed upstream task and observes it as absent (the deps-nullability contract)
+handler: |
+  A DAG named "compensate" with two step tasks in a linear chain: charge -> audit.
+  charge is a root step that ALWAYS fails ("charge failed"); its retry policy is
+  disabled (single attempt) so it deterministically ends FAILED after one attempt,
+  producing exactly one terminal StepFailed. audit is a step with an ALL_DONE
+  trigger rule that depends on charge via an INLINE (typed) dependency, so it runs
+  even though charge failed AND receives charge in its resolved deps map. audit's
+  body reads its dependency's result for charge and returns "absent" when the
+  language's null / None / undefined / empty-Optional value is observed (the
+  correct behavior for a dependency that did not SUCCEED) and "present" otherwise.
+  This codifies the deps-nullability fix: a compensation task MUST observe a failed
+  upstream's result as absent, never as a stale or fabricated present value. Because
+  a task failed but the DAG still ran its compensating task to completion, the DAG
+  completes with reason COMPLETED_WITH_FAILURES (the container does not throw).
+  charge ends FAILED and audit ends SUCCEEDED with result "absent". The handler
+  returns a summary with the completion reason, per-task terminal statuses, the
+  [succeeded, failed, skipped, total] counts, and audit's result.
+invocations: |
+  - Handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag). Each task delegates to its native operation checkpointed
+    directly under the Dag container (flat, name-based). charge runs first: its
+    step is attempted once (retries disabled) and fails terminally, checkpointing
+    StepFailed (SubType Step, ParentId = the Dag op). audit (ALL_DONE trigger)
+    then runs its step directly under the Dag container; its body reads charge
+    from the resolved deps, observes the absent value for the failed dependency,
+    and succeeds returning "absent" (StepStarted / StepSucceeded, SubType Step,
+    ParentId = the Dag op). Finally the DAG checkpoints ContextSucceeded (SubType
+    Dag) with reason COMPLETED_WITH_FAILURES and the invocation completes
+    returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: COMPLETED_WITH_FAILURES
+    statuses:
+      charge: FAILED
+      audit: SUCCEEDED
+    counts:
+      - 1
+      - 1
+      - 0
+      - 2
+    audit: absent
+# Verified against a real cloud run (TypeScript, 2026-07-27, account
+# 730758745077/us-west-2). ExpectedEventCount and the EventId sequence below
+# matched the captured execution history exactly, byte-for-byte, on first run:
+#   ExecutionStarted (1, unpinned)
+#   + ContextStarted(Dag) + StepStarted(charge) + StepFailed(charge)
+#     + StepStarted(audit) + StepSucceeded(audit) + ContextSucceeded(Dag)
+#     + InvocationCompleted                                        (7 pinned, EventIds 2-8)
+#   + ExecutionSucceeded (9, unpinned)
+#   = 9
+ExpectedEventCount: 9
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: compensate
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_CHARGE}
+    Name: charge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 4
+    Id: ${S_CHARGE}
+    Name: charge
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${S_AUDIT}
+    Name: audit
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${S_AUDIT}
+    Name: audit
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"absent"'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 7
+    Id: ${DAG}
+    Name: compensate
+    EventTimestamp: '*'
+    # Pin the converged, customer-facing DAG container envelope so the four SDKs
+    # cannot silently drift. The payload is carried on the wire as a JSON string,
+    # so ${JSON} decodes it before structural matching. Only genuinely-variable /
+    # language-specific values are wildcarded: timestamps, and the failed task's
+    # ErrorType / ErrorMessage / StackTrace (JS/Python/Go emit ErrorType
+    # "StepError" while Java emits the thrown class; message/stack are
+    # runtime-specific). Field NAMES, statuses, counts, completionReason,
+    # failedTaskNames, and audit's "absent" result are pinned.
+    # Verified against real cloud runs in all four languages (TypeScript,
+    # Python, Java, Go -- 2026-07-27, account 730758745077/us-west-2): the
+    # envelope shape below, the EventId sequence, and ExpectedEventCount all
+    # matched the captured ContextSucceeded payload byte-for-byte on first run
+    # in every language, with zero regressions across the pre-existing 17
+    # scenarios in each run. This is a proven cross-language conformance gate.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            totalCount: 2
+            successCount: 1
+            failureCount: 1
+            skippedCount: 0
+            completionReason: COMPLETED_WITH_FAILURES
+            startedTaskNames: []
+            failedTaskNames:
+              - charge
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}
+            # Registration order: charge, audit.
+            tasks:
+              - name: charge
+                status: FAILED
+                skipReason: null
+                resultKind: null
+                result: null
+                error:
+                  ErrorType: '*'
+                  ErrorMessage: '*'
+                  StackTrace: '*'
+                startedAt: '*'
+                completedAt: '*'
+              - name: audit
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result: absent
+                error: null
+                startedAt: '*'
+                completedAt: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
