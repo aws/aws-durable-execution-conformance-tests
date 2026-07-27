@@ -11,12 +11,14 @@ handler: |
   every individual task result (~51KB) stays well under it -- so only the
   aggregate container result is offloaded, never an individual task.
 
-  The four SDKs deliberately DIVERGE on how they replay a completed
-  large-payload container (DAG_SPEC_CROSS_LANGUAGE.md 2.A.4 / 2.B.6): TypeScript
-  writes an SDK-owned DagSummary envelope and reconstructs the aggregate from it
-  plus the per-task checkpoints, while Python, Java and Go re-execute the DAG
-  child body via ReplayChildren with no envelope. This scenario exercises that
-  path with one language-neutral assertion.
+  Post-convergence the four SDKs share ONE replay strategy (superseding the
+  divergence recorded in DAG_SPEC_CROSS_LANGUAGE.md 2.A.4 / 2.B.6): the container
+  checkpoints the converged aggregate envelope with `tasks` DROPPED -- its
+  absence is the offload signal -- and sets ReplayChildren so the per-task
+  results stay in the retained child operations; on replay the aggregate is
+  reconstructed from that envelope plus the per-task checkpoints. This scenario
+  PINS that offloaded envelope shape (below) and also asserts one language-neutral
+  round-trip fact via the digest.
 
   Handler flow, in order:
     1. dag(...) runs all eight tasks and resolves with the ~400KB aggregate. The
@@ -40,10 +42,10 @@ handler: |
   The assertion that matters is
   digestBefore == digestAfter == "8:409600:abcdefgh". digestBefore is frozen
   from the first invocation (before the offload); digestAfter is computed on the
-  resumed invocation from the container the SDK reconstructed (JS) or
-  re-executed (Python/Java/Go). Their equality proves the ~400KB aggregate
-  survived the offload and came back byte-identical through whichever replay
-  strategy the SDK uses -- one check that holds for all four.
+  resumed invocation from the container the SDK reconstructed from its offloaded
+  aggregate envelope plus the retained per-task checkpoints. Their equality
+  proves the ~400KB aggregate survived the offload and came back byte-identical
+  through the converged replay strategy -- one check that holds for all four.
 
   This scenario does NOT combine with completionConfig: Python has a documented
   early-completion divergence (in-flight tasks restart, inherited from
@@ -60,9 +62,9 @@ invocations: |
     succeeds returning "8:409600:abcdefgh". The wait (2s) starts (WaitStarted)
     and the invocation completes, so the execution suspends.
   - Resume (the 2s timer fires): the invocation replays. The completed DAG
-    container is reconstructed from its DagSummary envelope (TypeScript) or
-    re-executed via ReplayChildren (Python/Java/Go); either way each task
-    fast-paths from its own checkpoint and no task body is re-invoked. The
+    container is reconstructed from its checkpointed aggregate envelope plus the
+    retained per-task child checkpoints (ReplayChildren); each task fast-paths
+    from its own checkpoint and no task body is re-invoked. The
     digestBefore step fast-paths from its checkpoint (still "8:409600:abcdefgh").
     The wait's timer has elapsed (WaitSucceeded). The handler then recomputes the
     digest from the replayed DagResult -> digestAfter == "8:409600:abcdefgh", so
@@ -73,10 +75,9 @@ Input: {}
 # Event count MEASURED, not derived (the offload's event footprint was not
 # established when this scenario was authored). All four SDKs captured exactly 26
 # on their first cloud run of this scenario: 2 framing + 2 container + 16 for the
-# eight tasks + 2 digest step + 2 wait + 2 invocations. Notably the JS DagSummary
-# envelope rides INSIDE the container's ContextSucceeded payload (287 bytes) rather
-# than emitting an event of its own, so the envelope and re-execute strategies cost
-# the same number of operations.
+# eight tasks + 2 digest step + 2 wait + 2 invocations. The converged aggregate
+# envelope rides INSIDE the container's ContextSucceeded payload rather than
+# emitting an event of its own, so pinning that payload (below) adds no events.
 ExpectedEventCount: 26
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
@@ -90,15 +91,38 @@ ExpectedResult:
     digestBefore: "8:409600:abcdefgh"
     digestAfter: "8:409600:abcdefgh"
     match: true
-# Assert OUTCOME ONLY -- no ExpectedExecutionHistory. On a large-payload replay
-# the container's ContextSucceeded payload legitimately DIFFERS across SDKs: JS
-# writes an SDK-owned DagSummary envelope (DAG_SPEC_CROSS_LANGUAGE.md 2.A.4)
-# while Python, Java and Go store an offloaded aggregate marked ReplayChildren
-# (2.B.6). Pinning that payload -- or any per-event topology around the offload
-# -- would encode the divergence as a REQUIREMENT and force three SDKs (or the
-# fourth) to fail. The digest equality
-# (digestBefore == digestAfter == "8:409600:abcdefgh"), asserted via
-# ExpectedResult above, is the single language-neutral check that proves the
-# aggregate survived the offload and round-tripped identically through whichever
-# replay strategy the SDK uses.
-#
+# The OFFLOADED container payload is now PINNED -- the half of the envelope
+# contract no scenario checked before. Post-convergence all four SDKs checkpoint
+# the SAME aggregate envelope for the container result: the inline envelope with
+# `tasks` DROPPED (its absence is the offload signal; the per-task detail lives
+# in the retained child operations). Only this ONE container event is pinned and
+# only its shape -- no per-event topology or counts around the offload -- so the
+# assertion stays language-neutral. The digest equality asserted in
+# ExpectedResult above remains the complementary language-neutral proof that the
+# ~400KB aggregate round-tripped byte-identically through the offload.
+ExpectedExecutionHistory:
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 19
+    Name: bigdag
+    EventTimestamp: '*'
+    # Payload is an opaque JSON string on the wire; ${JSON} decodes it first.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            totalCount: 8
+            successCount: 8
+            failureCount: 0
+            skippedCount: 0
+            completionReason: ALL_COMPLETED
+            startedTaskNames: []
+            failedTaskNames: []
+            # Offloaded: the per-task array is DROPPED. Its absence IS the
+            # signal, so assert it is genuinely absent (not just unpinned).
+            tasks: ${ABSENT}
+            # Fields the convergence deleted from the old JS envelope stay gone.
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}

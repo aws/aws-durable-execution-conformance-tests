@@ -109,7 +109,71 @@ ExpectedExecutionHistory:
     Id: ${DAG}
     Name: compensation
     EventTimestamp: '*'
-    ContextSucceededDetails: '*'
+    # Pin the converged, customer-facing DAG container envelope (rendered in the
+    # AWS console) so the four SDKs cannot silently drift back to four shapes.
+    # The payload is carried on the wire as a JSON string, so ${JSON} decodes it
+    # before structural matching. Only genuinely-variable / language-specific
+    # values are wildcarded: timestamps, and the failed task's ErrorType /
+    # ErrorMessage / StackTrace (JS/Python/Go emit ErrorType "StepError" while
+    # Java emits the thrown class "java.lang.RuntimeException"; message/stack are
+    # runtime-specific too). Field NAMES, statuses, skipReason, counts,
+    # completionReason and failedTaskNames are pinned.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            totalCount: 4
+            successCount: 2
+            failureCount: 1
+            skippedCount: 1
+            completionReason: COMPLETED_WITH_FAILURES
+            startedTaskNames: []
+            failedTaskNames:
+              - charge
+            # Fields the convergence deleted from the old JS envelope stay gone.
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}
+            # Registration order: charge, fulfill, refund, audit.
+            tasks:
+              - name: charge
+                status: FAILED
+                skipReason: null
+                # resultKind describes how to read `result`, so a task with no
+                # result carries null for both. Converged in all four SDKs.
+                resultKind: null
+                result: null
+                error:
+                  ErrorType: '*'
+                  ErrorMessage: '*'
+                  StackTrace: '*'
+                startedAt: '*'
+                completedAt: '*'
+              - name: fulfill
+                status: SKIPPED
+                skipReason: TRIGGER_RULE
+                resultKind: null
+                result: null
+                error: null
+                startedAt: null
+                completedAt: null
+              - name: refund
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result: refunded
+                error: null
+                startedAt: '*'
+                completedAt: '*'
+              - name: audit
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result: logged
+                error: null
+                startedAt: '*'
+                completedAt: '*'
   - EventType: InvocationCompleted
     EventId: 25
     EventTimestamp: '*'
