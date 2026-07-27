@@ -251,10 +251,13 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             assert expected["kind"] == "INTERNAL"
             assert expected["parent"]
             assert expected["links"] == [{"name": "invocation"}]
-            assert expected["inside"] == {
-                "$linked": True,
-                "name": "invocation",
-            }
+            if "durable.attempt.outcome" in expected["attributes"]:
+                assert expected["inside"] == {
+                    "$linked": True,
+                    "name": "invocation",
+                }
+            else:
+                assert "inside" not in expected
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])
@@ -300,10 +303,7 @@ def test_callback_submitter_assertions_emit_once_without_retry(
         assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
     else:
         assert submitter_assertion["expect"]["links"] == [{"name": "invocation"}]
-        assert submitter_assertion["expect"]["inside"] == {
-            "$linked": True,
-            "name": "invocation",
-        }
+        assert "inside" not in submitter_assertion["expect"]
 
 
 @pytest.mark.parametrize(
