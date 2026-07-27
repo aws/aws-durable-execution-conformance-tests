@@ -1,0 +1,199 @@
+---
+# 10.17: nested DAG large payload — the inner container's OWN aggregate is
+# offloaded (forcing the outer to offload too), then BOTH completed containers
+# are replayed across a suspend and the inner per-task detail is proven
+# byte-identical. This is the untested intersection of NESTING and LARGE
+# PAYLOADS: 10-9 DagNested is small (nothing offloads) and 10-15 DagLargePayload
+# is flat (no nesting), so neither exercises restoring a nested DAG whose inner
+# aggregate exceeded the checkpoint limit. See NESTED_OFFLOAD_CONTRACT.md.
+description: Nested DAG whose inner aggregate exceeds the 256KB checkpoint limit is offloaded,
+  which forces the outer container to offload as well; after both completed containers are
+  replayed across a suspend the inner per-task detail is proven byte-identical via a digest,
+  confirming the nested-offload restore preserves the inner result rather than fabricating an
+  empty success
+handler: |
+  A nested DAG. The outer container "outernested" (max-concurrency 1 for
+  determinism) contains a single nested dag task "inner" (itself
+  max-concurrency 1) with six root step tasks p1..p6. Task pN returns one
+  distinct letter repeated 51200 times: p1 -> "a" x 51200, p2 -> "b" x 51200,
+  through p6 -> "f" x 51200. The inner aggregate DagResult is therefore
+  ~307200 characters (~307KB), comfortably over the 256KB checkpoint threshold,
+  while every individual inner task result (~51KB) stays well under it. So the
+  INNER container result is offloaded; and because the outer embeds the inner
+  result in full, the OUTER aggregate is over the limit too and the OUTER
+  container is offloaded as well. Both containers therefore checkpoint the
+  converged aggregate envelope with `tasks` DROPPED (its absence is the offload
+  signal) and set ReplayChildren so the per-task results stay in the retained
+  child operations.
+
+  This is exactly the combination the nested-offload contract targets: on the
+  outer's reconstruct path the inner dag task's result is read back from the
+  inner container's offloaded (tasks-less) envelope. A restore that only
+  rebuilds when `tasks` is present would fabricate an empty ALL_COMPLETED
+  result with zeroed counts, discarding the counts the envelope carries. The
+  fix preserves totalCount, the three counts and completionReason from the
+  tasks-less envelope, and — on the reconstruct path — recovers the inner
+  per-task detail by recursing into the inner container's own child
+  checkpoints.
+
+  Handler flow, in order:
+    1. dag("outernested") runs "inner", which resolves the ~307KB inner
+       aggregate. The SDK checkpoints both container results; each exceeds
+       256KB and is offloaded.
+    2. A digest is computed from the inner DagResult:
+       "<innerTaskCount>:<totalLength of all inner results>:<first char of each
+       inner result, in task order>" — here exactly "6:307200:abcdef". It is
+       captured as a CHECKPOINTED step so its first-invocation value survives
+       the suspend. Call it digestBefore.
+    3. A wait of 2 seconds forces the invocation to end so the next one must
+       REPLAY both completed, offloaded containers — the only path on which the
+       nested reconstruct fires.
+    4. After the resume the handler recomputes the identical digest from the
+       REPLAYED inner DagResult -> digestAfter.
+
+  The handler returns a small summary — never the payload itself, only the
+  digest, to keep the result small:
+    { reason, innerReason, innerCounts, digestBefore, digestAfter, match }
+  where innerCounts is [total, failed, skipped, succeeded] and match is whether
+  digestBefore equals digestAfter. All six inner tasks succeed, so both the
+  inner and the outer DAG complete with reason ALL_COMPLETED.
+
+  The decisive, language-neutral assertion is
+  digestBefore == digestAfter == "6:307200:abcdef" with match: true. digestBefore
+  is frozen from the first invocation (before either offload was replayed);
+  digestAfter is recomputed on the resumed invocation from the inner container
+  the SDK reconstructed from its offloaded aggregate envelope plus the retained
+  per-task checkpoints. Their equality proves the inner per-task detail survived
+  the offload of BOTH containers. Under the bug the inner comes back empty, so
+  the after-digest differs — while innerReason would still read a fabricated
+  ALL_COMPLETED, which is exactly why the DIGEST, not the reason, is the
+  decisive check. innerReason (ALL_COMPLETED) and innerCounts ([6,0,0,6]) are
+  the canonical inner-aggregate fields and are asserted alongside it.
+
+  This scenario does NOT combine with completionConfig: all six inner tasks run
+  to completion, so Python's documented early-completion divergence (inherited
+  from map/parallel) is never entered.
+invocations: |
+  - Fresh invoke: the SDK checkpoints ContextStarted (SubType Dag) for the
+    "outernested" container, then ContextStarted (SubType Dag) for the nested
+    "inner" container. With max-concurrency 1 the six inner step tasks run
+    serially in registration order p1..p6, each checkpointed under the inner
+    Dag container (StepStarted / StepSucceeded, SubType Step), each returning
+    its ~51KB string. The inner DAG resolves and the SDK checkpoints the inner
+    container result (ContextSucceeded, SubType Dag); the inner aggregate
+    exceeds 256KB and is offloaded (tasks dropped, ReplayChildren set). The
+    outer aggregate — which embeds the inner result — likewise exceeds 256KB
+    and its container result is offloaded too. The digestBefore step runs and
+    succeeds returning "6:307200:abcdef". The wait (2s) starts (WaitStarted)
+    and the invocation completes, so the execution suspends.
+  - Resume (the 2s timer fires): the invocation replays. Both completed
+    containers are replayed. The outer container is reconstructed from its
+    checkpointed aggregate envelope plus its retained child checkpoints
+    (ReplayChildren); its "inner" dag task is restored from the inner
+    container's OWN offloaded envelope and child checkpoints, recursing into
+    the inner container's children exactly as the outer recovers its own — so
+    the inner per-task detail is rebuilt with full fidelity and no inner task
+    body is re-invoked. The digestBefore step fast-paths from its checkpoint
+    (still "6:307200:abcdef"). The wait's timer has elapsed (WaitSucceeded).
+    The handler recomputes the digest from the replayed inner DagResult ->
+    digestAfter == "6:307200:abcdef", so match is true. The execution succeeds
+    and the invocation completes returning the summary.
+AsyncInvoke: true
+Input: {}
+# The per-event history and event COUNT are NOT pinned, but the OUTER container
+# envelope now IS — these are independent decisions, for the reasons below.
+#
+# 1. No cloud run of this scenario exists yet, so any ExpectedEventCount would
+#    be a guess. It MUST be MEASURED on the first cloud run before it is added,
+#    exactly as 10-15's count (26) was measured rather than derived. So this
+#    file pins NO ExpectedEventCount and NO full per-event history.
+#
+# 2. The graph shape has CONVERGED across all four SDKs (confirmed by re-reading
+#    all four handlers, not assumed). TypeScript, Python, Java and Go now ALL
+#    keep digestBefore / wait / digestAfter at the HANDLER level, so the outer
+#    "outernested" container holds exactly ONE task — the nested "inner" dag —
+#    in every SDK. (Java and Go were reshaped to match TS/Python; the earlier
+#    four-task divergence is gone.) With one shared shape the outer aggregate IS
+#    language-neutral: totalCount / successCount == 1 in all four. Because the
+#    outer embeds the inner's ~307KB result in full it exceeds the 256KB limit
+#    and OFFLOADS, so — exactly like 10-15's converged envelope — it checkpoints
+#    the aggregate envelope with `tasks` DROPPED (absence is the offload signal)
+#    and ReplayChildren set. That converged OUTER envelope is pinned below.
+#
+# The single outer ContextSucceeded event is the ONLY event pinned (as in
+# 10-16); its EventId is DERIVED from the flat, name-based model the DAG suite
+# shares (cf. 10-9's nested-dag arithmetic), NOT measured, and the orchestrator
+# confirms/adjusts that one id against the first cloud history. The decisive
+# proof remains the digest equality in ExpectedResult below; the canonical
+# INNER-aggregate fields (innerReason ALL_COMPLETED, innerCounts [6,0,0,6]) are
+# asserted there too, which together prove the inner per-task detail survived
+# the offload of BOTH containers — the behaviour the nested-offload contract
+# requires.
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  # The shared, language-neutral outcome. Confirmed identical across all four
+  # SDK handlers (TypeScript, Python, Java, Go). innerCounts is
+  # [total, failed, skipped, succeeded]. digestBefore is frozen pre-suspend;
+  # digestAfter is recomputed from the replayed, recursively reconstructed inner
+  # DagResult — their equality is the decisive proof of the fix.
+  Result:
+    reason: ALL_COMPLETED
+    innerReason: ALL_COMPLETED
+    innerCounts:
+      - 6
+      - 0
+      - 0
+      - 6
+    digestBefore: "6:307200:abcdef"
+    digestAfter: "6:307200:abcdef"
+    match: true
+# The OUTER container payload is now PINNED — possible only because the graph
+# shape converged so the outer "outernested" holds exactly ONE task ("inner")
+# in all four SDKs. The outer aggregate embeds the inner's ~307KB result in
+# full, so it exceeds the 256KB checkpoint limit and is OFFLOADED: it
+# checkpoints the converged aggregate envelope with `tasks` DROPPED (its absence
+# is the offload signal; the per-task detail lives in the retained child
+# operations) and the convergence-deleted fields gone. Only this ONE container
+# event is pinned and only its shape — no per-event topology, no counts around
+# the offload, and NOT the inner container event — so the assertion stays
+# language-neutral. The digest equality asserted in ExpectedResult above remains
+# the complementary proof that the inner per-task detail round-tripped through
+# the offload of BOTH containers.
+#
+# EventId 17 is DERIVED from the flat, name-based model the DAG suite shares
+# (cf. 10-9), NOT measured: ExecutionStarted(1); ContextStarted Dag
+# outernested(2); ContextStarted Dag inner(3); the six inner steps p1..p6 as
+# StepStarted/StepSucceeded pairs(4..15); ContextSucceeded Dag inner(16);
+# ContextSucceeded Dag outernested(17). The orchestrator confirms/adjusts this
+# single id against the first measured cloud history — nothing else depends on
+# it, and NO ExpectedEventCount is pinned until that run exists.
+ExpectedExecutionHistory:
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 17
+    Id: ${DAG}
+    Name: outernested
+    EventTimestamp: '*'
+    # Payload is an opaque JSON string on the wire; ${JSON} decodes it first.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            # The outer holds exactly ONE task (the nested "inner" dag), which
+            # succeeded — so totalCount == successCount == 1 in all four SDKs.
+            totalCount: 1
+            successCount: 1
+            failureCount: 0
+            skippedCount: 0
+            completionReason: ALL_COMPLETED
+            startedTaskNames: []
+            failedTaskNames: []
+            # Offloaded: the per-task array is DROPPED. Its absence IS the
+            # offload signal, so assert it is genuinely absent (not just unpinned).
+            tasks: ${ABSENT}
+            # Fields the envelope convergence deleted from the old shape stay
+            # gone; assert they are genuinely absent, not merely unpinned.
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}

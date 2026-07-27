@@ -68,6 +68,12 @@ ExpectedResult:
       - 3
     cb: ${CB_PAYLOAD}
     post: ${CB_PAYLOAD}_done
+# Direct op-count guard (flat N+1 with the two-level callback container): EXACT
+# total event count, MEASURED from the real captured cloud histories and
+# identical across all four SDKs over two rounds. Fails directly on a
+# reintroduced per-task wrapper op (2N+1) or any stray trailing op the
+# EventId-keyed matcher would otherwise ignore.
+ExpectedEventCount: 18
 ExpectedExecutionHistory:
   - EventType: ContextStarted
     SubType: Dag
