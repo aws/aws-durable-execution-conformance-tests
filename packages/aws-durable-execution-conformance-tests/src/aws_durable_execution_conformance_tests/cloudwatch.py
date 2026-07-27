@@ -40,7 +40,7 @@ class CloudWatchLogError(Exception):
 
 @dataclass(frozen=True)
 class LogExpectation:
-    """A single expected log entry from the YAML spec (v3 schema).
+    """A single expected log entry from the YAML spec.
 
     Cardinality (``count``/``min_count``/``max_count``) is always evaluated
     over the whole log stream. Ordering is asserted only via ``before``/
@@ -298,7 +298,7 @@ class CloudWatchLogRetriever:
 class CloudWatchLogValidator:
     """Matches expected log records against actual CloudWatch log events.
 
-    v3 semantics:
+    Semantics:
 
     - Each event's raw line is JSON-parsed into a field map (Lambda
       envelope + SDK enrichment); non-JSON lines expose only ``message``.

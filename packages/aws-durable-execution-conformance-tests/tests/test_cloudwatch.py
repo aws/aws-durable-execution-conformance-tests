@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for CloudWatch log retrieval and validation (v3 schema)."""
+"""Tests for CloudWatch log retrieval and validation."""
 
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ def test_raises_when_filter_log_events_fails() -> None:
 # endregion
 
 
-# region Validator (v3: structured matchers + before/after anchors)
+# region Validator (structured field matchers + before/after anchors)
 
 
 def _events(*messages: str) -> list[dict]:
