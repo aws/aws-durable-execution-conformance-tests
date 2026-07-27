@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
 from aws_durable_execution_conformance_tests.cloudwatch import (
@@ -22,94 +23,135 @@ from aws_durable_execution_conformance_tests.cloudwatch import (
 
 
 class _LogsClient:
-    def __init__(self, pages: list[dict[str, Any]]) -> None:
-        self._pages = pages
-        self._i = 0
-        self.filter_calls: list[dict[str, Any]] = []
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = iter(responses)
+        self.filter_log_events_calls: list[dict[str, Any]] = []
 
     def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
-        self.filter_calls.append(kwargs)
-        page = self._pages[min(self._i, len(self._pages) - 1)]
-        self._i += 1
-        return page
+        self.filter_log_events_calls.append(kwargs)
+        return next(self._responses)
 
 
-def _expire_poll_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Advance time.monotonic() by 100s per call so the bounded ingestion
-    polling window expires right after the first fetch."""
-    clock = {"t": 0.0}
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
 
-    def _monotonic() -> float:
-        clock["t"] += 100.0
-        return clock["t"]
+    def monotonic(self) -> float:
+        return self.now
 
-    monkeypatch.setattr(cloudwatch_module.time, "monotonic", _monotonic)
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
-def test_execution_log_events_keeps_unattributed_and_matching_records(
+def test_queries_logs_for_one_durable_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    execution_arn = "arn:aws:lambda:us-west-2:1:function:f:$LATEST/durable-execution/x/e1"
-    other_arn = "arn:aws:lambda:us-west-2:1:function:f:$LATEST/durable-execution/x/e2"
-    events = [
-        {"message": "CONFPLUGIN invocation-start first=true", "timestamp": 1},
-        {"message": json.dumps({"message": "enriched mine", "executionArn": execution_arn}), "timestamp": 2},
-        {"message": json.dumps({"message": "enriched other", "durableExecutionArn": other_arn}), "timestamp": 3},
-        {"message": json.dumps({"message": "no arn field", "level": "INFO"}), "timestamp": 4},
-    ]
-    logs_client = _LogsClient([{"events": events}])
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
-    _expire_poll_deadline(monkeypatch)
-    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=logs_client)
+    execution_arn = "arn:aws:lambda:us-west-2:123456789012:function:test:$LATEST/durable-execution/execution/name"
+    event = {
+        "timestamp": 1_500_000,
+        "message": f'{{"executionArn":"{execution_arn}","message":"step executed"}}',
+    }
+    logs_client = _LogsClient([{"events": []}] + [{"events": [event]}] * 10)
+    clock = _Clock()
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+    )
 
-    result = retriever.get_execution_log_events(
+    events = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test",
         execution_arn=execution_arn,
+        start_time_ms=1_000_123,
+        end_time_ms=2_000_456,
+        wait_seconds=0,
+    )
+
+    assert events == [event]
+    expected_call = {
+        "logGroupName": "/aws/lambda/test",
+        "startTime": 1_000_123,
+        "endTime": 2_000_456,
+        "filterPattern": f'{{ ($.durableExecutionArn = "{execution_arn}") || ($.executionArn = "{execution_arn}") }}',
+    }
+    assert logs_client.filter_log_events_calls == [expected_call] * 11
+
+
+def test_polls_through_partial_execution_log_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_event = {"timestamp": 1_500_000, "message": "first"}
+    second_event = {"timestamp": 1_600_000, "message": "second"}
+    complete_events = [first_event, second_event]
+    logs_client = _LogsClient([{"events": []}] + [{"events": [first_event]}] * 3 + [{"events": complete_events}] * 7)
+    clock = _Clock()
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+    )
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
         start_time_ms=1_000,
         end_time_ms=2_000,
         wait_seconds=0,
     )
 
-    kept = [evt["message"] for evt in result]
-    assert "CONFPLUGIN invocation-start first=true" in kept  # plain stdout kept
-    assert any("enriched mine" in m for m in kept)  # own execution kept
-    assert not any("enriched other" in m for m in kept)  # other execution dropped
-    assert any("no arn field" in m for m in kept)  # unattributed JSON kept
-    assert logs_client.filter_calls[0]["logGroupName"] == "/aws/lambda/test"
-    assert logs_client.filter_calls[0]["startTime"] == 1_000
+    assert events == complete_events
+    assert len(logs_client.filter_log_events_calls) == 11
 
 
-def test_execution_log_events_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
-    logs_client = _LogsClient(
-        [
-            {"events": [{"message": "a", "timestamp": 1}], "nextToken": "t1"},
-            {"events": [{"message": "b", "timestamp": 2}]},
-        ]
+def test_returns_empty_execution_logs_at_poll_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    logs_client = _LogsClient([{"events": []}, {"events": []}, {"events": []}])
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 2.0)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
     )
-    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
-    _expire_poll_deadline(monkeypatch)
-    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=logs_client)
 
-    result = retriever.get_execution_log_events(
+    events = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test",
-        execution_arn="arn:whatever",
-        start_time_ms=0,
-        end_time_ms=10,
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        end_time_ms=2_000,
         wait_seconds=0,
     )
 
-    assert [evt["message"] for evt in result] == ["a", "b"]
-    assert logs_client.filter_calls[1]["nextToken"] == "t1"
+    assert events == []
+    assert len(logs_client.filter_log_events_calls) == 3
 
 
-def test_get_log_group_name_raises_on_empty_physical_id() -> None:
-    class _Cfn:
-        def describe_stack_resource(self, **kwargs):
-            return {"StackResourceDetail": {"PhysicalResourceId": ""}}
+def test_raises_when_filter_log_events_fails() -> None:
+    class _FailingLogsClient:
+        def filter_log_events(self, **_kwargs: Any) -> dict[str, Any]:
+            raise ClientError(
+                {"Error": {"Code": "InvalidParameterException", "Message": "failed"}},
+                "FilterLogEvents",
+            )
 
-    retriever = CloudWatchLogRetriever(cloudformation_client=_Cfn(), logs_client=object())
-    with pytest.raises(CloudWatchLogError, match="Empty physical resource ID"):
-        retriever.get_log_group_name("stack", "Fn")
+    logs_client = _FailingLogsClient()
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+    )
+
+    with pytest.raises(CloudWatchLogError, match="filter-log-events failed"):
+        retriever.get_execution_log_events(
+            log_group_name="/aws/lambda/test",
+            execution_arn="arn:execution",
+            start_time_ms=1_000,
+            end_time_ms=2_000,
+            wait_seconds=0,
+        )
 
 
 # endregion

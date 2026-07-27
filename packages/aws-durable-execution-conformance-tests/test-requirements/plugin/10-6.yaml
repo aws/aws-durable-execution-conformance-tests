@@ -6,6 +6,10 @@ handler: |
   plugin. The plugin logs a JSON object to plain stdout from each hook:
   `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>}`
   and `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "status": "<status enum token>"}`.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
   - Handler invokes `context.wait(2 seconds)`, plugin logs
     `invocation-start first=true`, SDK checkpoints WaitStarted, invocation

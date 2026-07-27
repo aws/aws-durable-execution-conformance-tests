@@ -10,6 +10,10 @@ handler: |
   attempt-start, attempt-end (operation/attempt hooks filter to step-type
   operations). The SDK must catch and ignore every plugin exception: the
   execution result and history are identical to running without the plugin.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
   - Handler invokes `context.step(greet(event))`, step succeeds on first attempt.
     Each plugin hook logs its line and throws; the SDK swallows all plugin

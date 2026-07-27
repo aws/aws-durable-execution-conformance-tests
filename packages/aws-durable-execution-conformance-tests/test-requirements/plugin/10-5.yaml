@@ -9,6 +9,10 @@ handler: |
   may be dispatched concurrently, so no cross-plugin ordering is asserted; only
   plugin A's start-before-end ordering is asserted, plugin B's hooks are
   asserted by count alone.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
   - Handler invokes `context.step(greet(event))`, step succeeds on first attempt,
     execution succeeds in a single invocation. Both plugins receive the

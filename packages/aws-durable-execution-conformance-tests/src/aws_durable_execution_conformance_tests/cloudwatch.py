@@ -245,18 +245,16 @@ class CloudWatchLogRetriever:
     ) -> list[dict]:
         """Fetch log events associated with one durable execution.
 
-        Events are retrieved via ``filter_log_events`` (near-real-time,
-        unlike the Logs Insights query engine whose indexing of fresh log
-        groups can lag by tens of minutes or more) and attributed
-        client-side: structured records carrying ``durableExecutionArn`` or
-        ``executionArn`` are kept only when they match ``execution_arn``;
-        records with no ARN field (plain stdout lines) cannot be attributed
-        and are kept — they are already scoped by the per-function log
-        group and the invocation time window.
+        CloudWatch's JSON filter matches ``durableExecutionArn`` or
+        ``executionArn`` on structured Lambda log records. Filtering on both
+        field names keeps concurrent executions of the same function isolated
+        without relying on Logs Insights indexing. The method polls through a
+        bounded ingestion window because ``FilterLogEvents`` has no signal that
+        all matching records are available.
 
         Args:
             log_group_name: The full log group name.
-            execution_arn: Durable execution ARN to filter attributed records on.
+            execution_arn: Durable execution ARN to filter on.
             start_time_ms: Start of the time range in epoch milliseconds.
             end_time_ms: End of the time range in epoch milliseconds.
                          Defaults to current time if not provided.
@@ -266,38 +264,29 @@ class CloudWatchLogRetriever:
             A list of log event dicts, each with at least a "message" key.
 
         Raises:
-            CloudWatchLogError: If retrieval fails.
+            CloudWatchLogError: If fetching log events fails.
         """
+        escaped_execution_arn = execution_arn.replace("\\", "\\\\").replace('"', '\\"')
+        filter_pattern = (
+            f'{{ ($.durableExecutionArn = "{escaped_execution_arn}") || ($.executionArn = "{escaped_execution_arn}") }}'
+        )
         if wait_seconds is None:
             wait_seconds = self.DEFAULT_WAIT_SECONDS
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        # FilterLogEvents has no signal that all matching records have been
-        # ingested, so poll through a bounded ingestion window (upstream #35)
-        # and attribute client-side: unlike a server-side JSON filter
-        # pattern, this keeps plain stdout lines (which carry no ARN field
-        # and are already scoped by log group + time window).
         deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
         while True:
-            all_events: list[dict] = self.get_log_events(
+            events = self.get_log_events(
                 log_group_name=log_group_name,
                 start_time_ms=start_time_ms,
                 end_time_ms=end_time_ms,
+                filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
             if time.monotonic() >= deadline:
-                return [evt for evt in all_events if _attributed_to_execution(evt.get("message", ""), execution_arn)]
+                return events
             time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
-
-
-def _attributed_to_execution(raw_line: str, execution_arn: str) -> bool:
-    """True unless the record is attributed to a DIFFERENT execution."""
-    record = _parse_record(raw_line)
-    record_arn = record.get("durableExecutionArn", record.get("executionArn"))
-    if record_arn is None:
-        return True
-    return execution_arn in str(record_arn)
 
 
 # endregion

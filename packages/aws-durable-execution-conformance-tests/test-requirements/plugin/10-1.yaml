@@ -7,6 +7,10 @@ handler: |
   logs `Greeting step running for: <input>` before returning. The plugin logs a JSON object to plain stdout from each hook:
   `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>}`
   and `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "status": "<status enum token>"}`.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
   - Handler invokes `context.step(greet(event))`, the step logs its running line
     and succeeds on first attempt, execution succeeds in a single invocation. The

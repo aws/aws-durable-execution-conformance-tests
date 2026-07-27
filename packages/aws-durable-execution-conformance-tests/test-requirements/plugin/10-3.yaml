@@ -12,6 +12,10 @@ handler: |
   must equal the id the execution history checkpointed for the step. These hooks
   run on the same thread as the user function, so their relative order is
   deterministic.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
   - Handler invokes `context.step(unreliable_func, config={ retryStrategy: ... })`,
     the plugin logs `attempt-start n=1`, the step throws, the plugin logs
