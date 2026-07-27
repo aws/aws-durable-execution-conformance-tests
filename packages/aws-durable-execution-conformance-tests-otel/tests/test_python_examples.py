@@ -177,7 +177,9 @@ def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit
 def test_python_s3_job_builds_and_queries_the_collector() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "  collector:" in workflow
+    assert "  collector:" not in workflow
+    assert "Community layer + test collector" not in workflow
+    assert "collector_query_endpoint" not in workflow
     assert "  s3_collector:" in workflow
     assert "github.base_ref == 'main'" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow

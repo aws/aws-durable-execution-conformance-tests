@@ -29,8 +29,8 @@ env:
   AWS_REGION: ${{ inputs.aws_region }}
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_SUITE: ${{ inputs.suite }}
-  TEST_STACK_NAME: conformance-tests-typescript-xray
-  TEST_NAME: typescript-xray
+  TEST_STACK_NAME: conformance-tests-typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+  TEST_NAME: typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
 
@@ -225,8 +225,8 @@ jobs:
     env:
       COLLECTOR_LAYER_NAME: durable-execution-conformance-typescript-s3-collector
       OTEL_LAMBDA_CHECKOUT: .build/opentelemetry-lambda
-      TEST_STACK_NAME: conformance-tests-typescript-s3
-      TEST_NAME: typescript-s3
+      TEST_STACK_NAME: conformance-tests-typescript-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: typescript-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

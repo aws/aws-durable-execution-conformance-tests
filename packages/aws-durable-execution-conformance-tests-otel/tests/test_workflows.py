@@ -11,6 +11,7 @@ LANGUAGE_WORKFLOWS = {
     "python": WORKFLOWS_DIR / "python-opentelemetry.yml",
     "typescript": WORKFLOWS_DIR / "typescript-opentelemetry.yml",
 }
+VIEW_SUFFIX = "${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
 
 
 def test_language_workflows_run_one_parameterized_suite() -> None:
@@ -27,6 +28,7 @@ def test_language_workflows_run_one_parameterized_suite() -> None:
         report_options = [line.strip() for line in workflow.splitlines() if line.strip().startswith("--report ")]
         assert len(report_options) == workflow.count("hatch run validate")
         assert all("github" in options for options in report_options)
+        assert workflow.count("--otel-service-name invocation") == 2
         concurrency_group = next(line for line in workflow.splitlines() if line.startswith("  group:"))
         assert "${{ inputs.suite }}" in concurrency_group
         assert "${{ inputs.aws_region }}" in concurrency_group
@@ -34,6 +36,15 @@ def test_language_workflows_run_one_parameterized_suite() -> None:
         assert "    name: ADOT + X-Ray" in workflow
         assert "  s3_collector:" in workflow
         assert "    name: Community layer + S3 collector" in workflow
+
+
+def test_language_workflows_use_language_and_view_specific_stacks() -> None:
+    for language, path in LANGUAGE_WORKFLOWS.items():
+        workflow = path.read_text(encoding="utf-8")
+
+        assert f"TEST_NAME: {language}-xray-{VIEW_SUFFIX}" in workflow
+        assert f"TEST_STACK_NAME: conformance-tests-{language}-s3-{VIEW_SUFFIX}" in workflow
+        assert f"TEST_NAME: {language}-s3-{VIEW_SUFFIX}" in workflow
 
 
 def test_invocation_view_workflow_calls_every_language() -> None:

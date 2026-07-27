@@ -8,8 +8,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
 from aws_durable_execution_conformance_tests.validate import (
+    _CfnSafeLoader,
     parse_function_descriptions,
     parse_not_implemented,
 )
@@ -79,6 +82,14 @@ def test_typescript_example_template_maps_every_otel_requirement() -> None:
 
 def test_typescript_example_declares_no_execution_plugin_gaps() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
+
+
+def test_wait_interrupted_functions_use_short_execution_timeout() -> None:
+    with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
+        resources = yaml.load(stream, Loader=_CfnSafeLoader)["Resources"]
+
+    assert resources["Otel15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
+    assert resources["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
 
 
 def test_typescript_example_template_accepts_runner_parameters() -> None:
@@ -188,14 +199,11 @@ def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
 
 
 def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    for backend in ("xray", "s3"):
+        for view, suite in (("inv", "otel-invocation"), ("exec", "otel-execution")):
+            stack_name = f"{STACK_NAME_PREFIX}-typescript-{backend}-{view}"
 
-    for test_name in ("typescript-xray", "typescript-s3"):
-        stack_name = f"{STACK_NAME_PREFIX}-{test_name}"
-
-        assert f"TEST_STACK_NAME: {stack_name}" in workflow
-        assert f"TEST_NAME: {test_name}" in workflow
-        assert len(f"{stack_name}-otel-invocation-18-target") <= 64
+            assert len(f"{stack_name}-{suite}-18-target") <= 64
 
 
 def test_typescript_bundle_uses_the_external_collector_layer() -> None:

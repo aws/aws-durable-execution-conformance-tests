@@ -536,6 +536,9 @@ Resources:
       Handler: otel_15_wait_interrupted.handler
       FunctionName: !Sub "${AWS::StackName}-otel-execution-15"
       Role: !Ref LambdaExecutionRoleArn
+      DurableConfig:
+        ExecutionTimeout: 5
+        RetentionPeriodInDays: 1
       Environment:
         Variables:
           OTEL_PLUGIN_MODE: execution

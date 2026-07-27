@@ -68,6 +68,8 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
             **dict(segment.get("annotations", {})),
             **_metadata_attributes(segment.get("metadata")),
         }
+        raw_service_name = attributes.get("aws.local.service")
+        resolved_service_name = str(raw_service_name) if raw_service_name else service_name
         status = "ERROR" if any(segment.get(flag) for flag in ("error", "fault", "throttle")) else "OK"
         grouped[trace_id].append(
             Span(
@@ -80,11 +82,11 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
                 end_time=end,
                 status=status,
                 attributes=attributes,
-                service_name=service_name,
+                service_name=resolved_service_name,
             )
         )
         for child in segment.get("subsegments", []):
-            ingest(child, trace_id, service_name, span_id)
+            ingest(child, trace_id, resolved_service_name, span_id)
 
     raw_documents = list(documents)
     for document in raw_documents:

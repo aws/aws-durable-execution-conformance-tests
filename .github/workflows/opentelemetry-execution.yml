@@ -24,10 +24,6 @@ on:
         description: OTLP ingest endpoint for community-layer jobs
         required: false
         type: string
-      collector_query_endpoint:
-        description: Query endpoint for the deployed test collector
-        required: false
-        type: string
       dash0_query_endpoint:
         description: Dash0 trace API endpoint
         required: false
@@ -46,7 +42,6 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
-      collector_query_endpoint: ${{ inputs.collector_query_endpoint || '' }}
       dash0_query_endpoint: ${{ inputs.dash0_query_endpoint || '' }}
     secrets: inherit
 

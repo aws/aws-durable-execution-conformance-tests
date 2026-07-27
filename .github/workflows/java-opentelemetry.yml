@@ -31,7 +31,7 @@ env:
   JAVA_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_SUITE: ${{ inputs.suite }}
-  TEST_NAME: java-xray
+  TEST_NAME: java-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
 
 jobs:
   xray:
@@ -221,8 +221,8 @@ jobs:
     env:
       COLLECTOR_LAYER_NAME: durable-execution-conformance-java-s3-collector
       OTEL_LAMBDA_CHECKOUT: .build/opentelemetry-lambda
-      TEST_STACK_NAME: conformance-tests-java-s3
-      TEST_NAME: java-s3
+      TEST_STACK_NAME: conformance-tests-java-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: java-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
