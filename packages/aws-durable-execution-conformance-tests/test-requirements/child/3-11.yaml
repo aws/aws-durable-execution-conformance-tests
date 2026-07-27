@@ -68,5 +68,6 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Replay logging shows both child executions: first invocation and replay
-  - pattern: ${INPUT_1}
+  - match:
+      message: '/${INPUT_1}/'
     count: 2

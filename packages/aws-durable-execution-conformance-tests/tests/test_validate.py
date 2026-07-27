@@ -246,3 +246,127 @@ Resources:
 """,
     )
     assert parse_not_implemented(template) == {"8-13": "gap"}
+
+
+# region End-to-end ExpectedLogs validation
+
+
+class _StubCfnClient:
+    def describe_stack_resource(self, **kwargs):
+        return {"StackResourceDetail": {"PhysicalResourceId": "my-stack-PluginFn-abc123"}}
+
+
+class _StubLogsClient:
+    """Stub filter_log_events client returning one page of events."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self._events = events
+        self.filter_calls: list[dict] = []
+
+    def filter_log_events(self, **kwargs):
+        self.filter_calls.append(kwargs)
+        return {"events": self._events}
+
+
+def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
+    """Drive _validate_expected_logs end-to-end with stubbed AWS clients."""
+    import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
+    from aws_durable_execution_conformance_tests.clients import AwsClients
+    from aws_durable_execution_conformance_tests.validate import _validate_expected_logs
+    from aws_durable_execution_conformance_tests.variables import PlaceholderContext
+
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
+
+    events = [
+        {"message": msg, "timestamp": 1_000_000 + i, "ingestionTime": 1_000_100 + i}
+        for i, msg in enumerate(messages_in_order)
+    ]
+    logs_client = _StubLogsClient(events)
+    description_data = {
+        "Variables": {"INPUT_1": "abc123XY"},
+        "ExpectedLogs": expected_logs,
+    }
+    context = PlaceholderContext()
+    context.resolve_variables(description_data["Variables"])
+
+    errors = _validate_expected_logs(
+        description_data=description_data,
+        stack_name="my-stack",
+        function_name="PluginFn",
+        execution_arn="arn:aws:lambda:us-west-2:123456789012:function:f:$LATEST/durable-execution/execution/e1",
+        start_time_ms=1_000_000,
+        aws_clients=AwsClients({"cloudformation": _StubCfnClient(), "logs": logs_client}),
+        context=context,
+    )
+    return errors, logs_client
+
+
+def test_e2e_expected_logs_ordered_pass(monkeypatch) -> None:
+    """Full path: CFN log-group resolution -> filter_log_events retrieval ->
+    placeholder substitution -> exact matchers + after anchors."""
+    errors, logs_client = _run_expected_logs(
+        monkeypatch,
+        expected_logs=[
+            {"match": {"message": "CONFPLUGIN invocation-start first=true"}, "count": 1},
+            {
+                "match": {"message": "Greeting step running for: ${INPUT_1}"},
+                "count": 1,
+                "after": {"message": "CONFPLUGIN invocation-start first=true"},
+            },
+            {
+                "match": {"message": "CONFPLUGIN invocation-end status=SUCCEEDED"},
+                "count": 1,
+                "after": {"message": "Greeting step running for: ${INPUT_1}"},
+            },
+            {"match": {"message": "CONFPLUGIN invocation-start first=false"}, "count": 0},
+        ],
+        messages_in_order=[
+            "CONFPLUGIN invocation-start first=true",
+            "Greeting step running for: abc123XY",
+            "CONFPLUGIN invocation-end status=SUCCEEDED",
+        ],
+    )
+    assert errors == []
+    # Retrieval is scoped by log group + invocation time window
+    assert logs_client.filter_calls[0]["logGroupName"] == "/aws/lambda/my-stack-PluginFn-abc123"
+    assert logs_client.filter_calls[0]["startTime"] == 1_000_000
+
+
+def test_e2e_expected_logs_ordered_violation_fails(monkeypatch) -> None:
+    errors, _ = _run_expected_logs(
+        monkeypatch,
+        expected_logs=[
+            {"match": {"message": "CONFPLUGIN invocation-start first=true"}, "count": 1},
+            {
+                "match": {"message": "CONFPLUGIN invocation-end status=SUCCEEDED"},
+                "count": 1,
+                "after": {"message": "CONFPLUGIN invocation-start first=true"},
+            },
+        ],
+        messages_in_order=[
+            "CONFPLUGIN invocation-end status=SUCCEEDED",
+            "CONFPLUGIN invocation-start first=true",
+        ],
+    )
+    assert len(errors) == 1
+    assert "invocation-end status=SUCCEEDED" in errors[0]
+
+
+def test_e2e_expected_logs_absent_field_skips_validation(monkeypatch) -> None:
+    from aws_durable_execution_conformance_tests.clients import AwsClients
+    from aws_durable_execution_conformance_tests.validate import _validate_expected_logs
+
+    errors = _validate_expected_logs(
+        description_data={},
+        stack_name="my-stack",
+        function_name="PluginFn",
+        execution_arn="arn:whatever",
+        start_time_ms=0,
+        aws_clients=AwsClients({}),  # must not be touched when ExpectedLogs is absent
+        context=None,
+    )
+    assert errors == []
+
+
+# endregion

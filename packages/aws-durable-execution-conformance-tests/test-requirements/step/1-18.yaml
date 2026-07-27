@@ -70,5 +70,6 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Step logs twice: once before the crash and once on retry
-  - pattern: ${INPUT_1}
+  - match:
+      message: '/${INPUT_1}/'
     count: 2

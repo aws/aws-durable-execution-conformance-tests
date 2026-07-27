@@ -1,0 +1,71 @@
+---
+# 10.1: Plugin invocation lifecycle hooks
+description: Plugin invocation lifecycle hooks (start and end on a single invocation)
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin registered through the SDK's plugin API. The step body
+  logs `Greeting step running for: <input>` before returning. The plugin logs a JSON object to plain stdout from each hook:
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>}`
+  and `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "status": "<status enum token>"}`.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, the step logs its running line
+    and succeeds on first attempt, execution succeeds in a single invocation. The
+    plugin's invocation-start hook fires before the handler code runs (logs
+    `first=true`) and its invocation-end hook fires after the execution result is
+    finalized (logs `status=SUCCEEDED`).
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Invocation-start hook fires (synchronously) before handler code runs
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: true
+    count: 1
+  # Handler step body runs between the two invocation hooks
+  - match:
+      message: '/Greeting step running for: ${INPUT_1}/'
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: invocation-start
+        first: true
+  # Invocation-end hook fires last, with the terminal status
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      status: SUCCEEDED
+    count: 1
+    after:
+      - message: '/Greeting step running for: ${INPUT_1}/'
+  # Single invocation: no replay invocation-start may appear
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: false
+    count: 0

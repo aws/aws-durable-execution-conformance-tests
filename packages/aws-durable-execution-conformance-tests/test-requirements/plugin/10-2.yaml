@@ -1,0 +1,66 @@
+---
+# 10.2: Plugin operation lifecycle hooks
+description: Plugin operation lifecycle hooks (step start and terminal end)
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin. The plugin, filtering to step-type operations only, logs a JSON object to plain stdout from each hook:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>"}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`,
+  where `op` is the operation id received in the hook's info parameter. The logged id must equal the id the execution history checkpointed
+  for the step.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt.
+    The plugin's operation-start hook fires when the step's STARTED checkpoint is
+    observed and its operation-end hook fires when the step reaches its terminal
+    SUCCEEDED status. Operation hooks may be dispatched asynchronously, so their
+    relative log order is not asserted — only that each fires exactly once and
+    carries the history-consistent operation id.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Both operation hooks fire exactly once and carry the operation id the
+  # history checkpointed (${ID1}); dispatch may be async, so no ordering
+  # is asserted (no before/after)
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: SUCCEEDED
+    count: 1
+  # The step never reaches a FAILED terminal status
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: FAILED
+    count: 0

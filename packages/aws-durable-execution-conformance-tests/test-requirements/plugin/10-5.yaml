@@ -1,0 +1,66 @@
+---
+# 10.5: Multiple plugins
+description: Multiple registered plugins all receive lifecycle hooks
+handler: |
+  A handler with a single step that returns a greeting string, configured with TWO
+  instrumentation plugins registered together (in order A, B). Each plugin logs JSON objects to plain
+  stdout: `{"plugin": "<CONFPLUGIN-A|CONFPLUGIN-B>", "hook": "invocation-start"}` and
+  `{"plugin": "<CONFPLUGIN-A|CONFPLUGIN-B>", "hook": "invocation-end", "status": "<status>"}`. Hooks across multiple plugins
+  may be dispatched concurrently, so no cross-plugin ordering is asserted; only
+  plugin A's start-before-end ordering is asserted, plugin B's hooks are
+  asserted by count alone.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt,
+    execution succeeds in a single invocation. Both plugins receive the
+    invocation-start and invocation-end hooks exactly once.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Plugin A: start observed before its own end
+  - match:
+      plugin: CONFPLUGIN-A
+      hook: invocation-start
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-A
+      hook: invocation-end
+      status: SUCCEEDED
+    count: 1
+    after:
+      - plugin: CONFPLUGIN-A
+        hook: invocation-start
+  # Plugin B: both hooks fired; cross-plugin ordering not asserted
+  - match:
+      plugin: CONFPLUGIN-B
+      hook: invocation-start
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-B
+      hook: invocation-end
+      status: SUCCEEDED
+    count: 1

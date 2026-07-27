@@ -48,5 +48,6 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Step logs once before the crash and never re-executes on replay
-  - pattern: ${INPUT_1}
+  - match:
+      message: '/${INPUT_1}/'
     count: 1
