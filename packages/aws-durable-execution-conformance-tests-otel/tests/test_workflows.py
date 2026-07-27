@@ -24,6 +24,9 @@ def test_language_workflows_run_one_parameterized_suite() -> None:
         assert "OTEL_SUITE: ${{ inputs.suite }}" in workflow
         assert '--suite "$OTEL_SUITE"' in workflow
         assert "--suite otel-invocation otel-execution" not in workflow
+        concurrency_group = next(line for line in workflow.splitlines() if line.startswith("  group:"))
+        assert "${{ inputs.suite }}" in concurrency_group
+        assert "${{ inputs.aws_region }}" in concurrency_group
         assert "  xray:" in workflow
         assert "    name: ADOT + X-Ray" in workflow
         assert "  s3_collector:" in workflow

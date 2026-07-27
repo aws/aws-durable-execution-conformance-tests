@@ -22,7 +22,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: typescript-otel-examples-${{ inputs.aws_region }}
+  group: typescript-otel-examples-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
 
 env:

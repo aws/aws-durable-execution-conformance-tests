@@ -34,7 +34,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: python-otel-${{ inputs.aws_region }}
+  group: python-otel-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
 
 env:
