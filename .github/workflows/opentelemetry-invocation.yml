@@ -11,7 +11,7 @@ on:
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/collector/**
+      - packages/aws-durable-execution-conformance-tests-otel/collector/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/python/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**

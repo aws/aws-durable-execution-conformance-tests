@@ -12,6 +12,7 @@ LANGUAGE_WORKFLOWS = {
     "typescript": WORKFLOWS_DIR / "typescript-opentelemetry.yml",
 }
 VIEW_SUFFIX = "${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
+COLLECTOR_PATH_FILTER = "packages/aws-durable-execution-conformance-tests-otel/collector/**"
 
 
 def test_language_workflows_run_one_parameterized_suite() -> None:
@@ -45,6 +46,14 @@ def test_language_workflows_use_language_and_view_specific_stacks() -> None:
         assert f"TEST_NAME: {language}-xray-{VIEW_SUFFIX}" in workflow
         assert f"TEST_STACK_NAME: conformance-tests-{language}-s3-{VIEW_SUFFIX}" in workflow
         assert f"TEST_NAME: {language}-s3-{VIEW_SUFFIX}" in workflow
+
+
+def test_view_workflows_watch_the_collector_implementation() -> None:
+    for name in ("opentelemetry-invocation.yml", "opentelemetry-execution.yml"):
+        workflow = (WORKFLOWS_DIR / name).read_text(encoding="utf-8")
+
+        assert COLLECTOR_PATH_FILTER in workflow
+        assert "packages/aws-durable-execution-conformance-tests-otel/examples/collector/**" not in workflow
 
 
 def test_invocation_view_workflow_calls_every_language() -> None:
