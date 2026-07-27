@@ -11,6 +11,7 @@ to JUnit ``<skipped>`` so CI renders them yellow, not red; only FAILED maps to
 
 from __future__ import annotations
 
+import html
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -72,6 +73,50 @@ def render_console(report: Report) -> str:
 def render_json(report: Report) -> str:
     """Render the report as a pretty-printed JSON string (schema 1.0)."""
     return json.dumps(report.to_dict(), indent=2)
+
+
+def render_github_summary(report: Report) -> str:
+    """Render a GitHub Actions job summary with blocking failure details."""
+    summary = report.summary()
+    lines = [
+        "## Conformance test summary",
+        "",
+        f"**Run:** `{html.escape(report.run.name)}`  ",
+        f"**Language:** `{html.escape(report.run.language or 'unknown')}`  ",
+        f"**Suites:** `{html.escape(', '.join(report.run.suites))}`",
+        "",
+        "| Passed | Failed | Optional failed | Not implemented | Uncovered | Total |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: |",
+        (
+            f"| {summary['passed']} | {summary['failed']} | {summary['optional_failed']} | "
+            f"{summary['not_implemented']} | {summary['uncovered']} | {summary['total']} |"
+        ),
+    ]
+
+    blocking_entries = [entry for entry in report.entries if entry.status in report.blocking_statuses()]
+    if not blocking_entries:
+        lines.extend(["", "No blocking test failures."])
+        return "\n".join(lines)
+
+    lines.extend(["", "### Blocking failures"])
+    for entry in blocking_entries:
+        description = f" - {html.escape(entry.description)}" if entry.description else ""
+        lines.extend(
+            [
+                "",
+                f"<details><summary><code>{html.escape(entry.id)}</code> ({entry.status.value}){description}</summary>",
+                "",
+            ]
+        )
+        if entry.function:
+            lines.append(f"**Function:** `{html.escape(entry.function)}`")
+        details = entry.errors or ([entry.reason] if entry.reason else [])
+        if details:
+            escaped_details = html.escape("\n".join(details))
+            lines.extend(["", f"<pre>{escaped_details}</pre>"])
+        lines.extend(["", "</details>"])
+
+    return "\n".join(lines)
 
 
 def render_junit(report: Report) -> str:
@@ -174,4 +219,13 @@ def write_report(report: Report, fmt: str, report_base: str) -> str:
     path = Path(f"{report_base}.{_EXT[fmt]}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+    return str(path)
+
+
+def append_github_summary(report: Report, summary_path: str) -> str:
+    """Append a rendered report to the GitHub Actions job summary."""
+    path = Path(summary_path)
+    with path.open("a", encoding="utf-8") as summary_file:
+        summary_file.write(render_github_summary(report))
+        summary_file.write("\n")
     return str(path)

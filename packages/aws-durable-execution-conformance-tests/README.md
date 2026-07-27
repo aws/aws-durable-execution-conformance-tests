@@ -97,7 +97,7 @@ take precedence over values supplied by extensions.
 
 ## Test Reports
 
-The validator can emit reports in three formats via `--report` (repeatable;
+The validator can emit reports in four formats via `--report` (repeatable;
 defaults to `console`). Machine formats are written next to `--report-file`
 (default `<history-dir>/report`), with the extension appended per format:
 
@@ -106,11 +106,12 @@ defaults to `console`). Machine formats are written next to `--report-file`
 | Console | `console` | Human | Grouped summary printed to stdout |
 | JSON | `json` | Machine | `<report-file>.json` (schema-versioned) |
 | JUnit XML | `junit` | Machine → CI viewers | `<report-file>.xml` |
+| GitHub summary | `github` | Human | Appended to `$GITHUB_STEP_SUMMARY` when available |
 
 ```bash
 hatch run validate --template path/to/template.yaml \
                    --language python --suite step \
-                   --report console json junit --report-file build/report
+                   --report console json junit github --report-file build/report
 ```
 
 ### Result statuses

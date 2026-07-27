@@ -152,7 +152,7 @@ jobs:
             --no-cleanup \
             --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/java-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/java-otel-xray-report" \
             --fail-on failed+uncovered \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
@@ -428,7 +428,7 @@ jobs:
             --no-cleanup \
             --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/java-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/java-otel-s3-report" \
             --fail-on failed+uncovered \
             --parameter-overrides \

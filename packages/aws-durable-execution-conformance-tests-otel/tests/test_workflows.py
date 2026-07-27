@@ -24,6 +24,9 @@ def test_language_workflows_run_one_parameterized_suite() -> None:
         assert "OTEL_SUITE: ${{ inputs.suite }}" in workflow
         assert '--suite "$OTEL_SUITE"' in workflow
         assert "--suite otel-invocation otel-execution" not in workflow
+        report_options = [line.strip() for line in workflow.splitlines() if line.strip().startswith("--report ")]
+        assert len(report_options) == workflow.count("hatch run validate")
+        assert all("github" in options for options in report_options)
         concurrency_group = next(line for line in workflow.splitlines() if line.startswith("  group:"))
         assert "${{ inputs.suite }}" in concurrency_group
         assert "${{ inputs.aws_region }}" in concurrency_group

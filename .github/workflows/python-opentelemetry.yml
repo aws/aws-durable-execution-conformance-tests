@@ -118,7 +118,7 @@ jobs:
             --no-cleanup \
             --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/python-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/python-otel-xray-report" \
             --fail-on failed+uncovered \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
@@ -226,6 +226,7 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite "$OTEL_SUITE" \
+            --report console github \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
             --otel-backend datadog \
@@ -278,6 +279,7 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite "$OTEL_SUITE" \
+            --report console github \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
             --otel-backend dash0 \
@@ -329,6 +331,7 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite "$OTEL_SUITE" \
+            --report console github \
             --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-exporter community \
             --otel-backend collector \
@@ -511,7 +514,7 @@ jobs:
             --no-cleanup \
             --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/python-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/python-otel-s3-report" \
             --fail-on failed+uncovered \
             --parameter-overrides \
