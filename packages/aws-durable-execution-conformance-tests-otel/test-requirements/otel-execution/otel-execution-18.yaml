@@ -29,6 +29,7 @@ TelemetryAssertions:
   span_assertions:
     - select:
         name: Workflow
+        status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
@@ -42,6 +43,7 @@ TelemetryAssertions:
           durable.execution.status: FAILED
     - select:
         name: Workflow
+        status: ERROR
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:

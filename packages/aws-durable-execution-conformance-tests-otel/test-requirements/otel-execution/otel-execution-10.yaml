@@ -47,6 +47,7 @@ TelemetryAssertions:
   span_assertions:
     - select:
         name: Workflow
+        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
