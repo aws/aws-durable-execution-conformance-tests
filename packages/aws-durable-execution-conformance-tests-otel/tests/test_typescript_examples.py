@@ -67,6 +67,7 @@ REQUIRED_OTEL_PARAMETERS = {
     "OtelCollectorLayerArn",
     "OtelCollectorPrefix",
     "OtelLayerArn",
+    "OtelSuite",
     "OtelExecWrapper",
     "OtelServiceName",
     "OtelTracesExporter",
@@ -90,6 +91,22 @@ def test_wait_interrupted_functions_use_short_execution_timeout() -> None:
 
     assert resources["Otel15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
     assert resources["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
+
+
+def test_typescript_template_deploys_only_the_selected_otel_view() -> None:
+    with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
+        template = yaml.load(stream, Loader=_CfnSafeLoader)
+
+    assert template["Parameters"]["OtelSuite"] == {
+        "Type": "String",
+        "Default": "all",
+        "AllowedValues": ["all", "otel-invocation", "otel-execution"],
+        "Description": "OpenTelemetry view whose functions should be deployed",
+    }
+    assert {"DeployInvocationView", "DeployExecutionView"} <= template["Conditions"].keys()
+    for logical_id, resource in template["Resources"].items():
+        expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
+        assert resource["Condition"] == expected_condition
 
 
 def test_typescript_example_template_accepts_runner_parameters() -> None:

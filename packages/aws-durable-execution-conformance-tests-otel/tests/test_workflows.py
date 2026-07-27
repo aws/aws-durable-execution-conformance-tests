@@ -48,6 +48,13 @@ def test_language_workflows_use_language_and_view_specific_stacks() -> None:
         assert f"TEST_NAME: {language}-s3-{VIEW_SUFFIX}" in workflow
 
 
+def test_shared_view_templates_receive_the_selected_suite() -> None:
+    for language in ("python", "typescript"):
+        workflow = LANGUAGE_WORKFLOWS[language].read_text(encoding="utf-8")
+
+        assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
+
+
 def test_view_workflows_watch_the_collector_implementation() -> None:
     for name in ("opentelemetry-invocation.yml", "opentelemetry-execution.yml"):
         workflow = (WORKFLOWS_DIR / name).read_text(encoding="utf-8")

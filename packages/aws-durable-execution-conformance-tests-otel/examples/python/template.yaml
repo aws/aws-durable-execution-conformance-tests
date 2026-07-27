@@ -6,6 +6,14 @@ Parameters:
   LambdaExecutionRoleArn:
     Type: String
     Description: Pre-created execution role for the test functions
+  OtelSuite:
+    Type: String
+    Default: all
+    AllowedValues:
+      - all
+      - otel-invocation
+      - otel-execution
+    Description: OpenTelemetry view whose functions should be deployed
   OtelLayerArn:
     Type: String
     Description: Lambda layer used to export OpenTelemetry spans
@@ -49,6 +57,12 @@ Parameters:
 
 Conditions:
   HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+  DeployInvocationView: !Or
+    - !Equals [!Ref OtelSuite, all]
+    - !Equals [!Ref OtelSuite, otel-invocation]
+  DeployExecutionView: !Or
+    - !Equals [!Ref OtelSuite, all]
+    - !Equals [!Ref OtelSuite, otel-execution]
 
 Globals:
   Function:
@@ -85,6 +99,7 @@ Globals:
 Resources:
   Otel1Success:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -103,6 +118,7 @@ Resources:
 
   Otel2WaitResume:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -116,6 +132,7 @@ Resources:
 
   Otel3Retry:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -129,6 +146,7 @@ Resources:
 
   Otel4TerminalFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -142,6 +160,7 @@ Resources:
 
   Otel5ChildContext:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -155,6 +174,7 @@ Resources:
 
   Otel6Parallel:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -168,6 +188,7 @@ Resources:
 
   Otel7Map:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -181,6 +202,7 @@ Resources:
 
   Otel8HandledFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -194,6 +216,7 @@ Resources:
 
   Otel9WaitForCondition:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -207,6 +230,7 @@ Resources:
 
   Otel10WaitForCallback:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -220,6 +244,7 @@ Resources:
 
   Otel11ChainedInvoke:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -236,6 +261,7 @@ Resources:
 
   Otel11InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     Properties:
@@ -246,6 +272,7 @@ Resources:
 
   Otel12ChildContextFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -259,6 +286,7 @@ Resources:
 
   Otel13ParallelFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -272,6 +300,7 @@ Resources:
 
   Otel14MapFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -285,6 +314,7 @@ Resources:
 
   Otel15WaitInterrupted:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -301,6 +331,7 @@ Resources:
 
   Otel16WaitForConditionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -314,6 +345,7 @@ Resources:
 
   Otel17WaitForCallbackFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -327,6 +359,7 @@ Resources:
 
   Otel18ChainedInvokeFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -343,6 +376,7 @@ Resources:
 
   Otel18InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     Properties:
@@ -353,6 +387,7 @@ Resources:
 
   Otel19ExecutionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -366,6 +401,7 @@ Resources:
 
   OtelExecution1Success:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -382,6 +418,7 @@ Resources:
 
   OtelExecution2WaitResume:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -398,6 +435,7 @@ Resources:
 
   OtelExecution3Retry:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -414,6 +452,7 @@ Resources:
 
   OtelExecution4TerminalFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -430,6 +469,7 @@ Resources:
 
   OtelExecution5ChildContext:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -446,6 +486,7 @@ Resources:
 
   OtelExecution6Parallel:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -462,6 +503,7 @@ Resources:
 
   OtelExecution7Map:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -478,6 +520,7 @@ Resources:
 
   OtelExecution8HandledFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -494,6 +537,7 @@ Resources:
 
   OtelExecution9WaitForCondition:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -510,6 +554,7 @@ Resources:
 
   OtelExecution10WaitForCallback:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -526,6 +571,7 @@ Resources:
 
   OtelExecution11ChainedInvoke:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -543,6 +589,7 @@ Resources:
 
   OtelExecution11InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     Properties:
@@ -556,6 +603,7 @@ Resources:
 
   OtelExecution12ChildContextFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -572,6 +620,7 @@ Resources:
 
   OtelExecution13ParallelFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -588,6 +637,7 @@ Resources:
 
   OtelExecution14MapFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -604,6 +654,7 @@ Resources:
 
   OtelExecution16WaitForConditionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -620,6 +671,7 @@ Resources:
 
   OtelExecution17WaitForCallbackFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -636,6 +688,7 @@ Resources:
 
   OtelExecution18ChainedInvokeFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     TestingMetadata:
@@ -653,6 +706,7 @@ Resources:
 
   OtelExecution18InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Metadata:
       BuildMethod: makefile
     Properties:

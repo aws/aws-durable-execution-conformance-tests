@@ -8,7 +8,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import yaml
+
 from aws_durable_execution_conformance_tests.validate import (
+    _CfnSafeLoader,
     parse_function_descriptions,
     parse_not_implemented,
 )
@@ -61,6 +64,7 @@ REQUIRED_OTEL_PARAMETERS = {
     "OtelCollectorLayerArn",
     "OtelCollectorPrefix",
     "OtelLayerArn",
+    "OtelSuite",
     "OtelExecWrapper",
     "OtelServiceName",
     "OtelTracesExporter",
@@ -84,6 +88,22 @@ def test_python_example_declares_execution_plugin_lifecycle_gaps() -> None:
         ),
         "otel-execution-19": "ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY",
     }
+
+
+def test_python_template_deploys_only_the_selected_otel_view() -> None:
+    with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
+        template = yaml.load(stream, Loader=_CfnSafeLoader)
+
+    assert template["Parameters"]["OtelSuite"] == {
+        "Type": "String",
+        "Default": "all",
+        "AllowedValues": ["all", "otel-invocation", "otel-execution"],
+        "Description": "OpenTelemetry view whose functions should be deployed",
+    }
+    assert {"DeployInvocationView", "DeployExecutionView"} <= template["Conditions"].keys()
+    for logical_id, resource in template["Resources"].items():
+        expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
+        assert resource["Condition"] == expected_condition
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:

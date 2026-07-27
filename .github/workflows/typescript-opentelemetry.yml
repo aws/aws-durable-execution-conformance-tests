@@ -151,7 +151,9 @@ jobs:
             --report console json junit github \
             --report-file "$RUNNER_TEMP/typescript-otel-xray-report" \
             --fail-on failed+uncovered \
-            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --parameter-overrides \
+              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelSuite=$OTEL_SUITE" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-service-name invocation \
@@ -413,6 +415,7 @@ jobs:
             --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelSuite=$OTEL_SUITE" \
               "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
               "OtelCollectorBucket=$OTEL_S3_BUCKET" \
               "OtelCollectorPrefix=$OTEL_S3_PREFIX" \

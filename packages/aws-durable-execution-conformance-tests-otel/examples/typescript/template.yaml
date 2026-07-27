@@ -6,6 +6,14 @@ Parameters:
   LambdaExecutionRoleArn:
     Type: String
     Description: Pre-created execution role for the test functions
+  OtelSuite:
+    Type: String
+    Default: all
+    AllowedValues:
+      - all
+      - otel-invocation
+      - otel-execution
+    Description: OpenTelemetry view whose functions should be deployed
   OtelLayerArn:
     Type: String
     Description: AWSOpenTelemetryDistroJs Lambda layer used to export spans
@@ -49,6 +57,12 @@ Parameters:
 
 Conditions:
   HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+  DeployInvocationView: !Or
+    - !Equals [!Ref OtelSuite, all]
+    - !Equals [!Ref OtelSuite, otel-invocation]
+  DeployExecutionView: !Or
+    - !Equals [!Ref OtelSuite, all]
+    - !Equals [!Ref OtelSuite, otel-execution]
 
 Globals:
   Function:
@@ -86,6 +100,7 @@ Globals:
 Resources:
   Otel1Success:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-1
@@ -97,6 +112,7 @@ Resources:
 
   Otel2WaitResume:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-2
@@ -108,6 +124,7 @@ Resources:
 
   Otel3Retry:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-3
@@ -119,6 +136,7 @@ Resources:
 
   Otel4TerminalFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-4
@@ -130,6 +148,7 @@ Resources:
 
   Otel5ChildContext:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-5
@@ -141,6 +160,7 @@ Resources:
 
   Otel6Parallel:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-6
@@ -152,6 +172,7 @@ Resources:
 
   Otel7Map:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-7
@@ -163,6 +184,7 @@ Resources:
 
   Otel8HandledFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-8
@@ -174,6 +196,7 @@ Resources:
 
   Otel9WaitForCondition:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-9
@@ -185,6 +208,7 @@ Resources:
 
   Otel10WaitForCallback:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-10
@@ -196,6 +220,7 @@ Resources:
 
   Otel11ChainedInvoke:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-11
@@ -210,6 +235,7 @@ Resources:
 
   Otel11InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Properties:
       CodeUri: dist/
       Handler: otel_11_chained_invoke.targetHandler
@@ -218,6 +244,7 @@ Resources:
 
   Otel12ChildContextFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-12
@@ -229,6 +256,7 @@ Resources:
 
   Otel13ParallelFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-13
@@ -240,6 +268,7 @@ Resources:
 
   Otel14MapFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-14
@@ -251,6 +280,7 @@ Resources:
 
   Otel15WaitInterrupted:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-15
@@ -265,6 +295,7 @@ Resources:
 
   Otel16WaitForConditionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-16
@@ -276,6 +307,7 @@ Resources:
 
   Otel17WaitForCallbackFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-17
@@ -287,6 +319,7 @@ Resources:
 
   Otel18ChainedInvokeFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-18
@@ -301,6 +334,7 @@ Resources:
 
   Otel18InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     Properties:
       CodeUri: dist/
       Handler: otel_18_chained_invoke_failure.targetHandler
@@ -309,6 +343,7 @@ Resources:
 
   Otel19ExecutionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployInvocationView
     TestingMetadata:
       TestDescription:
         - otel-invocation-19
@@ -320,6 +355,7 @@ Resources:
 
   OtelExecution1Success:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-1
@@ -334,6 +370,7 @@ Resources:
 
   OtelExecution2WaitResume:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-2
@@ -348,6 +385,7 @@ Resources:
 
   OtelExecution3Retry:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-3
@@ -362,6 +400,7 @@ Resources:
 
   OtelExecution4TerminalFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-4
@@ -376,6 +415,7 @@ Resources:
 
   OtelExecution5ChildContext:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-5
@@ -390,6 +430,7 @@ Resources:
 
   OtelExecution6Parallel:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-6
@@ -404,6 +445,7 @@ Resources:
 
   OtelExecution7Map:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-7
@@ -418,6 +460,7 @@ Resources:
 
   OtelExecution8HandledFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-8
@@ -432,6 +475,7 @@ Resources:
 
   OtelExecution9WaitForCondition:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-9
@@ -446,6 +490,7 @@ Resources:
 
   OtelExecution10WaitForCallback:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-10
@@ -460,6 +505,7 @@ Resources:
 
   OtelExecution11ChainedInvoke:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-11
@@ -475,6 +521,7 @@ Resources:
 
   OtelExecution11InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Properties:
       CodeUri: dist/
       Handler: otel_11_chained_invoke.targetHandler
@@ -486,6 +533,7 @@ Resources:
 
   OtelExecution12ChildContextFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-12
@@ -500,6 +548,7 @@ Resources:
 
   OtelExecution13ParallelFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-13
@@ -514,6 +563,7 @@ Resources:
 
   OtelExecution14MapFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-14
@@ -528,6 +578,7 @@ Resources:
 
   OtelExecution15WaitInterrupted:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-15
@@ -545,6 +596,7 @@ Resources:
 
   OtelExecution16WaitForConditionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-16
@@ -559,6 +611,7 @@ Resources:
 
   OtelExecution17WaitForCallbackFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-17
@@ -573,6 +626,7 @@ Resources:
 
   OtelExecution18ChainedInvokeFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-18
@@ -588,6 +642,7 @@ Resources:
 
   OtelExecution18InvokeTarget:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     Properties:
       CodeUri: dist/
       Handler: otel_18_chained_invoke_failure.targetHandler
@@ -599,6 +654,7 @@ Resources:
 
   OtelExecution19ExecutionFailure:
     Type: AWS::Serverless::Function
+    Condition: DeployExecutionView
     TestingMetadata:
       TestDescription:
         - otel-execution-19
