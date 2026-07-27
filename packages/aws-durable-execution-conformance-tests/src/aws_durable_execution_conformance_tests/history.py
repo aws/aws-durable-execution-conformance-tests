@@ -24,6 +24,32 @@ PLACEHOLDER_PATTERN = re.compile(r"^\$\{(.+)\}$")
 # Pattern for regex matchers like ${/pattern/}
 REGEX_PATTERN = re.compile(r"^\$\{/(.+)/\}$")
 
+# Directive that JSON-decodes the actual (string) value before matching the
+# wrapped expected structure against the decoded value, e.g. an expected
+# ``Payload: {"${JSON}": {<envelope fields>}}`` decodes the actual Payload
+# string and matches the envelope fields against it.
+# It exists because container payloads (e.g. a DAG's ContextSucceeded result)
+# are carried on the wire as an opaque JSON *string*; without decoding, the
+# whole payload could only be compared with a single literal string, so no
+# nested field could be pinned while wildcarding just the variable ones
+# (timestamps, language-specific error values). The wrapped value is matched
+# with the ordinary rules (``*``, ``${...}``, ``${/re/}``, literals, ``${ABSENT}``).
+JSON_DECODE_KEY = "${JSON}"
+
+# Directive asserting a mapping key is ABSENT from the actual object, e.g.
+#   tasks: ${ABSENT}
+# The ordinary matcher recurses on expected keys only and silently ignores
+# extra actual keys, so it cannot express "this field must not be present".
+# ``${ABSENT}`` fills that gap: it is the only way to pin that a field was
+# dropped (e.g. the offloaded DAG envelope omits ``tasks``; the converged
+# envelope no longer carries ``completedCount`` / ``terminalTaskNames`` /
+# ``summary``). It is meaningful only as a mapping *value*.
+ABSENT_DIRECTIVE = "${ABSENT}"
+
+# Sentinel distinguishing "no ${JSON} directive" from a wrapped spec that is
+# itself falsy (e.g. an empty object).
+_NO_JSON_SPEC = object()
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -81,6 +107,23 @@ def get_regex_pattern(value: Any) -> re.Pattern | None:
     return re.compile(m.group(1))
 
 
+def get_json_decode_spec(value: Any) -> Any:
+    """Return the wrapped spec of a ``{"${JSON}": <spec>}`` directive.
+
+    Returns the special :data:`_NO_JSON_SPEC` sentinel when ``value`` is not a
+    JSON-decode directive, so a wrapped spec that is itself falsy (``{}``,
+    ``[]``, ``null``) is still handled.
+    """
+    if isinstance(value, dict) and len(value) == 1 and JSON_DECODE_KEY in value:
+        return value[JSON_DECODE_KEY]
+    return _NO_JSON_SPEC
+
+
+def is_absent_directive(value: Any) -> bool:
+    """Check if value is the ``${ABSENT}`` key-absence directive."""
+    return isinstance(value, str) and value == ABSENT_DIRECTIVE
+
+
 def load_json_file(path: str) -> Any:
     """Load and parse a JSON file."""
     with open(path) as f:
@@ -106,6 +149,9 @@ class EventHistoryMatcher:
     - ${/re/} : regex — actual value must be a string matching the pattern
     - {}      : empty object means "don't care", field is skipped
     - "*"     : wildcard, any value is accepted
+    - {"${JSON}": <spec>} : JSON-decode the actual string value, then match <spec>
+      against the decoded structure with these same rules
+    - ${ABSENT} (as a mapping value) : assert the key is NOT present in actual
     - Otherwise: literal equality is required
 
     Expected events are matched to actual events by EventId.
@@ -190,13 +236,40 @@ class EventHistoryMatcher:
                 self._errors.append(f"{path}: value {actual!r} does not match regex pattern {regex.pattern!r}")
             return
 
+        # Rule: {"${JSON}": <spec>} → decode the actual JSON string, then match
+        # <spec> against the decoded structure. Lets a payload carried on the
+        # wire as an opaque JSON string be pinned field-by-field.
+        json_spec = get_json_decode_spec(expected)
+        if json_spec is not _NO_JSON_SPEC:
+            if not isinstance(actual, str):
+                self._errors.append(
+                    f"{path}: ${{JSON}} expects a JSON string to decode, got {type(actual).__name__}"
+                )
+                return
+            try:
+                decoded = json.loads(actual)
+            except (json.JSONDecodeError, ValueError) as exc:
+                self._errors.append(f"{path}: value is not valid JSON ({exc}): {actual!r}")
+                return
+            self._match_value(json_spec, decoded, f"{path}<json>")
+            return
+
         # Both dicts → recurse on expected keys only
         if isinstance(expected, dict) and isinstance(actual, dict):
             for key in expected:
+                expected_child = expected[key]
+                # ${ABSENT}: the key must NOT appear in the actual object.
+                if is_absent_directive(expected_child):
+                    if key in actual:
+                        self._errors.append(
+                            f"{path}.{key}: expected key to be ABSENT, but it is present "
+                            f"with value {actual[key]!r}"
+                        )
+                    continue
                 if key not in actual:
                     self._errors.append(f"{path}.{key}: key missing in actual event")
                     continue
-                self._match_value(expected[key], actual[key], f"{path}.{key}")
+                self._match_value(expected_child, actual[key], f"{path}.{key}")
             return
 
         # Both lists → match element-wise

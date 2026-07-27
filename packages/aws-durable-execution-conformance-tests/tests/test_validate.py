@@ -316,14 +316,16 @@ def test_event_count_non_dict_description_is_noop() -> None:
 # --- 10-15 large-payload scenario loads and parses -------------------------
 #
 # The runner discovers requirements by file stem and parses them with
-# load_yaml_file. These tests confirm the new outcome-only large-payload
-# scenario is discoverable in the dag suite and that its parsed shape matches
-# the contract: an async, outcome-only description whose digest-equality result
-# is the single language-neutral assertion, deliberately carrying NEITHER an
-# ExpectedExecutionHistory (the container payload diverges across SDKs) NOR an
-# ExpectedEventCount (must be MEASURED from the first cloud history, not
-# derived). If either key were added prematurely, or the digest constants
-# drifted, these assertions catch it before a cloud run.
+# load_yaml_file. These tests confirm the large-payload scenario is discoverable
+# in the dag suite and that its parsed shape matches the contract post-envelope-
+# convergence: an async description whose digest-equality result is one
+# language-neutral assertion, PLUS a pinned ExpectedExecutionHistory that asserts
+# the OFFLOADED container payload is the converged aggregate envelope WITHOUT
+# `tasks` (its absence is the offload signal). It keeps ExpectedEventCount 26
+# (MEASURED from the first cloud history, not derived), which the pinned envelope
+# does not change because the envelope rides inside the existing container event.
+# If the pinned envelope, the digest constants, or the count drifted, these
+# assertions catch it before a cloud run.
 
 _REQUIREMENTS_DIR = (
     Path(__file__).resolve().parents[1] / "test-requirements"
@@ -338,24 +340,47 @@ def test_dag_suite_discovers_10_15() -> None:
     assert files["10-15"].endswith("dag/10-15.yaml")
 
 
-def test_10_15_parses_as_outcome_only_large_payload() -> None:
-    """10-15 loads and matches the contract's outcome-only large-payload shape."""
+def test_10_15_pins_offloaded_envelope_large_payload() -> None:
+    """10-15 loads and pins the offloaded aggregate envelope (WITHOUT tasks)."""
     files = discover_test_files(_REQUIREMENTS_DIR, suite="dag")
     data = load_yaml_file(files["10-15"])
 
-    # Async, outcome-only: a result is asserted but no full history is pinned.
+    # Async, and now carrying a pinned history for the offloaded container event.
     assert data["AsyncInvoke"] is True
-    assert "ExpectedExecutionHistory" not in data
 
-    # ExpectedEventCount was MEASURED on the first cloud run rather than derived:
-    # all four SDKs emitted exactly 26 events for this graph, and the envelope
-    # strategy costs no more operations than the re-execute one.
+    history = data["ExpectedExecutionHistory"]
+    ctx_succeeded = [
+        e
+        for e in history
+        if e.get("EventType") == "ContextSucceeded" and e.get("SubType") == "Dag"
+    ]
+    assert len(ctx_succeeded) == 1
+    event = ctx_succeeded[0]
+    assert event["EventId"] == 19
+    assert event["Name"] == "bigdag"
+
+    # The payload is JSON-decoded via the ${JSON} directive, then the converged
+    # aggregate envelope is pinned WITHOUT tasks (tasks absence is the offload
+    # signal) and the deleted-by-convergence fields are asserted absent.
+    envelope = event["ContextSucceededDetails"]["Result"]["Payload"]["${JSON}"]
+    assert envelope["type"] == "DagResult"
+    assert envelope["totalCount"] == 8
+    assert envelope["successCount"] == 8
+    assert envelope["completionReason"] == "ALL_COMPLETED"
+    assert envelope["startedTaskNames"] == []
+    assert envelope["failedTaskNames"] == []
+    assert envelope["tasks"] == "${ABSENT}"
+    assert envelope["completedCount"] == "${ABSENT}"
+    assert envelope["terminalTaskNames"] == "${ABSENT}"
+    assert envelope["summary"] == "${ABSENT}"
+
+    # ExpectedEventCount stays MEASURED at 26 (the pinned envelope rides inside
+    # the existing container event and adds no events); it is still enforced.
     assert data["ExpectedEventCount"] == 26
-    # ...and it is enforced: the measured count passes, anything else fails.
     assert _validate_event_count(data, _events(26)) == []
     assert _validate_event_count(data, _events(999)) != []
 
-    # The digest equality is the single language-neutral assertion.
+    # The digest equality remains the complementary language-neutral assertion.
     result = data["ExpectedResult"]["Result"]
     assert result["reason"] == "ALL_COMPLETED"
     assert result["counts"] == [8, 0, 0, 8]
