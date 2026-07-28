@@ -62,10 +62,8 @@ Execution cases 15 and 19 remain declared under
 callback for those service-driven lifecycle transitions.
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
-both packages at the merge commit of
-[Python SDK PR 576](https://github.com/aws/aws-durable-execution-sdk-python/pull/576),
-which introduced `ExecutionOtelPlugin`. Both Git requirements use that same
-commit so the core and OTel plugin APIs cannot drift before the next release.
+both packages from the Python SDK repository's latest `main`. Using the same
+branch for both Git requirements keeps the core and OTel plugin APIs aligned.
 
 ## Run Against X-Ray
 

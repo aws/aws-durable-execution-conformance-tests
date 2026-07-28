@@ -130,22 +130,33 @@ def test_java_example_template_handlers_have_sources() -> None:
         assert f"      Handler: {handler}" in template
 
 
-def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
+def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     pom_path = EXAMPLES_DIR / "pom.xml"
     root = ET.parse(pom_path).getroot()
     namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
     properties = root.find("m:properties", namespace)
 
     assert properties is not None
-    assert properties.findtext("m:durable.sdk.version", namespaces=namespace) == "2.1.0"
+    assert properties.find("m:durable.sdk.version", namespace) is None
     assert properties.findtext("m:maven.compiler.target", namespaces=namespace) == "17"
-    artifacts = {element.text for element in root.findall("m:dependencies/m:dependency/m:artifactId", namespace)}
+    dependencies = root.findall("m:dependencies/m:dependency", namespace)
+    artifacts = {element.findtext("m:artifactId", namespaces=namespace) for element in dependencies}
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
         "aws-distro-opentelemetry-xray-udp-span-exporter",
         "opentelemetry-exporter-otlp",
     } <= artifacts
+    sdk_versions = {
+        element.findtext("m:version", namespaces=namespace)
+        for element in dependencies
+        if element.findtext("m:artifactId", namespaces=namespace)
+        in {
+            "aws-durable-execution-sdk-java",
+            "aws-durable-execution-sdk-java-plugin-otel",
+        }
+    }
+    assert sdk_versions == {"${durable.sdk.version}"}
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler

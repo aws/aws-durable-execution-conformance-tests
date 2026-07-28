@@ -187,18 +187,17 @@ def test_python_example_handlers_are_valid_python() -> None:
         assert f"build-{logical_id}" in makefile
 
 
-def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit() -> None:
+def test_python_examples_install_both_sdk_packages_from_main() -> None:
     requirements = (EXAMPLES_DIR / "src" / "requirements.txt").read_text(encoding="utf-8")
-    sdk_ref = "01d789744dc051809a181cc985cd1a9a64e0dbe5"
 
     assert (
         "aws-durable-execution-sdk-python @ "
-        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
         "#subdirectory=packages/aws-durable-execution-sdk-python"
     ) in requirements
     assert (
         "aws-durable-execution-sdk-python-otel @ "
-        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
         "#subdirectory=packages/aws-durable-execution-sdk-python-otel"
     ) in requirements
 

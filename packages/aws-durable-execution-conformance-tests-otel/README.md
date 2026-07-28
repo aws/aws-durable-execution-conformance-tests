@@ -120,15 +120,16 @@ temporary stack, bucket, and layer version afterward.
 The package includes a self-contained
 [Python SAM project](examples/python/README.md) that implements every OTel
 requirement with the Python SDK and its OTel plugins. Its runtime requirements
-pin both packages to the merge commit of Python SDK PR 576, which introduced
-`ExecutionOtelPlugin`. The folder is structured to move into the Python SDK's
-OTel package when this suite stabilizes.
+install both packages from the Python SDK repository's latest `main`. The
+folder is structured to move into the Python SDK's OTel package when this suite
+stabilizes.
 
 ## Java Examples
 
 The self-contained [Java SAM project](examples/java/README.md) implements the
-invocation-view requirements with the Java SDK and its OTel plugin. It builds one
-shaded JAR containing all handlers and attaches the
+invocation-view requirements with the Java SDK and its OTel plugin. Hosted
+workflows build both artifacts from the Java SDK repository's latest `main`.
+The project builds one shaded JAR containing all handlers and attaches the
 `AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
 remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
 gRPC endpoint from the deployment environment.
