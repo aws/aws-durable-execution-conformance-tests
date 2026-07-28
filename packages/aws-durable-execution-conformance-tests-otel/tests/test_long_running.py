@@ -26,11 +26,11 @@ from aws_durable_execution_conformance_tests_otel.long_running import (
     ExecutionState,
     RunState,
     _premature_executions,
+    _query_service_name,
     _requirement_cases,
     _requirement_for_view,
     _resolved_input,
     _send_due_callback,
-    _service_name,
     _validate_delay,
     _validate_view,
     run_to_completion,
@@ -115,9 +115,9 @@ def test_runtime_accepts_supported_telemetry_views(language: str, view: str) -> 
 
 def test_java_execution_view_uses_the_plugin_service_name() -> None:
     assert SUPPORTED_VIEWS["java"] == {"execution", "invocation"}
-    assert _service_name("java", "execution") == "workflow"
-    assert _service_name("java", "invocation") == "invocation"
-    assert _service_name("python", "execution") == "invocation"
+    assert _query_service_name("java", "execution") == "workflow"
+    assert _query_service_name("java", "invocation") == "invocation"
+    assert _query_service_name("python", "execution") == "invocation"
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:

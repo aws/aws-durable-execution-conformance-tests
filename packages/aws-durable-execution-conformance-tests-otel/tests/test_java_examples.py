@@ -180,7 +180,9 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "-Dexpression=project.version" in workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
     assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
-    assert '--otel-service-name "$OTEL_SERVICE_NAME"' in workflow
+    assert workflow.count('"OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME"') == workflow.count("hatch run validate")
+    assert '--otel-service-name "$OTEL_QUERY_SERVICE_NAME"' in workflow
+    assert "${OTEL_SUITE}-${case_number}-target" in workflow
 
 
 def test_java_s3_job_builds_and_queries_the_collector() -> None:

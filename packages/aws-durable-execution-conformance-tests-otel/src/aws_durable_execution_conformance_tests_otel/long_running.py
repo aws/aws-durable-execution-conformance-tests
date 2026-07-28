@@ -231,14 +231,14 @@ def _otel_options(
         "suite": [SUITE],
         "otel_backend": backend,
         "otel_exporter": "adot",
-        "otel_service_name": _service_name(language, view),
+        "otel_service_name": _query_service_name(language, view),
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
     }
 
 
-def _service_name(language: str, view: str) -> str:
+def _query_service_name(language: str, view: str) -> str:
     if normalize_runtime(language) == "java" and view == "execution":
         return "workflow"
     return "invocation"
@@ -283,7 +283,7 @@ def launch(args: argparse.Namespace) -> int:
             runtime=runtime,
             region=args.region,
             endpoint=None,
-            service_name=_service_name(runtime, view),
+            service_name="invocation",
             layer_arn=args.otel_layer_arn,
         )
     )
