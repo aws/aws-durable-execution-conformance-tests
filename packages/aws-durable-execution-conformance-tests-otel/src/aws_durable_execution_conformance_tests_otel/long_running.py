@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -272,7 +273,8 @@ def launch(args: argparse.Namespace) -> int:
         for function_name, description_id in parse_function_descriptions(str(template_path))
         if description_id in requirements
     ]
-    if {description_id for _, description_id in mappings} != set(requirements):
+    mapping_counts = Counter(description_id for _, description_id in mappings)
+    if mapping_counts != Counter(requirements.keys()):
         raise ValueError(f"{template_path} must map every {SUITE} requirement exactly once")
 
     stack_name = f"{STACK_NAME_PREFIX}-{args.name}"

@@ -90,7 +90,8 @@ jobs:
           && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
       view: invocation
       delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
           && '600' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit
@@ -104,7 +105,8 @@ jobs:
           && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
       view: execution
       delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
           && '600' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

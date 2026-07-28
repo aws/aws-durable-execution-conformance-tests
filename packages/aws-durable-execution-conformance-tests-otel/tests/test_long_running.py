@@ -355,8 +355,11 @@ def test_launch_cleans_up_a_failed_deployment_attempt(
         lambda_execution_role_arn="arn:role",
         source_revision="a" * 40,
     )
-    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {})
-    monkeypatch.setattr(long_running, "parse_function_descriptions", lambda _path: [])
+    requirements = {
+        description_id: tmp_path / f"{description_id}.yaml" for _function_name, description_id in EXPECTED_MAPPINGS
+    }
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: requirements)
+    monkeypatch.setattr(long_running, "parse_function_descriptions", lambda _path: EXPECTED_MAPPINGS)
     monkeypatch.setattr(long_running, "AdotExporterProfile", _Profile)
     monkeypatch.setattr(long_running, "Deployer", _Deployer)
     monkeypatch.setattr(long_running, "delete_stack", lambda name, region: deleted.append((name, region)))
@@ -365,6 +368,31 @@ def test_launch_cleans_up_a_failed_deployment_attempt(
         long_running.launch(args)
 
     assert deleted == [("conformance-tests-failed-deploy", "us-west-2")]
+
+
+def test_launch_rejects_duplicate_requirement_mappings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requirements = {
+        description_id: tmp_path / f"{description_id}.yaml" for _function_name, description_id in EXPECTED_MAPPINGS
+    }
+    duplicate_mappings = [
+        *EXPECTED_MAPPINGS,
+        ("DuplicateLongWait", "otel-long-running-1"),
+    ]
+    args = argparse.Namespace(
+        language="python",
+        view="invocation",
+        delay_seconds=10,
+        state_file=str(tmp_path / "state.json"),
+        template="template.yaml",
+    )
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: requirements)
+    monkeypatch.setattr(long_running, "parse_function_descriptions", lambda _path: duplicate_mappings)
+
+    with pytest.raises(ValueError, match="must map every otel-long-running requirement exactly once"):
+        long_running.launch(args)
 
 
 def _short_run_args(tmp_path: Path) -> argparse.Namespace:
@@ -535,8 +563,14 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
+    entry_workflow_config = yaml.safe_load(entry_workflow)
     workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").read_text(encoding="utf-8")
     workflow_config = yaml.safe_load(workflow)
+    display_name = {
+        "java": "Java",
+        "python": "Python",
+        "typescript": "TypeScript",
+    }[language]
 
     assert "  pull_request:" in entry_workflow
     assert "  push:" in entry_workflow
@@ -550,6 +584,10 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "&& '600'" in entry_workflow
     assert 'default: "82800"' in entry_workflow
     assert f"uses: ./.github/workflows/{language}-opentelemetry-long-running.yml" in entry_workflow
+    for view in ("invocation", "execution"):
+        delay_expression = entry_workflow_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
+        assert "inputs.phase == 'short'" in delay_expression
+        assert "&& '600'" in delay_expression
     assert "  workflow_call:" in workflow
     assert "  pull_request:" not in workflow
     assert "  push:" not in workflow
@@ -559,6 +597,14 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "env.PHASE != 'short'" in workflow
     assert "phase=launch" in workflow
     assert "phase=check" in workflow
+    assert (
+        f"""if [ -z "$artifact_id" ]; then
+            echo "No active {display_name} $OTEL_VIEW long-running OTel run."
+            exit 1
+          fi"""
+        in workflow
+    )
+    assert 'echo "active=false"' not in workflow
     assert "inputs.delay_seconds || '82800'" in workflow
     assert workflow.count('--source-revision "$GITHUB_SHA"') == 2
     assert "source_revision=$(jq -r '.source_revision // empty' \"$STATE_FILE\")" in workflow

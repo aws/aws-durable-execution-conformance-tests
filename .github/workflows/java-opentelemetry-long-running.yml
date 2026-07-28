@@ -90,8 +90,7 @@ jobs:
           fi
           if [ -z "$artifact_id" ]; then
             echo "No active Java $OTEL_VIEW long-running OTel run."
-            echo "active=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
             > "$RUNNER_TEMP/java-otel-long-running-state.zip"
