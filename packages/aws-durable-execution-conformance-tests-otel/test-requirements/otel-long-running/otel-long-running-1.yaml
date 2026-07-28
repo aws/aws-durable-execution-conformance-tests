@@ -1,4 +1,6 @@
-description: OpenTelemetry preserves wait and resume telemetry across a long durable suspension
+---
+description: OpenTelemetry preserves wait and resume telemetry across a long durable
+  suspension
 Variables:
   LONG_DELAY_SECONDS: 1
 Input:
@@ -33,8 +35,7 @@ TelemetryAssertions:
   span_assertion_scope:
     attributes:
       durable.execution.arn: ${EXECUTION_ARN}
-  exact_attribute_prefixes:
-    - durable.
+  exact_attribute_prefixes: [durable.]
   span_assertions:
     - select:
         name: invocation
@@ -186,3 +187,141 @@ TelemetryAssertions:
             durable.operation.id: ${STEP1}
             durable.operation.type: STEP
             durable.operation.subtype: Step
+ExecutionTelemetryAssertions:
+  minimum_spans: 6
+  minimum_invocations: 2
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: otel-long-wait
+        attributes:
+          durable.operation.id: ${WAIT1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${WAIT1}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.name: otel-long-wait
+        before:
+          name: otel-after-long-wait
+          attributes:
+            durable.operation.id: ${STEP1}
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-after-long-wait
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-after-long-wait
+        after:
+          name: otel-long-wait
+          attributes:
+            durable.operation.id: ${WAIT1}
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-after-long-wait attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-after-long-wait
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-after-long-wait
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}

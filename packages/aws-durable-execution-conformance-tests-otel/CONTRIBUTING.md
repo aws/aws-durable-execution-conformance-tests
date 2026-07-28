@@ -32,9 +32,10 @@ Add invocation-view requirements as
 `test-requirements/otel-invocation/otel-invocation-N.yaml` and execution-view
 requirements as
 `test-requirements/otel-execution/otel-execution-N.yaml`. Add day-scale
-invocation-view requirements as
-`test-requirements/otel-long-running/otel-long-running-N.yaml`. Requirement IDs
-are global and must not be reused.
+requirements as `test-requirements/otel-long-running/otel-long-running-N.yaml`,
+with invocation assertions in `TelemetryAssertions` and execution assertions in
+`ExecutionTelemetryAssertions`. Requirement IDs are global and must not be
+reused.
 
 When both plugins cover a scenario, keep `Input`, `AsyncInvoke`,
 `ExpectedExecutionHistory`, and `ExpectedResult` identical between the paired

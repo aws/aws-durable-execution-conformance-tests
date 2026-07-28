@@ -37,7 +37,6 @@ env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
-  STATE_ARTIFACT: python-otel-long-running-state
   STATE_FILE: /tmp/python-otel-long-running-state.json
   RESULT_FILE: /tmp/python-otel-long-running-result.json
   HISTORY_DIR: /tmp/python-otel-long-running-history
@@ -46,9 +45,19 @@ env:
 
 jobs:
   run:
-    name: ${{ github.event_name == 'schedule' && 'Daily run' || inputs.phase }}
+    name: ${{ matrix.view }} / ${{ github.event_name == 'schedule' && 'Daily run' || inputs.phase }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        view:
+          - invocation
+          - execution
+    env:
+      OTEL_VIEW: ${{ matrix.view }}
+      STATE_ARTIFACT: python-otel-long-running-${{ matrix.view }}-state
+      TEST_NAME: python-xray-long-${{ matrix.view }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -73,14 +82,14 @@ jobs:
           echo "phase=$phase" >> "$GITHUB_OUTPUT"
           if [ "$phase" = "launch" ]; then
             if [ -n "$artifact_id" ]; then
-              echo "An active Python long-running OTel run already exists (artifact $artifact_id)."
+              echo "An active Python $OTEL_VIEW long-running OTel run already exists (artifact $artifact_id)."
               exit 1
             fi
             echo "active=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -z "$artifact_id" ]; then
-            echo "No active Python long-running OTel run."
+            echo "No active Python $OTEL_VIEW long-running OTel run."
             echo "active=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -154,8 +163,9 @@ jobs:
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
             --template "$TEST_TEMPLATE" \
             --language python \
+            --view "$OTEL_VIEW" \
             --region "$AWS_REGION" \
-            --name python-xray-long \
+            --name "$TEST_NAME" \
             --state-file "$STATE_FILE" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
@@ -221,7 +231,7 @@ jobs:
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-otel-long-running-results-${{ github.run_id }}
+          name: python-otel-long-running-${{ matrix.view }}-results-${{ github.run_id }}
           path: |
             ${{ env.HISTORY_DIR }}/
             ${{ env.REPORT_FILE }}.json

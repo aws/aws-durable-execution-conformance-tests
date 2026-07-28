@@ -19,13 +19,17 @@ from aws_durable_execution_conformance_tests.validate import (
 from aws_durable_execution_conformance_tests_otel.long_running import (
     CALLBACK_CASE,
     MAX_DELAY_SECONDS,
+    STATE_VERSION,
+    SUPPORTED_VIEWS,
     ExecutionState,
     RunState,
     _premature_executions,
     _requirement_cases,
+    _requirement_for_view,
     _resolved_input,
     _send_due_callback,
     _validate_delay,
+    _validate_view,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -54,6 +58,7 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state = RunState(
         language="python",
+        view="invocation",
         region="us-west-2",
         name="python-xray-long",
         stack_name="conformance-tests-python-xray-long",
@@ -75,7 +80,36 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
     state.save(state_path)
 
     assert RunState.load(state_path) == state
-    assert json.loads(state_path.read_text(encoding="utf-8"))["version"] == 1
+    assert json.loads(state_path.read_text(encoding="utf-8"))["version"] == STATE_VERSION
+
+
+def test_run_state_rejects_an_old_schema_before_reading_new_fields(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"version": STATE_VERSION - 1}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"version {STATE_VERSION - 1}; expected {STATE_VERSION}"):
+        RunState.load(state_path)
+
+
+@pytest.mark.parametrize(
+    ("language", "view"),
+    [
+        ("java", "invocation"),
+        ("javascript", "invocation"),
+        ("javascript", "execution"),
+        ("python", "invocation"),
+        ("python", "execution"),
+    ],
+)
+def test_runtime_accepts_supported_telemetry_views(language: str, view: str) -> None:
+    assert _validate_view(language, view) == view
+
+
+def test_java_rejects_the_unavailable_execution_view() -> None:
+    with pytest.raises(ValueError, match="supports view\\(s\\): invocation"):
+        _validate_view("java", "execution")
+
+    assert SUPPORTED_VIEWS["java"] == {"invocation"}
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:
@@ -85,6 +119,24 @@ def test_requirement_input_uses_the_workflow_delay_override() -> None:
 
     assert resolved == {"scenario": "long-wait", "delay_seconds": "86400"}
     assert bindings == {"LONG_DELAY_SECONDS": "86400"}
+
+
+@pytest.mark.parametrize(
+    ("view", "assertion_key"),
+    [
+        ("invocation", "TelemetryAssertions"),
+        ("execution", "ExecutionTelemetryAssertions"),
+    ],
+)
+def test_requirement_selects_assertions_for_the_deployed_view(
+    view: str,
+    assertion_key: str,
+) -> None:
+    requirement = yaml.safe_load(_requirement_cases()["otel-long-running-1"].read_text(encoding="utf-8"))
+
+    selected = _requirement_for_view(requirement, view)
+
+    assert selected["TelemetryAssertions"] == requirement[assertion_key]
 
 
 class _CallbackClient:
@@ -109,6 +161,7 @@ def test_due_callback_is_sent_once_and_persisted() -> None:
     )
     state = RunState(
         language="python",
+        view="invocation",
         region="us-west-2",
         name="test",
         stack_name="stack",
@@ -152,6 +205,7 @@ def test_non_callback_cases_cannot_finish_before_the_configured_delay() -> None:
     ]
     state = RunState(
         language="python",
+        view="invocation",
         region="us-west-2",
         name="test",
         stack_name="stack",
@@ -184,6 +238,19 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
         "RetentionPeriodInDays": 3,
     }
     assert globals_config["Tracing"] == "Active"
+    if language == "java":
+        assert "OtelView" not in template["Parameters"]
+        assert "OTEL_PLUGIN_MODE" not in globals_config["Environment"]["Variables"]
+    else:
+        assert template["Parameters"]["OtelView"] == {
+            "Type": "String",
+            "Default": "invocation",
+            "AllowedValues": ["invocation", "execution"],
+            "Description": "OpenTelemetry plugin view used by the long-running functions",
+        }
+        assert globals_config["Environment"]["Variables"]["OTEL_PLUGIN_MODE"] == {
+            "Ref": "OtelView",
+        }
     assert set(template["Resources"]) == {
         *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
         "OtelLongRunning4InvokeTarget",
@@ -237,6 +304,7 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running check" in workflow
     assert "aws-observability/aws-otel-" in workflow
+    assert '--view "$OTEL_VIEW"' in workflow
     assert "--otel-layer-arn" in workflow
     assert "--otel-backend xray" in workflow
     assert "retention-days: 5" in workflow
@@ -245,3 +313,13 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
     assert workflow.index("- name: Persist updated callback state") < workflow.index(
         "- name: Retire previous state artifact"
     )
+    if language == "java":
+        assert "OTEL_VIEW: invocation" in workflow
+        assert "matrix:" not in workflow
+        assert "java-otel-long-running-invocation-state" in workflow
+    else:
+        assert "matrix:" in workflow
+        assert "          - invocation" in workflow
+        assert "          - execution" in workflow
+        assert f"STATE_ARTIFACT: {language}-otel-long-running-${{{{ matrix.view }}}}-state" in workflow
+        assert f"{language}-xray-long-${{{{ matrix.view }}}}" in workflow

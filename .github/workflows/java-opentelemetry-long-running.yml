@@ -37,7 +37,8 @@ env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
-  STATE_ARTIFACT: java-otel-long-running-state
+  OTEL_VIEW: invocation
+  STATE_ARTIFACT: java-otel-long-running-invocation-state
   STATE_FILE: /tmp/java-otel-long-running-state.json
   RESULT_FILE: /tmp/java-otel-long-running-result.json
   HISTORY_DIR: /tmp/java-otel-long-running-history
@@ -197,8 +198,9 @@ jobs:
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
             --template "$TEST_TEMPLATE" \
             --language java \
+            --view "$OTEL_VIEW" \
             --region "$AWS_REGION" \
-            --name java-xray-long \
+            --name java-xray-long-invocation \
             --state-file "$STATE_FILE" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
@@ -264,7 +266,7 @@ jobs:
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: java-otel-long-running-results-${{ github.run_id }}
+          name: java-otel-long-running-invocation-results-${{ github.run_id }}
           path: |
             ${{ env.HISTORY_DIR }}/
             ${{ env.REPORT_FILE }}.json

@@ -58,6 +58,18 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
         assert requirement["ExpectedResult"]["ExecutionStatus"] == "SUCCEEDED"
         expected_invocations = 4 if case_number == 4 else 2
         assert requirement["TelemetryAssertions"]["minimum_invocations"] == expected_invocations
+        assert requirement["ExecutionTelemetryAssertions"]["minimum_invocations"] == expected_invocations
+        assert requirement["TelemetryAssertions"] != requirement["ExecutionTelemetryAssertions"]
+
+        execution_span_assertions = requirement["ExecutionTelemetryAssertions"]["span_assertions"]
+        workflow_spans = [
+            assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Workflow"
+        ]
+        invocation_spans = [
+            assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Invocation"
+        ]
+        assert len(workflow_spans) == (2 if case_number == 4 else 1)
+        assert len(invocation_spans) == expected_invocations
 
 
 @pytest.mark.parametrize("case_number", range(1, 20))

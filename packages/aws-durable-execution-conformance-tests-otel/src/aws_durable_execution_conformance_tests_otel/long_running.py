@@ -55,14 +55,20 @@ from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.exporters import (
     AdotExporterProfile,
     ExporterOptions,
+    normalize_runtime,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 
 SUITE = "otel-long-running"
-STATE_VERSION = 1
+STATE_VERSION = 2
 MAX_DELAY_SECONDS = 86400
 CALLBACK_CASE = "otel-long-running-3"
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"})
+SUPPORTED_VIEWS = {
+    "java": frozenset({"invocation"}),
+    "javascript": frozenset({"execution", "invocation"}),
+    "python": frozenset({"execution", "invocation"}),
+}
 
 
 @dataclass
@@ -105,6 +111,7 @@ class RunState:
     """Persisted state shared between the launch and scheduled check phases."""
 
     language: str
+    view: str
     region: str
     name: str
     stack_name: str
@@ -118,10 +125,14 @@ class RunState:
     @classmethod
     def load(cls, path: Path) -> RunState:
         value = json.loads(path.read_text(encoding="utf-8"))
+        version = int(value["version"])
+        if version != STATE_VERSION:
+            raise ValueError(f"Unsupported long-running state version {version}; expected {STATE_VERSION}")
         state = cls(
-            version=int(value["version"]),
+            version=version,
             suite=str(value["suite"]),
             language=str(value["language"]),
+            view=str(value["view"]),
             region=str(value["region"]),
             name=str(value["name"]),
             stack_name=str(value["stack_name"]),
@@ -130,10 +141,9 @@ class RunState:
             launched_at_ms=int(value["launched_at_ms"]),
             executions=[ExecutionState.from_dict(item) for item in value["executions"]],
         )
-        if state.version != STATE_VERSION:
-            raise ValueError(f"Unsupported long-running state version {state.version}; expected {STATE_VERSION}")
         if state.suite != SUITE:
             raise ValueError(f"State suite is {state.suite!r}; expected {SUITE!r}")
+        _validate_view(state.language, state.view)
         _validate_delay(state.delay_seconds)
         return state
 
@@ -143,6 +153,7 @@ class RunState:
             "version": self.version,
             "suite": self.suite,
             "language": self.language,
+            "view": self.view,
             "region": self.region,
             "name": self.name,
             "stack_name": self.stack_name,
@@ -160,10 +171,31 @@ def _validate_delay(value: int) -> int:
     return value
 
 
+def _validate_view(language: str, view: str) -> str:
+    runtime = normalize_runtime(language)
+    supported = SUPPORTED_VIEWS.get(runtime)
+    if supported is None:
+        raise ValueError(f"Long-running OTel does not support runtime {language!r}")
+    if view not in supported:
+        choices = ", ".join(sorted(supported))
+        raise ValueError(f"Long-running OTel runtime {runtime!r} supports view(s): {choices}; received {view!r}")
+    return view
+
+
 def _requirement_cases() -> dict[str, Path]:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
     root = suites[SUITE].root
     return {path.stem: path for path in sorted(root.glob("*.yaml"))}
+
+
+def _requirement_for_view(requirement: dict[str, Any], view: str) -> dict[str, Any]:
+    assertion_key = "TelemetryAssertions" if view == "invocation" else "ExecutionTelemetryAssertions"
+    assertions = requirement.get(assertion_key)
+    if not isinstance(assertions, Mapping):
+        raise ValueError(f"Long-running requirement is missing {assertion_key}")
+    selected = dict(requirement)
+    selected["TelemetryAssertions"] = assertions
+    return selected
 
 
 def _otel_options(
@@ -198,6 +230,8 @@ def _resolved_input(
 def launch(args: argparse.Namespace) -> int:
     """Build, deploy, and asynchronously start every long-running case."""
 
+    runtime = normalize_runtime(args.language)
+    view = _validate_view(runtime, args.view)
     delay_seconds = _validate_delay(args.delay_seconds)
     state_path = Path(args.state_file)
     if state_path.exists():
@@ -218,7 +252,7 @@ def launch(args: argparse.Namespace) -> int:
     profile = AdotExporterProfile()
     exporter = profile.configure(
         ExporterOptions(
-            runtime=args.language,
+            runtime=runtime,
             region=args.region,
             endpoint=None,
             service_name="invocation",
@@ -229,6 +263,8 @@ def launch(args: argparse.Namespace) -> int:
         **exporter.parameter_overrides,
         "LambdaExecutionRoleArn": args.lambda_execution_role_arn,
     }
+    if len(SUPPORTED_VIEWS[runtime]) > 1:
+        parameters["OtelView"] = view
 
     deployer = Deployer(
         template_path=str(template_path),
@@ -287,7 +323,8 @@ def launch(args: argparse.Namespace) -> int:
                 print(f"  Launched {description_id}: {execution_arn}")
 
         RunState(
-            language=args.language,
+            language=runtime,
+            view=view,
             region=args.region,
             name=args.name,
             stack_name=stack_name,
@@ -390,7 +427,10 @@ def _validate_terminal_execution(
     finished_at_ms: int,
     backend: str,
 ) -> ReportEntry:
-    requirement = load_yaml_file(str(requirement_path))
+    requirement = _requirement_for_view(
+        load_yaml_file(str(requirement_path)),
+        state.view,
+    )
     context = PlaceholderContext()
     for name, value in execution.bindings.items():
         context.bind(name, value)
@@ -592,6 +632,11 @@ def _parser() -> argparse.ArgumentParser:
     launch_parser = subparsers.add_parser("launch")
     launch_parser.add_argument("--template", required=True)
     launch_parser.add_argument("--language", required=True)
+    launch_parser.add_argument(
+        "--view",
+        choices=["execution", "invocation"],
+        default="invocation",
+    )
     launch_parser.add_argument("--region", default="us-west-2")
     launch_parser.add_argument("--name", required=True)
     launch_parser.add_argument("--state-file", required=True)
