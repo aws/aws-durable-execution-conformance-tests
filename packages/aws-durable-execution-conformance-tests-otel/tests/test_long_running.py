@@ -180,8 +180,8 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
 
     globals_config = template["Globals"]["Function"]
     assert globals_config["DurableConfig"] == {
-        "ExecutionTimeout": 93600,
-        "RetentionPeriodInDays": 2,
+        "ExecutionTimeout": 180000,
+        "RetentionPeriodInDays": 3,
     }
     assert globals_config["Tracing"] == "Active"
     assert set(template["Resources"]) == {
@@ -226,7 +226,12 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
 
     assert "  schedule:" in workflow
     assert "  workflow_dispatch:" in workflow
+    assert 'cron: "0 7 * * *"' in workflow
+    assert "github.event_name == 'schedule' && 'auto'" in workflow
+    assert "phase=launch" in workflow
+    assert "phase=check" in workflow
     assert 'default: "86400"' in workflow
+    assert "inputs.delay_seconds || '86400'" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
@@ -234,7 +239,7 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
     assert "aws-observability/aws-otel-" in workflow
     assert "--otel-layer-arn" in workflow
     assert "--otel-backend xray" in workflow
-    assert "retention-days: 3" in workflow
+    assert "retention-days: 5" in workflow
     assert "actions/artifacts/$ARTIFACT_ID" in workflow
     assert "CHECK_EXIT_CODE" in workflow
     assert workflow.index("- name: Persist updated callback state") < workflow.index(

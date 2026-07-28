@@ -2,7 +2,7 @@ name: Python OpenTelemetry Long Running
 
 on:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
       phase:
@@ -35,7 +35,8 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
-  PHASE: ${{ github.event_name == 'schedule' && 'check' || inputs.phase }}
+  PHASE: ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
+  DELAY_SECONDS: ${{ inputs.delay_seconds || '86400' }}
   STATE_ARTIFACT: python-otel-long-running-state
   STATE_FILE: /tmp/python-otel-long-running-state.json
   RESULT_FILE: /tmp/python-otel-long-running-result.json
@@ -45,7 +46,7 @@ env:
 
 jobs:
   run:
-    name: ${{ github.event_name == 'schedule' && 'Check' || inputs.phase }}
+    name: ${{ github.event_name == 'schedule' && 'Daily run' || inputs.phase }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -61,7 +62,16 @@ jobs:
             gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100" \
               --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty'
           )
-          if [ "$PHASE" = "launch" ]; then
+          phase="$PHASE"
+          if [ "$phase" = "auto" ]; then
+            if [ -n "$artifact_id" ]; then
+              phase=check
+            else
+              phase=launch
+            fi
+          fi
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          if [ "$phase" = "launch" ]; then
             if [ -n "$artifact_id" ]; then
               echo "An active Python long-running OTel run already exists (artifact $artifact_id)."
               exit 1
@@ -111,11 +121,11 @@ jobs:
         run: python -m pip install hatch==1.16.5
 
       - name: Set up SAM CLI
-        if: env.PHASE == 'launch'
+        if: steps.state.outputs.phase == 'launch'
         uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
 
       - name: Resolve latest ADOT Python layer
-        if: env.PHASE == 'launch'
+        if: steps.state.outputs.phase == 'launch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -137,7 +147,7 @@ jobs:
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
       - name: Launch long-running conformance executions
-        if: env.PHASE == 'launch'
+        if: steps.state.outputs.phase == 'launch'
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
@@ -147,20 +157,20 @@ jobs:
             --region "$AWS_REGION" \
             --name python-xray-long \
             --state-file "$STATE_FILE" \
-            --delay-seconds "${{ inputs.delay_seconds }}" \
+            --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN"
 
       - name: Persist active run state
-        if: env.PHASE == 'launch'
+        if: steps.state.outputs.phase == 'launch'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STATE_ARTIFACT }}
           path: ${{ env.STATE_FILE }}
-          retention-days: 3
+          retention-days: 5
 
       - name: Check long-running conformance executions
-        if: env.PHASE == 'check' && steps.state.outputs.active == 'true'
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         id: check
         run: |
           set +e
@@ -188,10 +198,10 @@ jobs:
         with:
           name: ${{ env.STATE_ARTIFACT }}
           path: ${{ env.STATE_FILE }}
-          retention-days: 3
+          retention-days: 5
 
       - name: Retire previous state artifact
-        if: env.PHASE == 'check' && steps.state.outputs.active == 'true'
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.state.outputs.artifact_id }}
@@ -208,7 +218,7 @@ jobs:
           fi
 
       - name: Upload reports and histories
-        if: env.PHASE == 'check' && steps.state.outputs.active == 'true' && always()
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-otel-long-running-results-${{ github.run_id }}
@@ -219,7 +229,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Enforce terminal result
-        if: env.PHASE == 'check' && steps.state.outputs.active == 'true' && always()
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()
         env:
           STATUS: ${{ steps.check.outputs.status }}
           CHECK_EXIT_CODE: ${{ steps.check.outputs.check_exit_code }}

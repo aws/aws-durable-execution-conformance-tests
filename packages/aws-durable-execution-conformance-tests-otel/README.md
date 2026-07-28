@@ -23,8 +23,9 @@ Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
 The long-running suite applies the invocation view to waits, retry delays,
 callbacks, and chained invokes that can remain suspended for up to one day.
-Dedicated X-Ray workflows launch these executions and validate them in later,
-scheduled runs.
+Dedicated daily X-Ray workflows run at midnight PDT (07:00 UTC), launch a suite
+when no run is active, and validate active executions on later runs. They can
+also be dispatched manually to launch or check a run.
 
 ## Run
 
