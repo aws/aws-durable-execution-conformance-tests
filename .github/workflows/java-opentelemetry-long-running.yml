@@ -33,7 +33,7 @@ env:
   PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   OTEL_VIEW: invocation
-  STATE_ARTIFACT: java-otel-long-running-invocation-state
+  STATE_ARTIFACT: java-otel-long-running-invocation-${{ inputs.aws_region || 'us-west-2' }}-state
   STATE_FILE: /tmp/java-otel-long-running-state.json
   RESULT_FILE: /tmp/java-otel-long-running-result.json
   HISTORY_DIR: /tmp/java-otel-long-running-history
@@ -55,9 +55,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
       - name: Find active run state
         if: env.PHASE != 'short'
         id: state
@@ -94,8 +91,19 @@ jobs:
             > "$RUNNER_TEMP/java-otel-long-running-state.zip"
           unzip -q "$RUNNER_TEMP/java-otel-long-running-state.zip" -d "$RUNNER_TEMP/state"
           mv "$RUNNER_TEMP/state/java-otel-long-running-state.json" "$STATE_FILE"
+          source_revision=$(jq -r '.source_revision // empty' "$STATE_FILE")
+          if [ -z "$source_revision" ]; then
+            echo "Active Java state does not record its launch revision."
+            exit 1
+          fi
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
           echo "active=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.state.outputs.source_revision || github.sha }}
 
       - name: Set up Python
         if: env.PHASE == 'short' || steps.state.outputs.active == 'true'
@@ -196,6 +204,7 @@ jobs:
 
       - name: Launch long-running conformance executions
         if: steps.state.outputs.phase == 'launch'
+        id: launch
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
@@ -206,6 +215,7 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --state-file "$STATE_FILE" \
+            --source-revision "$GITHUB_SHA" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN"
@@ -222,6 +232,7 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --state-file "$STATE_FILE" \
+            --source-revision "$GITHUB_SHA" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
@@ -234,11 +245,19 @@ jobs:
 
       - name: Persist active run state
         if: steps.state.outputs.phase == 'launch'
+        id: persist
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STATE_ARTIFACT }}
           path: ${{ env.STATE_FILE }}
           retention-days: 5
+
+      - name: Clean up failed launch handoff
+        if: >-
+          always() && steps.state.outputs.phase == 'launch' &&
+          steps.launch.outcome == 'success' && steps.persist.outcome == 'failure'
+        continue-on-error: true
+        run: aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"
 
       - name: Check long-running conformance executions
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
@@ -271,6 +290,19 @@ jobs:
           path: ${{ env.STATE_FILE }}
           retention-days: 5
 
+      - name: Upload reports and histories
+        if: >-
+          always() && (env.PHASE == 'short' ||
+          (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-otel-long-running-invocation-results-${{ github.run_id }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
+
       - name: Retire previous state artifact
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         env:
@@ -287,19 +319,6 @@ jobs:
           elif [ "$STATUS" = "passed" ] && [ "$CHECK_EXIT_CODE" = "0" ]; then
             gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
           fi
-
-      - name: Upload reports and histories
-        if: >-
-          always() && (env.PHASE == 'short' ||
-          (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: java-otel-long-running-invocation-results-${{ github.run_id }}
-          path: |
-            ${{ env.HISTORY_DIR }}/
-            ${{ env.REPORT_FILE }}.json
-            ${{ env.REPORT_FILE }}.xml
-          if-no-files-found: ignore
 
       - name: Enforce terminal result
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()

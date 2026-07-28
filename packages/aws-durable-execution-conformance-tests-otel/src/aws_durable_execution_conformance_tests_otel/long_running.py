@@ -58,12 +58,28 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     normalize_runtime,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.model import parse_timestamp
 
 SUITE = "otel-long-running"
-STATE_VERSION = 2
+STATE_VERSION = 3
 MAX_DELAY_SECONDS = 86400
 CALLBACK_CASE = "otel-long-running-3"
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"})
+TERMINAL_EVENT_TYPES = frozenset(
+    {
+        "ExecutionSucceeded",
+        "ExecutionFailed",
+        "ExecutionTimedOut",
+        "ExecutionCancelled",
+    }
+)
+CALLBACK_OUTCOME_EVENT_TYPES = frozenset(
+    {
+        "CallbackSucceeded",
+        "CallbackFailed",
+        "CallbackTimedOut",
+    }
+)
 SUPPORTED_VIEWS = {
     "java": frozenset({"invocation"}),
     "javascript": frozenset({"execution", "invocation"}),
@@ -119,6 +135,7 @@ class RunState:
     delay_seconds: int
     launched_at_ms: int
     executions: list[ExecutionState]
+    source_revision: str
     version: int = STATE_VERSION
     suite: str = SUITE
 
@@ -140,9 +157,12 @@ class RunState:
             delay_seconds=int(value["delay_seconds"]),
             launched_at_ms=int(value["launched_at_ms"]),
             executions=[ExecutionState.from_dict(item) for item in value["executions"]],
+            source_revision=str(value["source_revision"]),
         )
         if state.suite != SUITE:
             raise ValueError(f"State suite is {state.suite!r}; expected {SUITE!r}")
+        if not state.source_revision:
+            raise ValueError("Long-running state source revision cannot be empty")
         _validate_view(state.language, state.view)
         _validate_delay(state.delay_seconds)
         return state
@@ -161,6 +181,7 @@ class RunState:
             "delay_seconds": self.delay_seconds,
             "launched_at_ms": self.launched_at_ms,
             "executions": [execution.to_dict() for execution in self.executions],
+            "source_revision": self.source_revision,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -271,15 +292,15 @@ def launch(args: argparse.Namespace) -> int:
         build_dir=str(build_dir),
         region=args.region,
     )
-    deployed = False
+    deployment_attempted = False
     try:
         print(f"=== Deploying long-running stack {stack_name!r} ===")
         deployer.build()
+        deployment_attempted = True
         deployer.deploy(
             stack_name=stack_name,
             parameter_overrides=parameters,
         )
-        deployed = True
 
         clients = AwsClients.create(args.region)
         invoker = Invoker(
@@ -332,11 +353,12 @@ def launch(args: argparse.Namespace) -> int:
             delay_seconds=delay_seconds,
             launched_at_ms=launched_at_ms,
             executions=executions,
+            source_revision=str(args.source_revision),
         ).save(state_path)
         print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
         return 0
     except Exception:
-        if deployed:
+        if deployment_attempted:
             delete_stack(stack_name, args.region)
         raise
 
@@ -352,6 +374,23 @@ def _callback_id(history: dict[str, Any]) -> str | None:
     return None
 
 
+def _latest_event(
+    history: dict[str, Any],
+    event_types: frozenset[str],
+) -> dict[str, Any] | None:
+    events = history.get("Events", history.get("events", []))
+    return next(
+        (event for event in reversed(events) if event.get("EventType") in event_types),
+        None,
+    )
+
+
+def _event_timestamp_ms(event: Mapping[str, Any] | None) -> int | None:
+    if event is None or event.get("EventTimestamp") is None:
+        return None
+    return int(parse_timestamp(event["EventTimestamp"]).timestamp() * 1000)
+
+
 def _send_due_callback(
     state: RunState,
     execution: ExecutionState,
@@ -363,7 +402,15 @@ def _send_due_callback(
         return False
     if execution.callback_sent_at_ms is not None:
         return False
-    if now_ms - state.launched_at_ms < state.delay_seconds * 1000:
+
+    completion_event = _latest_event(history, CALLBACK_OUTCOME_EVENT_TYPES)
+    if completion_event is not None:
+        execution.callback_sent_at_ms = _event_timestamp_ms(completion_event) or now_ms
+        print(f"Recovered completed delayed callback for {execution.description_id}")
+        return True
+    if get_execution_status(history) in TERMINAL_STATUSES:
+        return False
+    if now_ms - execution.invocation_started_at_ms < state.delay_seconds * 1000:
         return False
 
     callback_id = _callback_id(history)
@@ -385,16 +432,22 @@ def _send_due_callback(
 def _premature_executions(
     state: RunState,
     statuses: Mapping[str, str | None],
-    now_ms: int,
+    histories: Mapping[str, dict[str, Any]],
 ) -> list[ExecutionState]:
-    due_at_ms = state.launched_at_ms + state.delay_seconds * 1000
-    if now_ms >= due_at_ms:
-        return []
-    return [
-        execution
-        for execution in state.executions
-        if execution.description_id != CALLBACK_CASE and statuses[execution.description_id] in TERMINAL_STATUSES
-    ]
+    premature: list[ExecutionState] = []
+    for execution in state.executions:
+        if statuses[execution.description_id] not in TERMINAL_STATUSES:
+            continue
+        terminal_at_ms = _event_timestamp_ms(
+            _latest_event(
+                histories[execution.description_id],
+                TERMINAL_EVENT_TYPES,
+            )
+        )
+        due_at_ms = execution.invocation_started_at_ms + state.delay_seconds * 1000
+        if terminal_at_ms is None or terminal_at_ms < due_at_ms:
+            premature.append(execution)
+    return premature
 
 
 def _write_check_result(
@@ -514,7 +567,7 @@ def check(args: argparse.Namespace) -> int:
 
         statuses[execution.description_id] = get_execution_status(history)
 
-    premature = _premature_executions(state, statuses, now_ms)
+    premature = _premature_executions(state, statuses, histories)
     if premature:
         report = _new_report(state, now_ms)
         for execution in premature:
@@ -550,12 +603,6 @@ def check(args: argparse.Namespace) -> int:
         )
     if state_changed:
         state.save(state_path)
-        _write_check_result(
-            result_path,
-            status="pending",
-            state_changed=True,
-        )
-        return 0
 
     pending = {description_id: status for description_id, status in statuses.items() if status not in TERMINAL_STATUSES}
     if pending:
@@ -686,6 +733,10 @@ def _parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--region", default="us-west-2")
     launch_parser.add_argument("--name", required=True)
     launch_parser.add_argument("--state-file", required=True)
+    launch_parser.add_argument(
+        "--source-revision",
+        default=os.environ.get("GITHUB_SHA", "local"),
+    )
     launch_parser.add_argument("--build-dir", default=".build/long-running")
     launch_parser.add_argument(
         "--delay-seconds",
@@ -717,6 +768,10 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--region", default="us-west-2")
     run_parser.add_argument("--name", required=True)
     run_parser.add_argument("--state-file", required=True)
+    run_parser.add_argument(
+        "--source-revision",
+        default=os.environ.get("GITHUB_SHA", "local"),
+    )
     run_parser.add_argument("--build-dir", default=".build/long-running")
     run_parser.add_argument(
         "--delay-seconds",

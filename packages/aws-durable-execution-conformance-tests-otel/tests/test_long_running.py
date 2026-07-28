@@ -68,6 +68,7 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
         template="template.yaml",
         delay_seconds=86400,
         launched_at_ms=1000,
+        source_revision="a" * 40,
         executions=[
             ExecutionState(
                 description_id=CALLBACK_CASE,
@@ -83,7 +84,9 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
     state.save(state_path)
 
     assert RunState.load(state_path) == state
-    assert json.loads(state_path.read_text(encoding="utf-8"))["version"] == STATE_VERSION
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["version"] == STATE_VERSION
+    assert payload["source_revision"] == "a" * 40
 
 
 def test_run_state_rejects_an_old_schema_before_reading_new_fields(tmp_path: Path) -> None:
@@ -170,7 +173,8 @@ def test_due_callback_is_sent_once_and_persisted() -> None:
         stack_name="stack",
         template="template.yaml",
         delay_seconds=10,
-        launched_at_ms=1000,
+        launched_at_ms=0,
+        source_revision="a" * 40,
         executions=[execution],
     )
     history = {
@@ -195,7 +199,81 @@ def test_due_callback_is_sent_once_and_persisted() -> None:
     ]
 
 
-def test_non_callback_cases_cannot_finish_before_the_configured_delay() -> None:
+def test_completed_callback_is_recovered_without_resending() -> None:
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    state = RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    )
+    history = {
+        "Events": [
+            {
+                "EventType": "CallbackSucceeded",
+                "EventTimestamp": 11.0,
+            },
+            {
+                "EventType": "ExecutionSucceeded",
+                "EventTimestamp": 12.0,
+            },
+        ]
+    }
+    client = _CallbackClient()
+
+    assert _send_due_callback(state, execution, history, client, 12000) is True
+    assert execution.callback_sent_at_ms == 11000
+    assert client.requests == []
+
+
+def test_terminal_callback_without_an_outcome_is_not_resent() -> None:
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    state = RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    )
+    history = {
+        "Events": [
+            {
+                "EventType": "ExecutionFailed",
+                "EventTimestamp": 12.0,
+            },
+        ]
+    }
+    client = _CallbackClient()
+
+    assert _send_due_callback(state, execution, history, client, 12000) is False
+    assert execution.callback_sent_at_ms is None
+    assert client.requests == []
+
+
+def test_terminal_event_timestamps_enforce_the_configured_delay() -> None:
     executions = [
         ExecutionState(
             description_id=f"otel-long-running-{case_number}",
@@ -215,16 +293,76 @@ def test_non_callback_cases_cannot_finish_before_the_configured_delay() -> None:
         template="template.yaml",
         delay_seconds=10,
         launched_at_ms=1000,
+        source_revision="a" * 40,
         executions=executions,
     )
     statuses = {execution.description_id: "SUCCEEDED" for execution in executions}
+    histories = {
+        execution.description_id: {
+            "Events": [
+                {
+                    "EventType": "ExecutionSucceeded",
+                    "EventTimestamp": 10.999,
+                },
+            ]
+        }
+        for execution in executions
+    }
 
-    assert _premature_executions(state, statuses, 10999) == [
-        executions[0],
-        executions[1],
-        executions[3],
-    ]
-    assert _premature_executions(state, statuses, 11000) == []
+    assert _premature_executions(state, statuses, histories) == executions
+
+    for history in histories.values():
+        history["Events"][0]["EventTimestamp"] = 11.0
+
+    assert _premature_executions(state, statuses, histories) == []
+
+
+def test_launch_cleans_up_a_failed_deployment_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Exporter:
+        def __init__(self) -> None:
+            self.parameter_overrides: dict[str, str] = {}
+
+    class _Profile:
+        def configure(self, _options: Any) -> _Exporter:
+            return _Exporter()
+
+    class _Deployer:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def build(self) -> None:
+            pass
+
+        def deploy(self, **_kwargs: Any) -> None:
+            raise RuntimeError("deployment failed")
+
+    deleted: list[tuple[str, str]] = []
+    args = argparse.Namespace(
+        language="python",
+        view="invocation",
+        delay_seconds=10,
+        state_file=str(tmp_path / "state.json"),
+        template="template.yaml",
+        build_dir=str(tmp_path / "build"),
+        region="us-west-2",
+        name="failed-deploy",
+        otel_layer_arn="arn:layer",
+        lambda_execution_role_arn="arn:role",
+        source_revision="a" * 40,
+    )
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {})
+    monkeypatch.setattr(long_running, "parse_function_descriptions", lambda _path: [])
+    monkeypatch.setattr(long_running, "AdotExporterProfile", _Profile)
+    monkeypatch.setattr(long_running, "Deployer", _Deployer)
+    monkeypatch.setattr(long_running, "delete_stack", lambda name, region: deleted.append((name, region)))
+
+    with pytest.raises(RuntimeError, match="deployment failed"):
+        long_running.launch(args)
+
+    assert deleted == [("conformance-tests-failed-deploy", "us-west-2")]
 
 
 def _short_run_args(tmp_path: Path) -> argparse.Namespace:
@@ -246,6 +384,7 @@ def _save_short_run_state(args: argparse.Namespace) -> int:
         template="template.yaml",
         delay_seconds=600,
         launched_at_ms=0,
+        source_revision="a" * 40,
         executions=[],
     ).save(Path(args.state_file))
     return 0
@@ -399,6 +538,7 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").read_text(encoding="utf-8")
+    workflow_config = yaml.safe_load(workflow)
 
     assert "  pull_request:" in entry_workflow
     assert "  push:" in entry_workflow
@@ -422,6 +562,9 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "phase=launch" in workflow
     assert "phase=check" in workflow
     assert "inputs.delay_seconds || '82800'" in workflow
+    assert workflow.count('--source-revision "$GITHUB_SHA"') == 2
+    assert "source_revision=$(jq -r '.source_revision // empty' \"$STATE_FILE\")" in workflow
+    assert "ref: ${{ steps.state.outputs.source_revision || github.sha }}" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
@@ -436,14 +579,24 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "retention-days: 5" in workflow
     assert "actions/artifacts/$ARTIFACT_ID" in workflow
     assert "CHECK_EXIT_CODE" in workflow
-    assert workflow.index("- name: Persist updated callback state") < workflow.index(
-        "- name: Retire previous state artifact"
+    assert "id: launch" in workflow
+    assert "id: persist" in workflow
+    assert "steps.persist.outcome == 'failure'" in workflow
+    assert 'aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"' in workflow
+    assert (
+        workflow.index("- name: Persist updated callback state")
+        < workflow.index("- name: Upload reports and histories")
+        < workflow.index("- name: Retire previous state artifact")
     )
     if language == "java":
         assert "OTEL_VIEW: invocation" in workflow
-        assert "java-otel-long-running-invocation-state" in workflow
+        assert workflow_config["env"]["STATE_ARTIFACT"] == (
+            "java-otel-long-running-invocation-${{ inputs.aws_region || 'us-west-2' }}-state"
+        )
         assert "j-olr-i${{" in workflow
     else:
         assert "matrix:" not in workflow
-        assert f"STATE_ARTIFACT: {language}-otel-long-running-${{{{ inputs.view }}}}-state" in workflow
+        assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
+            f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
+        )
         assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow
