@@ -24,10 +24,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable.execution.arn",
     "durable_execution_arn",
 )
-_DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
-    "durable.invocation.first",
-    "durable.invocation.status",
-)
+_DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
 _TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
 
 
@@ -42,7 +39,8 @@ def _invocation_count(trace: Trace) -> int:
     return sum(
         1
         for span in trace.spans
-        if span.name == "invocation" and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
+        if span.name.lower() == "invocation"
+        and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
     )
 
 
@@ -205,6 +203,11 @@ def _parent_expectation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    allow_outside = expected.get("$allow_outside", False)
+    if "$allow_outside" in expected and allow_outside is not True:
+        return [f"{path}.$allow_outside must be true"]
+    expected_properties = {key: value for key, value in expected.items() if key != "$allow_outside"}
+
     parent_span_id = span.parent_span_id
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
@@ -215,7 +218,7 @@ def _parent_expectation_errors(
 
     expectation_errors = [
         _span_expectation_errors(
-            expected,
+            expected_properties,
             serialized_parent,
             path=path,
             feature_disparities=feature_disparities,
@@ -229,6 +232,9 @@ def _parent_expectation_errors(
         if len(parents) > 1:
             return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
         return expectation_errors[0]
+
+    if allow_outside:
+        return []
 
     candidate_errors = []
     for parent in matching_parents:
@@ -429,32 +435,46 @@ def _span_assertion_errors(
 
         selector = assertion.get("select", {})
         expected = assertion.get("expect")
-        expected_count = assertion.get("count", 1)
+        raw_expected_count = assertion.get("count", 1)
         if not isinstance(selector, Mapping):
             errors.append(f"{path}.select must be a mapping")
             continue
         if not isinstance(expected, Mapping):
             errors.append(f"{path}.expect must be a mapping")
             continue
-        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
-            errors.append(f"{path}.count must be a positive integer")
+        if isinstance(raw_expected_count, int) and not isinstance(raw_expected_count, bool) and raw_expected_count > 0:
+            expected_counts = (raw_expected_count,)
+        elif (
+            isinstance(raw_expected_count, Mapping)
+            and set(raw_expected_count) == {"$any_of"}
+            and _is_sequence(raw_expected_count["$any_of"])
+            and raw_expected_count["$any_of"]
+            and all(
+                isinstance(count, int) and not isinstance(count, bool) and count > 0
+                for count in raw_expected_count["$any_of"]
+            )
+        ):
+            expected_counts = tuple(dict.fromkeys(raw_expected_count["$any_of"]))
+        else:
+            errors.append(f"{path}.count must be a positive integer or $any_of positive integers")
             continue
 
         matches = _select_span_matches(
             selector,
             spans,
             used_span_indexes,
-            expected_count,
+            max(expected_counts),
             feature_disparities,
         )
-        if not matches and expected_count == 1:
+        if not matches and expected_counts == (1,):
             errors.append(f"{path}.select matched no spans")
             continue
-        if len(matches) > 1 and expected_count == 1:
+        if len(matches) > 1 and expected_counts == (1,):
             errors.append(f"{path}.select matched {len(matches)} spans; it must select exactly one")
             continue
-        if len(matches) != expected_count:
-            errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
+        if len(matches) not in expected_counts:
+            allowed_counts = " or ".join(str(count) for count in expected_counts)
+            errors.append(f"{path}.select matched {len(matches)} spans; expected {allowed_counts}")
             continue
         matched_span_indexes = {span_index for span_index, _span in matches}
         covered_span_indexes.update(matched_span_indexes)
@@ -468,7 +488,7 @@ def _span_assertion_errors(
         expected_attributes = expected.get("attributes")
         for match_index, (span_index, matched_span) in enumerate(matches):
             expectation_path = f"{path}.expect"
-            if expected_count > 1:
+            if len(matches) > 1:
                 expectation_path = f"{expectation_path}[{match_index}]"
             errors.extend(
                 _span_expectation_errors(

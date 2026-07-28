@@ -6,6 +6,7 @@
 import json
 import re
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,17 @@ from aws_durable_execution_conformance_tests.validate import (
     discover_test_files,
     load_yaml_file,
 )
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.model import (
+    Span,
+    TelemetryQuery,
+    Trace,
+)
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendFeatureDisparity,
+)
+from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 
@@ -34,9 +45,181 @@ def test_example_templates_do_not_use_top_level_testing_metadata(language: str) 
 def test_extension_exposes_packaged_otel_view_requirements() -> None:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
 
-    assert set(suites) == {"otel-execution", "otel-invocation"}
+    assert set(suites) == {
+        "otel-execution",
+        "otel-invocation",
+        "otel-long-running",
+    }
     assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 20)}
     assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 20)}
+    assert set(_requirements("otel-long-running")) == {
+        f"otel-long-running-{case_number}" for case_number in range(1, 5)
+    }
+
+
+def test_long_running_catalog_uses_configurable_delays() -> None:
+    requirements = _requirements("otel-long-running")
+
+    for case_number in range(1, 5):
+        requirement = load_yaml_file(requirements[f"otel-long-running-{case_number}"])
+
+        assert requirement["Variables"] == {"LONG_DELAY_SECONDS": 1}
+        assert requirement["Input"]["delay_seconds"] == "${LONG_DELAY_SECONDS}"
+        assert requirement["AsyncInvoke"] is True
+        assert requirement["ExpectedResult"]["ExecutionStatus"] == "SUCCEEDED"
+        expected_invocations = 4 if case_number == 4 else 2
+        assert requirement["TelemetryAssertions"]["minimum_invocations"] == expected_invocations
+        assert requirement["ExecutionTelemetryAssertions"]["minimum_invocations"] == expected_invocations
+        assert requirement["TelemetryAssertions"] != requirement["ExecutionTelemetryAssertions"]
+
+        execution_span_assertions = requirement["ExecutionTelemetryAssertions"]["span_assertions"]
+        workflow_spans = [
+            assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Workflow"
+        ]
+        invocation_spans = [
+            assertion
+            for assertion in execution_span_assertions
+            if assertion["select"]["name"] == "${/^[Ii]nvocation$/}"
+        ]
+        assert len(workflow_spans) == 1
+        assert len(invocation_spans) == expected_invocations
+
+
+@pytest.mark.parametrize(
+    ("assertion_key", "callback_count"),
+    [
+        ("TelemetryAssertions", 2),
+        ("ExecutionTelemetryAssertions", 1),
+    ],
+)
+def test_long_callback_assertions_accept_typescript_generic_span_names(
+    assertion_key: str,
+    callback_count: int,
+) -> None:
+    requirement = load_yaml_file(_requirements("otel-long-running")["otel-long-running-3"])
+    placeholders = PlaceholderContext()
+    bindings = {
+        "EXECUTION_ARN": "arn:test",
+        "CALLBACK_CONTEXT": "callback-context",
+        "CALLBACK1": "callback-1",
+        "SUBMITTER_STEP": "submitter-step",
+    }
+    for name, value in bindings.items():
+        placeholders.bind(name, value)
+    assertions = placeholders.substitute(requirement[assertion_key])
+    focused_assertions = {"span_assertions": assertions["span_assertions"][-3:]}
+
+    now = datetime.now(UTC)
+    trace_id = "1" * 32
+    context_span = Span(
+        trace_id=trace_id,
+        span_id="2" * 16,
+        name="otel-long-callback",
+        start_time=now,
+        end_time=now,
+        kind="INTERNAL",
+        status="OK",
+        service_name="invocation",
+        attributes={
+            "durable.execution.arn": bindings["EXECUTION_ARN"],
+            "durable.operation.id": bindings["CALLBACK_CONTEXT"],
+            "durable.operation.subtype": "WaitForCallback",
+        },
+    )
+    invocation_span = Span(
+        trace_id=trace_id,
+        span_id="7" * 16,
+        name="invocation",
+        start_time=now,
+        end_time=now,
+        kind="INTERNAL",
+        status="OK",
+        service_name="invocation",
+        attributes={
+            "durable.execution.arn": bindings["EXECUTION_ARN"],
+        },
+    )
+    callbacks = tuple(
+        Span(
+            trace_id=trace_id,
+            span_id=str(index + 3) * 16,
+            parent_span_id=(invocation_span.span_id if callback_count == 2 and index == 0 else context_span.span_id),
+            name="CALLBACK",
+            start_time=now,
+            end_time=now,
+            kind="INTERNAL",
+            status="OK",
+            service_name="invocation",
+            attributes={
+                "durable.execution.arn": bindings["EXECUTION_ARN"],
+                "durable.operation.id": bindings["CALLBACK1"],
+                "durable.operation.type": "CALLBACK",
+                "durable.operation.subtype": "Callback",
+                "durable.operation.name": "otel-long-callback-callback",
+            },
+        )
+        for index in range(callback_count)
+    )
+    step_span = Span(
+        trace_id=trace_id,
+        span_id="5" * 16,
+        parent_span_id=context_span.span_id,
+        name="STEP",
+        start_time=now,
+        end_time=now,
+        kind="INTERNAL",
+        status="OK",
+        service_name="invocation",
+        attributes={
+            "durable.execution.arn": bindings["EXECUTION_ARN"],
+            "durable.operation.id": bindings["SUBMITTER_STEP"],
+            "durable.operation.type": "STEP",
+            "durable.operation.subtype": "Step",
+            "durable.operation.status": "SUCCEEDED",
+            "durable.operation.name": "otel-long-callback-submitter",
+            "durable.attempt.number": 1,
+        },
+    )
+    attempt_span = Span(
+        trace_id=trace_id,
+        span_id="6" * 16,
+        parent_span_id=step_span.span_id,
+        name="STEP attempt 1",
+        start_time=now,
+        end_time=now,
+        kind="INTERNAL",
+        status="OK",
+        service_name="invocation",
+        attributes={
+            "durable.execution.arn": bindings["EXECUTION_ARN"],
+            "durable.operation.id": bindings["SUBMITTER_STEP"],
+            "durable.operation.type": "STEP",
+            "durable.operation.subtype": "Step",
+            "durable.operation.name": "otel-long-callback-submitter",
+            "durable.attempt.number": 1,
+            "durable.attempt.outcome": "SUCCEEDED",
+        },
+    )
+    trace = Trace(
+        trace_id=trace_id,
+        spans=(context_span, invocation_span, *callbacks, step_span, attempt_span),
+    )
+    query = TelemetryQuery(
+        execution_arn=bindings["EXECUTION_ARN"],
+        service_name="invocation",
+        started_at=now,
+        ended_at=now,
+    )
+
+    assert (
+        validate_trace(
+            trace,
+            focused_assertions,
+            query,
+            feature_disparities={BackendFeatureDisparity.SPAN_LINKS},
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize("case_number", range(1, 20))

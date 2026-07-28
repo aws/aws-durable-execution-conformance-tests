@@ -17,7 +17,7 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-suite.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -168,9 +168,23 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    makefile = (source_dir / "Makefile").read_text(encoding="utf-8")
+    for logical_id in (
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
+    ):
+        assert f"build-{logical_id}" in makefile
 
 
 def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit() -> None:

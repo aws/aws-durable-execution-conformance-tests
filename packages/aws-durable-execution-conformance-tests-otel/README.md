@@ -2,8 +2,9 @@
 
 Optional OpenTelemetry integration suites for
 `aws-durable-execution-conformance-tests`. Installing this distribution adds
-the `otel-invocation` and `otel-execution` suites to the existing runner through
-a Python entry point; it does not install a second conformance CLI.
+the `otel-invocation`, `otel-execution`, and `otel-long-running` suites to the
+existing runner through a Python entry point; it does not install a second
+conformance CLI.
 
 ## Install
 
@@ -20,6 +21,13 @@ The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each
 Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
+The long-running suite applies both invocation and execution views to waits,
+retry delays, callbacks, and chained invokes that can remain suspended for up
+to one day. Python and TypeScript run both views; Java runs the invocation view
+because its SDK does not provide `ExecutionOtelPlugin`. Dedicated daily X-Ray
+workflows run at midnight PDT (07:00 UTC), launch a suite when no run is active,
+and validate active executions on later runs. They can also be dispatched
+manually to launch or check a run.
 
 ## Run
 

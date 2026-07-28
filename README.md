@@ -26,7 +26,7 @@ Installing only the core package does not install OpenTelemetry dependencies:
 pip install aws-durable-execution-conformance-tests
 ```
 
-Install the optional distribution to make both OTel suites available through
+Install the optional distribution to make the OTel suites available through
 the same CLI:
 
 ```bash
@@ -90,7 +90,7 @@ combinations fail during argument validation, before SAM build or deployment.
 hatch run validate \
   --template path/to/template.yaml \
   --language python \
-  --suite otel-invocation otel-execution \
+  --suite otel-invocation otel-execution otel-long-running \
   --otel-exporter community \
   --otel-backend collector \
   --otel-endpoint https://otel-collector.example/v1/traces \

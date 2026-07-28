@@ -67,7 +67,7 @@ class OtelExtension:
             "test_requirements",
         )
         suites = []
-        for name in ("otel-invocation", "otel-execution"):
+        for name in ("otel-invocation", "otel-execution", "otel-long-running"):
             source_root = project_root / "test-requirements" / name
             installed_root = Path(str(package_root.joinpath(name)))
             suites.append(

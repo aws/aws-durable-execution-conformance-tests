@@ -8,6 +8,7 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.SdkTracerProviderBuilder;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import java.net.URLDecoder;
@@ -19,7 +20,7 @@ import software.amazon.distro.opentelemetry.exporter.xray.udp.trace.AwsXrayUdpSp
 import software.amazon.lambda.durable.DurableConfig;
 import software.amazon.lambda.durable.DurableHandler;
 import software.amazon.lambda.durable.TypeToken;
-import software.amazon.lambda.durable.otel.OtelPlugin;
+import software.amazon.lambda.durable.plugin.DurableExecutionPlugin;
 
 abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Object>, O> {
 
@@ -37,11 +38,34 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                                         Attributes.of(
                                                 AttributeKey.stringKey("service.name"),
                                                 System.getenv().getOrDefault("OTEL_SERVICE_NAME", "invocation"))));
-        var plugin = new OtelPlugin(
+        var plugin = createInvocationPlugin(
                 SdkTracerProvider.builder()
                         .setResource(resource)
                         .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
         return DurableConfig.builder().withPlugins(plugin).build();
+    }
+
+    private DurableExecutionPlugin createInvocationPlugin(
+            SdkTracerProviderBuilder tracerProviderBuilder) {
+        var classNames =
+                new String[] {
+                    "software.amazon.lambda.durable.otel.InvocationOtelPlugin",
+                    "software.amazon.lambda.durable.otel.OtelPlugin"
+                };
+        for (var className : classNames) {
+            try {
+                return (DurableExecutionPlugin)
+                        Class.forName(className)
+                                .getConstructor(SdkTracerProviderBuilder.class)
+                                .newInstance(tracerProviderBuilder);
+            } catch (ClassNotFoundException error) {
+                // The preview plugin was renamed after the 2.1.0 release.
+            } catch (ReflectiveOperationException error) {
+                throw new IllegalStateException(
+                        "Could not initialize OpenTelemetry plugin " + className, error);
+            }
+        }
+        throw new IllegalStateException("No supported Java OpenTelemetry plugin is available");
     }
 
     private SpanExporter createExporter() {
@@ -107,5 +131,23 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
         if (!expected.equals(actual)) {
             throw new IllegalArgumentException("Expected scenario " + expected + ", received " + actual);
         }
+    }
+
+    protected final long longDelaySeconds(Map<String, Object> event) {
+        var rawDelay = event.get("delay_seconds");
+        final long delay;
+        try {
+            delay = rawDelay instanceof Number
+                    ? ((Number) rawDelay).longValue()
+                    : Long.parseLong(String.valueOf(rawDelay));
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException(
+                    "delay_seconds must be an integer from 1 through 86400", error);
+        }
+        if (delay < 1 || delay > 86400) {
+            throw new IllegalArgumentException(
+                    "delay_seconds must be an integer from 1 through 86400");
+        }
+        return delay;
     }
 }

@@ -48,6 +48,14 @@ export function createTargetHandler<TResult>(
   return withDurableExecution(workflow, { plugins: [plugin] });
 }
 
+export function longDelaySeconds(event: ScenarioEvent): number {
+  const delay = Number(event.delay_seconds);
+  if (!Number.isInteger(delay) || delay < 1 || delay > 86_400) {
+    throw new Error("delay_seconds must be an integer from 1 through 86400");
+  }
+  return delay;
+}
+
 function requireScenario(event: ScenarioEvent, expected: string): void {
   if (event.scenario !== expected) {
     throw new Error(

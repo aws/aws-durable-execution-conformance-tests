@@ -14,7 +14,7 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry-suite.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
@@ -101,10 +101,22 @@ def test_java_example_template_handlers_have_sources() -> None:
         *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
         "Otel11InvokeTarget",
         "Otel18InvokeTarget",
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
     }
 
     assert {path.stem for path in SOURCE_DIR.glob("*.java")} == expected_classes
-    for class_name in expected_classes - {"OtelConformanceHandler"}:
+    for class_name in expected_classes - {
+        "OtelConformanceHandler",
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
+    }:
         handler = f"software.amazon.lambda.durable.conformance.otel.{class_name}"
         assert f"      Handler: {handler}" in template
 
@@ -135,6 +147,8 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
     assert '"OTEL_EXPORTER_OTLP_HEADERS"' in handler
     assert "URLDecoder.decode" in handler
     assert "builder::addHeader" in handler
+    assert '"software.amazon.lambda.durable.otel.InvocationOtelPlugin"' in handler
+    assert '"software.amazon.lambda.durable.otel.OtelPlugin"' in handler
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:

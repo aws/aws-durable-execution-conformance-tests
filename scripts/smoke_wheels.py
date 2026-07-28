@@ -42,12 +42,19 @@ def main() -> None:
             config.TESTS_DIR,
             entry_points=entry_points,
         )
-        requirements = registry.discover_requirements(["otel-invocation", "otel-execution"])
+        requirements = registry.discover_requirements(
+            ["otel-invocation", "otel-execution", "otel-long-running"],
+        )
 
-        assert {"otel-invocation", "otel-execution"} <= registry.suites.keys()
+        assert {
+            "otel-invocation",
+            "otel-execution",
+            "otel-long-running",
+        } <= registry.suites.keys()
         assert set(requirements) == {
             *(f"otel-invocation-{case_number}" for case_number in range(1, 20)),
             *(f"otel-execution-{case_number}" for case_number in range(1, 20)),
+            *(f"otel-long-running-{case_number}" for case_number in range(1, 5)),
         }
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 

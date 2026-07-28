@@ -18,7 +18,7 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry-suite.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -165,6 +165,10 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules
@@ -173,7 +177,13 @@ def test_typescript_template_handlers_have_sources() -> None:
         for line in template.splitlines()
         if line.strip().startswith("Handler: ")
     }
-    assert handlers == expected_modules - {"common"}
+    assert handlers == expected_modules - {
+        "common",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
+    }
 
 
 def test_typescript_examples_build_sdk_packages_from_main() -> None:
