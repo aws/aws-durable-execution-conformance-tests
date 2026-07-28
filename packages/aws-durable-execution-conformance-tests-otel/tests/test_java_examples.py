@@ -147,6 +147,8 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
     assert '"OTEL_EXPORTER_OTLP_HEADERS"' in handler
     assert "URLDecoder.decode" in handler
     assert "builder::addHeader" in handler
+    assert '"software.amazon.lambda.durable.otel.InvocationOtelPlugin"' in handler
+    assert '"software.amazon.lambda.durable.otel.OtelPlugin"' in handler
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
