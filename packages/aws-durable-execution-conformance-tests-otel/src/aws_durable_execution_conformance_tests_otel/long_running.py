@@ -597,6 +597,52 @@ def check(args: argparse.Namespace) -> int:
     return report.exit_code()
 
 
+def run_to_completion(args: argparse.Namespace) -> int:
+    """Launch a short run and poll it through callback completion and validation."""
+
+    state_path = Path(args.state_file)
+    result_path = Path(args.result_file)
+    terminal = False
+    try:
+        launch(args)
+        state = RunState.load(state_path)
+        due_at = (state.launched_at_ms / 1000) + state.delay_seconds
+        remaining = max(0.0, due_at - time.time())
+        if remaining:
+            print(f"Waiting {remaining:.1f} seconds before checking long-running executions")
+            time.sleep(remaining)
+
+        deadline = time.monotonic() + args.check_timeout
+        while True:
+            result_path.unlink(missing_ok=True)
+            exit_code = check(args)
+            if not result_path.is_file():
+                raise RuntimeError("Long-running check did not write a result")
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            status = str(result.get("status", "error"))
+            if status == "passed":
+                terminal = True
+                return exit_code
+            if status == "failed":
+                terminal = True
+                return exit_code or 1
+            if status == "error":
+                return exit_code or 1
+            if status != "pending":
+                raise RuntimeError(f"Long-running check returned unknown status {status!r}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Long-running executions remained pending after {args.check_timeout} seconds")
+            time.sleep(args.check_interval)
+    finally:
+        if state_path.is_file() and not terminal:
+            try:
+                state = RunState.load(state_path)
+            except (OSError, ValueError):
+                pass
+            else:
+                delete_stack(state.stack_name, state.region)
+
+
 def _new_report(state: RunState, now_ms: int) -> Report:
     return Report(
         run=RunMetadata(
@@ -659,6 +705,44 @@ def _parser() -> argparse.ArgumentParser:
         choices=["xray"],
         default="xray",
     )
+
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--template", required=True)
+    run_parser.add_argument("--language", required=True)
+    run_parser.add_argument(
+        "--view",
+        choices=["execution", "invocation"],
+        default="invocation",
+    )
+    run_parser.add_argument("--region", default="us-west-2")
+    run_parser.add_argument("--name", required=True)
+    run_parser.add_argument("--state-file", required=True)
+    run_parser.add_argument("--build-dir", default=".build/long-running")
+    run_parser.add_argument(
+        "--delay-seconds",
+        type=int,
+        default=600,
+    )
+    run_parser.add_argument("--lambda-execution-role-arn", required=True)
+    run_parser.add_argument("--otel-layer-arn", required=True)
+    run_parser.add_argument("--result-file", required=True)
+    run_parser.add_argument("--history-dir", required=True)
+    run_parser.add_argument("--report-file", required=True)
+    run_parser.add_argument(
+        "--otel-backend",
+        choices=["xray"],
+        default="xray",
+    )
+    run_parser.add_argument(
+        "--check-timeout",
+        type=float,
+        default=900.0,
+    )
+    run_parser.add_argument(
+        "--check-interval",
+        type=float,
+        default=15.0,
+    )
     return parser
 
 
@@ -667,7 +751,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.phase == "launch":
             return launch(args)
-        return check(args)
+        if args.phase == "check":
+            return check(args)
+        if args.check_timeout <= 0 or args.check_interval <= 0:
+            raise ValueError("check timeout and interval must be positive")
+        return run_to_completion(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Long-running OTel {args.phase} failed: {exc}", file=sys.stderr)
         return 1

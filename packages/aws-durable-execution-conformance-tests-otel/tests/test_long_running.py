@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from aws_durable_execution_conformance_tests_otel import long_running
 
 from aws_durable_execution_conformance_tests.validate import (
     _CfnSafeLoader,
@@ -30,6 +32,7 @@ from aws_durable_execution_conformance_tests_otel.long_running import (
     _send_due_callback,
     _validate_delay,
     _validate_view,
+    run_to_completion,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -224,6 +227,111 @@ def test_non_callback_cases_cannot_finish_before_the_configured_delay() -> None:
     assert _premature_executions(state, statuses, 11000) == []
 
 
+def _short_run_args(tmp_path: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        state_file=str(tmp_path / "state.json"),
+        result_file=str(tmp_path / "result.json"),
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+
+def _save_short_run_state(args: argparse.Namespace) -> int:
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="short",
+        stack_name="conformance-tests-short",
+        template="template.yaml",
+        delay_seconds=600,
+        launched_at_ms=0,
+        executions=[],
+    ).save(Path(args.state_file))
+    return 0
+
+
+def test_short_run_polls_again_after_sending_the_due_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _short_run_args(tmp_path)
+    statuses = iter(
+        [
+            {"status": "pending", "state_changed": True},
+            {"status": "passed", "state_changed": False},
+        ]
+    )
+    check_calls = 0
+    sleeps: list[float] = []
+
+    def fake_check(check_args: argparse.Namespace) -> int:
+        nonlocal check_calls
+        check_calls += 1
+        Path(check_args.result_file).write_text(json.dumps(next(statuses)), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(long_running, "launch", _save_short_run_state)
+    monkeypatch.setattr(long_running, "check", fake_check)
+    monkeypatch.setattr(long_running.time, "time", lambda: 600.0)
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(long_running.time, "sleep", sleeps.append)
+
+    assert run_to_completion(args) == 0
+    assert check_calls == 2
+    assert sleeps == [15.0]
+
+
+def test_short_run_cleans_up_an_error_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _short_run_args(tmp_path)
+    deleted: list[tuple[str, str]] = []
+
+    def fake_check(check_args: argparse.Namespace) -> int:
+        Path(check_args.result_file).write_text(
+            json.dumps({"status": "error", "state_changed": False}),
+            encoding="utf-8",
+        )
+        return 1
+
+    monkeypatch.setattr(long_running, "launch", _save_short_run_state)
+    monkeypatch.setattr(long_running, "check", fake_check)
+    monkeypatch.setattr(long_running, "delete_stack", lambda name, region: deleted.append((name, region)))
+    monkeypatch.setattr(long_running.time, "time", lambda: 600.0)
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: 0.0)
+
+    assert run_to_completion(args) == 1
+    assert deleted == [("conformance-tests-short", "us-west-2")]
+
+
+def test_short_run_cleans_up_after_poll_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _short_run_args(tmp_path)
+    monotonic_values = iter([0.0, 901.0])
+    deleted: list[tuple[str, str]] = []
+
+    def fake_check(check_args: argparse.Namespace) -> int:
+        Path(check_args.result_file).write_text(
+            json.dumps({"status": "pending", "state_changed": False}),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(long_running, "launch", _save_short_run_state)
+    monkeypatch.setattr(long_running, "check", fake_check)
+    monkeypatch.setattr(long_running, "delete_stack", lambda name, region: deleted.append((name, region)))
+    monkeypatch.setattr(long_running.time, "time", lambda: 600.0)
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(RuntimeError, match="remained pending after 900.0 seconds"):
+        run_to_completion(args)
+    assert deleted == [("conformance-tests-short", "us-west-2")]
+
+
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])
 def test_long_running_templates_map_the_complete_suite(language: str) -> None:
     template_path = EXAMPLES_DIR / language / "template-long-running.yaml"
@@ -288,13 +396,21 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 
 
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])
-def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
+def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").read_text(encoding="utf-8")
 
+    assert "  pull_request:" in workflow
+    assert "  push:" in workflow
+    assert workflow.count("    branches: [main]") == 2
     assert "  schedule:" in workflow
     assert "  workflow_dispatch:" in workflow
     assert 'cron: "0 7 * * *"' in workflow
+    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "github.event_name == 'schedule' && 'auto'" in workflow
+    assert "&& 'short'" in workflow
+    assert "&& '600'" in workflow
+    assert "env.PHASE != 'short'" in workflow
     assert "phase=launch" in workflow
     assert "phase=check" in workflow
     assert 'default: "82800"' in workflow
@@ -303,6 +419,9 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
     assert "otel-long-running-state" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running check" in workflow
+    assert "aws_durable_execution_conformance_tests_otel.long_running run" in workflow
+    assert "--check-timeout 900" in workflow
+    assert "--check-interval 15" in workflow
     assert "aws-observability/aws-otel-" in workflow
     assert '--view "$OTEL_VIEW"' in workflow
     assert "--otel-layer-arn" in workflow
@@ -317,9 +436,10 @@ def test_language_workflows_launch_and_resume_xray_runs(language: str) -> None:
         assert "OTEL_VIEW: invocation" in workflow
         assert "matrix:" not in workflow
         assert "java-otel-long-running-invocation-state" in workflow
+        assert "j-olr-i${{" in workflow
     else:
         assert "matrix:" in workflow
         assert "          - invocation" in workflow
         assert "          - execution" in workflow
         assert f"STATE_ARTIFACT: {language}-otel-long-running-${{{{ matrix.view }}}}-state" in workflow
-        assert f"{language}-xray-long-${{{{ matrix.view }}}}" in workflow
+        assert f"{language[0]}-olr-${{{{ matrix.view == 'invocation' && 'i' || 'e' }}}}" in workflow
