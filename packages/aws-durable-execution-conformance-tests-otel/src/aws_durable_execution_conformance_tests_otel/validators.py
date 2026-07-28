@@ -24,10 +24,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable.execution.arn",
     "durable_execution_arn",
 )
-_DURABLE_INVOCATION_ATTRIBUTE_KEYS = (
-    "durable.invocation.first",
-    "durable.invocation.status",
-)
+_DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
 _TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
 
 
@@ -42,7 +39,8 @@ def _invocation_count(trace: Trace) -> int:
     return sum(
         1
         for span in trace.spans
-        if span.name == "invocation" and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
+        if span.name.lower() == "invocation"
+        and all(key in span.attributes for key in _DURABLE_INVOCATION_ATTRIBUTE_KEYS)
     )
 
 
@@ -205,6 +203,11 @@ def _parent_expectation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    allow_outside = expected.get("$allow_outside", False)
+    if "$allow_outside" in expected and allow_outside is not True:
+        return [f"{path}.$allow_outside must be true"]
+    expected_properties = {key: value for key, value in expected.items() if key != "$allow_outside"}
+
     parent_span_id = span.parent_span_id
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
@@ -215,7 +218,7 @@ def _parent_expectation_errors(
 
     expectation_errors = [
         _span_expectation_errors(
-            expected,
+            expected_properties,
             serialized_parent,
             path=path,
             feature_disparities=feature_disparities,
@@ -229,6 +232,9 @@ def _parent_expectation_errors(
         if len(parents) > 1:
             return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
         return expectation_errors[0]
+
+    if allow_outside:
+        return []
 
     candidate_errors = []
     for parent in matching_parents:

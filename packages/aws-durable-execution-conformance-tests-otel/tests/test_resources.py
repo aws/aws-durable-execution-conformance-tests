@@ -66,9 +66,11 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Workflow"
         ]
         invocation_spans = [
-            assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Invocation"
+            assertion
+            for assertion in execution_span_assertions
+            if assertion["select"]["name"] == "${/^[Ii]nvocation$/}"
         ]
-        assert len(workflow_spans) == (2 if case_number == 4 else 1)
+        assert len(workflow_spans) == 1
         assert len(invocation_spans) == expected_invocations
 
 

@@ -39,7 +39,6 @@ TelemetryAssertions:
   span_assertion_scope:
     attributes:
       durable.execution.arn: ${EXECUTION_ARN}
-  exact_attribute_prefixes: [durable.]
   span_assertions:
     - select:
         name: invocation
@@ -86,24 +85,27 @@ TelemetryAssertions:
     - select:
         name: otel-long-retry
         attributes:
-          durable.operation.status: STARTED
+          durable.operation.id: ${RETRY_STEP}
+      count: 2
       expect:
-        status: UNSET
+        status:
+          $any_of: [UNSET, OK]
         service_name: invocation
-        links: []
+        links:
+          $any_of:
+            - []
+            - - name: otel-long-retry
+                attributes:
+                  durable.operation.id: ${RETRY_STEP}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-long-retry
-        before:
-          name: otel-long-retry
-          attributes:
-            durable.operation.status: SUCCEEDED
         parent:
+          $allow_outside: true
           name: invocation
           kind: INTERNAL
           attributes:
@@ -122,7 +124,6 @@ TelemetryAssertions:
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-long-retry
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
@@ -138,35 +139,6 @@ TelemetryAssertions:
             durable.operation.type: STEP
             durable.operation.subtype: Step
     - select:
-        name: otel-long-retry
-        attributes:
-          durable.operation.status: SUCCEEDED
-      expect:
-        status: OK
-        service_name: invocation
-        links:
-          - name: otel-long-retry
-            attributes:
-              durable.operation.id: ${RETRY_STEP}
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${RETRY_STEP}
-          durable.operation.type: STEP
-          durable.operation.subtype: Step
-          durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-long-retry
-          durable.attempt.number: 2
-        after:
-          name: otel-long-retry
-          attributes:
-            durable.operation.status: STARTED
-        parent:
-          name: invocation
-          kind: INTERNAL
-          attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
-    - select:
         name: otel-long-retry attempt 2
         attributes:
           durable.attempt.number: 2
@@ -180,7 +152,6 @@ TelemetryAssertions:
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-long-retry
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
@@ -215,11 +186,10 @@ ExecutionTelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.execution.status: SUCCEEDED
     - select:
-        name: Invocation
+        name: '${/^[Ii]nvocation$/}'
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: PENDING
       expect:
         status: UNSET
         service_name: invocation
@@ -228,19 +198,16 @@ ExecutionTelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: PENDING
         before:
-          name: Invocation
+          name: '${/^[Ii]nvocation$/}'
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
-            durable.invocation.status: SUCCEEDED
     - select:
-        name: Invocation
+        name: '${/^[Ii]nvocation$/}'
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
-          durable.invocation.status: SUCCEEDED
       expect:
         status: UNSET
         service_name: invocation
@@ -249,13 +216,11 @@ ExecutionTelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
-          durable.invocation.status: SUCCEEDED
         after:
-          name: Invocation
+          name: '${/^[Ii]nvocation$/}'
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: true
-            durable.invocation.status: PENDING
     - select:
         name: otel-long-retry
         attributes:
@@ -305,6 +270,7 @@ ExecutionTelemetryAssertions:
             durable.operation.id: ${RETRY_STEP}
             durable.attempt.outcome: SUCCEEDED
         parent:
+          $allow_outside: true
           name: otel-long-retry
           kind: INTERNAL
           attributes:

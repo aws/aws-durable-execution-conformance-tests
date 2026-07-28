@@ -78,6 +78,33 @@ def test_validates_stable_cross_invocation_invariants() -> None:
     assert errors == []
 
 
+def test_counts_case_insensitive_invocations_without_status_attributes() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    invocation_attributes = {
+        "durable.execution.arn": "arn:test",
+        "durable.invocation.first": True,
+    }
+    first = replace(root, name="invocation", attributes=invocation_attributes)
+    resumed = replace(
+        child,
+        name="Invocation",
+        attributes={
+            **invocation_attributes,
+            "durable.invocation.first": False,
+        },
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(first, resumed)),
+            {"minimum_invocations": 2},
+            _query(),
+        )
+        == []
+    )
+
+
 def test_rejects_spans_that_end_before_they_start() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -923,6 +950,48 @@ def test_parent_assertion_accepts_matching_replayed_span_with_duplicate_id() -> 
         )
         == []
     )
+
+
+def test_parent_assertion_can_allow_replay_backdated_child() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    backdated_child = replace(
+        child,
+        start_time=root.start_time - timedelta(seconds=1),
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$allow_outside": True,
+                    "name": "root",
+                }
+            },
+        }
+    }
+
+    assert validate_trace(replace(trace, spans=(root, backdated_child)), assertions, _query()) == []
+
+
+def test_parent_assertion_rejects_invalid_allow_outside_directive() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "parent": {
+                        "$allow_outside": False,
+                        "name": "root",
+                    }
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == ["span_assertions[0].expect.parent.$allow_outside must be true"]
 
 
 def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:

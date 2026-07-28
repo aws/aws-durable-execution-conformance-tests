@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 import yaml
-from aws_durable_execution_conformance_tests_otel import long_running
 
 from aws_durable_execution_conformance_tests.validate import (
     _CfnSafeLoader,
     parse_function_descriptions,
 )
+from aws_durable_execution_conformance_tests_otel import long_running
 from aws_durable_execution_conformance_tests_otel.long_running import (
     CALLBACK_CASE,
     MAX_DELAY_SECONDS,
@@ -327,7 +327,7 @@ def test_short_run_cleans_up_after_poll_timeout(
     monkeypatch.setattr(long_running.time, "time", lambda: 600.0)
     monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
 
-    with pytest.raises(RuntimeError, match="remained pending after 900.0 seconds"):
+    with pytest.raises(RuntimeError, match=r"remained pending after 900.0 seconds"):
         run_to_completion(args)
     assert deleted == [("conformance-tests-short", "us-west-2")]
 
