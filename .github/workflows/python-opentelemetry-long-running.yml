@@ -22,28 +22,6 @@ on:
         required: false
         default: us-west-2
         type: string
-  schedule:
-    - cron: "0 7 * * *"
-  workflow_dispatch:
-    inputs:
-      phase:
-        description: Launch a run or check the active run
-        required: true
-        default: launch
-        type: choice
-        options:
-          - launch
-          - check
-      delay_seconds:
-        description: Durable delay in seconds (1-86400, launch only)
-        required: true
-        default: "82800"
-        type: string
-      aws_region:
-        description: AWS region
-        required: true
-        default: us-west-2
-        type: string
 
 permissions:
   actions: write
@@ -56,8 +34,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
-  PHASE: >-
-    ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
+  PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   STATE_FILE: /tmp/python-otel-long-running-state.json
   RESULT_FILE: /tmp/python-otel-long-running-result.json
@@ -68,24 +45,17 @@ env:
 jobs:
   run:
     name: >-
-      ${{ matrix.view }} /
+      ${{ inputs.view }} /
       ${{ inputs.phase == 'short' && 'Short run'
-        || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
+        || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        view: >-
-          ${{ fromJSON(inputs.view
-            && format('["{0}"]', inputs.view)
-            || '["invocation", "execution"]') }}
     env:
-      OTEL_VIEW: ${{ matrix.view }}
-      STATE_ARTIFACT: python-otel-long-running-${{ matrix.view }}-state
+      OTEL_VIEW: ${{ inputs.view }}
+      STATE_ARTIFACT: python-otel-long-running-${{ inputs.view }}-state
       TEST_NAME: >-
-        p-olr-${{ matrix.view == 'invocation' && 'i' || 'e' }}${{
+        p-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{
           inputs.phase == 'short'
           && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
         }}
@@ -287,7 +257,7 @@ jobs:
           (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-otel-long-running-${{ matrix.view }}-results-${{ github.run_id }}
+          name: python-otel-long-running-${{ inputs.view }}-results-${{ github.run_id }}
           path: |
             ${{ env.HISTORY_DIR }}/
             ${{ env.REPORT_FILE }}.json

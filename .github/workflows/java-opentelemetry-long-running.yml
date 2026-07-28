@@ -18,28 +18,6 @@ on:
         required: false
         default: us-west-2
         type: string
-  schedule:
-    - cron: "0 7 * * *"
-  workflow_dispatch:
-    inputs:
-      phase:
-        description: Launch a run or check the active run
-        required: true
-        default: launch
-        type: choice
-        options:
-          - launch
-          - check
-      delay_seconds:
-        description: Durable delay in seconds (1-86400, launch only)
-        required: true
-        default: "82800"
-        type: string
-      aws_region:
-        description: AWS region
-        required: true
-        default: us-west-2
-        type: string
 
 permissions:
   actions: write
@@ -52,8 +30,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
-  PHASE: >-
-    ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
+  PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   OTEL_VIEW: invocation
   STATE_ARTIFACT: java-otel-long-running-invocation-state
@@ -73,7 +50,7 @@ jobs:
   run:
     name: >-
       ${{ inputs.phase == 'short' && 'Short run'
-        || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
+        || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120

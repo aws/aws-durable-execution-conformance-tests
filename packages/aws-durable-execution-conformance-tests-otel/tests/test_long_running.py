@@ -397,23 +397,30 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
+    entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").read_text(encoding="utf-8")
 
-    assert "  pull_request:" in workflow
-    assert "  push:" in workflow
-    assert workflow.count("    branches: [main]") == 2
-    assert "  schedule:" in workflow
-    assert "  workflow_dispatch:" in workflow
-    assert 'cron: "0 7 * * *"' in workflow
-    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in workflow
+    assert "  pull_request:" in entry_workflow
+    assert "  push:" in entry_workflow
+    assert entry_workflow.count("    branches: [main]") == 2
+    assert "  schedule:" in entry_workflow
+    assert "  workflow_dispatch:" in entry_workflow
+    assert 'cron: "0 7 * * *"' in entry_workflow
+    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in entry_workflow
+    assert "github.event_name == 'schedule' && 'auto'" in entry_workflow
+    assert "&& 'short'" in entry_workflow
+    assert "&& '600'" in entry_workflow
+    assert 'default: "82800"' in entry_workflow
+    assert f"uses: ./.github/workflows/{language}-opentelemetry-long-running.yml" in entry_workflow
+    assert "  workflow_call:" in workflow
+    assert "  pull_request:" not in workflow
+    assert "  push:" not in workflow
+    assert "  schedule:" not in workflow
+    assert "  workflow_dispatch:" not in workflow
     assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
-    assert "github.event_name == 'schedule' && 'auto'" in workflow
-    assert "&& 'short'" in workflow
-    assert "&& '600'" in workflow
     assert "env.PHASE != 'short'" in workflow
     assert "phase=launch" in workflow
     assert "phase=check" in workflow
-    assert 'default: "82800"' in workflow
     assert "inputs.delay_seconds || '82800'" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow
@@ -434,12 +441,9 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     )
     if language == "java":
         assert "OTEL_VIEW: invocation" in workflow
-        assert "matrix:" not in workflow
         assert "java-otel-long-running-invocation-state" in workflow
         assert "j-olr-i${{" in workflow
     else:
-        assert "matrix:" in workflow
-        assert "          - invocation" in workflow
-        assert "          - execution" in workflow
-        assert f"STATE_ARTIFACT: {language}-otel-long-running-${{{{ matrix.view }}}}-state" in workflow
-        assert f"{language[0]}-olr-${{{{ matrix.view == 'invocation' && 'i' || 'e' }}}}" in workflow
+        assert "matrix:" not in workflow
+        assert f"STATE_ARTIFACT: {language}-otel-long-running-${{{{ inputs.view }}}}-state" in workflow
+        assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow
