@@ -1,0 +1,166 @@
+---
+# 10.19: DAG custom result-based completion — a rules-engine predicate stops the
+# scheduler the moment a task's SUCCEEDED result carries a REJECT verdict
+description: DAG whose completion config is a custom, results-aware predicate (not a
+  threshold) that inspects a SUCCEEDED task's result and stops the DAG early as a
+  failure, proving custom completion works identically across all four SDKs
+handler: |
+  A DAG named "rulesengine" with max-concurrency 1 (a single deterministic lane)
+  and a linear chain of three step tasks: r1 -> r2 -> r3. Each task returns a
+  verdict object { verdict: "ACCEPT" | "REJECT" }. r1 always returns ACCEPT, r2
+  always returns REJECT, r3 (if it ever ran) would return ACCEPT.
+
+  The DAG's completion config is a CUSTOM predicate (not a threshold): after
+  every task settlement it receives a live progress snapshot (per-task status
+  and result, in registration order) and returns "continue" or "complete now
+  with an outcome." This predicate inspects every SUCCEEDED item's result and,
+  the moment ANY of them carries verdict REJECT, returns "complete now as a
+  failure" — something no threshold config (minSuccessful/toleratedFailureCount/
+  toleratedFailurePercentage) can express, since thresholds only ever see
+  aggregate counts, never individual task results.
+
+  r1 settles first (ACCEPT, predicate says continue), then r2 settles (REJECT,
+  predicate observes the rejected verdict and says complete-as-failure). The
+  scheduler stops immediately: r3 is never started, is absent from the results
+  map, and getStatus("r3") returns nothing. The DAG completes with reason
+  CUSTOM_COMPLETION_FAILED — a dedicated completion reason distinct from
+  COMPLETED_WITH_FAILURES, since no individual task FAILED (r1 and r2 both
+  SUCCEEDED; the predicate's verdict, not a task exception, is what failed the
+  DAG). throwIfError()/throw_if_error() MUST still throw in this case, because
+  the contract keys off completionReason as well as failureCount, not
+  failureCount alone.
+
+  The handler returns a summary with the completion reason, the [succeeded,
+  failed, skipped, total] counts, and r1/r2's results (r3 is omitted, since it
+  never started).
+invocations: |
+  - The handler invokes the DAG operation. The SDK checkpoints ContextStarted
+    (SubType Dag). r1 runs first (max-concurrency 1): its step succeeds
+    (StepStarted/StepSucceeded, SubType Step, ParentId = the Dag op) returning
+    {verdict:"ACCEPT"}. The custom predicate evaluates and continues. r2 then
+    runs and succeeds, returning {verdict:"REJECT"}. The custom predicate
+    evaluates again, observes the REJECT verdict on a SUCCEEDED item, and
+    signals completion as a failure. The scheduler stops immediately: r3 is
+    never launched (no StepStarted for r3 at all). The DAG checkpoints
+    ContextSucceeded (SubType Dag) with reason CUSTOM_COMPLETION_FAILED and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+Input: {}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: CUSTOM_COMPLETION_FAILED
+    counts:
+      - 2
+      - 0
+      - 0
+      - 3
+    r1:
+      verdict: ACCEPT
+    r2:
+      verdict: REJECT
+# Verified against real cloud runs in all four languages (TypeScript, Python,
+# Java, Go -- 2026-07-28, account 730758745077/us-west-2). The EventId
+# sequence, ExpectedEventCount, and the ContextSucceeded envelope below all
+# matched the captured execution history exactly, byte-for-byte, on first run
+# in every language, with zero regressions across the pre-existing 18
+# scenarios in each run. TypeScript's captured history was diffed directly
+# against this file's arithmetic and confirmed identical:
+#   ExecutionStarted(1) + ContextStarted Dag(2) + StepStarted r1(3) +
+#   StepSucceeded r1(4) + StepStarted r2(5) + StepSucceeded r2(6) +
+#   ContextSucceeded Dag(7) + InvocationCompleted(8)
+#   + ExecutionSucceeded(9, unpinned) = 9 total, 7 pinned (EventIds 2-8).
+ExpectedEventCount: 9
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Dag
+    EventId: 2
+    Id: ${DAG}
+    Name: rulesengine
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${S_R1}
+    Name: r1
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${S_R1}
+    Name: r1
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${S_R2}
+    Name: r2
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${S_R2}
+    Name: r2
+    ParentId: ${DAG}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '*'
+  - EventType: ContextSucceeded
+    SubType: Dag
+    EventId: 7
+    Id: ${DAG}
+    Name: rulesengine
+    EventTimestamp: '*'
+    # Pin the converged, customer-facing DAG container envelope so the four SDKs
+    # cannot silently drift. r3 never started, so per the catalog rule ("Absent
+    # tasks (never started, DAG-16/17/18[/19]) MUST be omitted") it MUST be
+    # missing from `tasks` entirely, not present with a placeholder status.
+    ContextSucceededDetails:
+      Result:
+        Payload:
+          ${JSON}:
+            type: DagResult
+            totalCount: 3
+            successCount: 2
+            failureCount: 0
+            skippedCount: 0
+            completionReason: CUSTOM_COMPLETION_FAILED
+            startedTaskNames: []
+            failedTaskNames: []
+            completedCount: ${ABSENT}
+            terminalTaskNames: ${ABSENT}
+            summary: ${ABSENT}
+            # Registration order: r1, r2. r3 never started and is omitted.
+            tasks:
+              - name: r1
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result:
+                  verdict: ACCEPT
+                error: null
+                startedAt: '*'
+                completedAt: '*'
+              - name: r2
+                status: SUCCEEDED
+                skipReason: null
+                resultKind: plain
+                result:
+                  verdict: REJECT
+                error: null
+                startedAt: '*'
+                completedAt: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
