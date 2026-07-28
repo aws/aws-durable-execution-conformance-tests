@@ -1,4 +1,4 @@
-name: TypeScript OpenTelemetry Suite (Reusable)
+name: TypeScript OpenTelemetry Suite
 
 on:
   workflow_call:

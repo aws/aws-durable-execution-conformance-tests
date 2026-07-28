@@ -1,4 +1,4 @@
-name: Python OpenTelemetry Suite (Reusable)
+name: Python OpenTelemetry Suite
 
 on:
   workflow_call:

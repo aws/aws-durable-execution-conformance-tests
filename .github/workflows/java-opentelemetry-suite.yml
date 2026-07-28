@@ -1,4 +1,4 @@
-name: Java OpenTelemetry Suite (Reusable)
+name: Java OpenTelemetry Suite
 
 on:
   workflow_call:
