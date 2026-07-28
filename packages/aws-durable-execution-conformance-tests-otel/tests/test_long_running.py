@@ -30,6 +30,7 @@ from aws_durable_execution_conformance_tests_otel.long_running import (
     _requirement_for_view,
     _resolved_input,
     _send_due_callback,
+    _service_name,
     _validate_delay,
     _validate_view,
     run_to_completion,
@@ -101,6 +102,7 @@ def test_run_state_rejects_an_old_schema_before_reading_new_fields(tmp_path: Pat
     ("language", "view"),
     [
         ("java", "invocation"),
+        ("java", "execution"),
         ("javascript", "invocation"),
         ("javascript", "execution"),
         ("python", "invocation"),
@@ -111,11 +113,11 @@ def test_runtime_accepts_supported_telemetry_views(language: str, view: str) -> 
     assert _validate_view(language, view) == view
 
 
-def test_java_rejects_the_unavailable_execution_view() -> None:
-    with pytest.raises(ValueError, match="supports view\\(s\\): invocation"):
-        _validate_view("java", "execution")
-
-    assert SUPPORTED_VIEWS["java"] == {"invocation"}
+def test_java_execution_view_uses_the_plugin_service_name() -> None:
+    assert SUPPORTED_VIEWS["java"] == {"execution", "invocation"}
+    assert _service_name("java", "execution") == "workflow"
+    assert _service_name("java", "invocation") == "invocation"
+    assert _service_name("python", "execution") == "invocation"
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:
@@ -485,19 +487,15 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
         "RetentionPeriodInDays": 3,
     }
     assert globals_config["Tracing"] == "Active"
-    if language == "java":
-        assert "OtelView" not in template["Parameters"]
-        assert "OTEL_PLUGIN_MODE" not in globals_config["Environment"]["Variables"]
-    else:
-        assert template["Parameters"]["OtelView"] == {
-            "Type": "String",
-            "Default": "invocation",
-            "AllowedValues": ["invocation", "execution"],
-            "Description": "OpenTelemetry plugin view used by the long-running functions",
-        }
-        assert globals_config["Environment"]["Variables"]["OTEL_PLUGIN_MODE"] == {
-            "Ref": "OtelView",
-        }
+    assert template["Parameters"]["OtelView"] == {
+        "Type": "String",
+        "Default": "invocation",
+        "AllowedValues": ["invocation", "execution"],
+        "Description": "OpenTelemetry plugin view used by the long-running functions",
+    }
+    assert globals_config["Environment"]["Variables"]["OTEL_PLUGIN_MODE"] == {
+        "Ref": "OtelView",
+    }
     assert set(template["Resources"]) == {
         *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
         "OtelLongRunning4InvokeTarget",
@@ -588,15 +586,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         < workflow.index("- name: Upload reports and histories")
         < workflow.index("- name: Retire previous state artifact")
     )
-    if language == "java":
-        assert "OTEL_VIEW: invocation" in workflow
-        assert workflow_config["env"]["STATE_ARTIFACT"] == (
-            "java-otel-long-running-invocation-${{ inputs.aws_region || 'us-west-2' }}-state"
-        )
-        assert "j-olr-i${{" in workflow
-    else:
-        assert "matrix:" not in workflow
-        assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
-            f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
-        )
-        assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow
+    assert "matrix:" not in workflow
+    assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
+        f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
+    )
+    assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow

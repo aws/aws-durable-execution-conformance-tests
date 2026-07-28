@@ -8,18 +8,13 @@ AWS Durable Execution SDK for Java and its experimental OpenTelemetry plugin:
 
 The project uses Java 21 at runtime, compiles to Java 17 bytecode, and packages
 every handler in one shaded JAR. The template maps `otel-invocation-1` through
-`otel-invocation-19` with `TestingMetadata.TestDescription`;
-`otel-invocation-11` and `otel-invocation-18` also deploy durable chained-invoke
-targets.
-
-Requirements `otel-execution-1` through `otel-execution-19` exercise
-`ExecutionOtelPlugin`, which is not available in the Java SDK. The template
-declares those cases under `TestingMetadata.NotImplemented` so reports
-distinguish that SDK gap from uncovered requirements.
+`otel-invocation-19` to `InvocationOtelPlugin` and `otel-execution-1` through
+`otel-execution-19` to `ExecutionOtelPlugin`. Cases 11 and 18 also deploy
+durable chained-invoke targets for each view.
 
 The hosted Java workflow checks out the Java SDK repository's latest `main`,
 installs its SDK and OTel plugin artifacts, and overrides the Maven project's
-default released SDK version for the conformance run.
+default released SDK version for both conformance views.
 
 ## Scenarios
 

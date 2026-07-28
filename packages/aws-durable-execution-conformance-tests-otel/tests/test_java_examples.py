@@ -19,7 +19,7 @@ COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
-EXPECTED_MAPPINGS = [
+EXPECTED_INVOCATION_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
     ("Otel2WaitResume", "otel-invocation-2"),
     ("Otel3Retry", "otel-invocation-3"),
@@ -40,6 +40,11 @@ EXPECTED_MAPPINGS = [
     ("Otel18ChainedInvokeFailure", "otel-invocation-18"),
     ("Otel19ExecutionFailure", "otel-invocation-19"),
 ]
+EXPECTED_EXECUTION_MAPPINGS = [
+    (logical_id.replace("Otel", "OtelExecution", 1), description_id.replace("invocation", "execution"))
+    for logical_id, description_id in EXPECTED_INVOCATION_MAPPINGS
+]
+EXPECTED_MAPPINGS = EXPECTED_INVOCATION_MAPPINGS + EXPECTED_EXECUTION_MAPPINGS
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -52,6 +57,7 @@ REQUIRED_OTEL_PARAMETERS = {
     "OtelExporterEndpoint",
     "OtelExporterHeaders",
     "OtelSecretEnvironmentNames",
+    "OtelSuite",
 }
 
 
@@ -61,11 +67,8 @@ def test_java_example_template_maps_every_otel_requirement() -> None:
     assert mappings == EXPECTED_MAPPINGS
 
 
-def test_java_example_declares_execution_view_plugin_gap() -> None:
-    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
-        f"otel-execution-{case_number}": "ExecutionOtelPlugin is not available in the Java SDK"
-        for case_number in range(1, 20)
-    }
+def test_java_example_implements_execution_view() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
 def test_java_example_template_accepts_runner_parameters() -> None:
@@ -74,14 +77,20 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     for parameter in REQUIRED_OTEL_PARAMETERS:
         assert f"  {parameter}:" in template
     assert "    NoEcho: true" in template
-    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
-    assert template.count("      CodeUri: .") == len(EXPECTED_MAPPINGS) + 2
+    assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 4
+    assert template.count("      CodeUri: .") == len(EXPECTED_MAPPINGS) + 4
     for case_number in range(1, 20):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-execution-{case_number}"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"' in template
     assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-execution-11-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-execution-18-target"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
+    assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
+    assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXPECTED_EXECUTION_MAPPINGS) + 2
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
@@ -98,7 +107,7 @@ def test_java_example_template_handlers_have_sources() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
     expected_classes = {
         "OtelConformanceHandler",
-        *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
+        *(logical_id for logical_id, _description_id in EXPECTED_INVOCATION_MAPPINGS),
         "Otel11InvokeTarget",
         "Otel18InvokeTarget",
         "OtelLongRunning1Wait",
@@ -148,7 +157,9 @@ def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
     assert "URLDecoder.decode" in handler
     assert "builder::addHeader" in handler
     assert '"software.amazon.lambda.durable.otel.InvocationOtelPlugin"' in handler
+    assert '"software.amazon.lambda.durable.otel.ExecutionOtelPlugin"' in handler
     assert '"software.amazon.lambda.durable.otel.OtelPlugin"' in handler
+    assert '"OTEL_PLUGIN_MODE"' in handler
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
@@ -168,6 +179,8 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "--projects sdk,otel-plugin" in workflow
     assert "-Dexpression=project.version" in workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
+    assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
+    assert '--otel-service-name "$OTEL_SERVICE_NAME"' in workflow
 
 
 def test_java_s3_job_builds_and_queries_the_collector() -> None:
