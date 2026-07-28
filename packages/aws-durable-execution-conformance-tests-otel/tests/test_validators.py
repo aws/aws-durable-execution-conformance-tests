@@ -613,6 +613,49 @@ def test_linked_span_attributes_accept_any_of_matchers() -> None:
     assert errors == []
 
 
+def test_link_assertion_counts_matching_replayed_spans_with_duplicate_id() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_root = replace(
+        root,
+        name="replayed-root",
+        status="ERROR",
+        attributes={
+            **root.attributes,
+            "durable.operation.outcome": "pending",
+        },
+    )
+    trace_with_duplicates = replace(trace, spans=(replayed_root, root, child))
+
+    def validate_link(expected_link: dict[str, object]) -> list[str]:
+        return validate_trace(
+            trace_with_duplicates,
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {"links": [expected_link]},
+                }
+            },
+            _query(),
+        )
+
+    matching_root: dict[str, object] = {
+        "name": "root",
+        "status": "OK",
+        "attributes": {"durable.operation.outcome": "retry"},
+    }
+    both_roots: dict[str, object] = {"attributes": {"durable.execution.arn": "arn:test"}}
+
+    assert validate_link(matching_root) == []
+    assert validate_link(both_roots) == [
+        "span_assertions[0].expect.links[0]: linked span expectation matched 2 spans; expected 1"
+    ]
+    assert validate_link({"count": 2, **both_roots}) == []
+    assert validate_link({"count": 2, **matching_root}) == [
+        "span_assertions[0].expect.links[0]: linked span expectation matched 1 spans; expected 2"
+    ]
+
+
 def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
     trace = _trace()
     root, child = trace.spans

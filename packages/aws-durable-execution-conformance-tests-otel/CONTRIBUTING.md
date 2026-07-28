@@ -111,7 +111,10 @@ Both `select` and `expect` can use any canonical span property: `trace_id`,
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions compare length, order, and nested values. Each `expect.links` item
 resolves the linked span within the trace and applies a partial span assertion,
-using the same mechanism as `expect.parent`. The
+using the same mechanism as `expect.parent`. When duplicate exports share the
+linked trace and span IDs, add `count` to the link item to require an exact
+positive number of candidates matching its other properties; the default is
+`1`. The
 `$any_of` matcher accepts a non-empty sequence of alternative expected values.
 Use it when repeated spans intentionally have one of a small set of shapes. The
 optional `expect.parent` mapping resolves the selected span's `parent_span_id`

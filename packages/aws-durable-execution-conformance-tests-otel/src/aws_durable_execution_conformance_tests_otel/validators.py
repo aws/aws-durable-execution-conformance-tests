@@ -295,26 +295,34 @@ def _link_expectation_errors(
             errors.append(f"{link_path} must be a mapping")
             continue
 
+        expected_count = expected_span.get("count", 1)
+        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
+            errors.append(f"{link_path}.count must be a positive integer")
+            continue
+        expected_properties = {key: value for key, value in expected_span.items() if key != "count"}
         linked_spans = [
             candidate for candidate in spans_by_id.get(link["span_id"], []) if candidate["trace_id"] == link["trace_id"]
         ]
         if not linked_spans:
             errors.append(f"{link_path}: linked span is not present in the trace")
             continue
-        if len(linked_spans) > 1:
-            errors.append(
-                f"{link_path}: linked span id matched {len(linked_spans)} spans; it must identify exactly one"
-            )
-            continue
 
-        errors.extend(
+        expectation_errors = [
             _span_expectation_errors(
-                expected_span,
-                linked_spans[0],
+                expected_properties,
+                linked_span,
                 path=link_path,
                 feature_disparities=feature_disparities,
             )
-        )
+            for linked_span in linked_spans
+        ]
+        matching_count = sum(not candidate_errors for candidate_errors in expectation_errors)
+        if matching_count == expected_count:
+            continue
+        if len(linked_spans) == 1 and expected_count == 1:
+            errors.extend(expectation_errors[0])
+            continue
+        errors.append(f"{link_path}: linked span expectation matched {matching_count} spans; expected {expected_count}")
     return errors
 
 
