@@ -16,7 +16,7 @@ on:
       delay_seconds:
         description: Durable delay in seconds (1-86400, launch only)
         required: true
-        default: "86400"
+        default: "82800"
         type: string
       aws_region:
         description: AWS region
@@ -36,7 +36,7 @@ concurrency:
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
-  DELAY_SECONDS: ${{ inputs.delay_seconds || '86400' }}
+  DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   STATE_ARTIFACT: typescript-otel-long-running-state
   STATE_FILE: /tmp/typescript-otel-long-running-state.json
   RESULT_FILE: /tmp/typescript-otel-long-running-result.json
