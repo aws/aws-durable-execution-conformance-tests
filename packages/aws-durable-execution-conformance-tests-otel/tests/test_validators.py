@@ -776,6 +776,22 @@ def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
     assert errors == []
 
 
+def test_asserts_one_of_multiple_allowed_span_counts() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    repeated = replace(child, span_id="4" * 16)
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "count": {"$any_of": [1, 2]},
+            "expect": {"status": "OK"},
+        }
+    }
+
+    assert validate_trace(trace, assertions, _query()) == []
+    assert validate_trace(replace(trace, spans=(root, child, repeated)), assertions, _query()) == []
+
+
 def test_reports_uncovered_spans_and_unasserted_plugin_attributes() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -1228,7 +1244,7 @@ def test_reports_invalid_span_assertion_schema() -> None:
         "allowed_execution_arns must be a string or sequence of strings",
         "exact_attribute_prefixes must be a string or sequence of strings",
         "span_assertion_scope must be a mapping or sequence of mappings",
-        "span_assertions[0].count must be a positive integer",
+        "span_assertions[0].count must be a positive integer or $any_of positive integers",
     ]
 
 

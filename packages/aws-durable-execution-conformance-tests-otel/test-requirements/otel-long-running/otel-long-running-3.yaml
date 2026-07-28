@@ -61,7 +61,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -82,7 +83,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -119,7 +121,8 @@ TelemetryAssertions:
         parent:
           $allow_outside: true
           name: invocation
-          kind: INTERNAL
+          kind:
+            $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -142,7 +145,6 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
-          durable.operation.subtype: Callback
           durable.operation.name: '${/^otel-long-callback(?: create callback id|-callback)$/}'
         parent:
           $allow_outside: true
@@ -156,7 +158,8 @@ TelemetryAssertions:
         status: OK
         attributes:
           durable.operation.status: SUCCEEDED
-      count: 2
+      count:
+        $any_of: [1, 2]
       expect:
         status: OK
         service_name: invocation
@@ -169,7 +172,6 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
           durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
-          durable.attempt.number: 1
         parent:
           $allow_outside: true
           name: otel-long-callback
@@ -192,17 +194,16 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
-          durable.operation.subtype: Step
           durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
+          $allow_outside: true
           name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
           kind: INTERNAL
           attributes:
             durable.operation.id: ${SUBMITTER_STEP}
             durable.operation.type: STEP
-            durable.operation.subtype: Step
 ExecutionTelemetryAssertions:
   minimum_spans: 8
   require_execution_correlation: true

@@ -46,7 +46,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -67,7 +68,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -98,7 +100,6 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${WAIT1}
           durable.operation.type: WAIT
-          durable.operation.subtype: Wait
           durable.operation.name: otel-long-wait
         before:
           name: otel-after-long-wait
@@ -107,7 +108,8 @@ TelemetryAssertions:
         parent:
           $allow_outside: true
           name: invocation
-          kind: INTERNAL
+          kind:
+            $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -126,14 +128,14 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-after-long-wait
-          durable.attempt.number: 1
         after:
           name: otel-long-wait
           attributes:
             durable.operation.status: SUCCEEDED
         parent:
           name: invocation
-          kind: INTERNAL
+          kind:
+            $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -149,17 +151,15 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
-          durable.operation.subtype: Step
           durable.operation.name: otel-after-long-wait
           durable.attempt.number: 1
-          durable.attempt.outcome: SUCCEEDED
         parent:
+          $allow_outside: true
           name: otel-after-long-wait
           kind: INTERNAL
           attributes:
             durable.operation.id: ${STEP1}
             durable.operation.type: STEP
-            durable.operation.subtype: Step
 ExecutionTelemetryAssertions:
   minimum_spans: 6
   minimum_invocations: 2

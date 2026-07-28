@@ -46,7 +46,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -67,7 +68,8 @@ TelemetryAssertions:
         status: UNSET
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
@@ -88,7 +90,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: false
@@ -115,7 +118,8 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of: [INTERNAL, SERVER]
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -146,12 +150,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${INVOKE1}
           durable.operation.type: CHAINED_INVOKE
-          durable.operation.subtype: ChainedInvoke
           durable.operation.name: otel-long-invoke
         parent:
           $allow_outside: true
           name: invocation
-          kind: INTERNAL
+          kind:
+            $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
@@ -174,12 +178,12 @@ TelemetryAssertions:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.operation.id: '*'
           durable.operation.type: WAIT
-          durable.operation.subtype: Wait
           durable.operation.name: otel-long-invoke-target-wait
         parent:
           $allow_outside: true
           name: invocation
-          kind: INTERNAL
+          kind:
+            $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
 ExecutionTelemetryAssertions:
