@@ -1,22 +1,23 @@
 name: Java OpenTelemetry Long Running
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/java-opentelemetry-long-running.yml
-      - packages/aws-durable-execution-conformance-tests/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/java-opentelemetry-long-running.yml
-      - packages/aws-durable-execution-conformance-tests/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
+  workflow_call:
+    inputs:
+      phase:
+        description: Workflow phase
+        required: false
+        default: short
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "600"
+        type: string
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
@@ -52,11 +53,8 @@ concurrency:
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: >-
-    ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-      && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-  DELAY_SECONDS: >-
-    ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-      && '600' || (inputs.delay_seconds || '82800') }}
+    ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
+  DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   OTEL_VIEW: invocation
   STATE_ARTIFACT: java-otel-long-running-invocation-state
   STATE_FILE: /tmp/java-otel-long-running-state.json
@@ -66,7 +64,7 @@ env:
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template-long-running.yaml
   TEST_NAME: >-
     j-olr-i${{
-      (github.event_name == 'pull_request' || github.event_name == 'push')
+      inputs.phase == 'short'
       && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
     }}
   JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
@@ -74,8 +72,8 @@ env:
 jobs:
   run:
     name: >-
-      ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-        && 'Short run' || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
+      ${{ inputs.phase == 'short' && 'Short run'
+        || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120

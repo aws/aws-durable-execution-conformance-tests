@@ -6,10 +6,28 @@ on:
     paths:
       - .github/workflows/opentelemetry-execution.yml
       - .github/workflows/python-opentelemetry.yml
+      - .github/workflows/python-opentelemetry-long-running.yml
       - .github/workflows/typescript-opentelemetry.yml
+      - .github/workflows/typescript-opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
+      - packages/aws-durable-execution-conformance-tests-otel/collector/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/python/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/opentelemetry-execution.yml
+      - .github/workflows/python-opentelemetry.yml
+      - .github/workflows/python-opentelemetry-long-running.yml
+      - .github/workflows/typescript-opentelemetry.yml
+      - .github/workflows/typescript-opentelemetry-long-running.yml
+      - packages/aws-durable-execution-conformance-tests/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
       - packages/aws-durable-execution-conformance-tests-otel/collector/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/python/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
@@ -30,6 +48,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: read
   id-token: write
 
@@ -51,5 +70,25 @@ jobs:
     with:
       suite: otel-execution
       case_count: 19
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
+
+  python-long-running:
+    name: Python long running
+    uses: ./.github/workflows/python-opentelemetry-long-running.yml
+    with:
+      phase: short
+      view: execution
+      delay_seconds: "600"
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
+
+  typescript-long-running:
+    name: TypeScript long running
+    uses: ./.github/workflows/typescript-opentelemetry-long-running.yml
+    with:
+      phase: short
+      view: execution
+      delay_seconds: "600"
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

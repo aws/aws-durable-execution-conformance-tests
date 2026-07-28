@@ -1,22 +1,27 @@
 name: TypeScript OpenTelemetry Long Running
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/typescript-opentelemetry-long-running.yml
-      - packages/aws-durable-execution-conformance-tests/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/typescript-opentelemetry-long-running.yml
-      - packages/aws-durable-execution-conformance-tests/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
+  workflow_call:
+    inputs:
+      phase:
+        description: Workflow phase
+        required: false
+        default: short
+        type: string
+      view:
+        description: OTel view to verify
+        required: true
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "600"
+        type: string
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
@@ -46,17 +51,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: typescript-otel-long-running-${{ inputs.aws_region || 'us-west-2' }}
+  group: typescript-otel-long-running-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: >-
-    ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-      && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-  DELAY_SECONDS: >-
-    ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-      && '600' || (inputs.delay_seconds || '82800') }}
+    ${{ github.event_name == 'schedule' && 'auto' || inputs.phase }}
+  DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   STATE_FILE: /tmp/typescript-otel-long-running-state.json
   RESULT_FILE: /tmp/typescript-otel-long-running-result.json
   HISTORY_DIR: /tmp/typescript-otel-long-running-history
@@ -68,23 +70,24 @@ jobs:
   run:
     name: >-
       ${{ matrix.view }} /
-      ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-        && 'Short run' || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
+      ${{ inputs.phase == 'short' && 'Short run'
+        || (github.event_name == 'schedule' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        view:
-          - invocation
-          - execution
+        view: >-
+          ${{ fromJSON(inputs.view
+            && format('["{0}"]', inputs.view)
+            || '["invocation", "execution"]') }}
     env:
       OTEL_VIEW: ${{ matrix.view }}
       STATE_ARTIFACT: typescript-otel-long-running-${{ matrix.view }}-state
       TEST_NAME: >-
         t-olr-${{ matrix.view == 'invocation' && 'i' || 'e' }}${{
-          (github.event_name == 'pull_request' || github.event_name == 'push')
+          inputs.phase == 'short'
           && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
         }}
     steps:
