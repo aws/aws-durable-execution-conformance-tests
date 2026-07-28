@@ -104,6 +104,8 @@ def test_java_example_template_handlers_have_sources() -> None:
         "OtelLongRunning1Wait",
         "OtelLongRunning2Retry",
         "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
     }
 
     assert {path.stem for path in SOURCE_DIR.glob("*.java")} == expected_classes
@@ -112,6 +114,8 @@ def test_java_example_template_handlers_have_sources() -> None:
         "OtelLongRunning1Wait",
         "OtelLongRunning2Retry",
         "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
     }:
         handler = f"software.amazon.lambda.durable.conformance.otel.{class_name}"
         assert f"      Handler: {handler}" in template

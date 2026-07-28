@@ -35,6 +35,7 @@ EXPECTED_MAPPINGS = [
     ("OtelLongRunning1Wait", "otel-long-running-1"),
     ("OtelLongRunning2Retry", "otel-long-running-2"),
     ("OtelLongRunning3Callback", "otel-long-running-3"),
+    ("OtelLongRunning4ChainedInvoke", "otel-long-running-4"),
 ]
 
 
@@ -138,7 +139,7 @@ def test_due_callback_is_sent_once_and_persisted() -> None:
     ]
 
 
-def test_wait_and_retry_cannot_finish_before_the_configured_delay() -> None:
+def test_non_callback_cases_cannot_finish_before_the_configured_delay() -> None:
     executions = [
         ExecutionState(
             description_id=f"otel-long-running-{case_number}",
@@ -147,7 +148,7 @@ def test_wait_and_retry_cannot_finish_before_the_configured_delay() -> None:
             invocation_started_at_ms=1000,
             bindings={},
         )
-        for case_number in range(1, 4)
+        for case_number in range(1, 5)
     ]
     state = RunState(
         language="python",
@@ -161,7 +162,11 @@ def test_wait_and_retry_cannot_finish_before_the_configured_delay() -> None:
     )
     statuses = {execution.description_id: "SUCCEEDED" for execution in executions}
 
-    assert _premature_executions(state, statuses, 10999) == executions[:2]
+    assert _premature_executions(state, statuses, 10999) == [
+        executions[0],
+        executions[1],
+        executions[3],
+    ]
     assert _premature_executions(state, statuses, 11000) == []
 
 
@@ -179,7 +184,13 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
         "RetentionPeriodInDays": 2,
     }
     assert globals_config["Tracing"] == "Active"
-    assert set(template["Resources"]) == {logical_id for logical_id, _description_id in EXPECTED_MAPPINGS}
+    assert set(template["Resources"]) == {
+        *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
+        "OtelLongRunning4InvokeTarget",
+    }
+    assert template["Resources"]["OtelLongRunning4ChainedInvoke"]["Properties"]["Environment"]["Variables"][
+        "OTEL_INVOKE_TARGET_FUNCTION_NAME"
+    ] == {"Sub": "${OtelLongRunning4InvokeTarget.Arn}:$LATEST"}
 
 
 def test_long_running_handlers_use_runtime_delay_inputs() -> None:
@@ -200,8 +211,13 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     )
 
     assert "long_delay_seconds(event)" in (python_source / "otel_20_long_wait.py").read_text(encoding="utf-8")
+    assert "long_delay_seconds(event)" in (python_source / "otel_23_long_chained_invoke.py").read_text(encoding="utf-8")
     assert "longDelaySeconds(event)" in (typescript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
+    assert "longDelaySeconds(event)" in (typescript_source / "otel_23_long_chained_invoke.ts").read_text(
+        encoding="utf-8"
+    )
     assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning2Retry.java").read_text(encoding="utf-8")
+    assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning4InvokeTarget.java").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])

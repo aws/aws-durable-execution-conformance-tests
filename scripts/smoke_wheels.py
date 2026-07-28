@@ -54,7 +54,7 @@ def main() -> None:
         assert set(requirements) == {
             *(f"otel-invocation-{case_number}" for case_number in range(1, 20)),
             *(f"otel-execution-{case_number}" for case_number in range(1, 20)),
-            *(f"otel-long-running-{case_number}" for case_number in range(1, 4)),
+            *(f"otel-long-running-{case_number}" for case_number in range(1, 5)),
         }
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 

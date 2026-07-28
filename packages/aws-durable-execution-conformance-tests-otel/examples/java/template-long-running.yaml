@@ -74,3 +74,25 @@ Resources:
       Handler: software.amazon.lambda.durable.conformance.otel.OtelLongRunning3Callback
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-3"
       Role: !Ref LambdaExecutionRoleArn
+
+  OtelLongRunning4ChainedInvoke:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - otel-long-running-4
+    Properties:
+      CodeUri: .
+      Handler: software.amazon.lambda.durable.conformance.otel.OtelLongRunning4ChainedInvoke
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-4"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelLongRunning4InvokeTarget.Arn}:$LATEST"
+
+  OtelLongRunning4InvokeTarget:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: software.amazon.lambda.durable.conformance.otel.OtelLongRunning4InvokeTarget
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-4-target"
+      Role: !Ref LambdaExecutionRoleArn

@@ -82,3 +82,29 @@ Resources:
       Handler: otel_22_long_callback.handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-3"
       Role: !Ref LambdaExecutionRoleArn
+
+  OtelLongRunning4ChainedInvoke:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-long-running-4
+    Properties:
+      CodeUri: src/
+      Handler: otel_23_long_chained_invoke.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-4"
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelLongRunning4InvokeTarget.Arn}:$LATEST"
+
+  OtelLongRunning4InvokeTarget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: src/
+      Handler: otel_23_long_chained_invoke.target_handler
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-4-target"
+      Role: !Ref LambdaExecutionRoleArn

@@ -168,6 +168,7 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_20_long_wait",
         "otel_21_long_retry",
         "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules
@@ -181,6 +182,7 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_20_long_wait",
         "otel_21_long_retry",
         "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
     }
 
 

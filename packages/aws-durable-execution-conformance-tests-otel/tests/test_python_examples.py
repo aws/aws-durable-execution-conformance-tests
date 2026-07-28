@@ -171,6 +171,7 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_20_long_wait",
         "otel_21_long_retry",
         "otel_22_long_callback",
+        "otel_23_long_chained_invoke",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -180,6 +181,8 @@ def test_python_example_handlers_are_valid_python() -> None:
         "OtelLongRunning1Wait",
         "OtelLongRunning2Retry",
         "OtelLongRunning3Callback",
+        "OtelLongRunning4ChainedInvoke",
+        "OtelLongRunning4InvokeTarget",
     ):
         assert f"build-{logical_id}" in makefile
 

@@ -21,9 +21,10 @@ The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each
 Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
-The long-running suite applies the invocation view to waits, retry delays, and
-callbacks that can remain suspended for up to one day. Dedicated X-Ray
-workflows launch these executions and validate them in later, scheduled runs.
+The long-running suite applies the invocation view to waits, retry delays,
+callbacks, and chained invokes that can remain suspended for up to one day.
+Dedicated X-Ray workflows launch these executions and validate them in later,
+scheduled runs.
 
 ## Run
 
