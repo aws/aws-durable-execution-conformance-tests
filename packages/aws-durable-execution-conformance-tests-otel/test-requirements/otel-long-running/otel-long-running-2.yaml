@@ -1,0 +1,197 @@
+description: OpenTelemetry preserves retry telemetry across a long durable backoff
+Variables:
+  LONG_DELAY_SECONDS: 1
+Input:
+  scenario: long-retry
+  delay_seconds: ${LONG_DELAY_SECONDS}
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-long-retry
+  - EventId: 3
+    EventType: StepFailed
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-long-retry
+  - EventId: 5
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-long-retry
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-long-retry
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 6
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: otel-long-retry
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-long-retry
+        before:
+          name: otel-long-retry
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-long-retry attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-long-retry
+          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
+        before:
+          name: otel-long-retry attempt 2
+          attributes:
+            durable.attempt.number: 2
+        parent:
+          name: otel-long-retry
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
+    - select:
+        name: otel-long-retry
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: otel-long-retry
+            attributes:
+              durable.operation.id: ${RETRY_STEP}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-long-retry
+          durable.attempt.number: 2
+        after:
+          name: otel-long-retry
+          attributes:
+            durable.operation.status: STARTED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-long-retry attempt 2
+        attributes:
+          durable.attempt.number: 2
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-long-retry
+          durable.attempt.number: 2
+          durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-long-retry attempt 1
+          attributes:
+            durable.attempt.number: 1
+        parent:
+          name: otel-long-retry
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

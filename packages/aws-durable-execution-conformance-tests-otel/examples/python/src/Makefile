@@ -13,7 +13,8 @@
 	build-OtelExecution12ChildContextFailure build-OtelExecution13ParallelFailure \
 	build-OtelExecution14MapFailure build-OtelExecution16WaitForConditionFailure \
 	build-OtelExecution17WaitForCallbackFailure build-OtelExecution18ChainedInvokeFailure \
-	build-OtelExecution18InvokeTarget
+	build-OtelExecution18InvokeTarget build-OtelLongRunning1Wait \
+	build-OtelLongRunning2Retry build-OtelLongRunning3Callback
 
 build-Otel1Success build-Otel2WaitResume build-Otel3Retry build-Otel4TerminalFailure \
 build-Otel5ChildContext build-Otel6Parallel build-Otel7Map build-Otel8HandledFailure \
@@ -30,7 +31,8 @@ build-OtelExecution11ChainedInvoke build-OtelExecution11InvokeTarget \
 build-OtelExecution12ChildContextFailure build-OtelExecution13ParallelFailure \
 build-OtelExecution14MapFailure build-OtelExecution16WaitForConditionFailure \
 build-OtelExecution17WaitForCallbackFailure build-OtelExecution18ChainedInvokeFailure \
-build-OtelExecution18InvokeTarget:
+build-OtelExecution18InvokeTarget build-OtelLongRunning1Wait \
+build-OtelLongRunning2Retry build-OtelLongRunning3Callback:
 	python3 -m pip install --upgrade \
 		--target "$(ARTIFACTS_DIR)" \
 		--platform manylinux2014_x86_64 \

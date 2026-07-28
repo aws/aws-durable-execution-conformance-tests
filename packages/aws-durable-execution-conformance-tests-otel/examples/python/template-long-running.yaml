@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Python SDK examples for long-running durable execution OTel conformance
+
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Pre-created execution role for the test functions
+  OtelLayerArn:
+    Type: String
+    Description: AWS Distro for OpenTelemetry Python Lambda layer
+  OtelExecWrapper:
+    Type: String
+    Default: /opt/otel-instrument
+    Description: Lambda execution wrapper supplied by the exporter profile
+  OtelServiceName:
+    Type: String
+    Default: invocation
+    Description: OpenTelemetry service name used to find the exported trace
+  OtelTracesExporter:
+    Type: String
+    Default: otlp
+    Description: OpenTelemetry traces exporter selected by the runner
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - x86_64
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Layers:
+      - !Ref OtelLayerArn
+    DurableConfig:
+      ExecutionTimeout: 93600
+      RetentionPeriodInDays: 2
+    Environment:
+      Variables:
+        AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
+        OTEL_SERVICE_NAME: !Ref OtelServiceName
+        OTEL_TRACES_EXPORTER: !Ref OtelTracesExporter
+        OTEL_PROPAGATORS: xray
+        OTEL_TRACES_SAMPLER: always_on
+
+Resources:
+  OtelLongRunning1Wait:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-long-running-1
+    Properties:
+      CodeUri: src/
+      Handler: otel_20_long_wait.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-1"
+      Role: !Ref LambdaExecutionRoleArn
+
+  OtelLongRunning2Retry:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-long-running-2
+    Properties:
+      CodeUri: src/
+      Handler: otel_21_long_retry.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-2"
+      Role: !Ref LambdaExecutionRoleArn
+
+  OtelLongRunning3Callback:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    TestingMetadata:
+      TestDescription:
+        - otel-long-running-3
+    Properties:
+      CodeUri: src/
+      Handler: otel_22_long_callback.handler
+      FunctionName: !Sub "${AWS::StackName}-otel-long-running-3"
+      Role: !Ref LambdaExecutionRoleArn

@@ -33,3 +33,18 @@ def require_scenario(event: Mapping[str, Any], expected: str) -> None:
     actual = event.get("scenario")
     if actual != expected:
         raise ValueError(f"Expected scenario {expected!r}, received {actual!r}")
+
+
+def long_delay_seconds(event: Mapping[str, Any]) -> int:
+    """Read a workflow delay constrained to the suite's one-day limit."""
+
+    raw_delay = event.get("delay_seconds")
+    if isinstance(raw_delay, bool):
+        raise ValueError("delay_seconds must be an integer from 1 through 86400")
+    try:
+        delay = int(raw_delay)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("delay_seconds must be an integer from 1 through 86400") from exc
+    if delay < 1 or delay > 86400:
+        raise ValueError("delay_seconds must be an integer from 1 through 86400")
+    return delay

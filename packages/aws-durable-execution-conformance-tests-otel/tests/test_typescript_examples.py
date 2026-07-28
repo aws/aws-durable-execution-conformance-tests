@@ -165,6 +165,9 @@ def test_typescript_template_handlers_have_sources() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
     }
 
     assert {path.stem for path in source_dir.glob("*.ts")} == expected_modules
@@ -173,7 +176,12 @@ def test_typescript_template_handlers_have_sources() -> None:
         for line in template.splitlines()
         if line.strip().startswith("Handler: ")
     }
-    assert handlers == expected_modules - {"common"}
+    assert handlers == expected_modules - {
+        "common",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
+    }
 
 
 def test_typescript_examples_build_sdk_packages_from_main() -> None:

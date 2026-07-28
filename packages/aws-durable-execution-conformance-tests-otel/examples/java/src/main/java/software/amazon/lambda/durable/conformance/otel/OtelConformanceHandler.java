@@ -108,4 +108,22 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
             throw new IllegalArgumentException("Expected scenario " + expected + ", received " + actual);
         }
     }
+
+    protected final long longDelaySeconds(Map<String, Object> event) {
+        var rawDelay = event.get("delay_seconds");
+        final long delay;
+        try {
+            delay = rawDelay instanceof Number
+                    ? ((Number) rawDelay).longValue()
+                    : Long.parseLong(String.valueOf(rawDelay));
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException(
+                    "delay_seconds must be an integer from 1 through 86400", error);
+        }
+        if (delay < 1 || delay > 86400) {
+            throw new IllegalArgumentException(
+                    "delay_seconds must be an integer from 1 through 86400");
+        }
+        return delay;
+    }
 }

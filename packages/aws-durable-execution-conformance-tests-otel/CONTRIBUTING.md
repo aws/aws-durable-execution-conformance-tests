@@ -1,8 +1,9 @@
 # Contributing OpenTelemetry Test Cases
 
-This guide covers changes to the `otel-invocation` and `otel-execution`
-conformance suites. Read the repository [contribution guide](../../CONTRIBUTING.md)
-first for the general development, security, and pull-request requirements.
+This guide covers changes to the `otel-invocation`, `otel-execution`, and
+`otel-long-running` conformance suites. Read the repository
+[contribution guide](../../CONTRIBUTING.md) first for the general development,
+security, and pull-request requirements.
 
 ## What Belongs in the Suite
 
@@ -30,8 +31,10 @@ synthetic telemetry in a test handler to make an unsupported behavior pass.
 Add invocation-view requirements as
 `test-requirements/otel-invocation/otel-invocation-N.yaml` and execution-view
 requirements as
-`test-requirements/otel-execution/otel-execution-N.yaml`. Requirement IDs are
-global and must not be reused.
+`test-requirements/otel-execution/otel-execution-N.yaml`. Add day-scale
+invocation-view requirements as
+`test-requirements/otel-long-running/otel-long-running-N.yaml`. Requirement IDs
+are global and must not be reused.
 
 When both plugins cover a scenario, keep `Input`, `AsyncInvoke`,
 `ExpectedExecutionHistory`, and `ExpectedResult` identical between the paired

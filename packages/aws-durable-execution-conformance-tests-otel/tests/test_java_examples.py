@@ -101,10 +101,18 @@ def test_java_example_template_handlers_have_sources() -> None:
         *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
         "Otel11InvokeTarget",
         "Otel18InvokeTarget",
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
     }
 
     assert {path.stem for path in SOURCE_DIR.glob("*.java")} == expected_classes
-    for class_name in expected_classes - {"OtelConformanceHandler"}:
+    for class_name in expected_classes - {
+        "OtelConformanceHandler",
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
+    }:
         handler = f"software.amazon.lambda.durable.conformance.otel.{class_name}"
         assert f"      Handler: {handler}" in template
 

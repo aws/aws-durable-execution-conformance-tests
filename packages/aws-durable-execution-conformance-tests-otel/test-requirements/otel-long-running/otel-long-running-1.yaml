@@ -1,0 +1,188 @@
+description: OpenTelemetry preserves wait and resume telemetry across a long durable suspension
+Variables:
+  LONG_DELAY_SECONDS: 1
+Input:
+  scenario: long-wait
+  delay_seconds: ${LONG_DELAY_SECONDS}
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: WaitStarted
+    SubType: Wait
+    Id: ${WAIT1}
+    Name: otel-long-wait
+  - EventId: 5
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-after-long-wait
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${STEP1}
+    Name: otel-after-long-wait
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 7
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: otel-long-wait
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${WAIT1}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: STARTED
+          durable.operation.name: otel-long-wait
+        before:
+          name: otel-long-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-long-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: otel-long-wait
+            attributes:
+              durable.operation.id: ${WAIT1}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${WAIT1}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-long-wait
+        after:
+          name: otel-long-wait
+          attributes:
+            durable.operation.status: STARTED
+        before:
+          name: otel-after-long-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-after-long-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-after-long-wait
+          durable.attempt.number: 1
+        after:
+          name: otel-long-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-after-long-wait attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-after-long-wait
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-after-long-wait
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

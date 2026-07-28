@@ -34,9 +34,29 @@ def test_example_templates_do_not_use_top_level_testing_metadata(language: str) 
 def test_extension_exposes_packaged_otel_view_requirements() -> None:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
 
-    assert set(suites) == {"otel-execution", "otel-invocation"}
+    assert set(suites) == {
+        "otel-execution",
+        "otel-invocation",
+        "otel-long-running",
+    }
     assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 20)}
     assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 20)}
+    assert set(_requirements("otel-long-running")) == {
+        f"otel-long-running-{case_number}" for case_number in range(1, 4)
+    }
+
+
+def test_long_running_catalog_uses_configurable_delays() -> None:
+    requirements = _requirements("otel-long-running")
+
+    for case_number in range(1, 4):
+        requirement = load_yaml_file(requirements[f"otel-long-running-{case_number}"])
+
+        assert requirement["Variables"] == {"LONG_DELAY_SECONDS": 1}
+        assert requirement["Input"]["delay_seconds"] == "${LONG_DELAY_SECONDS}"
+        assert requirement["AsyncInvoke"] is True
+        assert requirement["ExpectedResult"]["ExecutionStatus"] == "SUCCEEDED"
+        assert requirement["TelemetryAssertions"]["minimum_invocations"] == 2
 
 
 @pytest.mark.parametrize("case_number", range(1, 20))

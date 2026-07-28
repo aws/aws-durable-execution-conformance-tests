@@ -168,9 +168,20 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_long_wait",
+        "otel_21_long_retry",
+        "otel_22_long_callback",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    makefile = (source_dir / "Makefile").read_text(encoding="utf-8")
+    for logical_id in (
+        "OtelLongRunning1Wait",
+        "OtelLongRunning2Retry",
+        "OtelLongRunning3Callback",
+    ):
+        assert f"build-{logical_id}" in makefile
 
 
 def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit() -> None:
