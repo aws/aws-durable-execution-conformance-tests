@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Child-context hierarchy scenario for OTel requirement otel-5."""
+"""Child-context hierarchy scenario for OTel requirement otel-invocation-5."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from aws_durable_execution_sdk_python import (
     durable_step,
     durable_with_child_context,
 )
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -28,7 +27,7 @@ def run_child_workflow(context: DurableContext) -> str:
     return context.step(complete_child_step(), name="otel-child-step")
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> str:
     require_scenario(event, "child-context")
     return context.run_in_child_context(

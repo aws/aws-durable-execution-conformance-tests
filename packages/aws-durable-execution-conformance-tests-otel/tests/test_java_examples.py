@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aws_durable_execution_conformance_tests.validate import (
     parse_function_descriptions,
+    parse_not_implemented,
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
@@ -19,25 +20,25 @@ SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
 )
 EXPECTED_MAPPINGS = [
-    ("Otel1Success", "otel-1"),
-    ("Otel2WaitResume", "otel-2"),
-    ("Otel3Retry", "otel-3"),
-    ("Otel4TerminalFailure", "otel-4"),
-    ("Otel5ChildContext", "otel-5"),
-    ("Otel6Parallel", "otel-6"),
-    ("Otel7Map", "otel-7"),
-    ("Otel8HandledFailure", "otel-8"),
-    ("Otel9WaitForCondition", "otel-9"),
-    ("Otel10WaitForCallback", "otel-10"),
-    ("Otel11ChainedInvoke", "otel-11"),
-    ("Otel12ChildContextFailure", "otel-12"),
-    ("Otel13ParallelFailure", "otel-13"),
-    ("Otel14MapFailure", "otel-14"),
-    ("Otel15WaitInterrupted", "otel-15"),
-    ("Otel16WaitForConditionFailure", "otel-16"),
-    ("Otel17WaitForCallbackFailure", "otel-17"),
-    ("Otel18ChainedInvokeFailure", "otel-18"),
-    ("Otel19ExecutionFailure", "otel-19"),
+    ("Otel1Success", "otel-invocation-1"),
+    ("Otel2WaitResume", "otel-invocation-2"),
+    ("Otel3Retry", "otel-invocation-3"),
+    ("Otel4TerminalFailure", "otel-invocation-4"),
+    ("Otel5ChildContext", "otel-invocation-5"),
+    ("Otel6Parallel", "otel-invocation-6"),
+    ("Otel7Map", "otel-invocation-7"),
+    ("Otel8HandledFailure", "otel-invocation-8"),
+    ("Otel9WaitForCondition", "otel-invocation-9"),
+    ("Otel10WaitForCallback", "otel-invocation-10"),
+    ("Otel11ChainedInvoke", "otel-invocation-11"),
+    ("Otel12ChildContextFailure", "otel-invocation-12"),
+    ("Otel13ParallelFailure", "otel-invocation-13"),
+    ("Otel14MapFailure", "otel-invocation-14"),
+    ("Otel15WaitInterrupted", "otel-invocation-15"),
+    ("Otel16WaitForConditionFailure", "otel-invocation-16"),
+    ("Otel17WaitForCallbackFailure", "otel-invocation-17"),
+    ("Otel18ChainedInvokeFailure", "otel-invocation-18"),
+    ("Otel19ExecutionFailure", "otel-invocation-19"),
 ]
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
@@ -60,6 +61,13 @@ def test_java_example_template_maps_every_otel_requirement() -> None:
     assert mappings == EXPECTED_MAPPINGS
 
 
+def test_java_example_declares_execution_view_plugin_gap() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
+        f"otel-execution-{case_number}": "ExecutionOtelPlugin is not available in the Java SDK"
+        for case_number in range(1, 20)
+    }
+
+
 def test_java_example_template_accepts_runner_parameters() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
 
@@ -69,9 +77,9 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 2
     assert template.count("      CodeUri: .") == len(EXPECTED_MAPPINGS) + 2
     for case_number in range(1, 20):
-        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-{case_number}"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-11-target"' in template
-    assert 'FunctionName: !Sub "${AWS::StackName}-otel-18-target"' in template
+        assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-11-target"' in template
+    assert 'FunctionName: !Sub "${AWS::StackName}-otel-invocation-18-target"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert "ExecutionTimeout: 5" in template
@@ -165,14 +173,15 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
     assert "delete-layer-version" in workflow
+    assert '--suite "$OTEL_SUITE"' in workflow
 
 
 def test_map_iteration_names_are_cross_sdk_compatible() -> None:
-    requirements_dir = EXAMPLES_DIR.parents[1] / "test-requirements" / "otel"
+    requirements_dir = EXAMPLES_DIR.parents[1] / "test-requirements" / "otel-invocation"
     python_source = EXAMPLES_DIR.parent / "python" / "src"
 
-    success_requirement = (requirements_dir / "otel-7.yaml").read_text(encoding="utf-8")
-    failure_requirement = (requirements_dir / "otel-14.yaml").read_text(encoding="utf-8")
+    success_requirement = (requirements_dir / "otel-invocation-7.yaml").read_text(encoding="utf-8")
+    failure_requirement = (requirements_dir / "otel-invocation-14.yaml").read_text(encoding="utf-8")
     assert "otel-map-iteration-0" in success_requirement
     assert "otel-map-iteration-1" in success_requirement
     assert "otel-failed-map-iteration-0" in failure_requirement

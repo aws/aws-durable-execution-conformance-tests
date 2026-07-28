@@ -1,33 +1,32 @@
-description: OpenTelemetry emits complete wait-for-condition spans for every polling attempt
+description: OpenTelemetry emits every failed and successful retry attempt across invocations
 Input:
-  scenario: wait-for-condition
+  scenario: retry
 AsyncInvoke: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
   - EventId: 2
     EventType: StepStarted
-    SubType: WaitForCondition
-    Id: ${CONDITION1}
-    Name: otel-condition
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
   - EventId: 3
-    EventType: StepSucceeded
-    SubType: WaitForCondition
-    Id: ${CONDITION1}
-    Name: otel-condition
+    EventType: StepFailed
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
   - EventId: 5
     EventType: StepStarted
-    SubType: WaitForCondition
-    Id: ${CONDITION1}
-    Name: otel-condition
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
   - EventId: 6
     EventType: StepSucceeded
-    SubType: WaitForCondition
-    Id: ${CONDITION1}
-    Name: otel-condition
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
-  Result: 2
 TelemetryAssertions:
   minimum_spans: 6
   minimum_invocations: 2
@@ -54,6 +53,12 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
+        before:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: invocation
         attributes:
@@ -69,8 +74,14 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
+        after:
+          name: invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
     - select:
-        name: otel-condition
+        name: otel-retry
         attributes:
           durable.operation.status: STARTED
       expect:
@@ -80,68 +91,80 @@ TelemetryAssertions:
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${CONDITION1}
+          durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
-          durable.operation.subtype: WaitForCondition
+          durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-condition
+          durable.operation.name: otel-retry
+        before:
+          name: otel-retry
+          attributes:
+            durable.operation.status: SUCCEEDED
         parent:
           name: invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-condition attempt 1
+        name: otel-retry attempt 1
         attributes:
           durable.attempt.number: 1
       expect:
-        status: OK
+        status: ERROR
         service_name: invocation
         links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${CONDITION1}
+          durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
-          durable.operation.subtype: WaitForCondition
+          durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-condition
+          durable.operation.name: otel-retry
           durable.attempt.number: 1
-          durable.attempt.outcome: SUCCEEDED
+          durable.attempt.outcome: FAILED
+        before:
+          name: otel-retry attempt 2
+          attributes:
+            durable.attempt.number: 2
         parent:
-          name: otel-condition
+          name: otel-retry
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${CONDITION1}
+            durable.operation.id: ${RETRY_STEP}
             durable.operation.type: STEP
-            durable.operation.subtype: WaitForCondition
+            durable.operation.subtype: Step
     - select:
-        name: otel-condition
+        name: otel-retry
         attributes:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
         service_name: invocation
         links:
-          - name: otel-condition
+          - name: otel-retry
             attributes:
-              durable.operation.id: ${CONDITION1}
+              durable.operation.id: ${RETRY_STEP}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${CONDITION1}
+          durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
-          durable.operation.subtype: WaitForCondition
+          durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: otel-condition
+          durable.operation.name: otel-retry
           durable.attempt.number: 2
+        after:
+          name: otel-retry
+          attributes:
+            durable.operation.status: STARTED
         parent:
           name: invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: otel-condition attempt 2
+        name: otel-retry attempt 2
         attributes:
           durable.attempt.number: 2
       expect:
@@ -151,17 +174,21 @@ TelemetryAssertions:
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${CONDITION1}
+          durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
-          durable.operation.subtype: WaitForCondition
+          durable.operation.subtype: Step
           durable.operation.status: STARTED
-          durable.operation.name: otel-condition
+          durable.operation.name: otel-retry
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-retry attempt 1
+          attributes:
+            durable.attempt.number: 1
         parent:
-          name: otel-condition
+          name: otel-retry
           kind: INTERNAL
           attributes:
-            durable.operation.id: ${CONDITION1}
+            durable.operation.id: ${RETRY_STEP}
             durable.operation.type: STEP
-            durable.operation.subtype: WaitForCondition
+            durable.operation.subtype: Step

@@ -1,0 +1,142 @@
+description: Execution view emits linked workflow roots for a successful chained invoke
+Input:
+  scenario: chained-invoke
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ChainedInvokeStarted
+    SubType: ChainedInvoke
+    Id: ${INVOKE1}
+    Name: otel-invoke
+    ChainedInvokeStartedDetails:
+      DurableExecutionArn: ${TARGET_EXECUTION_ARN}
+  - EventId: 4
+    EventType: ChainedInvokeSucceeded
+    SubType: ChainedInvoke
+    Id: ${INVOKE1}
+    Name: otel-invoke
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 6
+  require_execution_correlation: true
+  minimum_invocations: 3
+  allowed_execution_arns:
+    - ${EXECUTION_ARN}
+    - ${TARGET_EXECUTION_ARN}
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: otel-invoke
+        attributes:
+          durable.operation.id: ${INVOKE1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INVOKE1}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.name: otel-invoke
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED

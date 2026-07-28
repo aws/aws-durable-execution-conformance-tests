@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Parallel hierarchy scenario for OTel requirement otel-6."""
+"""Parallel hierarchy scenario for OTel requirement otel-invocation-6."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ from aws_durable_execution_sdk_python import (
     durable_step,
 )
 from aws_durable_execution_sdk_python.config import ParallelConfig
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -40,7 +39,7 @@ def run_parallel_branch_b(context: DurableContext) -> str:
     )
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> list[str]:
     require_scenario(event, "parallel-hierarchy")
     return context.parallel(

@@ -1,4 +1,4 @@
-description: OpenTelemetry emits complete chained-invoke failure telemetry
+description: Execution view emits linked failed workflow roots for a chained invoke
 Input:
   scenario: chained-invoke-failure
 AsyncInvoke: true
@@ -20,24 +20,43 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
-  minimum_spans: 5
-  minimum_invocations: 3
+  minimum_spans: 6
   require_execution_correlation: true
+  minimum_invocations: 3
   allowed_execution_arns:
     - ${EXECUTION_ARN}
     - ${TARGET_EXECUTION_ARN}
-  require_all_spans: true
-  span_assertion_scope:
-    - attributes:
-        durable.execution.arn: ${EXECUTION_ARN}
-    - attributes:
-        durable.execution.arn: ${TARGET_EXECUTION_ARN}
-  exact_attribute_prefixes:
-    - durable.
   span_assertions:
     - select:
-        name: invocation
-        status: UNSET
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -51,79 +70,73 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
-    - select:
-        name: invocation
-        status: ERROR
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-          durable.invocation.status: FAILED
-      expect:
-        status: ERROR
-        service_name: invocation
-        links: []
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-          durable.invocation.status: FAILED
-    - select:
-        name: invocation
-        attributes:
-          durable.execution.arn: ${TARGET_EXECUTION_ARN}
-          durable.invocation.first: true
-          durable.invocation.status: FAILED
-      expect:
-        status: ERROR
-        service_name: invocation
-        links: []
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${TARGET_EXECUTION_ARN}
-          durable.invocation.first: true
-          durable.invocation.status: FAILED
-    - select:
-        name: otel-failed-invoke
-        attributes:
-          durable.operation.status: STARTED
-      expect:
-        status: UNSET
-        service_name: invocation
-        links: []
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.operation.id: ${FAILED_INVOKE}
-          durable.operation.type: CHAINED_INVOKE
-          durable.operation.subtype: ChainedInvoke
-          durable.operation.status: STARTED
-          durable.operation.name: otel-failed-invoke
-        parent:
-          name: invocation
-          kind: INTERNAL
+        before:
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: FAILED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: FAILED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: FAILED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: FAILED
     - select:
         name: otel-failed-invoke
         attributes:
-          durable.operation.status: FAILED
+          durable.operation.id: ${FAILED_INVOKE}
       expect:
         status: ERROR
         service_name: invocation
         links:
-          - name: otel-failed-invoke
-            attributes:
-              durable.operation.id: ${FAILED_INVOKE}
+          - name: invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${FAILED_INVOKE}
           durable.operation.type: CHAINED_INVOKE
           durable.operation.subtype: ChainedInvoke
-          durable.operation.status: FAILED
           durable.operation.name: otel-failed-invoke
         parent:
-          name: invocation
+          name: Workflow
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED

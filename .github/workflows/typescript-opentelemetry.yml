@@ -1,19 +1,19 @@
-name: TypeScript OpenTelemetry
+name: TypeScript OpenTelemetry (Reusable)
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/typescript-opentelemetry.yml
-      - packages/aws-durable-execution-conformance-tests/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/src/**
-      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel/**
-      - packages/aws-durable-execution-conformance-tests-otel/collector/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/typescript/**
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      suite:
+        description: OTel requirement suite to run
+        required: true
+        type: string
+      case_count:
+        description: Number of cases in the selected suite
+        required: true
+        type: number
       aws_region:
         description: AWS region
-        required: true
+        required: false
         default: us-west-2
         type: string
 
@@ -22,13 +22,15 @@ permissions:
   id-token: write
 
 concurrency:
-  group: typescript-otel-examples-${{ inputs.aws_region || 'us-west-2' }}
+  group: typescript-otel-examples-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
 
 env:
-  AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
-  TEST_STACK_NAME: conformance-tests-typescript-xray
-  TEST_NAME: typescript-xray
+  AWS_REGION: ${{ inputs.aws_region }}
+  OTEL_CASE_COUNT: ${{ inputs.case_count }}
+  OTEL_SUITE: ${{ inputs.suite }}
+  TEST_STACK_NAME: conformance-tests-typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+  TEST_NAME: typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
 
@@ -144,12 +146,14 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --no-cleanup \
-            --suite otel \
+            --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/typescript-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/typescript-otel-xray-report" \
             --fail-on failed+uncovered \
-            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+            --parameter-overrides \
+              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelSuite=$OTEL_SUITE" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-service-name invocation \
@@ -166,18 +170,20 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..19}; do
-            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 20m --format short || true
             echo "::endgroup::"
           done
-          for case_number in 11 18; do
-            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}-target"
-            echo "::group::$log_group"
-            aws logs tail "$log_group" --since 20m --format short || true
-            echo "::endgroup::"
-          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 20m --format short || true
+              echo "::endgroup::"
+            done
+          fi
 
       - name: Show execution history diagnostics
         if: failure()
@@ -221,8 +227,8 @@ jobs:
     env:
       COLLECTOR_LAYER_NAME: durable-execution-conformance-typescript-s3-collector
       OTEL_LAMBDA_CHECKOUT: .build/opentelemetry-lambda
-      TEST_STACK_NAME: conformance-tests-typescript-s3
-      TEST_NAME: typescript-s3
+      TEST_STACK_NAME: conformance-tests-typescript-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: typescript-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -402,13 +408,14 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --no-cleanup \
-            --suite otel \
+            --suite "$OTEL_SUITE" \
             --history-dir "$RUNNER_TEMP/typescript-otel-history" \
-            --report console json junit \
+            --report console json junit github \
             --report-file "$RUNNER_TEMP/typescript-otel-s3-report" \
             --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelSuite=$OTEL_SUITE" \
               "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
               "OtelCollectorBucket=$OTEL_S3_BUCKET" \
               "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
@@ -431,18 +438,20 @@ jobs:
       - name: Show Lambda logs
         if: failure()
         run: |
-          for case_number in {1..19}; do
-            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}"
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
             echo "::group::$log_group"
             aws logs tail "$log_group" --since 30m --format short || true
             echo "::endgroup::"
           done
-          for case_number in 11 18; do
-            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-otel-${case_number}-target"
-            echo "::group::$log_group"
-            aws logs tail "$log_group" --since 30m --format short || true
-            echo "::endgroup::"
-          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 30m --format short || true
+              echo "::endgroup::"
+            done
+          fi
 
       - name: Show execution history diagnostics
         if: failure()

@@ -119,7 +119,7 @@ def _write_template(tmp_path: Path, body: str) -> str:
     return str(path)
 
 
-def test_not_implemented_top_level_block(tmp_path: Path) -> None:
+def test_not_implemented_legacy_top_level_block(tmp_path: Path) -> None:
     template = _write_template(
         tmp_path,
         """

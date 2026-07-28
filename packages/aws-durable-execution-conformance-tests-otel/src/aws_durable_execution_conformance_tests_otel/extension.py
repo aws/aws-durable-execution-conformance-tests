@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Core-runner extension that exposes the ``otel`` suite."""
+"""Core-runner extension that exposes the OpenTelemetry view suites."""
 
 from __future__ import annotations
 
@@ -63,24 +63,22 @@ class OtelExtension:
 
     def requirement_suites(self) -> tuple[RequirementSuite, ...]:
         project_root = Path(__file__).resolve().parent.parent.parent
-        source_root = project_root / "test-requirements" / "otel"
-        package_root = Path(
-            str(
-                files("aws_durable_execution_conformance_tests_otel").joinpath(
-                    "test_requirements",
-                    "otel",
+        package_root = files("aws_durable_execution_conformance_tests_otel").joinpath(
+            "test_requirements",
+        )
+        suites = []
+        for name in ("otel-invocation", "otel-execution"):
+            source_root = project_root / "test-requirements" / name
+            installed_root = Path(str(package_root.joinpath(name)))
+            suites.append(
+                RequirementSuite(
+                    name=name,
+                    root=source_root if source_root.is_dir() else installed_root,
+                    validation_hook=self.validate_telemetry,
+                    provider=self.name,
                 )
             )
-        )
-        root = source_root if source_root.is_dir() else package_root
-        return (
-            RequirementSuite(
-                name="otel",
-                root=root,
-                validation_hook=self.validate_telemetry,
-                provider=self.name,
-            ),
-        )
+        return tuple(suites)
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         exporters = self._exporters()

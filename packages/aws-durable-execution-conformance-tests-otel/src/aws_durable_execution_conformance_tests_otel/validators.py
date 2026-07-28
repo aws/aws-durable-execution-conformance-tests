@@ -100,6 +100,31 @@ def _matches_span(
     )
 
 
+def _select_span_matches(
+    selector: Mapping[str, Any],
+    spans: Sequence[Mapping[str, Any]],
+    used_span_indexes: Collection[int],
+    expected_count: int,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[tuple[int, Mapping[str, Any]]]:
+    exact_matches = [
+        (span_index, span)
+        for span_index, span in enumerate(spans)
+        if span_index not in used_span_indexes and _matches_span(selector, span, ())
+    ]
+    if exact_matches or BackendFeatureDisparity.UNSET_STATUS not in feature_disparities:
+        return exact_matches
+
+    # Status normalization can collapse distinct UNSET and OK selectors. Allocate
+    # only the requested unused fallback spans so later selectors can claim the rest.
+    fallback_matches = [
+        (span_index, span)
+        for span_index, span in enumerate(spans)
+        if span_index not in used_span_indexes and _matches_span(selector, span, feature_disparities)
+    ]
+    return fallback_matches[:expected_count]
+
+
 def _expectation_errors(
     expected: Any,
     actual: Any,
@@ -187,30 +212,45 @@ def _parent_expectation_errors(
     parents = spans_by_id.get(parent_span_id, [])
     if not parents:
         return [f"{path}: parent span is not present in the trace"]
-    if len(parents) > 1:
-        return [f"{path}: parent span id matched {len(parents)} spans; it must identify exactly one"]
 
-    parent, serialized_parent = parents[0]
-    errors = _span_expectation_errors(
-        expected,
-        serialized_parent,
-        path=path,
-        feature_disparities=feature_disparities,
-    )
-    if errors:
-        return errors
+    expectation_errors = [
+        _span_expectation_errors(
+            expected,
+            serialized_parent,
+            path=path,
+            feature_disparities=feature_disparities,
+        )
+        for _parent, serialized_parent in parents
+    ]
+    matching_parents = [
+        parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
+    ]
+    if not matching_parents:
+        if len(parents) > 1:
+            return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
+        return expectation_errors[0]
 
-    if span.start_time < parent.start_time:
-        errors.append(
-            f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
-            f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
-        )
-    if span.end_time > parent.end_time:
-        errors.append(
-            f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
-            f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
-        )
-    return errors
+    candidate_errors = []
+    for parent in matching_parents:
+        errors: list[str] = []
+        if span.start_time < parent.start_time:
+            errors.append(
+                f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
+                f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
+            )
+        if span.end_time > parent.end_time:
+            errors.append(
+                f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
+                f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
+            )
+        candidate_errors.append(errors)
+    if any(not errors for errors in candidate_errors):
+        return []
+    if len(matching_parents) > 1:
+        return [
+            f"{path}: parent span id matched {len(matching_parents)} expected spans; none contained the child timespan"
+        ]
+    return candidate_errors[0]
 
 
 def _link_expectation_errors(
@@ -255,26 +295,34 @@ def _link_expectation_errors(
             errors.append(f"{link_path} must be a mapping")
             continue
 
+        expected_count = expected_span.get("count", 1)
+        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
+            errors.append(f"{link_path}.count must be a positive integer")
+            continue
+        expected_properties = {key: value for key, value in expected_span.items() if key != "count"}
         linked_spans = [
             candidate for candidate in spans_by_id.get(link["span_id"], []) if candidate["trace_id"] == link["trace_id"]
         ]
         if not linked_spans:
             errors.append(f"{link_path}: linked span is not present in the trace")
             continue
-        if len(linked_spans) > 1:
-            errors.append(
-                f"{link_path}: linked span id matched {len(linked_spans)} spans; it must identify exactly one"
-            )
-            continue
 
-        errors.extend(
+        expectation_errors = [
             _span_expectation_errors(
-                expected_span,
-                linked_spans[0],
+                expected_properties,
+                linked_span,
                 path=link_path,
                 feature_disparities=feature_disparities,
             )
-        )
+            for linked_span in linked_spans
+        ]
+        matching_count = sum(not candidate_errors for candidate_errors in expectation_errors)
+        if matching_count == expected_count:
+            continue
+        if len(linked_spans) == 1 and expected_count == 1:
+            errors.extend(expectation_errors[0])
+            continue
+        errors.append(f"{link_path}: linked span expectation matched {matching_count} spans; expected {expected_count}")
     return errors
 
 
@@ -292,10 +340,19 @@ def _temporal_relation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    linked_only = expected.get("$linked", False)
+    if "$linked" in expected and linked_only is not True:
+        return [f"{path}.$linked must be true"]
+    if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
+        return []
+    selector = {key: value for key, value in expected.items() if key != "$linked"}
+    linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
         for span_index, (span, serialized_span) in enumerate(zip(trace.spans, spans, strict=True))
-        if span_index != selected_span_index and _matches_span(expected, serialized_span, feature_disparities)
+        if span_index != selected_span_index
+        and (not linked_only or (span.trace_id, span.span_id) in linked_span_keys)
+        and _matches_span(selector, serialized_span, feature_disparities)
     ]
     if not matches:
         return [f"{path} matched no spans"]
@@ -358,6 +415,7 @@ def _span_assertion_errors(
 
     errors: list[str] = []
     covered_span_indexes: set[int] = set()
+    used_span_indexes: set[int] = set()
     for index, assertion in enumerate(span_assertions):
         path = f"span_assertions[{index}]"
         if not isinstance(assertion, Mapping):
@@ -382,12 +440,13 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer")
             continue
 
-        matches = [
-            (span_index, span)
-            for span_index, span in enumerate(spans)
-            if _matches_span(selector, span, feature_disparities)
-        ]
-        covered_span_indexes.update(span_index for span_index, _span in matches)
+        matches = _select_span_matches(
+            selector,
+            spans,
+            used_span_indexes,
+            expected_count,
+            feature_disparities,
+        )
         if not matches and expected_count == 1:
             errors.append(f"{path}.select matched no spans")
             continue
@@ -397,6 +456,9 @@ def _span_assertion_errors(
         if len(matches) != expected_count:
             errors.append(f"{path}.select matched {len(matches)} spans; expected {expected_count}")
             continue
+        matched_span_indexes = {span_index for span_index, _span in matches}
+        covered_span_indexes.update(matched_span_indexes)
+        used_span_indexes.update(matched_span_indexes)
 
         expected_properties = {
             key: value

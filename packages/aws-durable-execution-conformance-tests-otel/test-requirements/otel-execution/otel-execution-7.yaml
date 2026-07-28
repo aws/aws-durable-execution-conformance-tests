@@ -1,0 +1,229 @@
+description: Execution view emits the complete map iteration hierarchy
+Input:
+  scenario: map-hierarchy
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: Map
+    Id: ${MAP1}
+    Name: otel-map
+  - EventId: 3
+    EventType: ContextStarted
+    SubType: MapIteration
+    Id: ${ITERATION1}
+    ParentId: ${MAP1}
+    Name: otel-map-iteration-0
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${ITERATION1}
+    Name: otel-map-step-0
+  - EventId: 7
+    EventType: ContextStarted
+    SubType: MapIteration
+    Id: ${ITERATION2}
+    ParentId: ${MAP1}
+    Name: otel-map-iteration-1
+  - EventId: 8
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP2}
+    ParentId: ${ITERATION2}
+    Name: otel-map-step-1
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 9
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+    - select:
+        name: otel-map
+        attributes:
+          durable.operation.id: ${MAP1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${MAP1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: Map
+          durable.operation.name: otel-map
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-map-iteration-0
+        attributes:
+          durable.operation.id: ${ITERATION1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${ITERATION1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: MapIteration
+          durable.operation.name: otel-map-iteration-0
+        parent:
+          name: otel-map
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${MAP1}
+    - select:
+        name: otel-map-step-0
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-map-step-0
+        parent:
+          name: otel-map-iteration-0
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${ITERATION1}
+    - select:
+        name: otel-map-step-0 attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-map-step-0
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-map-step-0
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}
+    - select:
+        name: otel-map-iteration-1
+        attributes:
+          durable.operation.id: ${ITERATION2}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${ITERATION2}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: MapIteration
+          durable.operation.name: otel-map-iteration-1
+        parent:
+          name: otel-map
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${MAP1}
+    - select:
+        name: otel-map-step-1
+        attributes:
+          durable.operation.id: ${STEP2}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-map-step-1
+        parent:
+          name: otel-map-iteration-1
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${ITERATION2}
+    - select:
+        name: otel-map-step-1 attempt 1
+        attributes:
+          durable.operation.id: ${STEP2}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-map-step-1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-map-step-1
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP2}

@@ -10,6 +10,7 @@
 """
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -47,7 +48,11 @@ from aws_durable_execution_conformance_tests.report import (
     ReportStatus,
     RunMetadata,
 )
-from aws_durable_execution_conformance_tests.reporters import render_console, write_report
+from aws_durable_execution_conformance_tests.reporters import (
+    append_github_summary,
+    render_console,
+    write_report,
+)
 from aws_durable_execution_conformance_tests.sam import (
     BuildRequiredError,
     Deployer,
@@ -173,8 +178,8 @@ def parse_args(
         "--report",
         nargs="+",
         default=["console"],
-        choices=["console", "json", "junit"],
-        help="Report format(s) to emit. Repeatable (e.g. --report console json junit). Defaults to 'console'.",
+        choices=["console", "json", "junit", "github"],
+        help="Report format(s) to emit. Repeatable (e.g. --report console json junit github). Defaults to 'console'.",
     )
     parser.add_argument(
         "--report-file",
@@ -443,6 +448,14 @@ def _deploy_validate_report(
         for fmt in machine_formats:
             path = write_report(report, fmt, report_base)
             print(f"  Wrote {fmt} report to {path}")
+
+    if "github" in args.report:
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            path = append_github_summary(report, summary_path)
+            print(f"  Appended GitHub job summary to {path}")
+        else:
+            print("  Skipped GitHub job summary because GITHUB_STEP_SUMMARY is not set")
 
     sys.exit(report.exit_code())
 

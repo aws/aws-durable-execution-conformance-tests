@@ -1,8 +1,8 @@
 # Contributing OpenTelemetry Test Cases
 
-This guide covers changes to the `otel` conformance suite. Read the repository
-[contribution guide](../../CONTRIBUTING.md) first for the general development,
-security, and pull-request requirements.
+This guide covers changes to the `otel-invocation` and `otel-execution`
+conformance suites. Read the repository [contribution guide](../../CONTRIBUTING.md)
+first for the general development, security, and pull-request requirements.
 
 ## What Belongs in the Suite
 
@@ -27,9 +27,17 @@ synthetic telemetry in a test handler to make an unsupported behavior pass.
 
 ## Add a Requirement
 
-Add the next unused, sequential `otel-N.yaml` file under
-[`test-requirements/otel`](test-requirements/otel). Requirement IDs are global
-and must not be reused.
+Add invocation-view requirements as
+`test-requirements/otel-invocation/otel-invocation-N.yaml` and execution-view
+requirements as
+`test-requirements/otel-execution/otel-execution-N.yaml`. Requirement IDs are
+global and must not be reused.
+
+When both plugins cover a scenario, keep `Input`, `AsyncInvoke`,
+`ExpectedExecutionHistory`, and `ExpectedResult` identical between the paired
+case numbers. Only the human-readable description and `TelemetryAssertions`
+should differ. Reuse the same example workflow for both deployed functions and
+select the plugin in deployment configuration.
 
 An OTel requirement contains the normal execution expectations plus a
 `TelemetryAssertions` mapping:
@@ -65,8 +73,10 @@ The currently supported telemetry assertions are:
 `span_assertions` accepts one mapping or a list of mappings. Each `select`
 mapping matches exactly one span by default. Set `count` to an exact positive
 number for repeated spans such as invocation or continuation spans. The
-corresponding `expect` mapping is applied to every match and is otherwise a
-partial assertion, so unlisted properties and metadata are ignored:
+assertions are evaluated in order, and a span selected by one assertion is not
+available to later selectors. The corresponding `expect` mapping is applied to
+every match and is otherwise a partial assertion, so unlisted properties and
+metadata are ignored:
 
 ```yaml
 TelemetryAssertions:
@@ -101,7 +111,10 @@ Both `select` and `expect` can use any canonical span property: `trace_id`,
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions compare length, order, and nested values. Each `expect.links` item
 resolves the linked span within the trace and applies a partial span assertion,
-using the same mechanism as `expect.parent`. The
+using the same mechanism as `expect.parent`. When duplicate exports share the
+linked trace and span IDs, add `count` to the link item to require an exact
+positive number of candidates matching its other properties; the default is
+`1`. The
 `$any_of` matcher accepts a non-empty sequence of alternative expected values.
 Use it when repeated spans intentionally have one of a small set of shapes. The
 optional `expect.parent` mapping resolves the selected span's `parent_span_id`
@@ -114,7 +127,9 @@ can also select exactly one other span with `before`, `after`, or `inside`.
 These relationships require the selected span's end to be at or before the
 other span's start, its start to be at or after the other span's end, or its
 complete timespan to be contained by the other span, respectively. `inside`
-is independent of `parent_span_id` and can target a non-parent span:
+is independent of `parent_span_id` and can target a non-parent span. Add
+`$linked: true` to a temporal selector to restrict it to spans linked by the
+selected span:
 
 ```yaml
 TelemetryAssertions:
@@ -125,6 +140,7 @@ TelemetryAssertions:
       after:
         name: first attempt
       inside:
+        $linked: true
         name: retry window
 ```
 
@@ -140,6 +156,12 @@ Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable
 across the complete exporter/backend support matrix.
 
+The catalog uses separate requirements when two public plugins intentionally
+produce different trace views. Invocation-view cases assert per-invocation
+operation hierarchy. Execution-view cases assert a terminal `Workflow` root,
+operations parented beneath it, attempts parented beneath their operation, and
+links from operation spans to the Lambda invocation that observed them.
+
 ## Add SDK Test Handlers
 
 The matching test handler and deployment template belong in each supported SDK
@@ -149,14 +171,14 @@ repository. For Java, JavaScript/Node.js, and Python:
    `TestingMetadata.TestDescription`.
 2. Prefix the handler filename with the case ID and suffix the deployed
    `FunctionName` with it (for example, `otel_5_scenario.py` and
-   `${AWS::StackName}-otel-5`).
+   `${AWS::StackName}-otel-invocation-5`).
 3. Implement the `Input.scenario` contract with the SDK's public durable
    execution and OTel APIs.
 4. Accept the OTel template parameters documented in the package
    [README](README.md).
 5. Exercise the scenario with the S3 collector before using a hosted backend.
-6. Declare a missing handler under `TestingMetadata.NotImplemented`; its
-   `reason` may be empty.
+6. Declare a missing handler under any function resource's
+   `TestingMetadata.NotImplemented`; its `reason` may be empty.
 
 Use the same scenario semantics in every SDK. Runtime setup can differ, but the
 observable execution and telemetry behavior must satisfy the same requirement.
@@ -224,7 +246,8 @@ OTEL_S3_PREFIX=durable-execution \
 otelcol-contrib --config collector/config.yaml
 ```
 
-Then run the conformance CLI with `--suite otel`,
+Then run the conformance CLI with
+`--suite otel-invocation otel-execution`,
 `--otel-exporter community`, `--otel-backend collector`, the collector's
 reachable OTLP endpoint, and `--otel-backend-endpoint s3://bucket/prefix`.
 The backend supports the exporter's `otlp_json` and `otlp_proto` marshalers,

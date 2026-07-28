@@ -145,6 +145,93 @@ def test_asserts_before_after_non_parent_inside_and_parent_containment() -> None
     assert errors == []
 
 
+def test_inside_can_select_a_linked_span_among_duplicate_matches() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    first_invocation = replace(
+        root,
+        name="invocation",
+        span_id="4" * 16,
+    )
+    linked_invocation = replace(
+        root,
+        name="invocation",
+        span_id="5" * 16,
+    )
+    linked_child = replace(
+        child,
+        links=(
+            SpanLink(
+                trace_id=linked_invocation.trace_id,
+                span_id=linked_invocation.span_id,
+            ),
+        ),
+    )
+    linked_trace = replace(
+        trace,
+        spans=(first_invocation, linked_invocation, linked_child),
+    )
+
+    errors = validate_trace(
+        linked_trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "inside": {
+                        "$linked": True,
+                        "name": "invocation",
+                    }
+                },
+            }
+        },
+        _query(),
+    )
+    ambiguous_errors = validate_trace(
+        linked_trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"inside": {"name": "invocation"}},
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+    assert ambiguous_errors == ["span_assertions[0].expect.inside matched 2 spans; it must select exactly one"]
+
+
+def test_span_link_disparity_skips_linked_temporal_relations() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    trace_without_links = replace(trace, spans=(root, replace(child, links=())))
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "inside": {
+                    "$linked": True,
+                    "name": "root",
+                }
+            },
+        }
+    }
+
+    assert validate_trace(trace_without_links, assertions, _query()) == [
+        "span_assertions[0].expect.inside matched no spans"
+    ]
+    assert (
+        validate_trace(
+            trace_without_links,
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.SPAN_LINKS}),
+        )
+        == []
+    )
+
+
 def test_reports_timestamp_and_parent_containment_violations() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -217,8 +304,23 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
         span_id="4" * 16,
         name="sibling",
     )
+    invalid_after = replace(
+        child,
+        span_id="5" * 16,
+        name="invalid-after",
+    )
+    invalid_before = replace(
+        child,
+        span_id="6" * 16,
+        name="invalid-before",
+    )
+    invalid_link = replace(
+        child,
+        span_id="7" * 16,
+        name="invalid-link",
+    )
     errors = validate_trace(
-        replace(trace, spans=(root, child, sibling)),
+        replace(trace, spans=(root, child, sibling, invalid_after, invalid_before, invalid_link)),
         {
             "span_assertions": [
                 {
@@ -226,12 +328,16 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
                     "expect": {"inside": "root"},
                 },
                 {
-                    "select": {"name": "child"},
+                    "select": {"name": "invalid-after"},
                     "expect": {"after": {"name": "missing"}},
                 },
                 {
-                    "select": {"name": "child"},
-                    "expect": {"before": {"service_name": "service"}},
+                    "select": {"name": "invalid-before"},
+                    "expect": {"before": {"name": "${/^(?:root|sibling)$/}"}},
+                },
+                {
+                    "select": {"name": "invalid-link"},
+                    "expect": {"inside": {"$linked": False, "name": "root"}},
                 },
             ]
         },
@@ -242,6 +348,7 @@ def test_reports_invalid_timestamp_relationship_selectors() -> None:
         "span_assertions[0].expect.inside must be a mapping",
         "span_assertions[1].expect.after matched no spans",
         "span_assertions[2].expect.before matched 2 spans; it must select exactly one",
+        "span_assertions[3].expect.inside.$linked must be true",
     ]
 
 
@@ -265,6 +372,50 @@ def test_counts_every_canonical_invocation_span_occurrence() -> None:
         )
         == []
     )
+
+
+def test_asserts_duplicate_trace_and_span_ids_individually() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_child = replace(
+        child,
+        status="ERROR",
+        attributes={
+            **child.attributes,
+            "faas.invocation_id": "invocation-3",
+        },
+    )
+
+    errors = validate_trace(
+        replace(trace, spans=(root, child, replayed_child)),
+        {
+            "span_assertions": [
+                {
+                    "select": {
+                        "name": "child",
+                        "attributes": {"faas.invocation_id": "invocation-2"},
+                    },
+                    "expect": {
+                        "span_id": child.span_id,
+                        "status": "OK",
+                    },
+                },
+                {
+                    "select": {
+                        "name": "child",
+                        "attributes": {"faas.invocation_id": "invocation-3"},
+                    },
+                    "expect": {
+                        "span_id": replayed_child.span_id,
+                        "status": "ERROR",
+                    },
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == []
 
 
 def test_does_not_count_noncanonical_spans_named_invocation() -> None:
@@ -436,6 +587,75 @@ def test_span_links_accept_any_of_matchers() -> None:
     assert errors == []
 
 
+def test_linked_span_attributes_accept_any_of_matchers() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "links": [
+                        {
+                            "attributes": {
+                                "$any_of": [
+                                    {"faas.invocation_id": "*"},
+                                    {"aws.lambda.invocation_id": "*"},
+                                ]
+                            }
+                        }
+                    ]
+                },
+            }
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
+def test_link_assertion_counts_matching_replayed_spans_with_duplicate_id() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_root = replace(
+        root,
+        name="replayed-root",
+        status="ERROR",
+        attributes={
+            **root.attributes,
+            "durable.operation.outcome": "pending",
+        },
+    )
+    trace_with_duplicates = replace(trace, spans=(replayed_root, root, child))
+
+    def validate_link(expected_link: dict[str, object]) -> list[str]:
+        return validate_trace(
+            trace_with_duplicates,
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {"links": [expected_link]},
+                }
+            },
+            _query(),
+        )
+
+    matching_root: dict[str, object] = {
+        "name": "root",
+        "status": "OK",
+        "attributes": {"durable.operation.outcome": "retry"},
+    }
+    both_roots: dict[str, object] = {"attributes": {"durable.execution.arn": "arn:test"}}
+
+    assert validate_link(matching_root) == []
+    assert validate_link(both_roots) == [
+        "span_assertions[0].expect.links[0]: linked span expectation matched 2 spans; expected 1"
+    ]
+    assert validate_link({"count": 2, **both_roots}) == []
+    assert validate_link({"count": 2, **matching_root}) == [
+        "span_assertions[0].expect.links[0]: linked span expectation matched 1 spans; expected 2"
+    ]
+
+
 def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -478,14 +698,26 @@ def test_reports_missing_and_mismatched_linked_span_assertions() -> None:
 
 
 def test_asserts_repeated_spans_and_complete_plugin_contract() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    repeated_root = replace(
+        root,
+        span_id="4" * 16,
+        name="repeated",
+    )
+    repeated_child = replace(
+        child,
+        span_id="5" * 16,
+        name="repeated",
+    )
     errors = validate_trace(
-        _trace(),
+        replace(trace, spans=(root, child, repeated_root, repeated_child)),
         {
             "require_all_spans": True,
             "exact_attribute_prefixes": ["durable."],
             "span_assertions": [
                 {
-                    "select": {"status": "OK"},
+                    "select": {"name": "repeated"},
                     "count": 2,
                     "expect": {
                         "service_name": "service",
@@ -597,6 +829,11 @@ def test_scopes_complete_span_coverage_to_multiple_executions() -> None:
 def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     trace = _trace()
     root, child = trace.spans
+    invalid_parent_child = replace(
+        child,
+        span_id="4" * 16,
+        name="invalid-parent-child",
+    )
     external_child = Span(
         trace_id=child.trace_id,
         span_id=child.span_id,
@@ -612,7 +849,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     )
 
     errors = validate_trace(
-        trace,
+        replace(trace, spans=(root, child, invalid_parent_child)),
         {
             "span_assertions": [
                 {
@@ -629,7 +866,7 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
                     },
                 },
                 {
-                    "select": {"name": "child"},
+                    "select": {"name": "invalid-parent-child"},
                     "expect": {"parent": "root"},
                 },
             ]
@@ -652,6 +889,40 @@ def test_reports_missing_external_and_mismatched_parent_assertions() -> None:
     assert "span_assertions[1].expect.parent.attributes.missing.key: property is missing" in errors
     assert "span_assertions[2].expect.parent must be a mapping" in errors
     assert external_errors == ["span_assertions[0].expect.parent: parent span is not present in the trace"]
+
+
+def test_parent_assertion_accepts_matching_replayed_span_with_duplicate_id() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replayed_root = replace(
+        root,
+        name="replayed-root",
+        attributes={
+            **root.attributes,
+            "durable.operation.outcome": "pending",
+        },
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(replayed_root, root, child)),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "parent": {
+                            "name": "root",
+                            "attributes": {
+                                "durable.operation.outcome": "retry",
+                            },
+                        }
+                    },
+                }
+            },
+            _query(),
+        )
+        == []
+    )
 
 
 def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
@@ -739,6 +1010,64 @@ def test_unset_status_disparity_applies_to_span_selectors() -> None:
         )
         == []
     )
+
+
+def test_unset_status_disparity_prefers_exact_then_allocates_unused_ok_spans() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    native_trace = replace(
+        trace,
+        spans=(
+            replace(root, name="callback", status="UNSET"),
+            replace(child, name="callback"),
+        ),
+    )
+    normalized_trace = replace(
+        trace,
+        spans=(
+            replace(root, name="callback"),
+            replace(child, name="callback"),
+        ),
+    )
+    assertions = {
+        "span_assertions": [
+            {
+                "select": {"name": "callback", "status": "UNSET"},
+                "expect": {"status": "UNSET"},
+            },
+            {
+                "select": {"name": "callback", "status": "OK"},
+                "expect": {"status": "OK"},
+            },
+        ]
+    }
+    disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+
+    assert validate_trace(native_trace, assertions, _query(), feature_disparities=disparities) == []
+    assert validate_trace(normalized_trace, assertions, _query()) == [
+        "span_assertions[0].select matched no spans",
+        "span_assertions[1].select matched 2 spans; it must select exactly one",
+    ]
+    assert validate_trace(normalized_trace, assertions, _query(), feature_disparities=disparities) == []
+
+
+def test_span_selectors_do_not_reuse_consumed_spans() -> None:
+    assertions = {
+        "span_assertions": [
+            {
+                "select": {"name": "root"},
+                "expect": {},
+            },
+            {
+                "select": {"name": "root"},
+                "expect": {},
+            },
+        ]
+    }
+
+    assert validate_trace(_trace(), assertions, _query()) == [
+        "span_assertions[1].select matched no spans",
+    ]
 
 
 def test_unset_status_disparity_applies_to_status_matchers() -> None:

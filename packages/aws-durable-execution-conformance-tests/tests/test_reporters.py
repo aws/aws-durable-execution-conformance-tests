@@ -18,7 +18,9 @@ from aws_durable_execution_conformance_tests.report import (
     RunMetadata,
 )
 from aws_durable_execution_conformance_tests.reporters import (
+    append_github_summary,
     render_console,
+    render_github_summary,
     render_json,
     render_junit,
     write_report,
@@ -73,6 +75,47 @@ def test_json_is_valid_and_schema_versioned() -> None:
     assert data["summary"]["failed"] == 1
     assert data["ci"]["exit_code"] == 1
     assert {r["id"] for r in data["results"]} == {"8-1", "8-2", "8-13", "8-9"}
+
+
+def test_github_summary_includes_counts_and_blocking_failures() -> None:
+    text = render_github_summary(_report())
+
+    assert "| 1 | 1 | 0 | 1 | 1 | 4 |" in text
+    assert "### Blocking failures" in text
+    assert "<code>8-2</code> (FAILED)" in text
+    assert "**Function:** `ParallelFail`" in text
+    assert "<pre>boom</pre>" in text
+    assert "<code>8-9</code>" not in text  # UNCOVERED is non-blocking under the default policy.
+
+
+def test_github_summary_escapes_failure_details() -> None:
+    report = _report()
+    report.entries[1].errors[0] = "expected <span> & actual"
+
+    text = render_github_summary(report)
+
+    assert "<pre>expected &lt;span&gt; &amp; actual</pre>" in text
+
+
+def test_github_summary_includes_uncovered_when_blocking() -> None:
+    report = _report()
+    report.fail_on = "failed+uncovered"
+
+    text = render_github_summary(report)
+
+    assert "<code>8-9</code> (UNCOVERED)" in text
+
+
+def test_append_github_summary_preserves_existing_content(tmp_path: Path) -> None:
+    summary_path = tmp_path / "summary.md"
+    summary_path.write_text("# Existing\n", encoding="utf-8")
+
+    written_path = append_github_summary(_report(), str(summary_path))
+
+    assert written_path == str(summary_path)
+    text = summary_path.read_text(encoding="utf-8")
+    assert text.startswith("# Existing\n## Conformance test summary")
+    assert text.endswith("\n")
 
 
 def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:

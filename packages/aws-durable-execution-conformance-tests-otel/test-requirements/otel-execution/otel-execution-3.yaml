@@ -1,0 +1,174 @@
+description: Execution view preserves one operation across failed and successful retry invocations
+Input:
+  scenario: retry
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
+  - EventId: 3
+    EventType: StepFailed
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
+  - EventId: 5
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${RETRY_STEP}
+    Name: otel-retry
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 6
+  minimum_invocations: 2
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: otel-retry
+        attributes:
+          durable.operation.id: ${RETRY_STEP}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-retry
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-retry attempt 1
+        attributes:
+          durable.operation.id: ${RETRY_STEP}
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-retry
+          durable.attempt.outcome: FAILED
+        before:
+          name: otel-retry attempt 2
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-retry
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+    - select:
+        name: otel-retry attempt 2
+        attributes:
+          durable.operation.id: ${RETRY_STEP}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RETRY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-retry
+          durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-retry attempt 1
+          attributes:
+            durable.operation.id: ${RETRY_STEP}
+            durable.attempt.outcome: FAILED
+        parent:
+          name: otel-retry
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${RETRY_STEP}

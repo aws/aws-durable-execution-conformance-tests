@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Wait and resume scenario for OTel requirement otel-2."""
+"""Wait and resume scenario shared by OTel view case 2."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from aws_durable_execution_sdk_python import (
     durable_step,
 )
 from aws_durable_execution_sdk_python.config import Duration
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 @durable_step
@@ -23,7 +22,7 @@ def complete_after_resume(_step_context: StepContext) -> str:
     return "resumed"
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> str:
     require_scenario(event, "wait-resume")
     context.wait(Duration.from_seconds(1), name="otel-wait")

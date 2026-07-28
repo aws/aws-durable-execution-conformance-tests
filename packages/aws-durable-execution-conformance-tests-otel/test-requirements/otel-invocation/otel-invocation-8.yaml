@@ -1,0 +1,166 @@
+description: OpenTelemetry emits every failed and recovery step span with complete attributes
+Input:
+  scenario: handled-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
+  - EventId: 3
+    EventType: StepFailed
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-handled-failure
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
+  - EventId: 5
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${RECOVERY_STEP}
+    Name: otel-recovery-step
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 5
+  require_execution_correlation: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes:
+    - durable.
+  span_assertions:
+    - select:
+        name: invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+    - select:
+        name: otel-handled-failure
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: FAILED
+          durable.operation.name: otel-handled-failure
+          durable.attempt.number: 1
+        before:
+          name: otel-recovery-step
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-handled-failure attempt 1
+        attributes:
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-handled-failure
+          durable.attempt.number: 1
+          durable.attempt.outcome: FAILED
+        before:
+          name: otel-recovery-step attempt 1
+          attributes:
+            durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-handled-failure
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${FAILED_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
+    - select:
+        name: otel-recovery-step
+        attributes:
+          durable.operation.type: STEP
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RECOVERY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
+        after:
+          name: otel-handled-failure
+          attributes:
+            durable.operation.status: FAILED
+        parent:
+          name: invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-recovery-step attempt 1
+        attributes:
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${RECOVERY_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: STARTED
+          durable.operation.name: otel-recovery-step
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        after:
+          name: otel-handled-failure attempt 1
+          attributes:
+            durable.attempt.outcome: FAILED
+        parent:
+          name: otel-recovery-step
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${RECOVERY_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step

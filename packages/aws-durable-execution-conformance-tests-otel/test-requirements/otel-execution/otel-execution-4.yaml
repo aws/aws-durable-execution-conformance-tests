@@ -1,0 +1,100 @@
+description: Execution view emits the terminal failed workflow, step, and attempt hierarchy
+Input:
+  scenario: terminal-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-terminal-failure
+  - EventId: 3
+    EventType: StepFailed
+    SubType: Step
+    Id: ${FAILED_STEP}
+    Name: otel-terminal-failure
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 4
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+    - select:
+        name: otel-terminal-failure
+        attributes:
+          durable.operation.id: ${FAILED_STEP}
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-terminal-failure
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED
+    - select:
+        name: otel-terminal-failure attempt 1
+        attributes:
+          durable.operation.id: ${FAILED_STEP}
+          durable.attempt.outcome: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-terminal-failure
+          durable.attempt.outcome: FAILED
+        parent:
+          name: otel-terminal-failure
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${FAILED_STEP}

@@ -1,0 +1,229 @@
+description: Execution view emits the complete parallel branch hierarchy
+Input:
+  scenario: parallel-hierarchy
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: Parallel
+    Id: ${PARALLEL1}
+    Name: otel-parallel
+  - EventId: 3
+    EventType: ContextStarted
+    SubType: ParallelBranch
+    Id: ${BRANCH1}
+    ParentId: ${PARALLEL1}
+    Name: otel-parallel-branch-a
+  - EventId: 4
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP1}
+    ParentId: ${BRANCH1}
+    Name: otel-parallel-step-a
+  - EventId: 7
+    EventType: ContextStarted
+    SubType: ParallelBranch
+    Id: ${BRANCH2}
+    ParentId: ${PARALLEL1}
+    Name: otel-parallel-branch-b
+  - EventId: 8
+    EventType: StepStarted
+    SubType: Step
+    Id: ${STEP2}
+    ParentId: ${BRANCH2}
+    Name: otel-parallel-step-b
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 9
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: UNSET
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+    - select:
+        name: otel-parallel
+        attributes:
+          durable.operation.id: ${PARALLEL1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${PARALLEL1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: Parallel
+          durable.operation.name: otel-parallel
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: SUCCEEDED
+    - select:
+        name: otel-parallel-branch-a
+        attributes:
+          durable.operation.id: ${BRANCH1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BRANCH1}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: ParallelBranch
+          durable.operation.name: otel-parallel-branch-a
+        parent:
+          name: otel-parallel
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${PARALLEL1}
+    - select:
+        name: otel-parallel-step-a
+        attributes:
+          durable.operation.id: ${STEP1}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-parallel-step-a
+        parent:
+          name: otel-parallel-branch-a
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${BRANCH1}
+    - select:
+        name: otel-parallel-step-a attempt 1
+        attributes:
+          durable.operation.id: ${STEP1}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP1}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-parallel-step-a
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-parallel-step-a
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP1}
+    - select:
+        name: otel-parallel-branch-b
+        attributes:
+          durable.operation.id: ${BRANCH2}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BRANCH2}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: ParallelBranch
+          durable.operation.name: otel-parallel-branch-b
+        parent:
+          name: otel-parallel
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${PARALLEL1}
+    - select:
+        name: otel-parallel-step-b
+        attributes:
+          durable.operation.id: ${STEP2}
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-parallel-step-b
+        parent:
+          name: otel-parallel-branch-b
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${BRANCH2}
+    - select:
+        name: otel-parallel-step-b attempt 1
+        attributes:
+          durable.operation.id: ${STEP2}
+          durable.attempt.outcome: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links:
+          - name: invocation
+        inside:
+          $linked: true
+          name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${STEP2}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-parallel-step-b
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-parallel-step-b
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${STEP2}

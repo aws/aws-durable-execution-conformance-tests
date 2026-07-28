@@ -8,7 +8,7 @@ import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.config.StepConfig;
 import software.amazon.lambda.durable.retry.RetryStrategies;
 
-/** Terminal step failure scenario for OTel requirement otel-4. */
+/** Terminal step failure scenario for OTel requirement otel-invocation-4. */
 public final class Otel4TerminalFailure extends OtelConformanceHandler<Void> {
 
     @Override

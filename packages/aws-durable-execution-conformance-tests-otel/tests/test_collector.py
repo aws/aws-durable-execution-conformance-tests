@@ -185,6 +185,48 @@ def test_collector_merges_otlp_json_files_across_s3_pages() -> None:
     assert all(body.closed for body in client.bodies)
 
 
+def test_collector_preserves_spans_with_duplicate_trace_and_span_ids() -> None:
+    span_id = "2" * 16
+    client = _S3(
+        {
+            "otel/year=2026/month=07/day=21/traces_100.json": (
+                json.dumps(
+                    _json_payload(
+                        span_id=span_id,
+                        execution_arn="arn:test",
+                        invocation_id="invoke-1",
+                    )
+                ).encode(),
+                "",
+            ),
+            "otel/year=2026/month=07/day=21/traces_101.json": (
+                json.dumps(
+                    _json_payload(
+                        span_id=span_id,
+                        execution_arn="arn:test",
+                        invocation_id="invoke-2",
+                    )
+                ).encode(),
+                "",
+            ),
+        }
+    )
+    backend = CollectorBackend(client, "telemetry-bucket", "otel/")
+
+    trace = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+    )
+
+    assert len(trace.spans) == 2
+    assert {span.trace_id for span in trace.spans} == {"1" * 32}
+    assert {span.span_id for span in trace.spans} == {span_id}
+    assert [span.attributes["faas.invocation_id"] for span in trace.spans] == [
+        "invoke-1",
+        "invoke-2",
+    ]
+
+
 def test_collector_reads_otlp_protobuf_files() -> None:
     payload = ExportTraceServiceRequest()
     resource_spans = payload.resource_spans.add()

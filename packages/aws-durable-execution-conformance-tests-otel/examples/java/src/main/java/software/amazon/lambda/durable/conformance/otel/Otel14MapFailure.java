@@ -8,7 +8,7 @@ import java.util.Map;
 import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.config.MapConfig;
 
-/** Failed map-iteration scenario for OTel requirement otel-14. */
+/** Failed map-iteration scenario for OTel requirement otel-invocation-14. */
 public final class Otel14MapFailure extends OtelConformanceHandler<Void> {
 
     @Override

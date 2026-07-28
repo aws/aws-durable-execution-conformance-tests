@@ -1,9 +1,9 @@
 # AWS Durable Execution OpenTelemetry Conformance
 
-Optional OpenTelemetry integration suite for
+Optional OpenTelemetry integration suites for
 `aws-durable-execution-conformance-tests`. Installing this distribution adds
-the `otel` suite to the existing runner through a Python entry point; it does
-not install a second conformance CLI.
+the `otel-invocation` and `otel-execution` suites to the existing runner through
+a Python entry point; it does not install a second conformance CLI.
 
 ## Install
 
@@ -14,7 +14,12 @@ pip install aws-durable-execution-conformance-tests-otel
 The package requires a compatible `>=0.2,<0.3` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
 validators, and requirement resources. Core `0.2.0` introduces the extension
-API used to discover this suite; core `0.1.x` cannot load it.
+API used to discover these suites; core `0.1.x` cannot load them.
+
+The suites pair the same execution scenarios with view-specific telemetry
+contracts. Invocation-view requirements assert spans emitted around each
+Lambda invocation. Execution-view requirements assert the terminal `Workflow`
+hierarchy and invocation links emitted across the durable execution.
 
 ## Run
 
@@ -22,7 +27,7 @@ API used to discover this suite; core `0.1.x` cannot load it.
 durable-execution-conformance \
   --template path/to/template.yaml \
   --language python \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --otel-exporter community \
   --otel-backend collector \
   --otel-endpoint https://otel-collector.example/v1/traces \
@@ -45,6 +50,7 @@ relationships, and timestamp ordering. Every span must start at or before it
 ends, and every asserted parent must contain its child's complete timespan.
 `before`, `after`, and `inside` compare a selected span with one other span.
 `inside` can target a span that is not the selected span's parent.
+`$linked: true` restricts the relation to spans linked by the selected span.
 Complete-contract cases can require every plugin span and every attribute
 under a stable prefix to be asserted. See the
 [contribution guide](CONTRIBUTING.md#add-a-requirement) for the requirement
@@ -104,15 +110,15 @@ temporary stack, bucket, and layer version afterward.
 
 The package includes a self-contained
 [Python SAM project](examples/python/README.md) that implements every OTel
-requirement with the Python SDK and its OTel plugin. Its runtime requirements
-track both packages directly from the SDK repository's `main` branch. The
-folder is structured to move into the Python SDK's OTel package when this suite
-stabilizes.
+requirement with the Python SDK and its OTel plugins. Its runtime requirements
+pin both packages to the merge commit of Python SDK PR 576, which introduced
+`ExecutionOtelPlugin`. The folder is structured to move into the Python SDK's
+OTel package when this suite stabilizes.
 
 ## Java Examples
 
 The self-contained [Java SAM project](examples/java/README.md) implements the
-same OTel requirements with the Java SDK and its OTel plugin. It builds one
+invocation-view requirements with the Java SDK and its OTel plugin. It builds one
 shaded JAR containing all handlers and attaches the
 `AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
 remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
@@ -123,8 +129,9 @@ gRPC endpoint from the deployment environment.
 The self-contained
 [TypeScript SAM project](examples/typescript/README.md) implements all OTel
 requirements on Node.js 22. It builds the JavaScript SDK and OTel plugin from
-their `main` branch, bundles the handlers, and uses `InvocationOtelPlugin` with
-the tracer provider registered by `AWSOpenTelemetryDistroJs`.
+their `main` branch, bundles the handlers, and exercises both
+`InvocationOtelPlugin` and `ExecutionOtelPlugin` with the tracer provider
+registered by the Lambda instrumentation layer.
 
 ## Third-Party Plugins
 

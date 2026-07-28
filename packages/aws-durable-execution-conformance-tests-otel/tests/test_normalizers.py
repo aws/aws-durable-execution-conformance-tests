@@ -128,6 +128,39 @@ def test_normalizes_xray_segments_and_subsegments() -> None:
     assert trace.spans[0].parent_span_id == "f" * 16
     assert trace.spans[1].parent_span_id == "1" * 16
     assert trace.spans[2].parent_span_id == "2" * 16
+    assert all(span.service_name == "conformance" for span in trace.spans)
+
+
+def test_normalizes_xray_otel_service_name_and_inherits_it_for_subsegments() -> None:
+    document = {
+        "trace_id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb",
+        "id": "1" * 16,
+        "name": "Workflow",
+        "start_time": 1,
+        "end_time": 2,
+        "metadata": {"default": {"aws.local.service": "invocation"}},
+        "subsegments": [
+            {
+                "id": "2" * 16,
+                "name": "inherited child",
+                "start_time": 1.2,
+                "end_time": 1.8,
+            },
+            {
+                "id": "3" * 16,
+                "name": "overriding child",
+                "start_time": 1.3,
+                "end_time": 1.7,
+                "metadata": {"default": {"aws.local.service": "child-service"}},
+            },
+        ],
+    }
+
+    spans = normalize_xray([document])[0].spans
+
+    assert spans[0].service_name == "invocation"
+    assert spans[1].service_name == "invocation"
+    assert spans[2].service_name == "child-service"
 
 
 def test_normalizes_datadog_decimal_identifiers() -> None:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Failed map scenario for OTel requirement otel-14."""
+"""Failed map scenario for OTel requirement otel-invocation-14."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from typing import Any
 
 from aws_durable_execution_sdk_python import DurableContext, durable_execution
 from aws_durable_execution_sdk_python.config import MapConfig
-from aws_durable_execution_sdk_python_otel import OtelPlugin
-from common import require_scenario
+from common import otel_plugin, require_scenario
 
 
 def fail_map_item(
@@ -23,7 +22,7 @@ def fail_map_item(
     raise RuntimeError("Intentional map iteration failure")
 
 
-@durable_execution(plugins=[OtelPlugin()])
+@durable_execution(plugins=[otel_plugin()])
 def handler(event: dict[str, Any], context: DurableContext) -> None:
     require_scenario(event, "map-failure")
     result = context.map(

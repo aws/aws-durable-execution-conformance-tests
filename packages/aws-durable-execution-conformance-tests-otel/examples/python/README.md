@@ -10,38 +10,62 @@ The project is intentionally self-contained so this directory can move into the
 Python SDK's OpenTelemetry package once the suite is complete.
 
 The runner discovers each requirement mapping from
-`TestingMetadata.TestDescription`. The same `otel-N` prefix appears in the
-handler module and deployed function name so cases are easy to correlate across
-the template and source tree.
+`TestingMetadata.TestDescription`. The 19 invocation and 19 execution
+requirements reuse the same scenario handlers and select their plugin through
+deployment configuration.
 
 ## Scenarios
 
 | Requirement | Handler | Behavior |
 |---|---|---|
-| `otel-1` | `otel_1_success.handler` | Verifies every successful step and attempt span. |
-| `otel-2` | `otel_2_wait_resume.handler` | Verifies every wait, resume, and post-resume step span. |
-| `otel-3` | `otel_3_retry.handler` | Verifies failed and successful retry attempts across invocations. |
-| `otel-4` | `otel_4_terminal_failure.handler` | Verifies complete telemetry for a terminal execution failure. |
-| `otel-5` | `otel_5_child_context.handler` | Verifies every child-context and nested-step span. |
-| `otel-6` | `otel_6_parallel.handler` | Verifies every parallel context, branch, step, and attempt span. |
-| `otel-7` | `otel_7_map.handler` | Verifies every map context, iteration, step, and attempt span. |
-| `otel-8` | `otel_8_handled_failure.handler` | Verifies complete failed-step and recovery telemetry. |
-| `otel-9` | `otel_9_wait_for_condition.handler` | Verifies every condition polling attempt and continuation. |
-| `otel-10` | `otel_10_wait_for_callback.handler` | Verifies callback context, callback, and submitter spans. |
-| `otel-11` | `otel_11_chained_invoke.handler` | Verifies chained-invoke continuation spans. |
-| `otel-12` | `otel_12_child_context_failure.handler` | Verifies a failed child-context span. |
-| `otel-13` | `otel_13_parallel_failure.handler` | Verifies failed parallel-branch telemetry. |
-| `otel-14` | `otel_14_map_failure.handler` | Verifies failed map-iteration telemetry. |
-| `otel-15` | `otel_15_wait_interrupted.handler` | Verifies an interrupted wait when execution times out. |
-| `otel-16` | `otel_16_wait_for_condition_failure.handler` | Verifies failed condition-check telemetry. |
-| `otel-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
-| `otel-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
-| `otel-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
+| `otel-invocation-1` | `otel_1_success.handler` | Verifies every successful step and attempt span. |
+| `otel-invocation-2` | `otel_2_wait_resume.handler` | Verifies every wait, resume, and post-resume step span. |
+| `otel-invocation-3` | `otel_3_retry.handler` | Verifies failed and successful retry attempts across invocations. |
+| `otel-invocation-4` | `otel_4_terminal_failure.handler` | Verifies complete telemetry for a terminal execution failure. |
+| `otel-invocation-5` | `otel_5_child_context.handler` | Verifies every child-context and nested-step span. |
+| `otel-invocation-6` | `otel_6_parallel.handler` | Verifies every parallel context, branch, step, and attempt span. |
+| `otel-invocation-7` | `otel_7_map.handler` | Verifies every map context, iteration, step, and attempt span. |
+| `otel-invocation-8` | `otel_8_handled_failure.handler` | Verifies complete failed-step and recovery telemetry. |
+| `otel-invocation-9` | `otel_9_wait_for_condition.handler` | Verifies every condition polling attempt and continuation. |
+| `otel-invocation-10` | `otel_10_wait_for_callback.handler` | Verifies callback context, callback, and submitter spans. |
+| `otel-invocation-11` | `otel_11_chained_invoke.handler` | Verifies chained-invoke continuation spans. |
+| `otel-invocation-12` | `otel_12_child_context_failure.handler` | Verifies a failed child-context span. |
+| `otel-invocation-13` | `otel_13_parallel_failure.handler` | Verifies failed parallel-branch telemetry. |
+| `otel-invocation-14` | `otel_14_map_failure.handler` | Verifies failed map-iteration telemetry. |
+| `otel-invocation-15` | `otel_15_wait_interrupted.handler` | Verifies an interrupted wait when execution times out. |
+| `otel-invocation-16` | `otel_16_wait_for_condition_failure.handler` | Verifies failed condition-check telemetry. |
+| `otel-invocation-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
+| `otel-invocation-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
+| `otel-invocation-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
+| `otel-execution-1` | `otel_1_success.handler` | Verifies the execution-view workflow, step, and attempt hierarchy. |
+| `otel-execution-2` | `otel_2_wait_resume.handler` | Verifies the execution view across a resumed invocation. |
+| `otel-execution-3` | `otel_3_retry.handler` | Verifies the execution view across retry attempts. |
+| `otel-execution-4` | `otel_4_terminal_failure.handler` | Verifies the failed workflow, step, and attempt hierarchy. |
+| `otel-execution-5` | `otel_5_child_context.handler` | Verifies child-context and nested-step parentage. |
+| `otel-execution-6` | `otel_6_parallel.handler` | Verifies parallel context, branch, step, and attempt parentage. |
+| `otel-execution-7` | `otel_7_map.handler` | Verifies map context, iteration, step, and attempt parentage. |
+| `otel-execution-8` | `otel_8_handled_failure.handler` | Verifies failed and recovery operations under a successful workflow. |
+| `otel-execution-9` | `otel_9_wait_for_condition.handler` | Verifies condition polling attempts across invocations. |
+| `otel-execution-10` | `otel_10_wait_for_callback.handler` | Verifies callback, submitter, and attempt parentage. |
+| `otel-execution-11` | `otel_11_chained_invoke.handler` | Verifies source and target workflow roots for a chained invoke. |
+| `otel-execution-12` | `otel_12_child_context_failure.handler` | Verifies a failed child context under a failed workflow. |
+| `otel-execution-13` | `otel_13_parallel_failure.handler` | Verifies a failed parallel branch under its operation. |
+| `otel-execution-14` | `otel_14_map_failure.handler` | Verifies a failed map iteration under its operation. |
+| `otel-execution-15` | Not implemented | Requires a terminal plugin hook after a pending invocation times out externally. |
+| `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Verifies a failed condition operation and attempt. |
+| `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
+| `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
+| `otel-execution-19` | Not implemented | Requires retaining the workflow after the handler invocation ends with `RETRY`. |
+
+Execution cases 15 and 19 remain declared under
+`TestingMetadata.NotImplemented` because the plugin does not receive a terminal
+callback for those service-driven lifecycle transitions.
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
-both packages directly from the SDK repository's `main` branch because the
-OpenTelemetry plugin is evolving quickly. Pin the two Git requirements to the
-same commit when a reproducible build is needed.
+both packages at the merge commit of
+[Python SDK PR 576](https://github.com/aws/aws-durable-execution-sdk-python/pull/576),
+which introduced `ExecutionOtelPlugin`. Both Git requirements use that same
+commit so the core and OTel plugin APIs cannot drift before the next release.
 
 ## Run Against X-Ray
 
@@ -56,7 +80,7 @@ pip install \
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml \
   --language python \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_LAYER_ARN" \
@@ -80,7 +104,7 @@ OTLP objects back from S3 for assertion:
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml \
   --language python \
-  --suite otel \
+  --suite otel-invocation otel-execution \
   --parameter-overrides \
     LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
     OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \

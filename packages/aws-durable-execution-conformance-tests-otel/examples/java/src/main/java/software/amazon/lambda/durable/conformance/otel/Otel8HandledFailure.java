@@ -8,7 +8,7 @@ import software.amazon.lambda.durable.DurableContext;
 import software.amazon.lambda.durable.config.StepConfig;
 import software.amazon.lambda.durable.retry.RetryStrategies;
 
-/** Handled step failure scenario for OTel requirement otel-8. */
+/** Handled step failure scenario for OTel requirement otel-invocation-8. */
 public final class Otel8HandledFailure extends OtelConformanceHandler<String> {
 
     @Override

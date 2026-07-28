@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
-/** Map hierarchy scenario for OTel requirement otel-7. */
+/** Map hierarchy scenario for OTel requirement otel-invocation-7. */
 
 import { createScenarioHandler } from "./common";
 

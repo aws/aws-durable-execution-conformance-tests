@@ -1,0 +1,74 @@
+description: Execution view emits the failed child-context hierarchy
+Input:
+  scenario: child-context-failure
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ContextStarted
+    SubType: RunInChildContext
+    Id: ${FAILED_CONTEXT}
+    Name: otel-failed-child-context
+  - EventId: 3
+    EventType: ContextFailed
+    SubType: RunInChildContext
+    Id: ${FAILED_CONTEXT}
+    Name: otel-failed-child-context
+ExpectedResult:
+  ExecutionStatus: FAILED
+TelemetryAssertions:
+  minimum_spans: 3
+  require_execution_correlation: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+      expect:
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: FAILED
+    - select:
+        name: otel-failed-child-context
+        attributes:
+          durable.operation.id: ${FAILED_CONTEXT}
+      expect:
+        status: ERROR
+        service_name: invocation
+        links:
+          - name: invocation
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${FAILED_CONTEXT}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
+          durable.operation.name: otel-failed-child-context
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.execution.status: FAILED
