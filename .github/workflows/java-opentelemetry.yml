@@ -10,6 +10,7 @@ on:
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
       - packages/aws-durable-execution-conformance-tests-otel/collector/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
@@ -22,6 +23,7 @@ on:
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
       - packages/aws-durable-execution-conformance-tests-otel/collector/**
       - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
@@ -67,6 +69,18 @@ jobs:
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit
 
+  execution:
+    name: Execution view
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
+    uses: ./.github/workflows/java-opentelemetry-suite.yml
+    with:
+      suite: otel-execution
+      case_count: 19
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
+
   long-running-invocation:
     name: Long running invocation view
     uses: ./.github/workflows/java-opentelemetry-long-running.yml
@@ -74,8 +88,25 @@ jobs:
       phase: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
           && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: invocation
       delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
+          && '600' || (inputs.delay_seconds || '82800') }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
+
+  long-running-execution:
+    name: Long running execution view
+    uses: ./.github/workflows/java-opentelemetry-long-running.yml
+    with:
+      phase: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: execution
+      delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
           && '600' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

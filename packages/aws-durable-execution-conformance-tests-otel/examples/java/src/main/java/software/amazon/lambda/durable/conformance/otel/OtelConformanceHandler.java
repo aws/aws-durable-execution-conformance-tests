@@ -38,17 +38,18 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                                         Attributes.of(
                                                 AttributeKey.stringKey("service.name"),
                                                 System.getenv().getOrDefault("OTEL_SERVICE_NAME", "invocation"))));
-        var plugin = createInvocationPlugin(
+        var plugin = createPlugin(
                 SdkTracerProvider.builder()
                         .setResource(resource)
                         .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
         return DurableConfig.builder().withPlugins(plugin).build();
     }
 
-    private DurableExecutionPlugin createInvocationPlugin(
-            SdkTracerProviderBuilder tracerProviderBuilder) {
-        var classNames =
-                new String[] {
+    private DurableExecutionPlugin createPlugin(SdkTracerProviderBuilder tracerProviderBuilder) {
+        var executionView = "execution".equals(System.getenv("OTEL_PLUGIN_MODE"));
+        var classNames = executionView
+                ? new String[] {"software.amazon.lambda.durable.otel.ExecutionOtelPlugin"}
+                : new String[] {
                     "software.amazon.lambda.durable.otel.InvocationOtelPlugin",
                     "software.amazon.lambda.durable.otel.OtelPlugin"
                 };
@@ -65,7 +66,10 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                         "Could not initialize OpenTelemetry plugin " + className, error);
             }
         }
-        throw new IllegalStateException("No supported Java OpenTelemetry plugin is available");
+        throw new IllegalStateException(
+                "No supported Java OpenTelemetry plugin is available for "
+                        + (executionView ? "execution" : "invocation")
+                        + " view");
     }
 
     private SpanExporter createExporter() {

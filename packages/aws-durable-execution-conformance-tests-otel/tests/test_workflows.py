@@ -14,7 +14,7 @@ LONG_RUNNING_WORKFLOWS = {
     language: WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml" for language in LANGUAGES
 }
 SUPPORTED_VIEWS = {
-    "java": ("invocation",),
+    "java": ("invocation", "execution"),
     "python": ("invocation", "execution"),
     "typescript": ("invocation", "execution"),
 }
@@ -58,7 +58,7 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
 
 
 def test_shared_view_templates_receive_the_selected_suite() -> None:
-    for language in ("python", "typescript"):
+    for language in LANGUAGES:
         workflow = SUITE_WORKFLOWS[language].read_text(encoding="utf-8")
 
         assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
@@ -81,7 +81,7 @@ def test_language_workflows_own_all_supported_views() -> None:
         assert workflow.count("delay_seconds: >-") == len(views)
         for view in views:
             assert f"suite: otel-{view}" in workflow
-            assert f"view: {view}" in workflow or language == "java"
+            assert f"view: {view}" in workflow
             assert f"test-requirements/otel-{view}/**" in workflow
 
 

@@ -8,6 +8,10 @@ on:
         required: false
         default: short
         type: string
+      view:
+        description: OTel view to verify
+        required: true
+        type: string
       delay_seconds:
         description: Durable delay in seconds
         required: false
@@ -25,35 +29,37 @@ permissions:
   id-token: write
 
 concurrency:
-  group: java-otel-long-running-${{ inputs.aws_region || 'us-west-2' }}
+  group: java-otel-long-running-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
   PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
-  OTEL_VIEW: invocation
-  STATE_ARTIFACT: java-otel-long-running-invocation-${{ inputs.aws_region || 'us-west-2' }}-state
   STATE_FILE: /tmp/java-otel-long-running-state.json
   RESULT_FILE: /tmp/java-otel-long-running-result.json
   HISTORY_DIR: /tmp/java-otel-long-running-history
   REPORT_FILE: /tmp/java-otel-long-running-report
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template-long-running.yaml
-  TEST_NAME: >-
-    j-olr-i${{
-      inputs.phase == 'short'
-      && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
-    }}
   JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
 
 jobs:
   run:
     name: >-
+      ${{ inputs.view }} /
       ${{ inputs.phase == 'short' && 'Short run'
         || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      OTEL_VIEW: ${{ inputs.view }}
+      STATE_ARTIFACT: java-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
+      TEST_NAME: >-
+        j-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{
+          inputs.phase == 'short'
+          && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
+        }}
     steps:
       - name: Find active run state
         if: env.PHASE != 'short'
@@ -76,16 +82,15 @@ jobs:
           echo "phase=$phase" >> "$GITHUB_OUTPUT"
           if [ "$phase" = "launch" ]; then
             if [ -n "$artifact_id" ]; then
-              echo "An active Java long-running OTel run already exists (artifact $artifact_id)."
+              echo "An active Java $OTEL_VIEW long-running OTel run already exists (artifact $artifact_id)."
               exit 1
             fi
             echo "active=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -z "$artifact_id" ]; then
-            echo "No active Java long-running OTel run."
-            echo "active=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "No active Java $OTEL_VIEW long-running OTel run."
+            exit 1
           fi
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
             > "$RUNNER_TEMP/java-otel-long-running-state.zip"
@@ -93,7 +98,7 @@ jobs:
           mv "$RUNNER_TEMP/state/java-otel-long-running-state.json" "$STATE_FILE"
           source_revision=$(jq -r '.source_revision // empty' "$STATE_FILE")
           if [ -z "$source_revision" ]; then
-            echo "Active Java state does not record its launch revision."
+            echo "Active Java $OTEL_VIEW state does not record its launch revision."
             exit 1
           fi
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
@@ -296,7 +301,7 @@ jobs:
           (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: java-otel-long-running-invocation-results-${{ github.run_id }}
+          name: java-otel-long-running-${{ inputs.view }}-results-${{ github.run_id }}
           path: |
             ${{ env.HISTORY_DIR }}/
             ${{ env.REPORT_FILE }}.json

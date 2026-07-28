@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -81,7 +82,7 @@ CALLBACK_OUTCOME_EVENT_TYPES = frozenset(
     }
 )
 SUPPORTED_VIEWS = {
-    "java": frozenset({"invocation"}),
+    "java": frozenset({"execution", "invocation"}),
     "javascript": frozenset({"execution", "invocation"}),
     "python": frozenset({"execution", "invocation"}),
 }
@@ -221,6 +222,7 @@ def _requirement_for_view(requirement: dict[str, Any], view: str) -> dict[str, A
 
 def _otel_options(
     language: str,
+    view: str,
     region: str,
     backend: str = "xray",
 ) -> dict[str, Any]:
@@ -230,11 +232,17 @@ def _otel_options(
         "suite": [SUITE],
         "otel_backend": backend,
         "otel_exporter": "adot",
-        "otel_service_name": "invocation",
+        "otel_service_name": _query_service_name(language, view),
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
     }
+
+
+def _query_service_name(language: str, view: str) -> str:
+    if normalize_runtime(language) == "java" and view == "execution":
+        return "workflow"
+    return "invocation"
 
 
 def _resolved_input(
@@ -265,7 +273,8 @@ def launch(args: argparse.Namespace) -> int:
         for function_name, description_id in parse_function_descriptions(str(template_path))
         if description_id in requirements
     ]
-    if {description_id for _, description_id in mappings} != set(requirements):
+    mapping_counts = Counter(description_id for _, description_id in mappings)
+    if mapping_counts != Counter(requirements.keys()):
         raise ValueError(f"{template_path} must map every {SUITE} requirement exactly once")
 
     stack_name = f"{STACK_NAME_PREFIX}-{args.name}"
@@ -521,7 +530,7 @@ def _validate_terminal_execution(
                 **match_result.resolved_placeholders,
                 "EXECUTION_ARN": execution.execution_arn,
             },
-            options=_otel_options(state.language, state.region, backend),
+            options=_otel_options(state.language, state.view, state.region, backend),
             aws_clients=clients,
         )
         errors.extend(OtelExtension().validate_telemetry(validation_context))
