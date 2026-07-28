@@ -137,7 +137,7 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     properties = root.find("m:properties", namespace)
 
     assert properties is not None
-    assert properties.find("m:durable.sdk.version", namespace) is None
+    assert properties.findtext("m:durable.sdk.version", namespaces=namespace) == "${env.JAVA_SDK_VERSION}"
     assert properties.findtext("m:maven.compiler.target", namespaces=namespace) == "17"
     dependencies = root.findall("m:dependencies/m:dependency", namespace)
     artifacts = {element.findtext("m:artifactId", namespaces=namespace) for element in dependencies}

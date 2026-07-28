@@ -62,8 +62,9 @@ Execution cases 15 and 19 remain declared under
 callback for those service-driven lifecycle transitions.
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
-both packages from the Python SDK repository's latest `main`. Using the same
-branch for both Git requirements keeps the core and OTel plugin APIs aligned.
+both packages from the commit in `PYTHON_SDK_REF`. The hosted workflow resolves
+the latest `main` commit once per run so every SAM function uses the same core
+and OTel plugin revision.
 
 ## Run Against X-Ray
 
@@ -120,13 +121,20 @@ S3 write access; the runner identity needs list, read, and cleanup access.
 
 ## Build Only
 
-SAM uses `src/Makefile` to install both packages from the SDK repository's
-`main` branch. The explicit Makefile build avoids SAM's package metadata
-inspection, which does not support these Git monorepo subdirectory dependencies.
-It also resolves binary dependencies for Lambda's `manylinux2014_x86_64`
-platform when building from macOS:
+SAM uses `src/Makefile` to install both packages from one resolved SDK commit.
+The explicit Makefile build avoids SAM's package metadata inspection, which
+does not support these Git monorepo subdirectory dependencies. It also resolves
+binary dependencies for Lambda's `manylinux2014_x86_64` platform when building
+from macOS:
 
 ```bash
+export PYTHON_SDK_REF=$(
+  git ls-remote \
+    https://github.com/aws/aws-durable-execution-sdk-python.git \
+    refs/heads/main |
+    awk '{print $1}'
+)
+
 sam build \
   --template-file packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml
 ```

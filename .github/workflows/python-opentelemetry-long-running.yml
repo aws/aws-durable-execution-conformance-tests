@@ -22,6 +22,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      python_sdk_ref:
+        description: Resolved commit from the Python SDK main branch
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -39,6 +43,7 @@ env:
   STATE_FILE: /tmp/python-otel-long-running-state.json
   RESULT_FILE: /tmp/python-otel-long-running-result.json
   HISTORY_DIR: /tmp/python-otel-long-running-history
+  PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
   REPORT_FILE: /tmp/python-otel-long-running-report
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template-long-running.yaml
 

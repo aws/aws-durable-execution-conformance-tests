@@ -17,7 +17,9 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
+ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -187,17 +189,17 @@ def test_python_example_handlers_are_valid_python() -> None:
         assert f"build-{logical_id}" in makefile
 
 
-def test_python_examples_install_both_sdk_packages_from_main() -> None:
+def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit() -> None:
     requirements = (EXAMPLES_DIR / "src" / "requirements.txt").read_text(encoding="utf-8")
 
     assert (
         "aws-durable-execution-sdk-python @ "
-        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@${PYTHON_SDK_REF}"
         "#subdirectory=packages/aws-durable-execution-sdk-python"
     ) in requirements
     assert (
         "aws-durable-execution-sdk-python-otel @ "
-        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@main"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@${PYTHON_SDK_REF}"
         "#subdirectory=packages/aws-durable-execution-sdk-python-otel"
     ) in requirements
 
@@ -205,6 +207,22 @@ def test_python_examples_install_both_sdk_packages_from_main() -> None:
     assert "ExecutionOtelPlugin" in common
     assert "InvocationOtelPlugin" in common
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
+
+
+def test_python_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert entry_workflow.count("git ls-remote") == 1
+    assert "refs/heads/main" in entry_workflow
+    assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
+    assert entry_workflow.count("needs: resolve-sdk-main") == 4
+    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    for workflow in (suite_workflow, long_running_workflow):
+        assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
+        assert "      python_sdk_ref:" in workflow
+        assert "        required: true" in workflow
 
 
 def test_python_s3_job_builds_and_queries_the_collector() -> None:
