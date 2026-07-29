@@ -385,26 +385,29 @@ jobs:
             --output text > /dev/null
           echo "Using S3 collector layer $COLLECTOR_LAYER_ARN"
 
-      - name: Create run-scoped S3 telemetry bucket
+      - name: Prepare stable S3 telemetry bucket
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
           TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
           TEST_ROLE_ARN: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
         run: |
-          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
           OTEL_S3_PREFIX=traces
           {
             echo "OTEL_S3_BUCKET=$OTEL_S3_BUCKET"
             echo "OTEL_S3_PREFIX=$OTEL_S3_PREFIX"
             echo "OTEL_S3_URI=s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX"
           } >> "$GITHUB_ENV"
-          if [ "$AWS_REGION" = "us-east-1" ]; then
-            aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
-          else
-            aws s3api create-bucket \
-              --bucket "$OTEL_S3_BUCKET" \
-              --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+          if ! aws s3api head-bucket --bucket "$OTEL_S3_BUCKET" 2>/dev/null; then
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
+            else
+              aws s3api create-bucket \
+                --bucket "$OTEL_S3_BUCKET" \
+                --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+            fi
           fi
+          aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive
           aws s3api put-public-access-block \
             --bucket "$OTEL_S3_BUCKET" \
             --public-access-block-configuration \
@@ -557,16 +560,3 @@ jobs:
             ${{ runner.temp }}/python-otel-s3-report.json
             ${{ runner.temp }}/python-otel-s3-report.xml
           if-no-files-found: ignore
-
-      - name: Delete collector resources
-        if: always()
-        run: |
-          if [ -n "${OTEL_S3_BUCKET:-}" ]; then
-            aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive || true
-            aws s3api delete-bucket --bucket "$OTEL_S3_BUCKET" || true
-          fi
-          if [ -n "${COLLECTOR_LAYER_ARN:-}" ]; then
-            aws lambda delete-layer-version \
-              --layer-name "$COLLECTOR_LAYER_NAME" \
-              --version-number "${COLLECTOR_LAYER_ARN##*:}" || true
-          fi

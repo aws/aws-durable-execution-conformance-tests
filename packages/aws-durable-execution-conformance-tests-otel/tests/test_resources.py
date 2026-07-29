@@ -90,28 +90,39 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
         ]
         assert len(execution_workflow_spans) == 1
         assert len(execution_invocation_spans) == expected_invocations
-        assert len(invocation_workflow_spans) == 1
+        expected_workflow_arns = ["${EXECUTION_ARN}"]
+        if case_number == 4:
+            expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
+            assert requirement["TelemetryAssertions"]["minimum_spans"] == 10
+        assert [
+            assertion["select"]["attributes"]["durable.execution.arn"] for assertion in invocation_workflow_spans
+        ] == expected_workflow_arns
         assert len(invocation_invocation_spans) == expected_invocations
-        assert invocation_workflow_spans[0] == {
-            "select": {
-                "name": "Workflow",
-                "status": "OK",
-                "attributes": {
-                    "durable.execution.arn": "${EXECUTION_ARN}",
+        for execution_arn, workflow_assertion in zip(
+            expected_workflow_arns,
+            invocation_workflow_spans,
+            strict=True,
+        ):
+            assert workflow_assertion == {
+                "select": {
+                    "name": "Workflow",
+                    "status": "OK",
+                    "attributes": {
+                        "durable.execution.arn": execution_arn,
+                    },
                 },
-            },
-            "expect": {
-                "parent_span_id": None,
-                "status": "OK",
-                "service_name": "invocation",
-                "links": [],
-                "kind": "INTERNAL",
-                "attributes": {
-                    "durable.execution.arn": "${EXECUTION_ARN}",
-                    "durable.execution.status": "SUCCEEDED",
+                "expect": {
+                    "parent_span_id": None,
+                    "status": "OK",
+                    "service_name": "invocation",
+                    "links": [],
+                    "kind": "INTERNAL",
+                    "attributes": {
+                        "durable.execution.arn": execution_arn,
+                        "durable.execution.status": "SUCCEEDED",
+                    },
                 },
-            },
-        }
+            }
         assert '"name": "invocation"' not in json.dumps(requirement["TelemetryAssertions"])
         for assertion in invocation_span_assertions:
             if assertion["select"]["name"] in {"Invocation", "Workflow"}:
@@ -119,12 +130,13 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
                 continue
             links = assertion["expect"]["links"]
             link_alternatives = links["$any_of"] if isinstance(links, dict) else [links]
+            execution_arn = assertion["expect"]["attributes"]["durable.execution.arn"]
             assert all(
                 link_set[-1]
                 == {
                     "name": "Workflow",
                     "attributes": {
-                        "durable.execution.arn": "${EXECUTION_ARN}",
+                        "durable.execution.arn": execution_arn,
                     },
                 }
                 for link_set in link_alternatives
@@ -319,27 +331,32 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 "FAILED": "ERROR",
                 "SUCCEEDED": "OK",
             }[expected_execution_status]
-            assert len(workflows) == 1
-            assert workflows[0] == {
-                "select": {
-                    "name": "Workflow",
-                    "status": expected_workflow_status,
-                    "attributes": {
-                        "durable.execution.arn": "${EXECUTION_ARN}",
+            expected_workflow_arns = ["${EXECUTION_ARN}"]
+            if case_number in {11, 18}:
+                expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
+                assert assertions["minimum_spans"] == 7
+            assert len(workflows) == len(expected_workflow_arns)
+            for execution_arn, workflow in zip(expected_workflow_arns, workflows, strict=True):
+                assert workflow == {
+                    "select": {
+                        "name": "Workflow",
+                        "status": expected_workflow_status,
+                        "attributes": {
+                            "durable.execution.arn": execution_arn,
+                        },
                     },
-                },
-                "expect": {
-                    "parent_span_id": None,
-                    "status": expected_workflow_status,
-                    "service_name": "invocation",
-                    "links": [],
-                    "kind": "INTERNAL",
-                    "attributes": {
-                        "durable.execution.arn": "${EXECUTION_ARN}",
-                        "durable.execution.status": expected_execution_status,
+                    "expect": {
+                        "parent_span_id": None,
+                        "status": expected_workflow_status,
+                        "service_name": "invocation",
+                        "links": [],
+                        "kind": "INTERNAL",
+                        "attributes": {
+                            "durable.execution.arn": execution_arn,
+                            "durable.execution.status": expected_execution_status,
+                        },
                     },
-                },
-            }
+                }
         for span_assertion in span_assertions:
             assert "count" not in span_assertion
             selected_name = span_assertion["select"]["name"]

@@ -232,7 +232,7 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
-    assert "delete-layer-version" in workflow
+    assert "delete-layer-version" not in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
 
 

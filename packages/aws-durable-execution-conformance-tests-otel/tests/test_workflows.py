@@ -68,6 +68,22 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
     assert f"TEST_NAME: python-dash0-{VIEW_SUFFIX}" in python_workflow
 
 
+def test_s3_collector_resources_are_stable_and_retained() -> None:
+    for language, path in SUITE_WORKFLOWS.items():
+        workflow = path.read_text(encoding="utf-8")
+
+        assert (
+            f'OTEL_S3_BUCKET="dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}-${{TEST_ACCOUNT_ID}}-${{AWS_REGION}}"'
+            in workflow
+        )
+        assert "aws s3api head-bucket" in workflow
+        assert 'aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive' in workflow
+        assert "Create run-scoped S3 telemetry bucket" not in workflow
+        assert "Delete collector resources" not in workflow
+        assert "aws s3api delete-bucket" not in workflow
+        assert "aws lambda delete-layer-version" not in workflow
+
+
 def test_otel_stack_names_are_stable() -> None:
     for path in {*SUITE_WORKFLOWS.values(), *LONG_RUNNING_WORKFLOWS.values()}:
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))

@@ -25,7 +25,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 9
+  minimum_spans: 10
   minimum_invocations: 4
   require_execution_correlation: true
   allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
@@ -49,6 +49,20 @@ TelemetryAssertions:
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.execution.status: SUCCEEDED
     - select:
         name: Invocation
@@ -190,13 +204,13 @@ TelemetryAssertions:
           $any_of:
             - - name: Workflow
                 attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
+                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
             - - name: otel-long-invoke-target-wait
                 attributes:
                   durable.operation.id: '*'
               - name: Workflow
                 attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
+                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
