@@ -68,7 +68,7 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: ${/^[Ii]nvocation$/}
+          - name: Invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -95,10 +95,10 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: ${/^[Ii]nvocation$/}
+          - name: Invocation
         inside:
           $linked: true
-          name: ${/^[Ii]nvocation$/}
+          name: Invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -120,7 +120,7 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: ${/^[Ii]nvocation$/}
+          - name: Invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -147,10 +147,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: ${/^[Ii]nvocation$/}
+          - name: Invocation
         inside:
           $linked: true
-          name: ${/^[Ii]nvocation$/}
+          name: Invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

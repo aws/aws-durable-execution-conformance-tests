@@ -77,9 +77,7 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Workflow"
         ]
         execution_invocation_spans = [
-            assertion
-            for assertion in execution_span_assertions
-            if assertion["select"]["name"] == "${/^[Ii]nvocation$/}"
+            assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Invocation"
         ]
         invocation_span_assertions = requirement["TelemetryAssertions"]["span_assertions"]
         invocation_workflow_spans = [
@@ -95,18 +93,16 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             invocation_invocation_spans,
             strict=True,
         ):
-            assert (
-                json.loads(json.dumps(execution_invocation).replace("${/^[Ii]nvocation$/}", "Invocation")) == invocation
-            )
+            assert execution_invocation == invocation
         for assertion in execution_span_assertions:
-            if assertion["select"]["name"] in {"Workflow", "${/^[Ii]nvocation$/}"}:
+            if assertion["select"]["name"] in {"Workflow", "Invocation"}:
                 assert assertion["expect"]["links"] == []
                 continue
-            assert assertion["expect"]["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
+            assert assertion["expect"]["links"] == [{"name": "Invocation"}]
             if inside := assertion["expect"].get("inside"):
                 assert inside == {
                     "$linked": True,
-                    "name": "${/^[Ii]nvocation$/}",
+                    "name": "Invocation",
                 }
         expected_workflow_arns = ["${EXECUTION_ARN}"]
         if case_number == 4:
@@ -205,7 +201,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
     invocation_span = Span(
         trace_id=trace_id,
         span_id="7" * 16,
-        name="invocation",
+        name="Invocation",
         start_time=now,
         end_time=now,
         kind="INTERNAL",
@@ -536,11 +532,11 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
         for descendant in descendants:
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
-            assert expected["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
+            assert expected["links"] == [{"name": "Invocation"}]
             if "durable.attempt.outcome" in expected["attributes"]:
                 assert expected["inside"] == {
                     "$linked": True,
-                    "name": "${/^[Ii]nvocation$/}",
+                    "name": "Invocation",
                 }
             else:
                 assert "inside" not in expected
@@ -602,7 +598,7 @@ def test_callback_submitter_assertions_emit_once_without_retry(
         ]
         assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
     else:
-        assert submitter_assertion["expect"]["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
+        assert submitter_assertion["expect"]["links"] == [{"name": "Invocation"}]
         assert "inside" not in submitter_assertion["expect"]
 
 

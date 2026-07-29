@@ -267,7 +267,7 @@ def test_validates_parentage_and_links_across_correlated_traces() -> None:
                     "select": {"name": "child"},
                     "expect": {
                         "parent": {"name": "Workflow"},
-                        "links": [{"name": "${/^[Ii]nvocation$/}"}],
+                        "links": [{"name": "Invocation"}],
                     },
                 },
             ]
