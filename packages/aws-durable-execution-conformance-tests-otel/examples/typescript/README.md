@@ -57,7 +57,7 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Failed condition operation and attempt. |
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Source and target failed workflow roots. |
-| `otel-execution-19` | `otel_19_execution_failure.handler` | Incomplete workflow and retrying invocation telemetry. |
+| `otel-execution-19` | `otel_19_execution_failure.handler` | Retrying invocation telemetry without a completed workflow. |
 
 ## Run Against the S3 Collector
 

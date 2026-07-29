@@ -463,9 +463,13 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         span_assertions = assertions["span_assertions"]
         assert all("count" not in assertion for assertion in span_assertions)
         workflows = [item for item in span_assertions if item["select"]["name"] == "Workflow"]
-        expected_workflow_statuses = {
-            "${EXECUTION_ARN}": requirement["ExpectedResult"]["ExecutionStatus"],
-        }
+        expected_workflow_statuses = (
+            {}
+            if case_number == 19
+            else {
+                "${EXECUTION_ARN}": requirement["ExpectedResult"]["ExecutionStatus"],
+            }
+        )
         if case_number in {11, 18}:
             expected_workflow_statuses["${TARGET_EXECUTION_ARN}"] = "SUCCEEDED" if case_number == 11 else "FAILED"
             assert assertions["allowed_execution_arns"] == [
@@ -482,7 +486,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             execution_status = expected_workflow_statuses[execution_arn]
             expected_span_status = (
                 "UNSET"
-                if case_number in {15, 19}
+                if case_number == 15
                 else {
                     "SUCCEEDED": "OK",
                     "FAILED": "ERROR",
@@ -497,7 +501,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             }
             assert workflow["expect"]["parent_span_id"] is None
             assert workflow["expect"]["status"] == expected_span_status
-            if case_number in {15, 19}:
+            if case_number == 15:
                 assert workflow["expect"]["attributes"] == {
                     "durable.execution.arn": execution_arn,
                 }

@@ -55,7 +55,7 @@ deployment configuration.
 | `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Verifies a failed condition operation and attempt. |
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
-| `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies an incomplete workflow and retrying invocation telemetry. |
+| `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies retrying invocation telemetry without a completed workflow. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages from the commit in `PYTHON_SDK_REF`. The hosted workflow resolves
