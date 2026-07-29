@@ -171,10 +171,10 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
-        "otel_20_long_wait",
-        "otel_21_long_retry",
-        "otel_22_long_callback",
-        "otel_23_long_chained_invoke",
+        "otel_long_running_1_wait",
+        "otel_long_running_2_retry",
+        "otel_long_running_3_callback",
+        "otel_long_running_4_chained_invoke",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

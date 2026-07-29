@@ -61,7 +61,7 @@ Resources:
         - otel-long-running-1
     Properties:
       CodeUri: src/
-      Handler: otel_20_long_wait.handler
+      Handler: otel_long_running_1_wait.handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-1"
       Role: !Ref LambdaExecutionRoleArn
 
@@ -74,7 +74,7 @@ Resources:
         - otel-long-running-2
     Properties:
       CodeUri: src/
-      Handler: otel_21_long_retry.handler
+      Handler: otel_long_running_2_retry.handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-2"
       Role: !Ref LambdaExecutionRoleArn
 
@@ -87,7 +87,7 @@ Resources:
         - otel-long-running-3
     Properties:
       CodeUri: src/
-      Handler: otel_22_long_callback.handler
+      Handler: otel_long_running_3_callback.handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-3"
       Role: !Ref LambdaExecutionRoleArn
 
@@ -100,7 +100,7 @@ Resources:
         - otel-long-running-4
     Properties:
       CodeUri: src/
-      Handler: otel_23_long_chained_invoke.handler
+      Handler: otel_long_running_4_chained_invoke.handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-4"
       Role: !Ref LambdaExecutionRoleArn
       Environment:
@@ -113,6 +113,6 @@ Resources:
       BuildMethod: makefile
     Properties:
       CodeUri: src/
-      Handler: otel_23_long_chained_invoke.target_handler
+      Handler: otel_long_running_4_chained_invoke.target_handler
       FunctionName: !Sub "${AWS::StackName}-otel-long-running-4-target"
       Role: !Ref LambdaExecutionRoleArn
