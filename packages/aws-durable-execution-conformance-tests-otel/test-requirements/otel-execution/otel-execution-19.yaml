@@ -1,4 +1,4 @@
-description: Execution view emits a retrying invocation when handler execution retries
+description: Execution view emits a failed invocation when handler execution never completes a workflow
 Input:
   scenario: execution-failure
 AsyncInvoke: true
@@ -18,13 +18,13 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: RETRY
+          durable.invocation.status: FAILED
       expect:
-        status: UNSET
+        status: ERROR
         service_name: invocation
         links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: RETRY
+          durable.invocation.status: FAILED

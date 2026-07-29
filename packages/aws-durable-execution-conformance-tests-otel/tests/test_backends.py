@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
+from aws_durable_execution_conformance_tests_otel.backends._common import (
+    matching_trace,
+)
 from aws_durable_execution_conformance_tests_otel.backends.collector import (
     CollectorBackend,
 )
@@ -20,7 +24,7 @@ from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DatadogBackend,
 )
 from aws_durable_execution_conformance_tests_otel.backends.xray import XRayBackend
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery
+from aws_durable_execution_conformance_tests_otel.model import Span, TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
     PollingBackend,
@@ -80,6 +84,78 @@ def test_backends_declare_feature_disparities(
     assert backend_type.feature_disparities == expected
 
 
+def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
+    now = datetime.now(UTC)
+
+    def span(
+        trace_id: str,
+        span_id: str,
+        name: str,
+        execution_arn: str | None,
+    ) -> Span:
+        return Span(
+            trace_id=trace_id,
+            span_id=span_id,
+            name=name,
+            start_time=now,
+            end_time=now,
+            attributes=({"durable.execution.arn": execution_arn} if execution_arn else {}),
+        )
+
+    source_trace_id = "1" * 32
+    source_invocation_trace_id = "2" * 32
+    target_invocation_trace_id = "3" * 32
+    workflow_trace = Trace(
+        trace_id=source_trace_id,
+        spans=(
+            span(source_trace_id, "1" * 16, "Workflow", "arn:test"),
+            span(source_trace_id, "2" * 16, "Workflow", "arn:target"),
+        ),
+    )
+    source_invocation_trace = Trace(
+        trace_id=source_invocation_trace_id,
+        spans=(
+            span(source_invocation_trace_id, "3" * 16, "handler", None),
+            span(source_invocation_trace_id, "4" * 16, "Invocation", "arn:test"),
+        ),
+    )
+    target_invocation_trace = Trace(
+        trace_id=target_invocation_trace_id,
+        spans=(span(target_invocation_trace_id, "5" * 16, "Invocation", "arn:target"),),
+    )
+    unrelated_trace = Trace(
+        trace_id="4" * 32,
+        spans=(span("4" * 32, "6" * 16, "Invocation", "arn:other"),),
+    )
+
+    result = matching_trace(
+        [
+            source_invocation_trace,
+            unrelated_trace,
+            workflow_trace,
+            target_invocation_trace,
+        ],
+        replace(
+            _query(),
+            execution_arns=("arn:test", "arn:target"),
+        ),
+    )
+
+    assert result is not None
+    assert result.trace_id == source_trace_id
+    assert [(item.name, item.attributes["durable.execution.arn"]) for item in result.spans] == [
+        ("Workflow", "arn:test"),
+        ("Workflow", "arn:target"),
+        ("Invocation", "arn:test"),
+        ("Invocation", "arn:target"),
+    ]
+    assert {item.trace_id for item in result.spans} == {
+        source_trace_id,
+        source_invocation_trace_id,
+        target_invocation_trace_id,
+    }
+
+
 def test_datadog_queries_span_search_and_correlates_execution() -> None:
     http = _Http(
         {
@@ -108,7 +184,10 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     )
 
     trace = backend.find_trace(
-        _query(),
+        replace(
+            _query(),
+            execution_arns=("arn:test", "arn:target"),
+        ),
         PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
     )
 
@@ -116,6 +195,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     assert http.calls[0][0] == "POST"
     assert "/api/v2/spans/events/search" in http.calls[0][1]
     assert "arn:test" in str(http.calls[0][2])
+    assert "arn:target" in str(http.calls[0][2])
 
 
 def test_dash0_queries_trace_api() -> None:
@@ -142,12 +222,16 @@ def test_dash0_queries_trace_api() -> None:
     )
 
     trace = backend.find_trace(
-        _query(),
+        replace(
+            _query(),
+            execution_arns=("arn:test", "arn:target"),
+        ),
         PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
     )
 
     assert trace.trace_id == "1" * 32
     assert "durable.execution.arn=arn%3Atest" in http.calls[0][1]
+    assert "durable.execution.arn=arn%3Atarget" in http.calls[1][1]
 
 
 def test_xray_queries_summaries_then_batch_get() -> None:

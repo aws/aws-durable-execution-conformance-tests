@@ -20,7 +20,7 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     ExporterOptions,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
-from aws_durable_execution_conformance_tests_otel.model import Trace
+from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
 )
@@ -170,6 +170,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
     received_disparities: list[object] = []
+    received_queries: list[TelemetryQuery] = []
 
     def capture_assertions(
         _trace: Trace,
@@ -182,7 +183,8 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         received_disparities.append(feature_disparities)
         return []
 
-    def find_trace(_query: object, _policy: object, *, accept: Any) -> Trace:
+    def find_trace(query: TelemetryQuery, _policy: object, *, accept: Any) -> Trace:
+        received_queries.append(query)
         assert accept(trace)
         return trace
 
@@ -219,6 +221,10 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
             language="python",
             requirement={
                 "TelemetryAssertions": {
+                    "allowed_execution_arns": [
+                        "${EXECUTION_ARN}",
+                        "${TARGET_EXECUTION_ARN}",
+                    ],
                     "span_assertions": {
                         "select": {
                             "attributes": {
@@ -235,6 +241,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
             placeholders={
                 "EXECUTION_ARN": "arn:execution",
                 "STEP1": "step-id",
+                "TARGET_EXECUTION_ARN": "arn:target",
             },
             options=vars(_args("adot", "xray")),
             aws_clients={"xray": object()},
@@ -242,6 +249,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     )
 
     assert errors == []
+    assert received_queries[0].execution_arns == ("arn:execution", "arn:target")
     assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
     assert received["span_assertions"]["select"]["attributes"] == {
         "durable.execution.arn": "arn:execution",

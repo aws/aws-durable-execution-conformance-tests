@@ -162,9 +162,14 @@ across the complete exporter/backend support matrix.
 
 The catalog uses separate requirements when two public plugins intentionally
 produce different trace views. Invocation-view cases assert per-invocation
-operation hierarchy. Execution-view cases assert a terminal `Workflow` root,
-operations parented beneath it, attempts parented beneath their operation, and
-links from operation spans to the Lambda invocation that observed them.
+operation hierarchy. In execution-view cases, `Invocation` spans remain
+parented to the ambient Lambda trace while `Workflow` and operation spans use
+the durable execution trace. Backends assemble a correlated view from the
+workflow trace and every ambient trace containing a span with the same
+`durable.execution.arn`. Execution-view cases can therefore assert all
+`Invocation` spans, the `Workflow` hierarchy, and the links between them
+without requiring those spans to share a trace ID. Cases where no workflow or
+operation span completes assert the ambient `Invocation` span alone.
 
 ## Add SDK Test Handlers
 

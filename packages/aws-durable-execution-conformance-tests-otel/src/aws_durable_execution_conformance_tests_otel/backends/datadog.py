@@ -97,7 +97,11 @@ class DatadogBackend(PollingBackend):
         self._http = http or JsonHttpClient()
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
-        search = f'service:{query.service_name} @durable.execution.arn:"{query.execution_arn}"'
+        arn_search = " OR ".join(
+            f'@durable.execution.arn:"{execution_arn}"'
+            for execution_arn in (query.execution_arns or (query.execution_arn,))
+        )
+        search = f"service:{query.service_name} ({arn_search})"
         response = self._http.request_json(
             "POST",
             f"{self._endpoint}/api/v2/spans/events/search",

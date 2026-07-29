@@ -90,6 +90,24 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
         ]
         assert len(execution_workflow_spans) == 1
         assert len(execution_invocation_spans) == expected_invocations
+        for execution_invocation, invocation in zip(
+            execution_invocation_spans,
+            invocation_invocation_spans,
+            strict=True,
+        ):
+            assert (
+                json.loads(json.dumps(execution_invocation).replace("${/^[Ii]nvocation$/}", "Invocation")) == invocation
+            )
+        for assertion in execution_span_assertions:
+            if assertion["select"]["name"] in {"Workflow", "${/^[Ii]nvocation$/}"}:
+                assert assertion["expect"]["links"] == []
+                continue
+            assert assertion["expect"]["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
+            if inside := assertion["expect"].get("inside"):
+                assert inside == {
+                    "$linked": True,
+                    "name": "${/^[Ii]nvocation$/}",
+                }
         expected_workflow_arns = ["${EXECUTION_ARN}"]
         if case_number == 4:
             expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
@@ -450,9 +468,10 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         assert telemetry_placeholders <= history_placeholders | {"EXECUTION_ARN"}
 
 
-def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links() -> None:
+def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -> None:
     execution_requirements = _requirements("otel-execution")
     invocation_requirements = _requirements("otel-invocation")
+    ambient_only_cases = {15, 19}
 
     for case_number in range(1, 20):
         requirement = load_yaml_file(execution_requirements[f"otel-execution-{case_number}"])
@@ -465,7 +484,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         workflows = [item for item in span_assertions if item["select"]["name"] == "Workflow"]
         expected_workflow_statuses = (
             {}
-            if case_number == 19
+            if case_number in ambient_only_cases
             else {
                 "${EXECUTION_ARN}": requirement["ExpectedResult"]["ExecutionStatus"],
             }
@@ -480,18 +499,15 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         assert assertions["require_execution_correlation"] is True
         assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
+        assert assertions["minimum_spans"] >= len(span_assertions)
         assert len(workflows) == len(expected_workflow_statuses)
         for workflow in workflows:
             execution_arn = workflow["select"]["attributes"]["durable.execution.arn"]
             execution_status = expected_workflow_statuses[execution_arn]
-            expected_span_status = (
-                "UNSET"
-                if case_number == 15
-                else {
-                    "SUCCEEDED": "OK",
-                    "FAILED": "ERROR",
-                }[execution_status]
-            )
+            expected_span_status = {
+                "SUCCEEDED": "OK",
+                "FAILED": "ERROR",
+            }[execution_status]
             assert workflow["select"] == {
                 "name": "Workflow",
                 "status": expected_span_status,
@@ -501,15 +517,10 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             }
             assert workflow["expect"]["parent_span_id"] is None
             assert workflow["expect"]["status"] == expected_span_status
-            if case_number == 15:
-                assert workflow["expect"]["attributes"] == {
-                    "durable.execution.arn": execution_arn,
-                }
-            else:
-                assert workflow["expect"]["attributes"] == {
-                    "durable.execution.arn": execution_arn,
-                    "durable.execution.status": execution_status,
-                }
+            assert workflow["expect"]["attributes"] == {
+                "durable.execution.arn": execution_arn,
+                "durable.execution.status": execution_status,
+            }
 
         invocations = [item for item in span_assertions if item["select"]["name"] == "Invocation"]
         expected_invocations = [
@@ -517,55 +528,29 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
             for item in invocation_requirement["TelemetryAssertions"]["span_assertions"]
             if item["select"]["name"] == "Invocation"
         ]
-        assert len(invocations) == len(expected_invocations)
-        for invocation, expected_invocation in zip(invocations, expected_invocations, strict=True):
-            expected_attributes = expected_invocation["expect"]["attributes"]
-            if case_number == 19:
-                expected_attributes = deepcopy(expected_attributes)
-                expected_attributes["durable.invocation.status"] = "RETRY"
-            invocation_status = expected_attributes["durable.invocation.status"]
-            assert invocation["select"] == {
-                "name": "Invocation",
-                "attributes": expected_attributes,
-            }
-            expected = invocation["expect"]
-            assert (
-                expected["status"]
-                == {
-                    "FAILED": "ERROR",
-                    "PENDING": "OK",
-                    "RETRY": "UNSET",
-                    "SUCCEEDED": "UNSET",
-                }[invocation_status]
-            )
-            assert expected["links"] == []
-            assert expected["kind"] == "INTERNAL"
-            assert expected["service_name"] == "invocation"
-            assert expected["attributes"] == expected_attributes
-            assert invocation["select"]["attributes"] == expected["attributes"]
-            for relation in ("before", "after"):
-                expected_relation = expected_invocation["expect"].get(relation)
-                if expected_relation:
-                    expected_relation = deepcopy(expected_relation)
-                    expected_relation["name"] = "Invocation"
-                    assert expected[relation] == expected_relation
-                else:
-                    assert relation not in expected
+        assert invocations == expected_invocations
+        assert assertions.get("minimum_invocations", 1) == len(expected_invocations)
 
         descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
-        assert bool(descendants) is (case_number != 19)
+        assert bool(descendants) is (case_number not in ambient_only_cases)
         for descendant in descendants:
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
-            assert expected["parent"]
-            assert expected["links"] == [{"name": "invocation"}]
+            assert expected["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
             if "durable.attempt.outcome" in expected["attributes"]:
                 assert expected["inside"] == {
                     "$linked": True,
-                    "name": "invocation",
+                    "name": "${/^[Ii]nvocation$/}",
                 }
             else:
                 assert "inside" not in expected
+            parent = expected["parent"]
+            if parent["name"] == "Workflow":
+                assert "$allow_outside" not in parent
+            elif case_number in {3, 9, 10, 17}:
+                assert parent["$allow_outside"] is True
+            else:
+                assert "$allow_outside" not in parent
 
         telemetry_json = json.dumps(assertions)
         history_json = json.dumps(requirement["ExpectedExecutionHistory"])
@@ -617,7 +602,7 @@ def test_callback_submitter_assertions_emit_once_without_retry(
         ]
         assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
     else:
-        assert submitter_assertion["expect"]["links"] == [{"name": "invocation"}]
+        assert submitter_assertion["expect"]["links"] == [{"name": "${/^[Ii]nvocation$/}"}]
         assert "inside" not in submitter_assertion["expect"]
 
 

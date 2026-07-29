@@ -229,6 +229,55 @@ def test_inside_can_select_a_linked_span_among_duplicate_matches() -> None:
     assert ambiguous_errors == ["span_assertions[0].expect.inside matched 2 spans; it must select exactly one"]
 
 
+def test_validates_parentage_and_links_across_correlated_traces() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    workflow = replace(root, name="Workflow")
+    invocation = replace(
+        root,
+        trace_id="9" * 32,
+        span_id="8" * 16,
+        name="Invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+        },
+    )
+    operation = replace(
+        child,
+        parent_span_id=workflow.span_id,
+        links=(SpanLink(trace_id=invocation.trace_id, span_id=invocation.span_id),),
+    )
+    correlated_trace = replace(trace, spans=(workflow, operation, invocation))
+
+    errors = validate_trace(
+        correlated_trace,
+        {
+            "span_assertions": [
+                {
+                    "select": {"name": "Invocation"},
+                    "expect": {
+                        "attributes": {
+                            "durable.execution.arn": "arn:test",
+                            "durable.invocation.first": True,
+                        }
+                    },
+                },
+                {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "parent": {"name": "Workflow"},
+                        "links": [{"name": "${/^[Ii]nvocation$/}"}],
+                    },
+                },
+            ]
+        },
+        _query(),
+    )
+
+    assert errors == []
+
+
 def test_span_link_disparity_skips_linked_temporal_relations() -> None:
     trace = _trace()
     root, child = trace.spans

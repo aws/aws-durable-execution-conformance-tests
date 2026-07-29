@@ -51,11 +51,11 @@ deployment configuration.
 | `otel-execution-12` | `otel_12_child_context_failure.handler` | Verifies a failed child context under a failed workflow. |
 | `otel-execution-13` | `otel_13_parallel_failure.handler` | Verifies a failed parallel branch under its operation. |
 | `otel-execution-14` | `otel_14_map_failure.handler` | Verifies a failed map iteration under its operation. |
-| `otel-execution-15` | `otel_15_wait_interrupted.handler` | Verifies an incomplete workflow, interrupted wait, and pending invocation telemetry. |
+| `otel-execution-15` | `otel_15_wait_interrupted.handler` | Verifies a pending invocation when workflow spans do not complete. |
 | `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Verifies a failed condition operation and attempt. |
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
-| `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies retrying invocation telemetry without a completed workflow. |
+| `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies a failed invocation without a completed workflow. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages from the commit in `PYTHON_SDK_REF`. The hosted workflow resolves

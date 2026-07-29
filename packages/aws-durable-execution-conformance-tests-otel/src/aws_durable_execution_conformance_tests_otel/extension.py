@@ -204,6 +204,23 @@ class OtelExtension:
             )
             print(f"  OpenTelemetry backend feature disparity flags enabled for {backend.name}: {feature_disparities}")
             timeout = float(options["otel_poll_timeout"])
+            raw_assertions = context.requirement.get("TelemetryAssertions", {})
+            if not isinstance(raw_assertions, Mapping):
+                return ["TelemetryAssertions must be a mapping"]
+            placeholders = PlaceholderContext()
+            for name, value in context.placeholders.items():
+                placeholders.bind(name, value)
+            assertions = placeholders.substitute(raw_assertions)
+            allowed_execution_arns = assertions.get("allowed_execution_arns", ())
+            additional_execution_arns: tuple[str, ...]
+            if isinstance(allowed_execution_arns, str):
+                additional_execution_arns = (allowed_execution_arns,)
+            elif isinstance(allowed_execution_arns, (list, tuple)) and all(
+                isinstance(value, str) for value in allowed_execution_arns
+            ):
+                additional_execution_arns = tuple(allowed_execution_arns)
+            else:
+                additional_execution_arns = ()
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
                 service_name=str(options["otel_service_name"]),
@@ -217,14 +234,12 @@ class OtelExtension:
                     tz=UTC,
                 )
                 + timedelta(seconds=timeout),
+                execution_arns=tuple(
+                    dict.fromkeys(
+                        (context.execution_arn, *additional_execution_arns),
+                    )
+                ),
             )
-            raw_assertions = context.requirement.get("TelemetryAssertions", {})
-            if not isinstance(raw_assertions, Mapping):
-                return ["TelemetryAssertions must be a mapping"]
-            placeholders = PlaceholderContext()
-            for name, value in context.placeholders.items():
-                placeholders.bind(name, value)
-            assertions = placeholders.substitute(raw_assertions)
             trace = backend.find_trace(
                 query,
                 PollingPolicy(

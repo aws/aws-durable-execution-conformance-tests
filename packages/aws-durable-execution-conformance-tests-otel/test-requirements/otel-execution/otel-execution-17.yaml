@@ -63,6 +63,7 @@ TelemetryAssertions:
           durable.execution.status: FAILED
     - select:
         name: Invocation
+        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -84,6 +85,7 @@ TelemetryAssertions:
             durable.invocation.status: FAILED
     - select:
         name: Invocation
+        status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -111,7 +113,7 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -133,7 +135,7 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -142,6 +144,7 @@ TelemetryAssertions:
           durable.operation.subtype: Callback
           durable.operation.name: '${/^otel-failed-callback(?: create callback id|-callback)$/}'
         parent:
+          $allow_outside: true
           name: otel-failed-callback
           kind: INTERNAL
           attributes:
@@ -155,7 +158,7 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -164,6 +167,7 @@ TelemetryAssertions:
           durable.operation.subtype: Step
           durable.operation.name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
         parent:
+          $allow_outside: true
           name: otel-failed-callback
           kind: INTERNAL
           attributes:
@@ -177,10 +181,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         inside:
           $linked: true
-          name: invocation
+          name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -190,6 +194,7 @@ TelemetryAssertions:
           durable.operation.name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
           durable.attempt.outcome: SUCCEEDED
         parent:
+          $allow_outside: true
           name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
           kind: INTERNAL
           attributes:

@@ -232,7 +232,7 @@ def _parent_expectation_errors(
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
 
-    parents = spans_by_id.get(parent_span_id, [])
+    parents = [parent for parent in spans_by_id.get(parent_span_id, []) if parent[0].trace_id == span.trace_id]
     if not parents:
         return [f"{path}: parent span is not present in the trace"]
 
@@ -589,10 +589,6 @@ def validate_trace(
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")
-
-    inconsistent = [span.span_id for span in trace.spans if span.trace_id != trace.trace_id]
-    if inconsistent:
-        errors.append("Canonical trace contains spans with a different trace id: " + ", ".join(inconsistent))
 
     for span in trace.spans:
         if span.start_time > span.end_time:

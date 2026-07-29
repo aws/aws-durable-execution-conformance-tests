@@ -58,7 +58,7 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

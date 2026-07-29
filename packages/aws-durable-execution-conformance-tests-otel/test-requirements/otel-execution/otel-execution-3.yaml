@@ -74,7 +74,7 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL
@@ -96,7 +96,7 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -119,10 +119,10 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         inside:
           $linked: true
-          name: invocation
+          name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -137,6 +137,7 @@ TelemetryAssertions:
             durable.operation.id: ${RETRY_STEP}
             durable.attempt.outcome: SUCCEEDED
         parent:
+          $allow_outside: true
           name: otel-retry
           kind: INTERNAL
           attributes:
@@ -150,10 +151,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         inside:
           $linked: true
-          name: invocation
+          name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -168,6 +169,7 @@ TelemetryAssertions:
             durable.operation.id: ${RETRY_STEP}
             durable.attempt.outcome: FAILED
         parent:
+          $allow_outside: true
           name: otel-retry
           kind: INTERNAL
           attributes:

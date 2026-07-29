@@ -57,6 +57,7 @@ TelemetryAssertions:
           durable.execution.status: FAILED
     - select:
         name: Invocation
+        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -78,6 +79,7 @@ TelemetryAssertions:
             durable.invocation.status: FAILED
     - select:
         name: Invocation
+        status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -126,7 +128,7 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: invocation
+          - name: ${/^[Ii]nvocation$/}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
