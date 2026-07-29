@@ -1,0 +1,66 @@
+---
+# 10.20: DAG task-ID stability across independently forced completion orders
+description: DAG task IDs are name-based, not completion-order-based -- verified directly
+  by invoking the SAME graph twice with completion order deliberately swapped and
+  asserting every task's Id field is identical across both runs
+handler: |
+  A DAG named "idstabilitydag" with six step tasks and max-concurrency UNSET:
+    root -> {a, b}; a -> afterA; b -> afterB; {afterA, afterB} -> merge.
+  root returns 1. a and b both depend on root and race: which one sleeps longer
+  is driven by Input.swap (swap=false: a finishes first (~200ms vs b's ~2000ms);
+  swap=true: b finishes first (~200ms vs a's ~2000ms)). Both invocations
+  register the SAME task names in the SAME order every time -- only the RUNTIME
+  completion order changes between the two runs. afterA depends on a and
+  returns deps.a + "a"; afterB depends on b and returns deps.b + "b"; merge
+  depends on [afterA, afterB] and returns deps.afterA + deps.afterB. Every task
+  succeeds, so the DAG completes with reason ALL_COMPLETED regardless of swap.
+  The handler returns a summary: the completion reason, per-task terminal
+  statuses, the [succeeded, failed, skipped, total] counts, and the merge
+  result.
+
+  This is the harness-level counterpart to 10-13 (DagConcurrentOverlap): 10-13
+  proves out-of-order completion doesn't fail the execution (an INDIRECT proof
+  of name-based ids -- a counter-based scheme would trip the SDK's own
+  replay-consistency check and the whole execution would FAIL, so no id
+  assertion is needed there). This scenario is the DIRECT proof: it is invoked
+  TWICE by a dedicated script (id_stability.py, NOT the normal
+  single-invocation `hatch run validate` path -- the standard EventId-keyed
+  matcher cannot express a cross-run assertion, since EventId is a per-run
+  sequence position assigned in completion order and shifts between the two
+  runs) with swap flipped between them, extracting each task's `Id` field
+  directly from the two raw captured histories and asserting every task name
+  maps to the IDENTICAL Id value in both runs.
+invocations: |
+  - Handler invokes the DAG operation with concurrency unbounded and Input.swap
+    controlling which sibling (a or b) finishes first. root runs and succeeds;
+    a and b then run concurrently, one finishing well before the other per
+    swap; afterA and afterB run in whichever order their dependency resolved;
+    merge runs last. The SDK checkpoints ContextSucceeded (SubType Dag) and the
+    invocation completes returning the summary.
+AsyncInvoke: true
+Input: {swap: false}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    reason: ALL_COMPLETED
+    statuses:
+      root: SUCCEEDED
+      a: SUCCEEDED
+      b: SUCCEEDED
+      afterA: SUCCEEDED
+      afterB: SUCCEEDED
+      merge: SUCCEEDED
+    counts:
+      - 6
+      - 0
+      - 0
+      - 6
+    merge: AaBb
+# Event-count arithmetic (flat N+1 model), matching 10-13's derivation for the
+# same six-step shape:
+#   framing  ExecutionStarted + ExecutionSucceeded         = 2
+#   Dag      ContextStarted + ContextSucceeded (SubType Dag) = 2
+#   6 step tasks x (StepStarted + StepSucceeded)           = 12
+#   single invocation (no durable wait -> no suspend)       = 1
+#   total = 2 + 2 + 12 + 1 = 17
+ExpectedEventCount: 17
