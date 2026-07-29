@@ -71,14 +71,14 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
     assert f"TEST_NAME: python-datadog-{VIEW_SUFFIX}" in python_workflow
 
 
-def test_dash0_jobs_match_xray_coverage_and_use_repository_credentials() -> None:
+def test_dash0_jobs_run_on_same_repository_prs_and_use_repository_credentials() -> None:
     for path in SUITE_WORKFLOWS.values():
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        xray = workflow["jobs"]["xray"]
         dash0 = workflow["jobs"]["dash0"]
+        s3_collector = workflow["jobs"]["s3_collector"]
         commands = "\n".join(step.get("run", "") for step in dash0["steps"])
 
-        assert dash0["if"] == xray["if"]
+        assert dash0["if"] == s3_collector["if"]
         assert dash0["env"]["DASH0_API_URL"] == "https://api.us-west-2.aws.dash0.com"
         assert dash0["env"]["DASH0_OTLP_ENDPOINT"] == "https://ingress.us-west-2.aws.dash0.com"
         assert dash0["env"]["DASH0_AUTH_TOKEN"] == "${{ secrets.DASH0_AUTH_TOKEN }}"
@@ -137,6 +137,7 @@ def test_language_workflows_own_all_supported_views() -> None:
 
         assert f"name: {DISPLAY_NAMES[language]} OpenTelemetry" in workflow
         assert "  pull_request:" in workflow
+        assert "  pull_request:\n    branches: [main]" not in workflow
         assert "  push:" in workflow
         assert "  schedule:" in workflow
         assert "  workflow_dispatch:" in workflow

@@ -2,7 +2,6 @@ name: Python OpenTelemetry
 
 on:
   pull_request:
-    branches: [main]
     paths:
       - .github/workflows/python-opentelemetry.yml
       - .github/workflows/python-opentelemetry-suite.yml
