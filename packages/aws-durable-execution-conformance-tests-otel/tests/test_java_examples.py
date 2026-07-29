@@ -14,7 +14,9 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
+ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
@@ -130,22 +132,33 @@ def test_java_example_template_handlers_have_sources() -> None:
         assert f"      Handler: {handler}" in template
 
 
-def test_java_examples_use_released_sdk_and_otel_plugin() -> None:
+def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     pom_path = EXAMPLES_DIR / "pom.xml"
     root = ET.parse(pom_path).getroot()
     namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
     properties = root.find("m:properties", namespace)
 
     assert properties is not None
-    assert properties.findtext("m:durable.sdk.version", namespaces=namespace) == "2.1.0"
+    assert properties.findtext("m:durable.sdk.version", namespaces=namespace) == "${env.JAVA_SDK_VERSION}"
     assert properties.findtext("m:maven.compiler.target", namespaces=namespace) == "17"
-    artifacts = {element.text for element in root.findall("m:dependencies/m:dependency/m:artifactId", namespace)}
+    dependencies = root.findall("m:dependencies/m:dependency", namespace)
+    artifacts = {element.findtext("m:artifactId", namespaces=namespace) for element in dependencies}
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
         "aws-distro-opentelemetry-xray-udp-span-exporter",
         "opentelemetry-exporter-otlp",
     } <= artifacts
+    sdk_versions = {
+        element.findtext("m:version", namespaces=namespace)
+        for element in dependencies
+        if element.findtext("m:artifactId", namespaces=namespace)
+        in {
+            "aws-durable-execution-sdk-java",
+            "aws-durable-execution-sdk-java-plugin-otel",
+        }
+    }
+    assert sdk_versions == {"${durable.sdk.version}"}
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
@@ -175,7 +188,7 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "repository: aws/aws-durable-execution-sdk-java" in workflow
-    assert "ref: main" in workflow
+    assert workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 2
     assert "--projects sdk,otel-plugin" in workflow
     assert "-Dexpression=project.version" in workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
@@ -183,6 +196,24 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert workflow.count('"OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME"') == workflow.count("hatch run validate")
     assert '--otel-service-name "$OTEL_QUERY_SERVICE_NAME"' in workflow
     assert "${OTEL_SUITE}-${case_number}-target" in workflow
+
+
+def test_java_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert entry_workflow.count("git ls-remote") == 1
+    assert "refs/heads/main" in entry_workflow
+    assert 'echo "ref=$JAVA_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
+    assert entry_workflow.count("needs: resolve-sdk-main") == 4
+    assert entry_workflow.count("java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}") == 4
+    for workflow in (suite_workflow, long_running_workflow):
+        assert "JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}" in workflow
+        assert "      java_sdk_ref:" in workflow
+        assert "        required: true" in workflow
+    assert suite_workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 2
+    assert long_running_workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 1
 
 
 def test_java_s3_job_builds_and_queries_the_collector() -> None:
@@ -201,7 +232,7 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
-    assert "delete-layer-version" in workflow
+    assert "delete-layer-version" not in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
 
 

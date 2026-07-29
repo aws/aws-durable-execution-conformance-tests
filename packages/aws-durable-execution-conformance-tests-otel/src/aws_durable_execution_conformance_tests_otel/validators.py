@@ -105,22 +105,42 @@ def _select_span_matches(
     expected_count: int,
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> list[tuple[int, Mapping[str, Any]]]:
+    def allocate_status_matches(
+        matches: list[tuple[int, Mapping[str, Any]]],
+    ) -> list[tuple[int, Mapping[str, Any]]]:
+        if (
+            BackendFeatureDisparity.UNSET_STATUS not in feature_disparities
+            or len(matches) <= expected_count
+            or selector.get("status") not in {"UNSET", "OK"}
+        ):
+            return matches
+        ordered = sorted(
+            matches,
+            key=lambda match: (
+                match[1]["start_time"],
+                match[1]["end_time"],
+                match[1]["span_id"],
+            ),
+            reverse=selector["status"] == "OK",
+        )
+        return ordered[:expected_count]
+
     exact_matches = [
         (span_index, span)
         for span_index, span in enumerate(spans)
         if span_index not in used_span_indexes and _matches_span(selector, span, ())
     ]
     if exact_matches or BackendFeatureDisparity.UNSET_STATUS not in feature_disparities:
-        return exact_matches
+        return allocate_status_matches(exact_matches)
 
     # Status normalization can collapse distinct UNSET and OK selectors. Allocate
-    # only the requested unused fallback spans so later selectors can claim the rest.
+    # the earliest span to UNSET and leave later spans for OK selectors.
     fallback_matches = [
         (span_index, span)
         for span_index, span in enumerate(spans)
         if span_index not in used_span_indexes and _matches_span(selector, span, feature_disparities)
     ]
-    return fallback_matches[:expected_count]
+    return allocate_status_matches(fallback_matches)
 
 
 def _expectation_errors(

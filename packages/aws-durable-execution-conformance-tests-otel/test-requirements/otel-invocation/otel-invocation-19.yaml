@@ -10,7 +10,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
-  minimum_spans: 1
+  minimum_spans: 2
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:
@@ -20,17 +20,31 @@ TelemetryAssertions:
     - durable.
   span_assertions:
     - select:
-        name: invocation
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: RETRY
+          durable.invocation.status: FAILED
       expect:
-        status: UNSET
+        status: ERROR
         service_name: invocation
         links: []
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
-          durable.invocation.status: RETRY
+          durable.invocation.status: FAILED

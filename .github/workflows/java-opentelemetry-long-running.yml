@@ -15,12 +15,16 @@ on:
       delay_seconds:
         description: Durable delay in seconds
         required: false
-        default: "600"
+        default: "60"
         type: string
       aws_region:
         description: AWS region
         required: false
         default: us-west-2
+        type: string
+      java_sdk_ref:
+        description: Resolved commit from the Java SDK main branch
+        required: true
         type: string
 
 permissions:
@@ -39,6 +43,7 @@ env:
   STATE_FILE: /tmp/java-otel-long-running-state.json
   RESULT_FILE: /tmp/java-otel-long-running-result.json
   HISTORY_DIR: /tmp/java-otel-long-running-history
+  JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}
   REPORT_FILE: /tmp/java-otel-long-running-report
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template-long-running.yaml
   JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
@@ -55,11 +60,7 @@ jobs:
     env:
       OTEL_VIEW: ${{ inputs.view }}
       STATE_ARTIFACT: java-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
-      TEST_NAME: >-
-        j-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{
-          inputs.phase == 'short'
-          && format('-{0}-{1}', github.run_number, github.run_attempt) || ''
-        }}
+      TEST_NAME: j-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
     steps:
       - name: Find active run state
         if: env.PHASE != 'short'
@@ -121,7 +122,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: aws/aws-durable-execution-sdk-java
-          ref: main
+          ref: ${{ env.JAVA_SDK_REF }}
           path: ${{ env.JAVA_SDK_CHECKOUT }}
 
       - name: Set up Java
@@ -257,13 +258,6 @@ jobs:
           path: ${{ env.STATE_FILE }}
           retention-days: 5
 
-      - name: Clean up failed launch handoff
-        if: >-
-          always() && steps.state.outputs.phase == 'launch' &&
-          steps.launch.outcome == 'success' && steps.persist.outcome == 'failure'
-        continue-on-error: true
-        run: aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"
-
       - name: Check long-running conformance executions
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         id: check
@@ -274,7 +268,8 @@ jobs:
             --result-file "$RESULT_FILE" \
             --history-dir "$HISTORY_DIR" \
             --report-file "$REPORT_FILE" \
-            --otel-backend xray
+            --otel-backend xray \
+            --no-cleanup
           exit_code=$?
           set -e
           if [ ! -f "$RESULT_FILE" ]; then

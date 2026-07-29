@@ -17,7 +17,9 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
+ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -53,11 +55,13 @@ EXPECTED_MAPPINGS = [
     ("OtelExecution12ChildContextFailure", "otel-execution-12"),
     ("OtelExecution13ParallelFailure", "otel-execution-13"),
     ("OtelExecution14MapFailure", "otel-execution-14"),
+    ("OtelExecution15WaitInterrupted", "otel-execution-15"),
     ("OtelExecution16WaitForConditionFailure", "otel-execution-16"),
     ("OtelExecution17WaitForCallbackFailure", "otel-execution-17"),
     ("OtelExecution18ChainedInvokeFailure", "otel-execution-18"),
+    ("OtelExecution19ExecutionFailure", "otel-execution-19"),
 ]
-EXECUTION_CASES = (*range(1, 15), 16, 17, 18)
+EXECUTION_CASES = tuple(range(1, 20))
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -81,13 +85,8 @@ def test_python_example_template_maps_every_otel_requirement() -> None:
     assert mappings == EXPECTED_MAPPINGS
 
 
-def test_python_example_declares_execution_plugin_lifecycle_gaps() -> None:
-    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
-        "otel-execution-15": (
-            "ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally"
-        ),
-        "otel-execution-19": "ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY",
-    }
+def test_python_example_declares_no_execution_plugin_lifecycle_gaps() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
 def test_python_template_deploys_only_the_selected_otel_view() -> None:
@@ -104,6 +103,10 @@ def test_python_template_deploys_only_the_selected_otel_view() -> None:
     for logical_id, resource in template["Resources"].items():
         expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
         assert resource["Condition"] == expected_condition
+    assert template["Resources"]["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"] == {
+        "ExecutionTimeout": 5,
+        "RetentionPeriodInDays": 1,
+    }
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:
@@ -168,10 +171,10 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
-        "otel_20_long_wait",
-        "otel_21_long_retry",
-        "otel_22_long_callback",
-        "otel_23_long_chained_invoke",
+        "otel_long_running_1_wait",
+        "otel_long_running_2_retry",
+        "otel_long_running_3_callback",
+        "otel_long_running_4_chained_invoke",
     }
     for path in source_dir.glob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -187,18 +190,17 @@ def test_python_example_handlers_are_valid_python() -> None:
         assert f"build-{logical_id}" in makefile
 
 
-def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit() -> None:
+def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit() -> None:
     requirements = (EXAMPLES_DIR / "src" / "requirements.txt").read_text(encoding="utf-8")
-    sdk_ref = "01d789744dc051809a181cc985cd1a9a64e0dbe5"
 
     assert (
         "aws-durable-execution-sdk-python @ "
-        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@${PYTHON_SDK_REF}"
         "#subdirectory=packages/aws-durable-execution-sdk-python"
     ) in requirements
     assert (
         "aws-durable-execution-sdk-python-otel @ "
-        f"git+https://github.com/aws/aws-durable-execution-sdk-python.git@{sdk_ref}"
+        "git+https://github.com/aws/aws-durable-execution-sdk-python.git@${PYTHON_SDK_REF}"
         "#subdirectory=packages/aws-durable-execution-sdk-python-otel"
     ) in requirements
 
@@ -206,6 +208,23 @@ def test_python_examples_pin_both_sdk_packages_to_merged_execution_plugin_commit
     assert "ExecutionOtelPlugin" in common
     assert "InvocationOtelPlugin" in common
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
+
+
+def test_python_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert entry_workflow.count("git ls-remote") == 1
+    assert "refs/heads/main" in entry_workflow
+    assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
+    assert entry_workflow.count("needs: resolve-sdk-main") == 4
+    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    for workflow in (suite_workflow, long_running_workflow):
+        assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
+        assert 'PYTHONUNBUFFERED: "1"' in workflow
+        assert "      python_sdk_ref:" in workflow
+        assert "        required: true" in workflow
 
 
 def test_python_s3_job_builds_and_queries_the_collector() -> None:
@@ -228,5 +247,5 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
     assert "OtelCollectorBucket=$OTEL_S3_BUCKET" in workflow
     assert "OtelCollectorPrefix=$OTEL_S3_PREFIX" in workflow
-    assert "delete-layer-version" in workflow
+    assert "delete-layer-version" not in workflow
     assert '--suite "$OTEL_SUITE"' in workflow

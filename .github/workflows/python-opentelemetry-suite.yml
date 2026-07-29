@@ -24,6 +24,10 @@ on:
         description: Dash0 trace API endpoint
         required: false
         type: string
+      python_sdk_ref:
+        description: Resolved commit from the Python SDK main branch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +42,8 @@ env:
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_SUITE: ${{ inputs.suite }}
   OTEL_VIEW_SUFFIX: ${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+  PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
+  PYTHONUNBUFFERED: "1"
   PYTHON_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml
 
 jobs:
@@ -187,7 +193,7 @@ jobs:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
-      TEST_NAME: datadog
+      TEST_NAME: python-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -242,7 +248,7 @@ jobs:
     env:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DASH0_OTLP_HEADERS }}
-      TEST_NAME: dash0
+      TEST_NAME: python-dash0-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -379,26 +385,29 @@ jobs:
             --output text > /dev/null
           echo "Using S3 collector layer $COLLECTOR_LAYER_ARN"
 
-      - name: Create run-scoped S3 telemetry bucket
+      - name: Prepare stable S3 telemetry bucket
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
           TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
           TEST_ROLE_ARN: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
         run: |
-          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
           OTEL_S3_PREFIX=traces
           {
             echo "OTEL_S3_BUCKET=$OTEL_S3_BUCKET"
             echo "OTEL_S3_PREFIX=$OTEL_S3_PREFIX"
             echo "OTEL_S3_URI=s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX"
           } >> "$GITHUB_ENV"
-          if [ "$AWS_REGION" = "us-east-1" ]; then
-            aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
-          else
-            aws s3api create-bucket \
-              --bucket "$OTEL_S3_BUCKET" \
-              --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+          if ! aws s3api head-bucket --bucket "$OTEL_S3_BUCKET" 2>/dev/null; then
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
+            else
+              aws s3api create-bucket \
+                --bucket "$OTEL_S3_BUCKET" \
+                --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+            fi
           fi
+          aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive
           aws s3api put-public-access-block \
             --bucket "$OTEL_S3_BUCKET" \
             --public-access-block-configuration \
@@ -551,20 +560,3 @@ jobs:
             ${{ runner.temp }}/python-otel-s3-report.json
             ${{ runner.temp }}/python-otel-s3-report.xml
           if-no-files-found: ignore
-
-      - name: Delete test resources
-        if: always()
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$TEST_STACK_NAME" > /dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
-            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME" || true
-          fi
-          if [ -n "${OTEL_S3_BUCKET:-}" ]; then
-            aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive || true
-            aws s3api delete-bucket --bucket "$OTEL_S3_BUCKET" || true
-          fi
-          if [ -n "${COLLECTOR_LAYER_ARN:-}" ]; then
-            aws lambda delete-layer-version \
-              --layer-name "$COLLECTOR_LAYER_NAME" \
-              --version-number "${COLLECTOR_LAYER_ARN##*:}" || true
-          fi

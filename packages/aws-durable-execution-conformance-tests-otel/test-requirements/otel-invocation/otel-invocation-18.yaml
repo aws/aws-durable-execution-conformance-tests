@@ -20,7 +20,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
-  minimum_spans: 5
+  minimum_spans: 7
   minimum_invocations: 3
   require_execution_correlation: true
   allowed_execution_arns:
@@ -36,14 +36,42 @@ TelemetryAssertions:
     - durable.
   span_assertions:
     - select:
-        name: invocation
-        status: UNSET
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
+        status: OK
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
           durable.invocation.status: PENDING
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL
@@ -52,13 +80,13 @@ TelemetryAssertions:
           durable.invocation.first: true
           durable.invocation.status: PENDING
         before:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
             durable.invocation.status: FAILED
     - select:
-        name: invocation
+        name: Invocation
         status: ERROR
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -74,13 +102,13 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: FAILED
         after:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: true
             durable.invocation.status: FAILED
     - select:
-        name: invocation
+        name: Invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
@@ -95,7 +123,7 @@ TelemetryAssertions:
           durable.invocation.first: true
           durable.invocation.status: FAILED
         before:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
@@ -107,7 +135,10 @@ TelemetryAssertions:
       expect:
         status: UNSET
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -121,7 +152,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: FAILED
         parent:
-          name: invocation
+          name: Invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
@@ -136,6 +167,9 @@ TelemetryAssertions:
           - name: otel-failed-invoke
             attributes:
               durable.operation.id: ${FAILED_INVOKE}
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -149,7 +183,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: STARTED
         parent:
-          name: invocation
+          name: Invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}

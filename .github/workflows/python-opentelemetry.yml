@@ -65,8 +65,31 @@ permissions:
   id-token: write
 
 jobs:
+  resolve-sdk-main:
+    name: Resolve Python SDK main
+    runs-on: ubuntu-latest
+    outputs:
+      python_sdk_ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - name: Resolve Python SDK main commit
+        id: resolve
+        run: |
+          PYTHON_SDK_REF=$(
+            git ls-remote \
+              https://github.com/aws/aws-durable-execution-sdk-python.git \
+              refs/heads/main |
+              awk '{print $1}'
+          )
+          if [ -z "$PYTHON_SDK_REF" ]; then
+            echo "Could not resolve aws-durable-execution-sdk-python main"
+            exit 1
+          fi
+          echo "Using Python SDK main commit $PYTHON_SDK_REF"
+          echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"
+
   invocation:
     name: Invocation view
+    needs: resolve-sdk-main
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -77,10 +100,12 @@ jobs:
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
       dash0_query_endpoint: ${{ inputs.dash0_query_endpoint || '' }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
   execution:
     name: Execution view
+    needs: resolve-sdk-main
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -91,10 +116,12 @@ jobs:
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
       dash0_query_endpoint: ${{ inputs.dash0_query_endpoint || '' }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
   long-running-invocation:
     name: Long running invocation view
+    needs: resolve-sdk-main
     uses: ./.github/workflows/python-opentelemetry-long-running.yml
     with:
       phase: >-
@@ -104,12 +131,14 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
   long-running-execution:
     name: Long running execution view
+    needs: resolve-sdk-main
     uses: ./.github/workflows/python-opentelemetry-long-running.yml
     with:
       phase: >-
@@ -119,6 +148,7 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit

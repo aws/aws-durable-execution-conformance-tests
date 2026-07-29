@@ -66,7 +66,7 @@ TelemetryAssertions:
           durable.invocation.first: true
           durable.invocation.status: PENDING
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL

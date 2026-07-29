@@ -11,9 +11,11 @@
 	build-OtelExecution9WaitForCondition build-OtelExecution10WaitForCallback \
 	build-OtelExecution11ChainedInvoke build-OtelExecution11InvokeTarget \
 	build-OtelExecution12ChildContextFailure build-OtelExecution13ParallelFailure \
-	build-OtelExecution14MapFailure build-OtelExecution16WaitForConditionFailure \
+	build-OtelExecution14MapFailure build-OtelExecution15WaitInterrupted \
+	build-OtelExecution16WaitForConditionFailure \
 	build-OtelExecution17WaitForCallbackFailure build-OtelExecution18ChainedInvokeFailure \
-	build-OtelExecution18InvokeTarget build-OtelLongRunning1Wait \
+	build-OtelExecution18InvokeTarget build-OtelExecution19ExecutionFailure \
+	build-OtelLongRunning1Wait \
 	build-OtelLongRunning2Retry build-OtelLongRunning3Callback \
 	build-OtelLongRunning4ChainedInvoke build-OtelLongRunning4InvokeTarget
 
@@ -30,9 +32,11 @@ build-OtelExecution6Parallel build-OtelExecution7Map build-OtelExecution8Handled
 build-OtelExecution9WaitForCondition build-OtelExecution10WaitForCallback \
 build-OtelExecution11ChainedInvoke build-OtelExecution11InvokeTarget \
 build-OtelExecution12ChildContextFailure build-OtelExecution13ParallelFailure \
-build-OtelExecution14MapFailure build-OtelExecution16WaitForConditionFailure \
+build-OtelExecution14MapFailure build-OtelExecution15WaitInterrupted \
+build-OtelExecution16WaitForConditionFailure \
 build-OtelExecution17WaitForCallbackFailure build-OtelExecution18ChainedInvokeFailure \
-build-OtelExecution18InvokeTarget build-OtelLongRunning1Wait \
+build-OtelExecution18InvokeTarget build-OtelExecution19ExecutionFailure \
+build-OtelLongRunning1Wait \
 build-OtelLongRunning2Retry build-OtelLongRunning3Callback \
 build-OtelLongRunning4ChainedInvoke build-OtelLongRunning4InvokeTarget:
 	python3 -m pip install --upgrade \

@@ -1097,7 +1097,7 @@ def test_unset_status_disparity_applies_to_span_selectors() -> None:
     )
 
 
-def test_unset_status_disparity_prefers_exact_then_allocates_unused_ok_spans() -> None:
+def test_unset_status_disparity_prefers_earliest_unset_and_latest_ok_spans() -> None:
     trace = _trace()
     root, child = trace.spans
     native_trace = replace(
@@ -1110,21 +1110,24 @@ def test_unset_status_disparity_prefers_exact_then_allocates_unused_ok_spans() -
     normalized_trace = replace(
         trace,
         spans=(
-            replace(root, name="callback"),
             replace(child, name="callback"),
+            replace(root, name="callback"),
         ),
     )
     assertions = {
         "span_assertions": [
             {
                 "select": {"name": "callback", "status": "UNSET"},
-                "expect": {"status": "UNSET"},
+                "expect": {"span_id": root.span_id, "status": "UNSET"},
             },
             {
                 "select": {"name": "callback", "status": "OK"},
-                "expect": {"status": "OK"},
+                "expect": {"span_id": child.span_id, "status": "OK"},
             },
         ]
+    }
+    ok_first_assertions = {
+        "span_assertions": list(reversed(assertions["span_assertions"])),
     }
     disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
 
@@ -1134,6 +1137,7 @@ def test_unset_status_disparity_prefers_exact_then_allocates_unused_ok_spans() -
         "span_assertions[1].select matched 2 spans; it must select exactly one",
     ]
     assert validate_trace(normalized_trace, assertions, _query(), feature_disparities=disparities) == []
+    assert validate_trace(normalized_trace, ok_first_assertions, _query(), feature_disparities=disparities) == []
 
 
 def test_span_selectors_do_not_reuse_consumed_spans() -> None:

@@ -301,75 +301,68 @@ def launch(args: argparse.Namespace) -> int:
         build_dir=str(build_dir),
         region=args.region,
     )
-    deployment_attempted = False
-    try:
-        print(f"=== Deploying long-running stack {stack_name!r} ===")
-        deployer.build()
-        deployment_attempted = True
-        deployer.deploy(
-            stack_name=stack_name,
-            parameter_overrides=parameters,
-        )
+    print(f"=== Deploying long-running stack {stack_name!r} ===")
+    deployer.build()
+    deployer.deploy(
+        stack_name=stack_name,
+        parameter_overrides=parameters,
+    )
 
-        clients = AwsClients.create(args.region)
-        invoker = Invoker(
-            stack_name=stack_name,
-            region=args.region,
-            lambda_client=clients["lambda"],
-            cfn_client=clients["cloudformation"],
-        )
-        executions: list[ExecutionState] = []
-        launched_at_ms = int(time.time() * 1000)
-        with tempfile.TemporaryDirectory(prefix="otel-long-running-events-") as temp_dir:
-            for function_name, description_id in mappings:
-                requirement = load_yaml_file(str(requirements[description_id]))
-                resolved_input, bindings = _resolved_input(
-                    requirement,
-                    delay_seconds,
-                )
-                event_path = Path(temp_dir) / f"{description_id}.json"
-                event_path.write_text(
-                    json.dumps({"Input": resolved_input}),
-                    encoding="utf-8",
-                )
-                invocation_started_at_ms = int(time.time() * 1000)
-                result = invoker.invoke_async(
+    clients = AwsClients.create(args.region)
+    invoker = Invoker(
+        stack_name=stack_name,
+        region=args.region,
+        lambda_client=clients["lambda"],
+        cfn_client=clients["cloudformation"],
+    )
+    executions: list[ExecutionState] = []
+    launched_at_ms = int(time.time() * 1000)
+    with tempfile.TemporaryDirectory(prefix="otel-long-running-events-") as temp_dir:
+        for function_name, description_id in mappings:
+            requirement = load_yaml_file(str(requirements[description_id]))
+            resolved_input, bindings = _resolved_input(
+                requirement,
+                delay_seconds,
+            )
+            event_path = Path(temp_dir) / f"{description_id}.json"
+            event_path.write_text(
+                json.dumps({"Input": resolved_input}),
+                encoding="utf-8",
+            )
+            invocation_started_at_ms = int(time.time() * 1000)
+            result = invoker.invoke_async(
+                function_name=function_name,
+                event_file_path=str(event_path),
+            )
+            response = json.loads(result.output)
+            execution_arn = response.get("DurableExecutionArn")
+            if not execution_arn:
+                raise RuntimeError(f"{description_id} invocation returned no DurableExecutionArn")
+            executions.append(
+                ExecutionState(
+                    description_id=description_id,
                     function_name=function_name,
-                    event_file_path=str(event_path),
+                    execution_arn=str(execution_arn),
+                    invocation_started_at_ms=invocation_started_at_ms,
+                    bindings=bindings,
                 )
-                response = json.loads(result.output)
-                execution_arn = response.get("DurableExecutionArn")
-                if not execution_arn:
-                    raise RuntimeError(f"{description_id} invocation returned no DurableExecutionArn")
-                executions.append(
-                    ExecutionState(
-                        description_id=description_id,
-                        function_name=function_name,
-                        execution_arn=str(execution_arn),
-                        invocation_started_at_ms=invocation_started_at_ms,
-                        bindings=bindings,
-                    )
-                )
-                print(f"  Launched {description_id}: {execution_arn}")
+            )
+            print(f"  Launched {description_id}: {execution_arn}")
 
-        RunState(
-            language=runtime,
-            view=view,
-            region=args.region,
-            name=args.name,
-            stack_name=stack_name,
-            template=str(template_path),
-            delay_seconds=delay_seconds,
-            launched_at_ms=launched_at_ms,
-            executions=executions,
-            source_revision=str(args.source_revision),
-        ).save(state_path)
-        print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
-        return 0
-    except Exception:
-        if deployment_attempted:
-            delete_stack(stack_name, args.region)
-        raise
+    RunState(
+        language=runtime,
+        view=view,
+        region=args.region,
+        name=args.name,
+        stack_name=stack_name,
+        template=str(template_path),
+        delay_seconds=delay_seconds,
+        launched_at_ms=launched_at_ms,
+        executions=executions,
+        source_revision=str(args.source_revision),
+    ).save(state_path)
+    print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
+    return 0
 
 
 def _callback_id(history: dict[str, Any]) -> str | None:
@@ -545,7 +538,11 @@ def _validate_terminal_execution(
     )
 
 
-def check(args: argparse.Namespace) -> int:
+def check(
+    args: argparse.Namespace,
+    *,
+    delete_terminal_stack: bool = True,
+) -> int:
     """Check deferred executions and validate terminal histories and traces."""
 
     state_path = Path(args.state_file)
@@ -599,7 +596,8 @@ def check(args: argparse.Namespace) -> int:
             status="failed",
             state_changed=False,
         )
-        delete_stack(state.stack_name, state.region)
+        if delete_terminal_stack:
+            delete_stack(state.stack_name, state.region)
         return 1
 
     for execution in state.executions:
@@ -649,7 +647,8 @@ def check(args: argparse.Namespace) -> int:
         status=status,
         state_changed=state_changed,
     )
-    delete_stack(state.stack_name, state.region)
+    if delete_terminal_stack:
+        delete_stack(state.stack_name, state.region)
     return report.exit_code()
 
 
@@ -658,45 +657,33 @@ def run_to_completion(args: argparse.Namespace) -> int:
 
     state_path = Path(args.state_file)
     result_path = Path(args.result_file)
-    terminal = False
-    try:
-        launch(args)
-        state = RunState.load(state_path)
-        due_at = (state.launched_at_ms / 1000) + state.delay_seconds
-        remaining = max(0.0, due_at - time.time())
-        if remaining:
-            print(f"Waiting {remaining:.1f} seconds before checking long-running executions")
-            time.sleep(remaining)
+    launch(args)
+    state = RunState.load(state_path)
+    due_at = (state.launched_at_ms / 1000) + state.delay_seconds
+    remaining = max(0.0, due_at - time.time())
+    if remaining:
+        print(f"Waiting {remaining:.1f} seconds before checking long-running executions")
+        time.sleep(remaining)
 
-        deadline = time.monotonic() + args.check_timeout
-        while True:
-            result_path.unlink(missing_ok=True)
-            exit_code = check(args)
-            if not result_path.is_file():
-                raise RuntimeError("Long-running check did not write a result")
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-            status = str(result.get("status", "error"))
-            if status == "passed":
-                terminal = True
-                return exit_code
-            if status == "failed":
-                terminal = True
-                return exit_code or 1
-            if status == "error":
-                return exit_code or 1
-            if status != "pending":
-                raise RuntimeError(f"Long-running check returned unknown status {status!r}")
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Long-running executions remained pending after {args.check_timeout} seconds")
-            time.sleep(args.check_interval)
-    finally:
-        if state_path.is_file() and not terminal:
-            try:
-                state = RunState.load(state_path)
-            except (OSError, ValueError):
-                pass
-            else:
-                delete_stack(state.stack_name, state.region)
+    deadline = time.monotonic() + args.check_timeout
+    while True:
+        result_path.unlink(missing_ok=True)
+        exit_code = check(args, delete_terminal_stack=False)
+        if not result_path.is_file():
+            raise RuntimeError("Long-running check did not write a result")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        status = str(result.get("status", "error"))
+        if status == "passed":
+            return exit_code
+        if status == "failed":
+            return exit_code or 1
+        if status == "error":
+            return exit_code or 1
+        if status != "pending":
+            raise RuntimeError(f"Long-running check returned unknown status {status!r}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Long-running executions remained pending after {args.check_timeout} seconds")
+        time.sleep(args.check_interval)
 
 
 def _new_report(state: RunState, now_ms: int) -> Report:
@@ -765,6 +752,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=["xray"],
         default="xray",
     )
+    check_parser.add_argument(
+        "--cleanup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete the stack after terminal validation (pass --no-cleanup to retain it).",
+    )
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--template", required=True)
@@ -816,7 +809,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.phase == "launch":
             return launch(args)
         if args.phase == "check":
-            return check(args)
+            return check(args, delete_terminal_stack=args.cleanup)
         if args.check_timeout <= 0 or args.check_interval <= 0:
             raise ValueError("check timeout and interval must be positive")
         return run_to_completion(args)

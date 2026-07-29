@@ -73,16 +73,74 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
         assert requirement["TelemetryAssertions"] != requirement["ExecutionTelemetryAssertions"]
 
         execution_span_assertions = requirement["ExecutionTelemetryAssertions"]["span_assertions"]
-        workflow_spans = [
+        execution_workflow_spans = [
             assertion for assertion in execution_span_assertions if assertion["select"]["name"] == "Workflow"
         ]
-        invocation_spans = [
+        execution_invocation_spans = [
             assertion
             for assertion in execution_span_assertions
             if assertion["select"]["name"] == "${/^[Ii]nvocation$/}"
         ]
-        assert len(workflow_spans) == 1
-        assert len(invocation_spans) == expected_invocations
+        invocation_span_assertions = requirement["TelemetryAssertions"]["span_assertions"]
+        invocation_workflow_spans = [
+            assertion for assertion in invocation_span_assertions if assertion["select"]["name"] == "Workflow"
+        ]
+        invocation_invocation_spans = [
+            assertion for assertion in invocation_span_assertions if assertion["select"]["name"] == "Invocation"
+        ]
+        assert len(execution_workflow_spans) == 1
+        assert len(execution_invocation_spans) == expected_invocations
+        expected_workflow_arns = ["${EXECUTION_ARN}"]
+        if case_number == 4:
+            expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
+            assert requirement["TelemetryAssertions"]["minimum_spans"] == 10
+        assert [
+            assertion["select"]["attributes"]["durable.execution.arn"] for assertion in invocation_workflow_spans
+        ] == expected_workflow_arns
+        assert len(invocation_invocation_spans) == expected_invocations
+        for execution_arn, workflow_assertion in zip(
+            expected_workflow_arns,
+            invocation_workflow_spans,
+            strict=True,
+        ):
+            assert workflow_assertion == {
+                "select": {
+                    "name": "Workflow",
+                    "status": "OK",
+                    "attributes": {
+                        "durable.execution.arn": execution_arn,
+                    },
+                },
+                "expect": {
+                    "parent_span_id": None,
+                    "status": "OK",
+                    "service_name": "invocation",
+                    "links": [],
+                    "kind": "INTERNAL",
+                    "attributes": {
+                        "durable.execution.arn": execution_arn,
+                        "durable.execution.status": "SUCCEEDED",
+                    },
+                },
+            }
+        assert '"name": "invocation"' not in json.dumps(requirement["TelemetryAssertions"])
+        for assertion in invocation_span_assertions:
+            if assertion["select"]["name"] in {"Invocation", "Workflow"}:
+                assert assertion["expect"]["links"] == []
+                continue
+            links = assertion["expect"]["links"]
+            link_alternatives = links["$any_of"] if isinstance(links, dict) else [links]
+            execution_arn = assertion["expect"]["attributes"]["durable.execution.arn"]
+            assert all(
+                link_set[-1]
+                == {
+                    "name": "Workflow",
+                    "attributes": {
+                        "durable.execution.arn": execution_arn,
+                    },
+                }
+                for link_set in link_alternatives
+            )
 
 
 @pytest.mark.parametrize(
@@ -262,8 +320,44 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             actual_scopes = [actual_scopes]
         assert actual_scopes == expected_scopes
         assert assertions["exact_attribute_prefixes"] == ["durable."]
-        assert assertions["span_assertions"]
-        for span_assertion in assertions["span_assertions"]:
+        span_assertions = assertions["span_assertions"]
+        assert span_assertions
+        workflows = [assertion for assertion in span_assertions if assertion["select"]["name"] == "Workflow"]
+        expected_execution_status = requirement["ExpectedResult"]["ExecutionStatus"]
+        if case_number == 15:
+            assert workflows == []
+        else:
+            expected_workflow_status = {
+                "FAILED": "ERROR",
+                "SUCCEEDED": "OK",
+            }[expected_execution_status]
+            expected_workflow_arns = ["${EXECUTION_ARN}"]
+            if case_number in {11, 18}:
+                expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
+                assert assertions["minimum_spans"] == 7
+            assert len(workflows) == len(expected_workflow_arns)
+            for execution_arn, workflow in zip(expected_workflow_arns, workflows, strict=True):
+                assert workflow == {
+                    "select": {
+                        "name": "Workflow",
+                        "status": expected_workflow_status,
+                        "attributes": {
+                            "durable.execution.arn": execution_arn,
+                        },
+                    },
+                    "expect": {
+                        "parent_span_id": None,
+                        "status": expected_workflow_status,
+                        "service_name": "invocation",
+                        "links": [],
+                        "kind": "INTERNAL",
+                        "attributes": {
+                            "durable.execution.arn": execution_arn,
+                            "durable.execution.status": expected_execution_status,
+                        },
+                    },
+                }
+        for span_assertion in span_assertions:
             assert "count" not in span_assertion
             selected_name = span_assertion["select"]["name"]
             expected = span_assertion["expect"]
@@ -274,19 +368,33 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 "UNSET",
             }
             assert expected["service_name"] == "invocation"
-            links = expected["links"]
-            if isinstance(links, dict):
-                assert set(links) == {"$any_of"}
-                assert links["$any_of"][0] == []
-                links = links["$any_of"][1]
-            assert isinstance(links, list)
-            assert len(links) <= 1
-            if links:
-                linked_span = links[0]
-                assert linked_span["name"]
-                assert linked_span["attributes"]["durable.operation.id"]
-                assert "trace_id" not in linked_span
-                assert "span_id" not in linked_span
+            if "links" not in expected:
+                assert case_number == 15
+                assert selected_name == "otel-interrupted-wait"
+                link_alternatives = []
+            else:
+                links = expected["links"]
+                if isinstance(links, dict):
+                    assert set(links) == {"$any_of"}
+                    link_alternatives = links["$any_of"]
+                else:
+                    link_alternatives = [links]
+                for link_set in link_alternatives:
+                    assert isinstance(link_set, list)
+                    assert len(link_set) <= 2
+                    for linked_span in link_set:
+                        assert linked_span["name"]
+                        assert "trace_id" not in linked_span
+                        assert "span_id" not in linked_span
+                        if linked_span["name"] == "Workflow":
+                            assert linked_span["attributes"] == {
+                                "durable.execution.arn": "${EXECUTION_ARN}",
+                            }
+                        else:
+                            assert linked_span["attributes"]["durable.operation.id"]
+            if selected_name not in {"Invocation", "Workflow"} and case_number != 15:
+                assert link_alternatives
+                assert all(link_set[-1]["name"] == "Workflow" for link_set in link_alternatives)
             assert expected["kind"] == "INTERNAL"
             assert "span.name" not in expected["attributes"]
             assert "span.kind" not in expected["attributes"]
@@ -301,7 +409,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         "durable.operation.subtype": expected_attributes["durable.operation.subtype"],
                     },
                 }
-            if selected_name == "invocation":
+            if selected_name == "Invocation":
                 selector_attributes = span_assertion["select"]["attributes"]
                 assert isinstance(expected_attributes["durable.invocation.first"], bool)
                 assert expected_attributes["durable.invocation.status"] in {
@@ -314,7 +422,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     expected["status"]
                     == {
                         "FAILED": "ERROR",
-                        "PENDING": "UNSET",
+                        "PENDING": "OK",
                         "RETRY": "UNSET",
                         "SUCCEEDED": "OK",
                     }[expected_attributes["durable.invocation.status"]]
@@ -325,6 +433,8 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 assert (
                     selector_attributes["durable.invocation.status"] == expected_attributes["durable.invocation.status"]
                 )
+                if case_number == 19:
+                    assert expected_attributes["durable.invocation.status"] == "FAILED"
             if parent := expected.get("parent"):
                 assert parent["kind"] == "INTERNAL"
                 assert "span.name" not in parent["attributes"]
@@ -401,18 +511,29 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
         expected_invocations = [
             item
             for item in invocation_requirement["TelemetryAssertions"]["span_assertions"]
-            if item["select"]["name"] == "invocation"
+            if item["select"]["name"] == "Invocation"
         ]
         assert len(invocations) == len(expected_invocations)
         for invocation, expected_invocation in zip(invocations, expected_invocations, strict=True):
             expected_attributes = expected_invocation["expect"]["attributes"]
+            if case_number == 19:
+                expected_attributes = deepcopy(expected_attributes)
+                expected_attributes["durable.invocation.status"] = "RETRY"
             invocation_status = expected_attributes["durable.invocation.status"]
             assert invocation["select"] == {
                 "name": "Invocation",
                 "attributes": expected_attributes,
             }
             expected = invocation["expect"]
-            assert expected["status"] == ("ERROR" if invocation_status == "FAILED" else "UNSET")
+            assert (
+                expected["status"]
+                == {
+                    "FAILED": "ERROR",
+                    "PENDING": "OK",
+                    "RETRY": "UNSET",
+                    "SUCCEEDED": "UNSET",
+                }[invocation_status]
+            )
             assert expected["links"] == []
             assert expected["kind"] == "INTERNAL"
             assert expected["service_name"] == "invocation"
@@ -482,7 +603,14 @@ def test_callback_submitter_assertions_emit_once_without_retry(
     assert submitter_assertion["expect"]["status"] == "OK"
 
     if suite_name == "otel-invocation":
-        assert submitter_assertion["expect"]["links"] == []
+        assert submitter_assertion["expect"]["links"] == [
+            {
+                "name": "Workflow",
+                "attributes": {
+                    "durable.execution.arn": "${EXECUTION_ARN}",
+                },
+            },
+        ]
         assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
     else:
         assert submitter_assertion["expect"]["links"] == [{"name": "invocation"}]

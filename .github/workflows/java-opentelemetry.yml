@@ -57,8 +57,31 @@ permissions:
   id-token: write
 
 jobs:
+  resolve-sdk-main:
+    name: Resolve Java SDK main
+    runs-on: ubuntu-latest
+    outputs:
+      java_sdk_ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - name: Resolve Java SDK main commit
+        id: resolve
+        run: |
+          JAVA_SDK_REF=$(
+            git ls-remote \
+              https://github.com/aws/aws-durable-execution-sdk-java.git \
+              refs/heads/main |
+              awk '{print $1}'
+          )
+          if [ -z "$JAVA_SDK_REF" ]; then
+            echo "Could not resolve aws-durable-execution-sdk-java main"
+            exit 1
+          fi
+          echo "Using Java SDK main commit $JAVA_SDK_REF"
+          echo "ref=$JAVA_SDK_REF" >> "$GITHUB_OUTPUT"
+
   invocation:
     name: Invocation view
+    needs: resolve-sdk-main
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -67,10 +90,12 @@ jobs:
       suite: otel-invocation
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
     secrets: inherit
 
   execution:
     name: Execution view
+    needs: resolve-sdk-main
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -79,10 +104,12 @@ jobs:
       suite: otel-execution
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
     secrets: inherit
 
   long-running-invocation:
     name: Long running invocation view
+    needs: resolve-sdk-main
     uses: ./.github/workflows/java-opentelemetry-long-running.yml
     with:
       phase: >-
@@ -92,12 +119,14 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
     secrets: inherit
 
   long-running-execution:
     name: Long running execution view
+    needs: resolve-sdk-main
     uses: ./.github/workflows/java-opentelemetry-long-running.yml
     with:
       phase: >-
@@ -107,6 +136,7 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
     secrets: inherit

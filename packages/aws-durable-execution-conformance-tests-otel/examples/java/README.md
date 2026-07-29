@@ -98,10 +98,30 @@ queries and merges those S3 objects before evaluating the span assertions.
 
 ## Build Only
 
-The Maven project uses released SDK artifacts and produces one shaded Lambda
-JAR:
+Build and install the Java SDK repository's latest `main`, then export that
+project version for both the direct Maven build and SAM's nested Maven build:
 
 ```bash
+git clone --depth 1 --branch main \
+  https://github.com/aws/aws-durable-execution-sdk-java.git \
+  /tmp/aws-durable-execution-sdk-java
+
+export JAVA_SDK_VERSION=$(
+  mvn -B -q \
+    --file /tmp/aws-durable-execution-sdk-java/pom.xml \
+    -Dstyle.color=never \
+    -Dexpression=project.version \
+    -DforceStdout \
+    help:evaluate
+)
+
+mvn -B -q \
+  --file /tmp/aws-durable-execution-sdk-java/pom.xml \
+  --projects sdk,otel-plugin \
+  --also-make \
+  -DskipTests \
+  install
+
 mvn -B package \
   --file packages/aws-durable-execution-conformance-tests-otel/examples/java/pom.xml
 

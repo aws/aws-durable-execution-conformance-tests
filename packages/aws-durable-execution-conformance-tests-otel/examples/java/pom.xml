@@ -17,7 +17,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <maven.compiler.release>17</maven.compiler.release>
-        <durable.sdk.version>2.1.0</durable.sdk.version>
+        <durable.sdk.version>${env.JAVA_SDK_VERSION}</durable.sdk.version>
         <opentelemetry.version>1.63.0</opentelemetry.version>
         <xray.udp.exporter.version>1.0.0</xray.udp.exporter.version>
     </properties>

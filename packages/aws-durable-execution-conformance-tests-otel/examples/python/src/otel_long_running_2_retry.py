@@ -13,7 +13,7 @@ from aws_durable_execution_sdk_python import (
     durable_execution,
     durable_step,
 )
-from aws_durable_execution_sdk_python.config import Duration, StepConfig
+from aws_durable_execution_sdk_python.config import Duration, JitterStrategy, StepConfig
 from aws_durable_execution_sdk_python.retries import (
     RetryStrategyConfig,
     create_retry_strategy,
@@ -36,6 +36,7 @@ def handler(event: dict[str, Any], context: DurableContext) -> str:
             max_attempts=2,
             initial_delay=Duration.from_seconds(long_delay_seconds(event)),
             backoff_rate=1.0,
+            jitter_strategy=JitterStrategy.NONE,
             retryable_error_types=[RuntimeError],
         )
     )

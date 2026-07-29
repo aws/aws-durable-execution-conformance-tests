@@ -16,6 +16,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      typescript_sdk_ref:
+        description: Resolved commit from the TypeScript SDK main branch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -33,6 +37,8 @@ env:
   TEST_STACK_NAME: conformance-tests-typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TEST_NAME: typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
+  TYPESCRIPT_SDK_CHECKOUT: .build/aws-durable-execution-sdk-js
+  TYPESCRIPT_SDK_REF: ${{ inputs.typescript_sdk_ref }}
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
 
 jobs:
@@ -44,6 +50,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check out TypeScript SDK main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: aws/aws-durable-execution-sdk-js
+          ref: ${{ env.TYPESCRIPT_SDK_REF }}
+          path: ${{ env.TYPESCRIPT_SDK_CHECKOUT }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -112,6 +125,8 @@ jobs:
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
       - name: Build TypeScript handlers with SDK main
+        env:
+          SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js
         working-directory: ${{ env.TYPESCRIPT_EXAMPLES }}
         run: |
           npm ci
@@ -234,6 +249,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Check out TypeScript SDK main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: aws/aws-durable-execution-sdk-js
+          ref: ${{ env.TYPESCRIPT_SDK_REF }}
+          path: ${{ env.TYPESCRIPT_SDK_CHECKOUT }}
+
       - name: Check out OpenTelemetry Lambda collector
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -292,6 +314,8 @@ jobs:
             packages/aws-durable-execution-conformance-tests-otel/tests/test_typescript_examples.py
 
       - name: Build TypeScript handlers with SDK main
+        env:
+          SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js
         working-directory: ${{ env.TYPESCRIPT_EXAMPLES }}
         run: |
           npm ci
@@ -324,26 +348,29 @@ jobs:
             --output text > /dev/null
           echo "Using S3 collector layer $COLLECTOR_LAYER_ARN"
 
-      - name: Create run-scoped S3 telemetry bucket
+      - name: Prepare stable S3 telemetry bucket
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
           TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
           TEST_ROLE_ARN: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
         run: |
-          OTEL_S3_BUCKET="dex-otel-typescript-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OTEL_S3_BUCKET="dex-otel-typescript-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
           OTEL_S3_PREFIX=traces
           {
             echo "OTEL_S3_BUCKET=$OTEL_S3_BUCKET"
             echo "OTEL_S3_PREFIX=$OTEL_S3_PREFIX"
             echo "OTEL_S3_URI=s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX"
           } >> "$GITHUB_ENV"
-          if [ "$AWS_REGION" = "us-east-1" ]; then
-            aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
-          else
-            aws s3api create-bucket \
-              --bucket "$OTEL_S3_BUCKET" \
-              --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+          if ! aws s3api head-bucket --bucket "$OTEL_S3_BUCKET" 2>/dev/null; then
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
+            else
+              aws s3api create-bucket \
+                --bucket "$OTEL_S3_BUCKET" \
+                --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+            fi
           fi
+          aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive
           aws s3api put-public-access-block \
             --bucket "$OTEL_S3_BUCKET" \
             --public-access-block-configuration \
@@ -496,20 +523,3 @@ jobs:
             ${{ runner.temp }}/typescript-otel-s3-report.json
             ${{ runner.temp }}/typescript-otel-s3-report.xml
           if-no-files-found: ignore
-
-      - name: Delete test resources
-        if: always()
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$TEST_STACK_NAME" > /dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
-            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME" || true
-          fi
-          if [ -n "${OTEL_S3_BUCKET:-}" ]; then
-            aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive || true
-            aws s3api delete-bucket --bucket "$OTEL_S3_BUCKET" || true
-          fi
-          if [ -n "${COLLECTOR_LAYER_ARN:-}" ]; then
-            aws lambda delete-layer-version \
-              --layer-name "$COLLECTOR_LAYER_NAME" \
-              --version-number "${COLLECTOR_LAYER_ARN##*:}" || true
-          fi

@@ -319,7 +319,7 @@ def test_terminal_event_timestamps_enforce_the_configured_delay() -> None:
     assert _premature_executions(state, statuses, histories) == []
 
 
-def test_launch_cleans_up_a_failed_deployment_attempt(
+def test_launch_retains_stack_after_a_failed_deployment_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -367,7 +367,7 @@ def test_launch_cleans_up_a_failed_deployment_attempt(
     with pytest.raises(RuntimeError, match="deployment failed"):
         long_running.launch(args)
 
-    assert deleted == [("conformance-tests-failed-deploy", "us-west-2")]
+    assert deleted == []
 
 
 def test_launch_rejects_duplicate_requirement_mappings(
@@ -420,6 +420,41 @@ def _save_short_run_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def test_deferred_check_can_retain_a_terminal_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_options: list[bool] = []
+
+    def fake_check(
+        _args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
+        return 0
+
+    monkeypatch.setattr(long_running, "check", fake_check)
+
+    assert (
+        long_running.main(
+            [
+                "check",
+                "--state-file",
+                "state.json",
+                "--result-file",
+                "result.json",
+                "--history-dir",
+                "history",
+                "--report-file",
+                "report",
+                "--no-cleanup",
+            ]
+        )
+        == 0
+    )
+    assert cleanup_options == [False]
+
+
 def test_short_run_polls_again_after_sending_the_due_callback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -432,11 +467,17 @@ def test_short_run_polls_again_after_sending_the_due_callback(
         ]
     )
     check_calls = 0
+    cleanup_options: list[bool] = []
     sleeps: list[float] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
         nonlocal check_calls
         check_calls += 1
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(json.dumps(next(statuses)), encoding="utf-8")
         return 0
 
@@ -448,17 +489,24 @@ def test_short_run_polls_again_after_sending_the_due_callback(
 
     assert run_to_completion(args) == 0
     assert check_calls == 2
+    assert cleanup_options == [False, False]
     assert sleeps == [15.0]
 
 
-def test_short_run_cleans_up_an_error_result(
+def test_short_run_retains_stack_after_an_error_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = _short_run_args(tmp_path)
     deleted: list[tuple[str, str]] = []
+    cleanup_options: list[bool] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(
             json.dumps({"status": "error", "state_changed": False}),
             encoding="utf-8",
@@ -472,18 +520,25 @@ def test_short_run_cleans_up_an_error_result(
     monkeypatch.setattr(long_running.time, "monotonic", lambda: 0.0)
 
     assert run_to_completion(args) == 1
-    assert deleted == [("conformance-tests-short", "us-west-2")]
+    assert cleanup_options == [False]
+    assert deleted == []
 
 
-def test_short_run_cleans_up_after_poll_timeout(
+def test_short_run_retains_stack_after_poll_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = _short_run_args(tmp_path)
     monotonic_values = iter([0.0, 901.0])
     deleted: list[tuple[str, str]] = []
+    cleanup_options: list[bool] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(
             json.dumps({"status": "pending", "state_changed": False}),
             encoding="utf-8",
@@ -498,7 +553,8 @@ def test_short_run_cleans_up_after_poll_timeout(
 
     with pytest.raises(RuntimeError, match=r"remained pending after 900.0 seconds"):
         run_to_completion(args)
-    assert deleted == [("conformance-tests-short", "us-west-2")]
+    assert cleanup_options == [False]
+    assert deleted == []
 
 
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])
@@ -533,6 +589,20 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
     ] == {"Sub": "${OtelLongRunning4InvokeTarget.Arn}:$LATEST"}
 
 
+def test_python_long_running_handler_names_match_requirement_numbers() -> None:
+    template_path = EXAMPLES_DIR / "python" / "template-long-running.yaml"
+    with template_path.open(encoding="utf-8") as stream:
+        resources = yaml.load(stream, Loader=_CfnSafeLoader)["Resources"]
+
+    assert {logical_id: resource["Properties"]["Handler"] for logical_id, resource in resources.items()} == {
+        "OtelLongRunning1Wait": "otel_long_running_1_wait.handler",
+        "OtelLongRunning2Retry": "otel_long_running_2_retry.handler",
+        "OtelLongRunning3Callback": "otel_long_running_3_callback.handler",
+        "OtelLongRunning4ChainedInvoke": "otel_long_running_4_chained_invoke.handler",
+        "OtelLongRunning4InvokeTarget": "otel_long_running_4_chained_invoke.target_handler",
+    }
+
+
 def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     python_source = EXAMPLES_DIR / "python" / "src"
     typescript_source = EXAMPLES_DIR / "typescript" / "handlers"
@@ -550,8 +620,13 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
         / "otel"
     )
 
-    assert "long_delay_seconds(event)" in (python_source / "otel_20_long_wait.py").read_text(encoding="utf-8")
-    assert "long_delay_seconds(event)" in (python_source / "otel_23_long_chained_invoke.py").read_text(encoding="utf-8")
+    assert "long_delay_seconds(event)" in (python_source / "otel_long_running_1_wait.py").read_text(encoding="utf-8")
+    python_retry_source = (python_source / "otel_long_running_2_retry.py").read_text(encoding="utf-8")
+    assert "long_delay_seconds(event)" in python_retry_source
+    assert "jitter_strategy=JitterStrategy.NONE" in python_retry_source
+    assert "long_delay_seconds(event)" in (python_source / "otel_long_running_4_chained_invoke.py").read_text(
+        encoding="utf-8"
+    )
     assert "longDelaySeconds(event)" in (typescript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
     assert "longDelaySeconds(event)" in (typescript_source / "otel_23_long_chained_invoke.ts").read_text(
         encoding="utf-8"
@@ -581,14 +656,15 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "github.event_name == 'pull_request' || github.event_name == 'push'" in entry_workflow
     assert "github.event_name == 'schedule' && 'auto'" in entry_workflow
     assert "&& 'short'" in entry_workflow
-    assert "&& '600'" in entry_workflow
+    assert "&& '60'" in entry_workflow
     assert 'default: "82800"' in entry_workflow
     assert f"uses: ./.github/workflows/{language}-opentelemetry-long-running.yml" in entry_workflow
     for view in ("invocation", "execution"):
         delay_expression = entry_workflow_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
         assert "inputs.phase == 'short'" in delay_expression
-        assert "&& '600'" in delay_expression
+        assert "&& '60'" in delay_expression
     assert "  workflow_call:" in workflow
+    assert 'default: "60"' in workflow
     assert "  pull_request:" not in workflow
     assert "  push:" not in workflow
     assert "  schedule:" not in workflow
@@ -625,8 +701,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "CHECK_EXIT_CODE" in workflow
     assert "id: launch" in workflow
     assert "id: persist" in workflow
-    assert "steps.persist.outcome == 'failure'" in workflow
-    assert 'aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"' in workflow
+    assert "steps.persist.outcome == 'failure'" not in workflow
+    assert 'aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"' not in workflow
     assert (
         workflow.index("- name: Persist updated callback state")
         < workflow.index("- name: Upload reports and histories")
@@ -636,4 +712,9 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
         f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
     )
-    assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow
+    assert workflow_config["jobs"]["run"]["env"]["TEST_NAME"] == (
+        f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}"
+        "${{ inputs.phase == 'short' && '-short' || '' }}"
+    )
+    assert "github.run_number" not in workflow
+    assert "github.run_attempt" not in workflow
