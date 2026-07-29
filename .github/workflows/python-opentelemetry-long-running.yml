@@ -44,6 +44,7 @@ env:
   RESULT_FILE: /tmp/python-otel-long-running-result.json
   HISTORY_DIR: /tmp/python-otel-long-running-history
   PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
+  PYTHONUNBUFFERED: "1"
   REPORT_FILE: /tmp/python-otel-long-running-report
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template-long-running.yaml
 

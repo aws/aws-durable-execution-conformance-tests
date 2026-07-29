@@ -221,6 +221,7 @@ def test_python_workflow_resolves_main_once_and_propagates_the_commit() -> None:
     assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
     for workflow in (suite_workflow, long_running_workflow):
         assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
+        assert 'PYTHONUNBUFFERED: "1"' in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
 
