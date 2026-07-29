@@ -131,7 +131,7 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
@@ -148,7 +148,7 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit

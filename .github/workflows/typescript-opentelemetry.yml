@@ -92,7 +92,7 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit
 
@@ -107,6 +107,6 @@ jobs:
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
-          && '600' || (inputs.delay_seconds || '82800') }}
+          && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

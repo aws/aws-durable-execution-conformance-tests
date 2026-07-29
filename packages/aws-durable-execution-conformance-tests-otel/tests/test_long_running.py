@@ -653,14 +653,15 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "github.event_name == 'pull_request' || github.event_name == 'push'" in entry_workflow
     assert "github.event_name == 'schedule' && 'auto'" in entry_workflow
     assert "&& 'short'" in entry_workflow
-    assert "&& '600'" in entry_workflow
+    assert "&& '60'" in entry_workflow
     assert 'default: "82800"' in entry_workflow
     assert f"uses: ./.github/workflows/{language}-opentelemetry-long-running.yml" in entry_workflow
     for view in ("invocation", "execution"):
         delay_expression = entry_workflow_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
         assert "inputs.phase == 'short'" in delay_expression
-        assert "&& '600'" in delay_expression
+        assert "&& '60'" in delay_expression
     assert "  workflow_call:" in workflow
+    assert 'default: "60"' in workflow
     assert "  pull_request:" not in workflow
     assert "  push:" not in workflow
     assert "  schedule:" not in workflow

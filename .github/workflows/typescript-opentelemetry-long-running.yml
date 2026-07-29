@@ -15,7 +15,7 @@ on:
       delay_seconds:
         description: Durable delay in seconds
         required: false
-        default: "600"
+        default: "60"
         type: string
       aws_region:
         description: AWS region
