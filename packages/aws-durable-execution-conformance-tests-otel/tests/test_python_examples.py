@@ -55,11 +55,13 @@ EXPECTED_MAPPINGS = [
     ("OtelExecution12ChildContextFailure", "otel-execution-12"),
     ("OtelExecution13ParallelFailure", "otel-execution-13"),
     ("OtelExecution14MapFailure", "otel-execution-14"),
+    ("OtelExecution15WaitInterrupted", "otel-execution-15"),
     ("OtelExecution16WaitForConditionFailure", "otel-execution-16"),
     ("OtelExecution17WaitForCallbackFailure", "otel-execution-17"),
     ("OtelExecution18ChainedInvokeFailure", "otel-execution-18"),
+    ("OtelExecution19ExecutionFailure", "otel-execution-19"),
 ]
-EXECUTION_CASES = (*range(1, 15), 16, 17, 18)
+EXECUTION_CASES = tuple(range(1, 20))
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -101,6 +103,10 @@ def test_python_template_deploys_only_the_selected_otel_view() -> None:
     for logical_id, resource in template["Resources"].items():
         expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
         assert resource["Condition"] == expected_condition
+    assert template["Resources"]["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"] == {
+        "ExecutionTimeout": 5,
+        "RetentionPeriodInDays": 1,
+    }
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:
