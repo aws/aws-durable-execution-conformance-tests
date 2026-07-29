@@ -24,6 +24,7 @@ PYTHONPATH = "{root}/packages/aws-durable-execution-conformance-tests/src:{root}
 
 [tool.hatch.envs.default.scripts]
 validate = "python -m aws_durable_execution_conformance_tests.app {args}"
+id-stability = "python -m aws_durable_execution_conformance_tests.id_stability {args}"
 
 [tool.hatch.envs.test]
 detached = true
