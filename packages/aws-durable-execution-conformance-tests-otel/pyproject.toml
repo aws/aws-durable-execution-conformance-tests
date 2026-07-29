@@ -17,7 +17,7 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-  "aws-durable-execution-conformance-tests>=0.2.0,<0.3.0",
+  "aws-durable-execution-conformance-tests>=1.0.0,<2.0.0",
   "opentelemetry-proto>=1.29.0",
   "protobuf>=5.0",
 ]

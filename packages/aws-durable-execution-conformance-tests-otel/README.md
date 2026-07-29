@@ -12,10 +12,11 @@ conformance CLI.
 pip install aws-durable-execution-conformance-tests-otel
 ```
 
-The package requires a compatible `>=0.2,<0.3` core runner and owns all OTel
+The package requires a compatible `>=1.0,<2.0` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
-validators, and requirement resources. Core `0.2.0` introduces the extension
-API used to discover these suites; core `0.1.x` cannot load them.
+validators, and requirement resources. Core `0.2.0` introduced the extension
+API used to discover these suites; this release of the package requires core
+`1.x` and cannot be installed against core `0.2.x` or earlier.
 
 The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each

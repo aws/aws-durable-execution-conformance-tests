@@ -35,7 +35,7 @@ class _Point:
 
 class _Extension:
     name = "fake"
-    requires_core = ">=0.2,<0.3"
+    requires_core = ">=1.0,<2.0"
 
     def __init__(
         self,
