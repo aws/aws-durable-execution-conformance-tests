@@ -2,6 +2,7 @@ name: TypeScript OpenTelemetry
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - .github/workflows/typescript-opentelemetry.yml
       - .github/workflows/typescript-opentelemetry-suite.yml
