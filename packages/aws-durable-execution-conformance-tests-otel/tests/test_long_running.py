@@ -432,11 +432,17 @@ def test_short_run_polls_again_after_sending_the_due_callback(
         ]
     )
     check_calls = 0
+    cleanup_options: list[bool] = []
     sleeps: list[float] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
         nonlocal check_calls
         check_calls += 1
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(json.dumps(next(statuses)), encoding="utf-8")
         return 0
 
@@ -448,17 +454,24 @@ def test_short_run_polls_again_after_sending_the_due_callback(
 
     assert run_to_completion(args) == 0
     assert check_calls == 2
+    assert cleanup_options == [False, False]
     assert sleeps == [15.0]
 
 
-def test_short_run_cleans_up_an_error_result(
+def test_short_run_retains_stack_after_an_error_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = _short_run_args(tmp_path)
     deleted: list[tuple[str, str]] = []
+    cleanup_options: list[bool] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(
             json.dumps({"status": "error", "state_changed": False}),
             encoding="utf-8",
@@ -472,18 +485,25 @@ def test_short_run_cleans_up_an_error_result(
     monkeypatch.setattr(long_running.time, "monotonic", lambda: 0.0)
 
     assert run_to_completion(args) == 1
-    assert deleted == [("conformance-tests-short", "us-west-2")]
+    assert cleanup_options == [False]
+    assert deleted == []
 
 
-def test_short_run_cleans_up_after_poll_timeout(
+def test_short_run_retains_stack_after_poll_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = _short_run_args(tmp_path)
     monotonic_values = iter([0.0, 901.0])
     deleted: list[tuple[str, str]] = []
+    cleanup_options: list[bool] = []
 
-    def fake_check(check_args: argparse.Namespace) -> int:
+    def fake_check(
+        check_args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
         Path(check_args.result_file).write_text(
             json.dumps({"status": "pending", "state_changed": False}),
             encoding="utf-8",
@@ -498,7 +518,8 @@ def test_short_run_cleans_up_after_poll_timeout(
 
     with pytest.raises(RuntimeError, match=r"remained pending after 900.0 seconds"):
         run_to_completion(args)
-    assert deleted == [("conformance-tests-short", "us-west-2")]
+    assert cleanup_options == [False]
+    assert deleted == []
 
 
 @pytest.mark.parametrize("language", ["java", "python", "typescript"])

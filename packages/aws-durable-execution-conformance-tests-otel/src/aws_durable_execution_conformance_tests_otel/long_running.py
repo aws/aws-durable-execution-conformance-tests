@@ -545,7 +545,11 @@ def _validate_terminal_execution(
     )
 
 
-def check(args: argparse.Namespace) -> int:
+def check(
+    args: argparse.Namespace,
+    *,
+    delete_terminal_stack: bool = True,
+) -> int:
     """Check deferred executions and validate terminal histories and traces."""
 
     state_path = Path(args.state_file)
@@ -599,7 +603,8 @@ def check(args: argparse.Namespace) -> int:
             status="failed",
             state_changed=False,
         )
-        delete_stack(state.stack_name, state.region)
+        if delete_terminal_stack:
+            delete_stack(state.stack_name, state.region)
         return 1
 
     for execution in state.executions:
@@ -649,7 +654,8 @@ def check(args: argparse.Namespace) -> int:
         status=status,
         state_changed=state_changed,
     )
-    delete_stack(state.stack_name, state.region)
+    if delete_terminal_stack:
+        delete_stack(state.stack_name, state.region)
     return report.exit_code()
 
 
@@ -658,45 +664,33 @@ def run_to_completion(args: argparse.Namespace) -> int:
 
     state_path = Path(args.state_file)
     result_path = Path(args.result_file)
-    terminal = False
-    try:
-        launch(args)
-        state = RunState.load(state_path)
-        due_at = (state.launched_at_ms / 1000) + state.delay_seconds
-        remaining = max(0.0, due_at - time.time())
-        if remaining:
-            print(f"Waiting {remaining:.1f} seconds before checking long-running executions")
-            time.sleep(remaining)
+    launch(args)
+    state = RunState.load(state_path)
+    due_at = (state.launched_at_ms / 1000) + state.delay_seconds
+    remaining = max(0.0, due_at - time.time())
+    if remaining:
+        print(f"Waiting {remaining:.1f} seconds before checking long-running executions")
+        time.sleep(remaining)
 
-        deadline = time.monotonic() + args.check_timeout
-        while True:
-            result_path.unlink(missing_ok=True)
-            exit_code = check(args)
-            if not result_path.is_file():
-                raise RuntimeError("Long-running check did not write a result")
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-            status = str(result.get("status", "error"))
-            if status == "passed":
-                terminal = True
-                return exit_code
-            if status == "failed":
-                terminal = True
-                return exit_code or 1
-            if status == "error":
-                return exit_code or 1
-            if status != "pending":
-                raise RuntimeError(f"Long-running check returned unknown status {status!r}")
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Long-running executions remained pending after {args.check_timeout} seconds")
-            time.sleep(args.check_interval)
-    finally:
-        if state_path.is_file() and not terminal:
-            try:
-                state = RunState.load(state_path)
-            except (OSError, ValueError):
-                pass
-            else:
-                delete_stack(state.stack_name, state.region)
+    deadline = time.monotonic() + args.check_timeout
+    while True:
+        result_path.unlink(missing_ok=True)
+        exit_code = check(args, delete_terminal_stack=False)
+        if not result_path.is_file():
+            raise RuntimeError("Long-running check did not write a result")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        status = str(result.get("status", "error"))
+        if status == "passed":
+            return exit_code
+        if status == "failed":
+            return exit_code or 1
+        if status == "error":
+            return exit_code or 1
+        if status != "pending":
+            raise RuntimeError(f"Long-running check returned unknown status {status!r}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Long-running executions remained pending after {args.check_timeout} seconds")
+        time.sleep(args.check_interval)
 
 
 def _new_report(state: RunState, now_ms: int) -> Report:
