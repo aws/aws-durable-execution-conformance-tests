@@ -148,6 +148,7 @@ def test_language_workflows_are_thin_presets() -> None:
         assert preset["with"]["delay_seconds"] == "${{ inputs.delay_seconds || '82800' }}"
         assert f"name: {DISPLAY_NAMES[language]} OpenTelemetry" in text
         assert "  pull_request:" in text
+        assert "  pull_request:\n    branches: [main]" not in text
         assert "  push:" in text
         assert "  schedule:" in text
         assert "  workflow_dispatch:" in text
@@ -276,6 +277,11 @@ def test_dash0_and_s3_resources_remain_stable() -> None:
     assert backend["env"]["DASH0_OTLP_ENDPOINT"] == "https://ingress.us-west-2.aws.dash0.com"
     assert backend["env"]["DASH0_AUTH_TOKEN"] == "${{ secrets.DASH0_AUTH_TOKEN }}"
     assert backend["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == ("Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}")
+    assert backend["if"] == s3["if"]
+    assert backend["if"] == (
+        "github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository"
+    )
     assert s3["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-s3-")
     assert 'OTEL_S3_BUCKET="dex-otel-${LANGUAGE}-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"' in text
     assert "aws s3api head-bucket" in text
