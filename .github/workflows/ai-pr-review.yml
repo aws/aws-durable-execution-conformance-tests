@@ -12,4 +12,4 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
-    uses: aws/aws-durable-execution-ci/.github/workflows/ai-pr-review.yml@main
+    uses: aws/aws-durable-execution-ci/.github/workflows/ai-pr-review.yml@f02d56af6317ce614251ee46e5c900750da53fe8
