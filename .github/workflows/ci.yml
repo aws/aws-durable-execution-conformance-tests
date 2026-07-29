@@ -42,8 +42,13 @@ jobs:
 
       - name: Lint shell scripts
         run: |
-          shellcheck scripts/*.sh
-          for script in scripts/*.sh; do
+          shopt -s nullglob
+          scripts=(scripts/*.sh)
+          if ((${#scripts[@]} == 0)); then
+            exit 0
+          fi
+          shellcheck "${scripts[@]}"
+          for script in "${scripts[@]}"; do
             bash -n "$script"
           done
 
