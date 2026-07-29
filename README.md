@@ -99,7 +99,7 @@ hatch run validate \
 
 Credentials are read only from the environment:
 
-- Datadog: `DD_API_KEY`, `DD_APPLICATION_KEY`
+- Datadog API: `DATADOG_ACCESS_TOKEN`
 - Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
