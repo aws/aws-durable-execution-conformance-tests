@@ -193,6 +193,22 @@ def test_normalizes_datadog_decimal_identifiers() -> None:
 
 
 def test_normalizes_dash0_otlp_shape() -> None:
-    trace = normalize_dash0(_otlp_payload())[0]
+    payload = _otlp_payload()
+    raw_span = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    raw_span["traceId"] = "EREREREREREREREREREREQ=="
+    raw_span["spanId"] = "IiIiIiIiIiI="
+    raw_span["links"] = [
+        {
+            "traceId": "MzMzMzMzMzMzMzMzMzMzMw==",
+            "spanId": "REREREREREQ=",
+        }
+    ]
+
+    trace = normalize_dash0(payload)[0]
+
+    assert trace.trace_id == "1" * 32
+    assert trace.spans[0].span_id == "2" * 16
+    assert trace.spans[0].links[0].trace_id == "3" * 32
+    assert trace.spans[0].links[0].span_id == "4" * 16
     assert trace.spans[0].name == "durable step"
     assert trace.spans[0].kind == "INTERNAL"

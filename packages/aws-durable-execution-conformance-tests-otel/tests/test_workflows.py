@@ -48,6 +48,8 @@ def test_suite_workflows_run_one_parameterized_suite() -> None:
         assert "${{ inputs.aws_region }}" in concurrency_group
         assert "  xray:" in workflow
         assert "    name: ADOT + X-Ray" in workflow
+        assert "  dash0:" in workflow
+        assert "    name: Community layer + Dash0" in workflow
         assert "  s3_collector:" in workflow
         assert "    name: Community layer + S3 collector" in workflow
 
@@ -57,15 +59,40 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
         workflow = path.read_text(encoding="utf-8")
 
         assert f"TEST_NAME: {language}-xray-{VIEW_SUFFIX}" in workflow
+        assert f"TEST_NAME: {language}-dash0-{VIEW_SUFFIX}" in workflow
         assert f"TEST_STACK_NAME: conformance-tests-{language}-s3-{VIEW_SUFFIX}" in workflow
         assert f"TEST_NAME: {language}-s3-{VIEW_SUFFIX}" in workflow
         assert f"name: {language}-otel-xray-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
+        assert f"name: {language}-otel-dash0-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
         assert f"name: {language}-otel-s3-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
         assert f"dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}-" in workflow
 
     python_workflow = SUITE_WORKFLOWS["python"].read_text(encoding="utf-8")
     assert f"TEST_NAME: python-datadog-{VIEW_SUFFIX}" in python_workflow
-    assert f"TEST_NAME: python-dash0-{VIEW_SUFFIX}" in python_workflow
+
+
+def test_dash0_jobs_match_xray_coverage_and_use_repository_credentials() -> None:
+    for path in SUITE_WORKFLOWS.values():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        xray = workflow["jobs"]["xray"]
+        dash0 = workflow["jobs"]["dash0"]
+        commands = "\n".join(step.get("run", "") for step in dash0["steps"])
+
+        assert dash0["if"] == xray["if"]
+        assert dash0["env"]["DASH0_API_URL"] == "https://api.us-west-2.aws.dash0.com"
+        assert dash0["env"]["DASH0_OTLP_ENDPOINT"] == "https://ingress.us-west-2.aws.dash0.com"
+        assert dash0["env"]["DASH0_AUTH_TOKEN"] == "${{ secrets.DASH0_AUTH_TOKEN }}"
+        assert dash0["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == ("Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}")
+        assert "--otel-exporter community" in commands
+        assert '--otel-endpoint "$DASH0_OTLP_ENDPOINT"' in commands
+        assert "--otel-backend dash0" in commands
+        assert "--no-cleanup" in commands
+
+    python_entry = LANGUAGE_WORKFLOWS["python"].read_text(encoding="utf-8")
+    python_suite = SUITE_WORKFLOWS["python"].read_text(encoding="utf-8")
+    assert "dash0_query_endpoint" not in python_entry
+    assert "dash0_query_endpoint" not in python_suite
+    assert "DASH0_OTLP_HEADERS" not in python_suite
 
 
 def test_s3_collector_resources_are_stable_and_retained() -> None:

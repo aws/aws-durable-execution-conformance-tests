@@ -107,7 +107,7 @@ class OtelExtension:
         group.add_argument(
             "--otel-backend-endpoint",
             default=None,
-            help="Backend query endpoint (for collector, s3://bucket/prefix).",
+            help="Backend query endpoint (Dash0 API base URL, or s3://bucket/prefix for collector).",
         )
         group.add_argument(
             "--otel-service-name",

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,12 +20,21 @@ def normalize_id(value: str | int | None, width: int) -> str | None:
         return None
     if isinstance(value, int):
         return f"{value:0{width}x}"[-width:]
-    text = str(value).lower().strip()
+    raw_text = str(value).strip()
+    text = raw_text.lower()
     if text.startswith("0x"):
         text = text[2:]
     if text.startswith("1-") and width == 32:
         text = text.replace("-", "")[1:]
-    if text.isdigit() and len(text) > width:
+    if len(text) == width and all(character in "0123456789abcdef" for character in text):
+        return text
+    try:
+        decoded = base64.b64decode(raw_text, validate=True)
+        if len(decoded) * 2 == width:
+            return decoded.hex()
+    except (binascii.Error, ValueError):
+        pass
+    if text.isdigit():
         text = f"{int(text):x}"
     return text.replace("-", "").zfill(width)[-width:]
 
