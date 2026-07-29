@@ -319,7 +319,7 @@ def test_terminal_event_timestamps_enforce_the_configured_delay() -> None:
     assert _premature_executions(state, statuses, histories) == []
 
 
-def test_launch_cleans_up_a_failed_deployment_attempt(
+def test_launch_retains_stack_after_a_failed_deployment_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -367,7 +367,7 @@ def test_launch_cleans_up_a_failed_deployment_attempt(
     with pytest.raises(RuntimeError, match="deployment failed"):
         long_running.launch(args)
 
-    assert deleted == [("conformance-tests-failed-deploy", "us-west-2")]
+    assert deleted == []
 
 
 def test_launch_rejects_duplicate_requirement_mappings(
@@ -698,8 +698,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "CHECK_EXIT_CODE" in workflow
     assert "id: launch" in workflow
     assert "id: persist" in workflow
-    assert "steps.persist.outcome == 'failure'" in workflow
-    assert 'aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"' in workflow
+    assert "steps.persist.outcome == 'failure'" not in workflow
+    assert 'aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"' not in workflow
     assert (
         workflow.index("- name: Persist updated callback state")
         < workflow.index("- name: Upload reports and histories")

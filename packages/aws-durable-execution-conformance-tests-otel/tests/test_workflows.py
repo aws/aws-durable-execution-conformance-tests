@@ -121,7 +121,6 @@ def test_long_running_workflows_are_reusable_only() -> None:
 
 def test_otel_workflows_do_not_delete_completed_stacks() -> None:
     allowed_recovery_steps = {
-        "Clean up failed launch handoff",
         "Delete rolled-back test stack",
         "Delete rolled-back test stacks",
     }
@@ -137,6 +136,13 @@ def test_otel_workflows_do_not_delete_completed_stacks() -> None:
                     assert "--no-cleanup" in command, path
                 if "aws cloudformation delete-stack" in command:
                     assert step["name"] in allowed_recovery_steps, (path, step["name"])
+
+
+def test_long_running_workflows_never_delete_stacks() -> None:
+    for path in LONG_RUNNING_WORKFLOWS.values():
+        workflow = path.read_text(encoding="utf-8")
+
+        assert "aws cloudformation delete-stack" not in workflow, path
 
 
 def test_view_grouped_workflows_were_removed() -> None:

@@ -301,75 +301,68 @@ def launch(args: argparse.Namespace) -> int:
         build_dir=str(build_dir),
         region=args.region,
     )
-    deployment_attempted = False
-    try:
-        print(f"=== Deploying long-running stack {stack_name!r} ===")
-        deployer.build()
-        deployment_attempted = True
-        deployer.deploy(
-            stack_name=stack_name,
-            parameter_overrides=parameters,
-        )
+    print(f"=== Deploying long-running stack {stack_name!r} ===")
+    deployer.build()
+    deployer.deploy(
+        stack_name=stack_name,
+        parameter_overrides=parameters,
+    )
 
-        clients = AwsClients.create(args.region)
-        invoker = Invoker(
-            stack_name=stack_name,
-            region=args.region,
-            lambda_client=clients["lambda"],
-            cfn_client=clients["cloudformation"],
-        )
-        executions: list[ExecutionState] = []
-        launched_at_ms = int(time.time() * 1000)
-        with tempfile.TemporaryDirectory(prefix="otel-long-running-events-") as temp_dir:
-            for function_name, description_id in mappings:
-                requirement = load_yaml_file(str(requirements[description_id]))
-                resolved_input, bindings = _resolved_input(
-                    requirement,
-                    delay_seconds,
-                )
-                event_path = Path(temp_dir) / f"{description_id}.json"
-                event_path.write_text(
-                    json.dumps({"Input": resolved_input}),
-                    encoding="utf-8",
-                )
-                invocation_started_at_ms = int(time.time() * 1000)
-                result = invoker.invoke_async(
+    clients = AwsClients.create(args.region)
+    invoker = Invoker(
+        stack_name=stack_name,
+        region=args.region,
+        lambda_client=clients["lambda"],
+        cfn_client=clients["cloudformation"],
+    )
+    executions: list[ExecutionState] = []
+    launched_at_ms = int(time.time() * 1000)
+    with tempfile.TemporaryDirectory(prefix="otel-long-running-events-") as temp_dir:
+        for function_name, description_id in mappings:
+            requirement = load_yaml_file(str(requirements[description_id]))
+            resolved_input, bindings = _resolved_input(
+                requirement,
+                delay_seconds,
+            )
+            event_path = Path(temp_dir) / f"{description_id}.json"
+            event_path.write_text(
+                json.dumps({"Input": resolved_input}),
+                encoding="utf-8",
+            )
+            invocation_started_at_ms = int(time.time() * 1000)
+            result = invoker.invoke_async(
+                function_name=function_name,
+                event_file_path=str(event_path),
+            )
+            response = json.loads(result.output)
+            execution_arn = response.get("DurableExecutionArn")
+            if not execution_arn:
+                raise RuntimeError(f"{description_id} invocation returned no DurableExecutionArn")
+            executions.append(
+                ExecutionState(
+                    description_id=description_id,
                     function_name=function_name,
-                    event_file_path=str(event_path),
+                    execution_arn=str(execution_arn),
+                    invocation_started_at_ms=invocation_started_at_ms,
+                    bindings=bindings,
                 )
-                response = json.loads(result.output)
-                execution_arn = response.get("DurableExecutionArn")
-                if not execution_arn:
-                    raise RuntimeError(f"{description_id} invocation returned no DurableExecutionArn")
-                executions.append(
-                    ExecutionState(
-                        description_id=description_id,
-                        function_name=function_name,
-                        execution_arn=str(execution_arn),
-                        invocation_started_at_ms=invocation_started_at_ms,
-                        bindings=bindings,
-                    )
-                )
-                print(f"  Launched {description_id}: {execution_arn}")
+            )
+            print(f"  Launched {description_id}: {execution_arn}")
 
-        RunState(
-            language=runtime,
-            view=view,
-            region=args.region,
-            name=args.name,
-            stack_name=stack_name,
-            template=str(template_path),
-            delay_seconds=delay_seconds,
-            launched_at_ms=launched_at_ms,
-            executions=executions,
-            source_revision=str(args.source_revision),
-        ).save(state_path)
-        print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
-        return 0
-    except Exception:
-        if deployment_attempted:
-            delete_stack(stack_name, args.region)
-        raise
+    RunState(
+        language=runtime,
+        view=view,
+        region=args.region,
+        name=args.name,
+        stack_name=stack_name,
+        template=str(template_path),
+        delay_seconds=delay_seconds,
+        launched_at_ms=launched_at_ms,
+        executions=executions,
+        source_revision=str(args.source_revision),
+    ).save(state_path)
+    print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
+    return 0
 
 
 def _callback_id(history: dict[str, Any]) -> str | None:

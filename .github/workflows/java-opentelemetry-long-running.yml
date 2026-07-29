@@ -258,13 +258,6 @@ jobs:
           path: ${{ env.STATE_FILE }}
           retention-days: 5
 
-      - name: Clean up failed launch handoff
-        if: >-
-          always() && steps.state.outputs.phase == 'launch' &&
-          steps.launch.outcome == 'success' && steps.persist.outcome == 'failure'
-        continue-on-error: true
-        run: aws cloudformation delete-stack --stack-name "conformance-tests-$TEST_NAME"
-
       - name: Check long-running conformance executions
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         id: check
