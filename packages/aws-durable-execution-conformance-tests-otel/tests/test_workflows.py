@@ -5,6 +5,8 @@
 
 from pathlib import Path
 
+import yaml
+
 WORKFLOWS_DIR = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 LANGUAGES = ("java", "python", "typescript")
 DISPLAY_NAMES = {"java": "Java", "python": "Python", "typescript": "TypeScript"}
@@ -12,6 +14,11 @@ LANGUAGE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry.yml" 
 SUITE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry-suite.yml" for language in LANGUAGES}
 LONG_RUNNING_WORKFLOWS = {
     language: WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml" for language in LANGUAGES
+}
+ALL_OTEL_WORKFLOWS = {
+    *LANGUAGE_WORKFLOWS.values(),
+    *SUITE_WORKFLOWS.values(),
+    *LONG_RUNNING_WORKFLOWS.values(),
 }
 SUPPORTED_VIEWS = {
     "java": ("invocation", "execution"),
@@ -56,6 +63,22 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
         assert f"name: {language}-otel-s3-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
         assert f"dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}-" in workflow
 
+    python_workflow = SUITE_WORKFLOWS["python"].read_text(encoding="utf-8")
+    assert f"TEST_NAME: python-datadog-{VIEW_SUFFIX}" in python_workflow
+    assert f"TEST_NAME: python-dash0-{VIEW_SUFFIX}" in python_workflow
+
+
+def test_otel_stack_names_are_stable() -> None:
+    for path in {*SUITE_WORKFLOWS.values(), *LONG_RUNNING_WORKFLOWS.values()}:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        environments = [workflow.get("env", {})]
+        environments.extend(job.get("env", {}) for job in workflow["jobs"].values())
+        for environment in environments:
+            for variable in ("TEST_NAME", "TEST_STACK_NAME"):
+                value = str(environment.get(variable, ""))
+                assert "github.run_" not in value.lower(), (path, variable)
+                assert "GITHUB_RUN_" not in value, (path, variable)
+
 
 def test_shared_view_templates_receive_the_selected_suite() -> None:
     for language in LANGUAGES:
@@ -94,6 +117,26 @@ def test_long_running_workflows_are_reusable_only() -> None:
         assert "  push:" not in workflow
         assert "  schedule:" not in workflow
         assert "  workflow_dispatch:" not in workflow
+
+
+def test_otel_workflows_do_not_delete_completed_stacks() -> None:
+    allowed_recovery_steps = {
+        "Clean up failed launch handoff",
+        "Delete rolled-back test stack",
+        "Delete rolled-back test stacks",
+    }
+
+    for path in ALL_OTEL_WORKFLOWS:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                command = step.get("run", "")
+                if "hatch run validate" in command:
+                    assert "--no-cleanup" in command, path
+                if "aws_durable_execution_conformance_tests_otel.long_running check" in command:
+                    assert "--no-cleanup" in command, path
+                if "aws cloudformation delete-stack" in command:
+                    assert step["name"] in allowed_recovery_steps, (path, step["name"])
 
 
 def test_view_grouped_workflows_were_removed() -> None:

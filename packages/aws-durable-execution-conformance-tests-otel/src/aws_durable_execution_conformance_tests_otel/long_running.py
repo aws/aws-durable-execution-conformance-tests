@@ -759,6 +759,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=["xray"],
         default="xray",
     )
+    check_parser.add_argument(
+        "--cleanup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete the stack after terminal validation (pass --no-cleanup to retain it).",
+    )
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--template", required=True)
@@ -810,7 +816,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.phase == "launch":
             return launch(args)
         if args.phase == "check":
-            return check(args)
+            return check(args, delete_terminal_stack=args.cleanup)
         if args.check_timeout <= 0 or args.check_interval <= 0:
             raise ValueError("check timeout and interval must be positive")
         return run_to_completion(args)

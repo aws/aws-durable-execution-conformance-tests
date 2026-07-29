@@ -270,7 +270,8 @@ jobs:
             --result-file "$RESULT_FILE" \
             --history-dir "$HISTORY_DIR" \
             --report-file "$REPORT_FILE" \
-            --otel-backend xray
+            --otel-backend xray \
+            --no-cleanup
           exit_code=$?
           set -e
           if [ ! -f "$RESULT_FILE" ]; then

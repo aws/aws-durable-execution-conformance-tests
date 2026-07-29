@@ -420,6 +420,41 @@ def _save_short_run_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def test_deferred_check_can_retain_a_terminal_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_options: list[bool] = []
+
+    def fake_check(
+        _args: argparse.Namespace,
+        *,
+        delete_terminal_stack: bool = True,
+    ) -> int:
+        cleanup_options.append(delete_terminal_stack)
+        return 0
+
+    monkeypatch.setattr(long_running, "check", fake_check)
+
+    assert (
+        long_running.main(
+            [
+                "check",
+                "--state-file",
+                "state.json",
+                "--result-file",
+                "result.json",
+                "--history-dir",
+                "history",
+                "--report-file",
+                "report",
+                "--no-cleanup",
+            ]
+        )
+        == 0
+    )
+    assert cleanup_options == [False]
+
+
 def test_short_run_polls_again_after_sending_the_due_callback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

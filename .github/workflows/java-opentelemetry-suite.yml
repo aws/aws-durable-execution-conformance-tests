@@ -521,13 +521,9 @@ jobs:
             ${{ runner.temp }}/java-otel-s3-report.xml
           if-no-files-found: ignore
 
-      - name: Delete test resources
+      - name: Delete collector resources
         if: always()
         run: |
-          if aws cloudformation describe-stacks --stack-name "$TEST_STACK_NAME" > /dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
-            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME" || true
-          fi
           if [ -n "${OTEL_S3_BUCKET:-}" ]; then
             aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive || true
             aws s3api delete-bucket --bucket "$OTEL_S3_BUCKET" || true
