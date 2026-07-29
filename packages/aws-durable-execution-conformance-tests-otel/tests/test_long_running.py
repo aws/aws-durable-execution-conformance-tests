@@ -621,6 +621,9 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     )
 
     assert "long_delay_seconds(event)" in (python_source / "otel_long_running_1_wait.py").read_text(encoding="utf-8")
+    python_retry_source = (python_source / "otel_long_running_2_retry.py").read_text(encoding="utf-8")
+    assert "long_delay_seconds(event)" in python_retry_source
+    assert "jitter_strategy=JitterStrategy.NONE" in python_retry_source
     assert "long_delay_seconds(event)" in (python_source / "otel_long_running_4_chained_invoke.py").read_text(
         encoding="utf-8"
     )
