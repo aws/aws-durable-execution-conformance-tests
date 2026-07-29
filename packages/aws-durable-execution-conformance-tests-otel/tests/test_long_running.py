@@ -636,4 +636,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
         f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
     )
-    assert f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}" in workflow
+    assert workflow_config["jobs"]["run"]["env"]["TEST_NAME"] == (
+        f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}"
+    )
+    assert "github.run_number" not in workflow
+    assert "github.run_attempt" not in workflow
