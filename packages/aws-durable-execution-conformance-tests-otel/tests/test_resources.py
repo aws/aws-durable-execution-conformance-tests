@@ -314,7 +314,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     expected["status"]
                     == {
                         "FAILED": "ERROR",
-                        "PENDING": "UNSET",
+                        "PENDING": "OK",
                         "RETRY": "UNSET",
                         "SUCCEEDED": "OK",
                     }[expected_attributes["durable.invocation.status"]]
@@ -412,7 +412,15 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_invocation_links(
                 "attributes": expected_attributes,
             }
             expected = invocation["expect"]
-            assert expected["status"] == ("ERROR" if invocation_status == "FAILED" else "UNSET")
+            assert (
+                expected["status"]
+                == {
+                    "FAILED": "ERROR",
+                    "PENDING": "OK",
+                    "RETRY": "UNSET",
+                    "SUCCEEDED": "UNSET",
+                }[invocation_status]
+            )
             assert expected["links"] == []
             assert expected["kind"] == "INTERNAL"
             assert expected["service_name"] == "invocation"
