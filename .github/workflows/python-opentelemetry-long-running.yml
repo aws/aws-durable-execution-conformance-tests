@@ -60,7 +60,7 @@ jobs:
     env:
       OTEL_VIEW: ${{ inputs.view }}
       STATE_ARTIFACT: python-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
-      TEST_NAME: p-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}
+      TEST_NAME: p-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
     steps:
       - name: Find active run state
         if: env.PHASE != 'short'

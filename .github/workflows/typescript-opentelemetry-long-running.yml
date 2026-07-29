@@ -55,7 +55,7 @@ jobs:
     env:
       OTEL_VIEW: ${{ inputs.view }}
       STATE_ARTIFACT: typescript-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
-      TEST_NAME: t-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}
+      TEST_NAME: t-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
     steps:
       - name: Find active run state
         if: env.PHASE != 'short'
