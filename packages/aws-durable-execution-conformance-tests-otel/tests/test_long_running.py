@@ -1091,7 +1091,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
 
     assert "  pull_request:" in entry_workflow
     assert "  push:" in entry_workflow
-    assert entry_workflow.count("    branches: [main]") == 2
+    assert entry_workflow.count("    branches: [main]") == 1
     assert "  schedule:" in entry_workflow
     assert "  workflow_dispatch:" in entry_workflow
     assert 'cron: "0 7 * * *"' in entry_workflow
