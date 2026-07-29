@@ -1,34 +1,40 @@
 ---
 # 10.17: Faulty plugin does not affect a healthy plugin
-description: A plugin that throws in every hook never blocks another plugin's hooks or the execution
+description: A plugin throwing from invocation, operation, and attempt hooks never blocks a healthy plugin
 handler: |
   A handler with a single step that returns a greeting string, configured with
   TWO instrumentation plugins registered together, in order: first a faulty
-  plugin whose EVERY hook logs a line and then throws an error, then a healthy
-  plugin that logs normally. Each faulty-plugin hook logs a JSON object
+  plugin, then a healthy plugin. For every invocation, operation, and attempt
+  hook exercised by this handler, the faulty plugin logs a JSON object
   `{"plugin": "CONFPLUGIN-FAULTY", "hook": "<hook name>"}` to plain stdout
-  before throwing, with hook names invocation-start and invocation-end. The
-  healthy plugin logs
+  and then throws an error. The exercised faulty hooks are invocation-start,
+  operation-start, attempt-start, attempt-end, operation-end, and
+  invocation-end.
+  The healthy plugin logs the equivalent lifecycle records normally:
   `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "invocation-start", "first": <is_first_invocation>}`,
-  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "invocation-end", "status": "<status enum token>"}`, and,
-  filtering to step-type operations,
-  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "operation-start", "op": "<operation_id>"}` and
-  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`.
-  The SDK must isolate each plugin: the faulty plugin's exceptions are swallowed
-  and the healthy plugin still receives every hook. Hooks across multiple
-  plugins may be dispatched concurrently, so no cross-plugin ordering is
-  asserted.
+  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "operation-start", "op": "<operation_id>"}`,
+  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "attempt-start", "op": "<operation_id>"}`,
+  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "attempt-end", "op": "<operation_id>", "outcome": "<SUCCEEDED|FAILED>"}`,
+  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`, and
+  `{"plugin": "CONFPLUGIN-HEALTHY", "hook": "invocation-end", "status": "<status enum token>"}`.
+  Operation and attempt records are filtered to step-type operations. The SDK
+  must isolate plugins at every exercised hook boundary: each faulty hook's
+  exception is swallowed, the healthy plugin still receives its corresponding
+  hook, and the execution still succeeds. Hooks across multiple plugins may be
+  dispatched concurrently, so no cross-plugin ordering is asserted.
   Every emitted record also carries a `durableExecutionArn` field — the
   execution ARN received via the invocation-start hook's info parameter
   (captured by the plugin and stamped on subsequent records) — so
   CloudWatch's execution-scoped log retrieval locates plugin records.
 invocations: |
-  - Handler invokes `context.step(greet(event))`, step succeeds on first
-    attempt, execution succeeds in a single invocation. The faulty plugin logs
-    and throws from both invocation hooks; the SDK swallows its exceptions. The
-    healthy plugin receives invocation-start, operation-start, operation-end,
-    and invocation-end exactly once each, and the execution result and history
-    are identical to running without the faulty plugin.
+  - Handler invokes `context.step(greet(event))`, step succeeds on its first
+    attempt, and execution succeeds in one invocation. At each of the six
+    exercised lifecycle boundaries, the faulty plugin logs and throws; the SDK
+    swallows that plugin's exception and continues dispatching. The healthy
+    plugin receives invocation-start, operation-start, attempt-start,
+    attempt-end, operation-end, and invocation-end exactly once each, and the
+    execution result and history are identical to running without the faulty
+    plugin.
 Variables:
   INPUT_1: ${GEN_STR:8}
 Input: ${INPUT_1}
@@ -54,16 +60,32 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # Faulty plugin ran (each hook logged before throwing)
+  # Every faulty hook ran and threw after logging
   - match:
       plugin: CONFPLUGIN-FAULTY
       hook: invocation-start
     count: 1
   - match:
       plugin: CONFPLUGIN-FAULTY
+      hook: operation-start
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-FAULTY
+      hook: attempt-start
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-FAULTY
+      hook: attempt-end
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-FAULTY
+      hook: operation-end
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-FAULTY
       hook: invocation-end
     count: 1
-  # Healthy plugin received every hook exactly once despite the faulty peer
+  # The healthy plugin received every corresponding hook exactly once
   - match:
       plugin: CONFPLUGIN-HEALTHY
       hook: invocation-start
@@ -73,6 +95,17 @@ ExpectedLogs:
       plugin: CONFPLUGIN-HEALTHY
       hook: operation-start
       op: ${ID1}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-HEALTHY
+      hook: attempt-start
+      op: ${ID1}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN-HEALTHY
+      hook: attempt-end
+      op: ${ID1}
+      outcome: SUCCEEDED
     count: 1
   - match:
       plugin: CONFPLUGIN-HEALTHY

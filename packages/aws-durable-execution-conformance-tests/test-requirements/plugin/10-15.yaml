@@ -12,7 +12,9 @@ handler: |
   `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`.
   Attempt hooks run on the same thread as the user function, so their relative
   order is deterministic; operation-end may be dispatched asynchronously, so its
-  ordering is not asserted.
+  ordering relative to the attempt hooks within an invocation is not asserted —
+  but it must be emitted after attempt 2 has started, tying the terminal FAILED
+  report to the exhausted attempt rather than the first retryable failure.
   Every emitted record also carries a `durableExecutionArn` field — the
   execution ARN received via the invocation-start hook's info parameter
   (captured by the plugin and stamped on subsequent records) — so
@@ -134,3 +136,8 @@ ExpectedLogs:
       op: ${ID1}
       status: FAILED
     count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        n: 2
+        op: ${ID1}

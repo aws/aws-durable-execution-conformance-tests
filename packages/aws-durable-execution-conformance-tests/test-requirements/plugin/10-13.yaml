@@ -21,7 +21,9 @@ invocations: |
   - Handler runs step A (succeeds, terminal) then step B with a retry strategy;
     step B throws, SDK checkpoints StepFailed with RetryDetails
     (CurrentAttempt=1), invocation completes, execution suspends. The plugin saw
-    `operation-start replay=false` for both steps.
+    `operation-start replay=false` for both steps. Step B's retryable attempt-1
+    failure is NOT terminal, so the plugin's operation-end hook must never
+    report FAILED for step B.
   - Replay 1: Re-invoked after the retry delay. Step A is terminal, so its
     operation-start MUST NOT fire again. Step B is non-terminal (pending retry),
     so the plugin observes it during replay with `replay=true` (it may fire more
@@ -126,3 +128,11 @@ ExpectedLogs:
       op: ${ID2}
       status: SUCCEEDED
     count: 1
+  # Step B's retryable attempt-1 failure is non-terminal: operation-end must
+  # never report FAILED for it
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID2}
+      status: FAILED
+    count: 0
