@@ -594,10 +594,7 @@ def test_python_long_running_handler_names_match_requirement_numbers() -> None:
     with template_path.open(encoding="utf-8") as stream:
         resources = yaml.load(stream, Loader=_CfnSafeLoader)["Resources"]
 
-    assert {
-        logical_id: resource["Properties"]["Handler"]
-        for logical_id, resource in resources.items()
-    } == {
+    assert {logical_id: resource["Properties"]["Handler"] for logical_id, resource in resources.items()} == {
         "OtelLongRunning1Wait": "otel_long_running_1_wait.handler",
         "OtelLongRunning2Retry": "otel_long_running_2_retry.handler",
         "OtelLongRunning3Callback": "otel_long_running_3_callback.handler",
@@ -624,9 +621,9 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     )
 
     assert "long_delay_seconds(event)" in (python_source / "otel_long_running_1_wait.py").read_text(encoding="utf-8")
-    assert "long_delay_seconds(event)" in (
-        python_source / "otel_long_running_4_chained_invoke.py"
-    ).read_text(encoding="utf-8")
+    assert "long_delay_seconds(event)" in (python_source / "otel_long_running_4_chained_invoke.py").read_text(
+        encoding="utf-8"
+    )
     assert "longDelaySeconds(event)" in (typescript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
     assert "longDelaySeconds(event)" in (typescript_source / "otel_23_long_chained_invoke.ts").read_text(
         encoding="utf-8"
