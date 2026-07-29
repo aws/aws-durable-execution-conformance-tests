@@ -1,0 +1,75 @@
+---
+# 10.16: Plugin invocation-end on suspension
+description: Invocation-end fires for every invocation, non-terminal on suspension and terminal at completion
+handler: |
+  A handler with a single 2-second wait, configured with an instrumentation
+  plugin. The plugin logs a JSON object to plain stdout from the invocation
+  hooks:
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>}` and
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "terminal": <boolean>, "status": "<status enum token>"}`,
+  where `terminal` is computed by the plugin as whether the reported invocation
+  status is SUCCEEDED or FAILED. The non-terminal status token naming varies per
+  SDK (e.g. PENDING/RETRYING), so only the `terminal` classification and the
+  terminal record's SUCCEEDED token are asserted.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.wait(2 seconds)`, SDK checkpoints WaitStarted,
+    invocation completes and the execution suspends. The plugin's invocation-end
+    hook fires for this suspending invocation with a NON-terminal status
+    (`terminal=false`).
+  - Replay 1: Re-invoked after the wait completes, SDK checkpoints
+    WaitSucceeded, execution succeeds. The plugin's invocation-end hook fires
+    with the terminal SUCCEEDED status (`terminal=true`), after the
+    non-terminal invocation-end.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Every invocation fired invocation-end: one non-terminal (suspension), one terminal
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      terminal: false
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      terminal: true
+      status: SUCCEEDED
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: invocation-end
+        terminal: false
+  # The execution never reports a terminal FAILED invocation-end
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      status: FAILED
+    count: 0

@@ -1,0 +1,127 @@
+---
+# 10.12: Plugin user-function hooks for parallel branches
+description: Plugin user-function hooks fire per parallel branch with parent linkage
+handler: |
+  A handler that invokes the parallel operation with a fixed name "parallel" and
+  two branches, each returning a constant string ("task-1" for branch 0, "task-2"
+  for branch 1) directly from the branch function (no inner step).
+  Max-concurrency is set to 1 so branches execute sequentially in index order.
+  The handler is configured with an instrumentation plugin that, filtering to
+  branch-type (parallel-branch sub-type) operations, logs a JSON object to plain
+  stdout when a branch's user function starts and ends:
+  `{"plugin": "CONFPLUGIN", "hook": "fn-start", "op": "<operation_id>", "parent": "<parent_id or NONE>"}` and
+  `{"plugin": "CONFPLUGIN", "hook": "fn-end", "op": "<operation_id>", "parent": "<parent_id or NONE>", "outcome": "<SUCCEEDED|FAILED>"}`,
+  where `op` and `parent` are taken from the hook's info parameter (`parent` is
+  the literal string `NONE` when absent). The logged ids must equal the ids and
+  ParentId linkage the execution history checkpointed. These hooks run on the
+  same thread as the branch function, so start-before-end order per branch is
+  deterministic.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes parallel(name="parallel", branches=[branch0, branch1],
+    max-concurrency=1). For each branch the plugin logs fn-start, the branch
+    function returns its constant, and the plugin logs fn-end with outcome
+    SUCCEEDED; both records carry the branch operation id and the parallel
+    parent operation id. The parent parallel operation and both branches are
+    checkpointed as in the standard parallel-basic history. Execution succeeds
+    in a single invocation returning ["task-1", "task-2"].
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [task-1, task-2]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"task-1"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"task-2"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Branch 0: fn-start then fn-end, both linked to the parallel parent
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-start
+      op: ${CTX_B1}
+      parent: ${CTX_P}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-end
+      op: ${CTX_B1}
+      parent: ${CTX_P}
+      outcome: SUCCEEDED
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: fn-start
+        op: ${CTX_B1}
+  # Branch 1: fn-start then fn-end, both linked to the parallel parent
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-start
+      op: ${CTX_B2}
+      parent: ${CTX_P}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-end
+      op: ${CTX_B2}
+      parent: ${CTX_P}
+      outcome: SUCCEEDED
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: fn-start
+        op: ${CTX_B2}
+  # No branch user function ever fails
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-end
+      outcome: FAILED
+    count: 0

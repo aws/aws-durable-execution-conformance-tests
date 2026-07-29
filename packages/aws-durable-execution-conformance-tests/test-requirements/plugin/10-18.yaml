@@ -1,0 +1,68 @@
+---
+# 10.18: Plugin hook work is flushed before the invocation returns
+description: Slow work in a plugin hook completes and its record is emitted before the invocation ends
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin. The plugin, filtering to step-type operations, performs
+  ~1 second of deliberately slow work inside its operation-end hook (using the
+  hook's natural completion contract for the SDK — e.g. an awaited async hook, or
+  a hook running on a dispatch worker the SDK drains before returning) and only
+  THEN logs a JSON object to plain stdout:
+  `{"plugin": "CONFPLUGIN", "hook": "slow-operation-end", "op": "<operation_id>", "status": "<status enum token>"}`.
+  The plugin also logs
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "status": "<status enum token>"}`
+  from its invocation-end hook. The SDK's plugin contract must guarantee the
+  slow hook completes before the Lambda response is returned (the execution
+  environment freezes immediately after), so the slow record MUST be present in
+  the execution's logs. No ordering between the slow record and the
+  invocation-end record is asserted, because hook dispatch threading varies per
+  SDK.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first
+    attempt, execution succeeds in a single invocation. The plugin's
+    operation-end hook performs its ~1s of work and emits the slow record; the
+    SDK does not return the invocation response until the hook has completed,
+    so the record is not lost to the environment freeze.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # The slow hook's record was emitted despite the ~1s delay — proof the SDK
+  # waited for the hook before returning the invocation response
+  - match:
+      plugin: CONFPLUGIN
+      hook: slow-operation-end
+      op: ${ID1}
+      status: SUCCEEDED
+    count: 1
+  # The invocation-end hook also fired with the terminal status
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      status: SUCCEEDED
+    count: 1

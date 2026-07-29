@@ -1,0 +1,91 @@
+---
+# 10.19: Plugin replay flag for a non-terminal wait
+description: A wait still pending during a replay re-fires operation-start with replay=true
+handler: |
+  A handler that invokes the parallel operation with a fixed name "waits" and two
+  branches, each running a single wait directly in the branch context: branch 0
+  waits 2 seconds, branch 1 waits 8 seconds. Max-concurrency is 2 (or
+  unbounded), such that both waits are pending simultaneously.
+  Each branch returns a constant string ("short-done" for branch 0, "long-done"
+  for branch 1) and the handler returns the ordered array of branch results.
+  The handler is configured with an instrumentation plugin that, filtering to
+  wait-type operations, logs a JSON object to plain stdout from the operation
+  lifecycle hooks:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "type": "WAIT", "replay": <is_replayed boolean>}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "type": "WAIT", "status": "<status enum token>"}`,
+  where `replay` is the hook's is-replayed indicator (false for a live first
+  START; true when a previously checkpointed NON-terminal operation is observed
+  during a replayed invocation) and `type` is the operation's type token
+  normalized to upper-case. Operation ids are deliberately not logged: branch
+  event ids are nondeterministic under concurrency, and the wait type + replay
+  flag alone identify the behavior under test.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes parallel(name="waits", branches=[wait2s, wait8s],
+    max-concurrency=2). Both waits checkpoint WaitStarted in the first
+    invocation (the plugin logs `operation-start replay=false` twice), the
+    invocation completes, and the execution suspends.
+  - Replay 1 (~2s): Re-invoked because the 2-second wait completed. The
+    8-second wait is still NON-terminal, so the plugin MUST observe it with
+    `operation-start replay=true` (asserted at-least-once: an SDK may also
+    re-report it on later replays). The 2-second wait is terminal at this
+    point and must not re-fire operation-start.
+  - Replay 2 (~8s): Re-invoked because the 8-second wait completed; both waits
+    are now terminal (the plugin logged `operation-end status=SUCCEEDED` once
+    per wait across the execution), both branches return, and the execution
+    succeeds returning ["short-done", "long-done"].
+  Because branch scheduling under concurrency makes per-branch EventIds
+  nondeterministic, only the deterministic parent ContextStarted event is
+  asserted in the history (the matcher ignores unlisted events); the behavior
+  under test is asserted through the plugin log records.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [short-done, long-done]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+ExpectedLogs:
+  # Both waits start live exactly once each in the first invocation
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      type: WAIT
+      replay: false
+    count: 2
+  # The still-pending 8s wait is observed during the ~2s replay with
+  # replay=true (at least once; later replays may re-report it). This is the
+  # assertion that catches an SDK that skips replay notification for
+  # non-terminal WAIT operations.
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      type: WAIT
+      replay: true
+    min_count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: operation-start
+        type: WAIT
+        replay: false
+  # Each wait reaches its terminal SUCCEEDED end exactly once
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      type: WAIT
+      status: SUCCEEDED
+    count: 2
+  # No wait ever fails
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      type: WAIT
+      status: FAILED
+    count: 0

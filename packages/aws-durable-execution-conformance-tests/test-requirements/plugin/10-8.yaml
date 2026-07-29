@@ -1,0 +1,64 @@
+---
+# 10.8: Plugin operation-change hook
+description: Plugin operation-change hook reports updated operations and the full operation map
+handler: |
+  A handler with a single step that returns a greeting string, configured with an
+  instrumentation plugin. The plugin implements the operation-change hook and, for
+  each step-type operation present in the change's updated-operations delta, logs a
+  JSON object to plain stdout:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "op": "<operation_id>", "status": "<status enum token>", "in_full_map": <boolean>}`,
+  where `op` is the updated operation's id, `status` is its post-change status, and
+  `in_full_map` is whether that operation id is also present in the change info's
+  full operation map (it always must be — the updated set is a subset of the full map).
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(greet(event))`, step succeeds on first attempt,
+    execution succeeds in a single invocation. When the step's terminal SUCCEEDED
+    checkpoint response is merged, the operation-change hook fires with the step in
+    the updated-operations delta and in the full operation map. A STARTED change is
+    not asserted because the START action may be checkpointed in a batch with the
+    terminal status, in which case only the terminal status is reported.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # The step's terminal SUCCEEDED transition is reported exactly once, with the
+  # history-checkpointed operation id, and the updated op is present in the full map
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-change
+      op: ${ID1}
+      status: SUCCEEDED
+      in_full_map: true
+    count: 1
+  # The step never reports a FAILED change
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-change
+      op: ${ID1}
+      status: FAILED
+    count: 0
