@@ -16,6 +16,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      typescript_sdk_ref:
+        description: Resolved commit from the TypeScript SDK main branch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -33,6 +37,8 @@ env:
   TEST_STACK_NAME: conformance-tests-typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TEST_NAME: typescript-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TYPESCRIPT_EXAMPLES: packages/aws-durable-execution-conformance-tests-otel/examples/typescript
+  TYPESCRIPT_SDK_CHECKOUT: .build/aws-durable-execution-sdk-js
+  TYPESCRIPT_SDK_REF: ${{ inputs.typescript_sdk_ref }}
   TYPESCRIPT_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml
 
 jobs:
@@ -44,6 +50,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check out TypeScript SDK main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: aws/aws-durable-execution-sdk-js
+          ref: ${{ env.TYPESCRIPT_SDK_REF }}
+          path: ${{ env.TYPESCRIPT_SDK_CHECKOUT }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -112,6 +125,8 @@ jobs:
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
       - name: Build TypeScript handlers with SDK main
+        env:
+          SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js
         working-directory: ${{ env.TYPESCRIPT_EXAMPLES }}
         run: |
           npm ci
@@ -234,6 +249,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Check out TypeScript SDK main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: aws/aws-durable-execution-sdk-js
+          ref: ${{ env.TYPESCRIPT_SDK_REF }}
+          path: ${{ env.TYPESCRIPT_SDK_CHECKOUT }}
+
       - name: Check out OpenTelemetry Lambda collector
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -292,6 +314,8 @@ jobs:
             packages/aws-durable-execution-conformance-tests-otel/tests/test_typescript_examples.py
 
       - name: Build TypeScript handlers with SDK main
+        env:
+          SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js
         working-directory: ${{ env.TYPESCRIPT_EXAMPLES }}
         run: |
           npm ci

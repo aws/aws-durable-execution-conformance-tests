@@ -18,7 +18,11 @@ from aws_durable_execution_conformance_tests.validate import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
+ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = (
+    EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry-long-running.yml"
+)
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -209,6 +213,30 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
+
+
+def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert entry_workflow.count("git ls-remote") == 1
+    assert "refs/heads/main" in entry_workflow
+    assert 'echo "ref=$TYPESCRIPT_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
+    assert entry_workflow.count("needs: resolve-sdk-main") == 4
+    assert entry_workflow.count("typescript_sdk_ref: ${{ needs.resolve-sdk-main.outputs.typescript_sdk_ref }}") == 4
+    for workflow in (suite_workflow, long_running_workflow):
+        assert "TYPESCRIPT_SDK_REF: ${{ inputs.typescript_sdk_ref }}" in workflow
+        assert "      typescript_sdk_ref:" in workflow
+        assert "        required: true" in workflow
+    assert suite_workflow.count("repository: aws/aws-durable-execution-sdk-js") == 2
+    assert suite_workflow.count("ref: ${{ env.TYPESCRIPT_SDK_REF }}") == 2
+    assert suite_workflow.count("SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js") == 2
+    assert long_running_workflow.count("repository: aws/aws-durable-execution-sdk-js") == 1
+    assert long_running_workflow.count("ref: ${{ env.TYPESCRIPT_SDK_REF }}") == 1
+    assert (
+        long_running_workflow.count("SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js") == 1
+    )
 
 
 def test_typescript_s3_job_builds_and_queries_the_collector() -> None:

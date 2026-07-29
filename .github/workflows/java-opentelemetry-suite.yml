@@ -16,6 +16,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      java_sdk_ref:
+        description: Resolved commit from the Java SDK main branch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +32,7 @@ concurrency:
 env:
   AWS_REGION: ${{ inputs.aws_region }}
   JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
+  JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}
   JAVA_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_DEPLOYMENT_SERVICE_NAME: invocation
@@ -52,7 +57,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: aws/aws-durable-execution-sdk-java
-          ref: main
+          ref: ${{ env.JAVA_SDK_REF }}
           path: ${{ env.JAVA_SDK_CHECKOUT }}
 
       - name: Set up Java
@@ -244,7 +249,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: aws/aws-durable-execution-sdk-java
-          ref: main
+          ref: ${{ env.JAVA_SDK_REF }}
           path: ${{ env.JAVA_SDK_CHECKOUT }}
 
       - name: Set up Java

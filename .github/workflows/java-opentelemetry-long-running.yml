@@ -22,6 +22,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      java_sdk_ref:
+        description: Resolved commit from the Java SDK main branch
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -39,6 +43,7 @@ env:
   STATE_FILE: /tmp/java-otel-long-running-state.json
   RESULT_FILE: /tmp/java-otel-long-running-result.json
   HISTORY_DIR: /tmp/java-otel-long-running-history
+  JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}
   REPORT_FILE: /tmp/java-otel-long-running-report
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template-long-running.yaml
   JAVA_SDK_CHECKOUT: .build/aws-durable-execution-sdk-java
@@ -117,7 +122,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: aws/aws-durable-execution-sdk-java
-          ref: main
+          ref: ${{ env.JAVA_SDK_REF }}
           path: ${{ env.JAVA_SDK_CHECKOUT }}
 
       - name: Set up Java
