@@ -51,15 +51,11 @@ deployment configuration.
 | `otel-execution-12` | `otel_12_child_context_failure.handler` | Verifies a failed child context under a failed workflow. |
 | `otel-execution-13` | `otel_13_parallel_failure.handler` | Verifies a failed parallel branch under its operation. |
 | `otel-execution-14` | `otel_14_map_failure.handler` | Verifies a failed map iteration under its operation. |
-| `otel-execution-15` | Not implemented | Requires a terminal plugin hook after a pending invocation times out externally. |
+| `otel-execution-15` | `otel_15_wait_interrupted.handler` | Verifies an incomplete workflow, interrupted wait, and pending invocation telemetry. |
 | `otel-execution-16` | `otel_16_wait_for_condition_failure.handler` | Verifies a failed condition operation and attempt. |
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
-| `otel-execution-19` | Not implemented | Requires retaining the workflow after the handler invocation ends with `RETRY`. |
-
-Execution cases 15 and 19 remain declared under
-`TestingMetadata.NotImplemented` because the plugin does not receive a terminal
-callback for those service-driven lifecycle transitions.
+| `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies an incomplete workflow and retrying invocation telemetry. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages from the commit in `PYTHON_SDK_REF`. The hosted workflow resolves

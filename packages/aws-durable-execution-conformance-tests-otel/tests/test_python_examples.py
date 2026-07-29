@@ -83,13 +83,8 @@ def test_python_example_template_maps_every_otel_requirement() -> None:
     assert mappings == EXPECTED_MAPPINGS
 
 
-def test_python_example_declares_execution_plugin_lifecycle_gaps() -> None:
-    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {
-        "otel-execution-15": (
-            "ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally"
-        ),
-        "otel-execution-19": "ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY",
-    }
+def test_python_example_declares_no_execution_plugin_lifecycle_gaps() -> None:
+    assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
 def test_python_template_deploys_only_the_selected_otel_view() -> None:

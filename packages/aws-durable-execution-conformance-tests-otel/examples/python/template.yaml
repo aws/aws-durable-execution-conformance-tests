@@ -105,11 +105,6 @@ Resources:
     TestingMetadata:
       TestDescription:
         - otel-invocation-1
-      NotImplemented:
-        - id: otel-execution-15
-          reason: ExecutionOtelPlugin cannot export a terminal workflow after a pending invocation times out externally
-        - id: otel-execution-19
-          reason: ExecutionOtelPlugin discards the workflow after the handler invocation ends with RETRY
     Properties:
       CodeUri: src/
       Handler: otel_1_success.handler
