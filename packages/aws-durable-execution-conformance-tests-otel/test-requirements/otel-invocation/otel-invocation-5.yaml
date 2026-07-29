@@ -25,7 +25,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 4
+  minimum_spans: 5
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:
@@ -35,7 +35,21 @@ TelemetryAssertions:
     - durable.
   span_assertions:
     - select:
-        name: invocation
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -57,7 +71,10 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -67,7 +84,7 @@ TelemetryAssertions:
           durable.operation.status: STARTED
           durable.operation.name: otel-child-context
         parent:
-          name: invocation
+          name: Invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
@@ -79,7 +96,10 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -104,7 +124,10 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

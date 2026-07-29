@@ -30,7 +30,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
-  minimum_spans: 3
+  minimum_spans: 4
   require_execution_correlation: true
   require_all_spans: true
   span_assertion_scope:
@@ -40,7 +40,21 @@ TelemetryAssertions:
     - durable.
   span_assertions:
     - select:
-        name: invocation
+        name: Workflow
+        status: ERROR
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: ERROR
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: FAILED
+    - select:
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -61,7 +75,10 @@ TelemetryAssertions:
       expect:
         status: OK
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -71,7 +88,7 @@ TelemetryAssertions:
           durable.operation.status: STARTED
           durable.operation.name: otel-failed-parallel
         parent:
-          name: invocation
+          name: Invocation
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
@@ -82,7 +99,10 @@ TelemetryAssertions:
       expect:
         status: ERROR
         service_name: invocation
-        links: []
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

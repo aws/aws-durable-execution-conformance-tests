@@ -25,7 +25,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 8
+  minimum_spans: 9
   minimum_invocations: 4
   require_execution_correlation: true
   allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
@@ -37,7 +37,21 @@ TelemetryAssertions:
         durable.execution.arn: ${TARGET_EXECUTION_ARN}
   span_assertions:
     - select:
-        name: invocation
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: invocation
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
@@ -53,13 +67,13 @@ TelemetryAssertions:
           durable.invocation.first: true
           durable.invocation.status: PENDING
         before:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
             durable.invocation.status: SUCCEEDED
     - select:
-        name: invocation
+        name: Invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
@@ -75,13 +89,13 @@ TelemetryAssertions:
           durable.invocation.first: true
           durable.invocation.status: PENDING
         before:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: false
             durable.invocation.status: SUCCEEDED
     - select:
-        name: invocation
+        name: Invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: false
@@ -97,19 +111,19 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
         after:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: true
             durable.invocation.status: PENDING
         before:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
             durable.invocation.status: SUCCEEDED
     - select:
-        name: invocation
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: false
@@ -125,7 +139,7 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
         after:
-          name: invocation
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: false
@@ -141,10 +155,15 @@ TelemetryAssertions:
         service_name: invocation
         links:
           $any_of:
-            - []
+            - - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
             - - name: otel-long-invoke
                 attributes:
                   durable.operation.id: ${INVOKE1}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -153,7 +172,7 @@ TelemetryAssertions:
           durable.operation.name: otel-long-invoke
         parent:
           $allow_outside: true
-          name: invocation
+          name: Invocation
           kind:
             $any_of: [INTERNAL, SERVER]
           attributes:
@@ -169,10 +188,15 @@ TelemetryAssertions:
         service_name: invocation
         links:
           $any_of:
-            - []
+            - - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
             - - name: otel-long-invoke-target-wait
                 attributes:
                   durable.operation.id: '*'
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
@@ -181,7 +205,7 @@ TelemetryAssertions:
           durable.operation.name: otel-long-invoke-target-wait
         parent:
           $allow_outside: true
-          name: invocation
+          name: Invocation
           kind:
             $any_of: [INTERNAL, SERVER]
           attributes:
