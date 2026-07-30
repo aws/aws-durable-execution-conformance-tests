@@ -40,6 +40,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
     PollingBackend,
     PollingPolicy,
+    RetryableBackendError,
 )
 
 
@@ -143,6 +144,47 @@ def test_json_http_client_bounds_http_error_body(
     assert "HTTP 500 Internal Server Error" in message
     assert "[truncated]" in message
     assert len(message) < 2200
+
+
+@pytest.mark.parametrize(
+    ("response_headers", "expected_delay"),
+    [
+        ({"Retry-After": "3.5", "X-RateLimit-Reset": "9"}, 3.5),
+        ({"Retry-After": "invalid", "X-RateLimit-Reset": "7"}, 7.0),
+    ],
+)
+def test_json_http_client_marks_rate_limits_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    response_headers: Mapping[str, str],
+    expected_delay: float,
+) -> None:
+    def fail_request(
+        _request: urllib.request.Request,
+        *,
+        timeout: int,
+    ) -> None:
+        del timeout
+        headers = Message()
+        for name, value in response_headers.items():
+            headers[name] = value
+        raise urllib.error.HTTPError(
+            "https://api.datadoghq.com/api/v2/spans/events/search",
+            429,
+            "Too Many Requests",
+            headers,
+            io.BytesIO(),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_request)
+
+    with pytest.raises(RetryableBackendError) as raised:
+        JsonHttpClient().request_json(
+            "POST",
+            "https://api.datadoghq.com/api/v2/spans/events/search",
+        )
+
+    assert raised.value.retry_after_seconds == expected_delay
+    assert "HTTP 429 Too Many Requests" in str(raised.value)
 
 
 @pytest.mark.parametrize(
