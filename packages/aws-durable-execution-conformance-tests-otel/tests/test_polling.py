@@ -126,6 +126,24 @@ def test_polling_uses_policy_delay_when_retryable_error_has_no_delay() -> None:
     assert backend.sleeps == [2]
 
 
+def test_polling_does_not_retry_before_policy_interval() -> None:
+    expected = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend(
+        [
+            RetryableBackendError("rate limited", retry_after_seconds=1),
+            expected,
+        ]
+    )
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=20, interval_seconds=15, max_attempts=2),
+    )
+
+    assert actual is expected
+    assert backend.sleeps == [15]
+
+
 def test_polling_does_not_retry_non_retryable_errors() -> None:
     backend = _Backend([BackendError("authentication failed")])
 

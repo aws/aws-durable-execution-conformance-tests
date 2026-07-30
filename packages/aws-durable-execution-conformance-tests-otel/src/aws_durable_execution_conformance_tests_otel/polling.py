@@ -91,7 +91,7 @@ class PollingBackend(ABC):
             except RetryableBackendError as exc:
                 latest_retryable_error = exc
                 if exc.retry_after_seconds is not None:
-                    delay_seconds = exc.retry_after_seconds
+                    delay_seconds = max(delay_seconds, exc.retry_after_seconds)
             else:
                 latest_retryable_error = None
                 if trace is not None:
