@@ -79,6 +79,20 @@ ADOT layer ARN with `--otel-layer-arn` or the runtime-specific
 `ADOT_<RUNTIME>_LAYER_ARN` environment variable. The hosted integration
 workflow discovers the latest Python layer from the ADOT release.
 
+## Dash0
+
+The `dash0` backend queries Dash0's OTLP/JSON spans API with `POST /api/spans`.
+Pass the regional API base URL through `--otel-backend-endpoint` or
+`DASH0_API_URL`, and set `DASH0_AUTH_TOKEN` to a read-capable token. Set
+`DASH0_DATASET` when traces are stored outside the organization's default
+dataset. The backend first locates a correlated span by service name and
+durable execution ARN, then retrieves every span in that trace with adaptive
+sampling disabled.
+
+The hosted Java, Python, and TypeScript suite workflows run Dash0 beside X-Ray
+using the `us-west-2` Dash0 API and ingress endpoints. They use
+`DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
+
 ## AWS S3 Collector
 
 The `collector` backend reads trace files written by the OpenTelemetry

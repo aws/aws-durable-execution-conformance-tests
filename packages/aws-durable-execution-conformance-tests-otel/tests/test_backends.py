@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping
 from dataclasses import replace
@@ -19,7 +20,10 @@ from aws_durable_execution_conformance_tests_otel.backends._common import (
 from aws_durable_execution_conformance_tests_otel.backends.collector import (
     CollectorBackend,
 )
-from aws_durable_execution_conformance_tests_otel.backends.dash0 import Dash0Backend
+from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
+    Dash0Backend,
+    Dash0BackendFactory,
+)
 from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DatadogBackend,
 )
@@ -33,8 +37,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 
 
 class _Http:
-    def __init__(self, response: Mapping[str, Any]) -> None:
-        self.response = response
+    def __init__(self, *responses: Mapping[str, Any]) -> None:
+        self.responses = list(responses)
         self.calls: list[tuple[str, str, Mapping[str, Any] | None]] = []
 
     def request_json(
@@ -46,8 +50,8 @@ class _Http:
         body: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         del headers
-        self.calls.append((method, url, body))
-        return self.response
+        self.calls.append((method, url, copy.deepcopy(body)))
+        return self.responses.pop(0)
 
 
 def _query() -> TelemetryQuery:
@@ -73,7 +77,7 @@ def _query() -> TelemetryQuery:
             ),
         ),
         (DatadogBackend, frozenset({BackendFeatureDisparity.SPAN_LINKS})),
-        (Dash0Backend, frozenset({BackendFeatureDisparity.SPAN_LINKS})),
+        (Dash0Backend, frozenset()),
         (CollectorBackend, frozenset()),
     ],
 )
@@ -199,20 +203,172 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
 
 
 def test_dash0_queries_trace_api() -> None:
+    trace_payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "conformance"},
+                        }
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "EREREREREREREREREREREQ==",
+                                "spanId": "IiIiIiIiIiI=",
+                                "name": "step",
+                                "startTimeUnixNano": "1767225600000000000",
+                                "endTimeUnixNano": "1767225601000000000",
+                                "attributes": [
+                                    {
+                                        "key": "durable.execution.arn",
+                                        "value": {"stringValue": "arn:test"},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
     http = _Http(
         {
-            "spans": [
+            **trace_payload,
+            "cursors": {"after": "page-2"},
+        },
+        {
+            "resourceSpans": [],
+        },
+        trace_payload,
+    )
+    backend = Dash0Backend(
+        "https://api.dash0.example",
+        "secret",
+        dataset="conformance",
+        http=http,
+        sleep=lambda _seconds: None,
+    )
+    query = _query()
+
+    trace = backend.find_trace(
+        query,
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+    )
+
+    assert trace.trace_id == "1" * 32
+    assert [call[0] for call in http.calls] == ["POST", "POST", "POST"]
+    assert all(call[1] == "https://api.dash0.example/api/spans" for call in http.calls)
+    assert http.calls[0][2] == {
+        "dataset": "conformance",
+        "filter": [
+            {"key": "service.name", "operator": "is", "value": "conformance"},
+            {
+                "key": "durable.execution.arn",
+                "operator": "is",
+                "value": "arn:test",
+            },
+        ],
+        "pagination": {"limit": 100},
+        "sampling": {
+            "mode": "disabled",
+            "timeRange": {
+                "from": query.started_at.isoformat(),
+                "to": query.ended_at.isoformat(),
+            },
+        },
+        "timeRange": {
+            "from": query.started_at.isoformat(),
+            "to": query.ended_at.isoformat(),
+        },
+    }
+    second_body = http.calls[1][2]
+    assert second_body is not None
+    assert second_body["pagination"]["cursor"] == "page-2"
+    third_body = http.calls[2][2]
+    assert third_body is not None
+    assert third_body["filter"] == [
+        {
+            "key": "otel.trace.id",
+            "operator": "is",
+            "value": "1" * 32,
+        }
+    ]
+
+
+def test_dash0_factory_uses_environment_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASH0_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("DASH0_API_URL", "https://api.us-west-2.aws.dash0.com")
+    monkeypatch.setenv("DASH0_DATASET", "conformance")
+
+    backend = Dash0BackendFactory().create({}, region="us-west-2")
+
+    assert isinstance(backend, Dash0Backend)
+    assert backend._endpoint == "https://api.us-west-2.aws.dash0.com"
+    assert backend._dataset == "conformance"
+
+
+def test_dash0_discovers_and_correlates_all_execution_arns() -> None:
+    def trace_payload(
+        trace_id: str,
+        span_id: str,
+        execution_arn: str,
+    ) -> Mapping[str, Any]:
+        return {
+            "resourceSpans": [
                 {
-                    "traceId": "1" * 32,
-                    "spanId": "2" * 16,
-                    "name": "step",
-                    "start_time": "2026-01-01T00:00:00Z",
-                    "end_time": "2026-01-01T00:00:01Z",
-                    "serviceName": "conformance",
-                    "attributes": {"durable.execution.arn": "arn:test"},
+                    "resource": {
+                        "attributes": [
+                            {
+                                "key": "service.name",
+                                "value": {"stringValue": "conformance"},
+                            }
+                        ]
+                    },
+                    "scopeSpans": [
+                        {
+                            "spans": [
+                                {
+                                    "traceId": trace_id,
+                                    "spanId": span_id,
+                                    "name": "Invocation",
+                                    "startTimeUnixNano": "1767225600000000000",
+                                    "endTimeUnixNano": "1767225601000000000",
+                                    "attributes": [
+                                        {
+                                            "key": "durable.execution.arn",
+                                            "value": {"stringValue": execution_arn},
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
                 }
             ]
         }
+
+    source_payload = trace_payload(
+        "EREREREREREREREREREREQ==",
+        "IiIiIiIiIiI=",
+        "arn:test",
+    )
+    target_payload = trace_payload(
+        "MzMzMzMzMzMzMzMzMzMzMw==",
+        "REREREREREQ=",
+        "arn:target",
+    )
+    http = _Http(
+        source_payload,
+        target_payload,
+        source_payload,
+        target_payload,
     )
     backend = Dash0Backend(
         "https://api.dash0.example",
@@ -230,8 +386,18 @@ def test_dash0_queries_trace_api() -> None:
     )
 
     assert trace.trace_id == "1" * 32
-    assert "durable.execution.arn=arn%3Atest" in http.calls[0][1]
-    assert "durable.execution.arn=arn%3Atarget" in http.calls[1][1]
+    assert [call[2]["filter"][1]["value"] for call in http.calls[:2] if call[2]] == [
+        "arn:test",
+        "arn:target",
+    ]
+    assert [call[2]["filter"][0]["value"] for call in http.calls[2:] if call[2]] == [
+        "1" * 32,
+        "3" * 32,
+    ]
+    assert {span.attributes["durable.execution.arn"] for span in trace.spans} == {
+        "arn:test",
+        "arn:target",
+    }
 
 
 def test_xray_queries_summaries_then_batch_get() -> None:

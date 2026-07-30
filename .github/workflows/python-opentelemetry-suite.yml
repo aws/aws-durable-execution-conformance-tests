@@ -20,10 +20,6 @@ on:
         description: OTLP ingest endpoint for community-layer jobs
         required: false
         type: string
-      dash0_query_endpoint:
-        description: Dash0 trace API endpoint
-        required: false
-        type: string
       python_sdk_ref:
         description: Resolved commit from the Python SDK main branch
         required: true
@@ -242,12 +238,16 @@ jobs:
 
   dash0:
     name: Community layer + Dash0
-    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != '' && inputs.dash0_query_endpoint != ''
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      DASH0_API_URL: https://api.us-west-2.aws.dash0.com
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DASH0_OTLP_HEADERS }}
+      DASH0_OTLP_ENDPOINT: https://ingress.us-west-2.aws.dash0.com
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}
       TEST_NAME: python-dash0-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out repository
@@ -287,14 +287,69 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite "$OTEL_SUITE" \
-            --report console github \
+            --history-dir "$RUNNER_TEMP/python-otel-dash0-history" \
+            --report console json junit github \
+            --report-file "$RUNNER_TEMP/python-otel-dash0-report" \
+            --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
-            --otel-backend dash0 \
-            --otel-endpoint "${{ inputs.otlp_endpoint }}" \
-            --otel-backend-endpoint "${{ inputs.dash0_query_endpoint }}"
+            --otel-endpoint "$DASH0_OTLP_ENDPOINT" \
+            --otel-service-name invocation \
+            --otel-backend dash0
+
+      - name: Show Lambda logs
+        if: failure()
+        run: |
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 20m --format short || true
+            echo "::endgroup::"
+          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 20m --format short || true
+              echo "::endgroup::"
+            done
+          fi
+
+      - name: Show execution history diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$RUNNER_TEMP"/python-otel-dash0-history/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show normalized Dash0 trace diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$RUNNER_TEMP"/python-otel-dash0-history/*-otel.json; do
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-otel-dash0-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/python-otel-dash0-history/
+            ${{ runner.temp }}/python-otel-dash0-report.json
+            ${{ runner.temp }}/python-otel-dash0-report.xml
+          if-no-files-found: ignore
 
   s3_collector:
     name: Community layer + S3 collector
