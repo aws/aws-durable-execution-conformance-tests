@@ -69,6 +69,8 @@ class Span:
 
 @dataclass(frozen=True)
 class Trace:
+    """A primary trace plus spans from execution-correlated ambient traces."""
+
     trace_id: str
     spans: tuple[Span, ...]
     log_trace_ids: tuple[str, ...] = ()
@@ -82,6 +84,7 @@ class TelemetryQuery:
     started_at: datetime
     ended_at: datetime
     trace_id: str | None = None
+    execution_arns: tuple[str, ...] = ()
 
 
 def trace_to_dict(trace: Trace) -> dict[str, Any]:

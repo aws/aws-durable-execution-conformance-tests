@@ -232,7 +232,7 @@ def _parent_expectation_errors(
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
 
-    parents = spans_by_id.get(parent_span_id, [])
+    parents = [parent for parent in spans_by_id.get(parent_span_id, []) if parent[0].trace_id == span.trace_id]
     if not parents:
         return [f"{path}: parent span is not present in the trace"]
 
@@ -282,6 +282,7 @@ def _parent_expectation_errors(
 def _link_expectation_errors(
     expected: Any,
     span: Mapping[str, Any],
+    spans: Sequence[Mapping[str, Any]],
     spans_by_id: Mapping[str, list[Mapping[str, Any]]],
     *,
     path: str,
@@ -298,6 +299,7 @@ def _link_expectation_errors(
             not _link_expectation_errors(
                 alternative,
                 span,
+                spans,
                 spans_by_id,
                 path=path,
                 feature_disparities=feature_disparities,
@@ -325,7 +327,15 @@ def _link_expectation_errors(
         if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
             errors.append(f"{link_path}.count must be a positive integer")
             continue
-        expected_properties = {key: value for key, value in expected_span.items() if key != "count"}
+        expected_occurrence = expected_span.get("$occurrence")
+        if expected_occurrence is not None and (
+            isinstance(expected_occurrence, bool) or not isinstance(expected_occurrence, int) or expected_occurrence < 1
+        ):
+            errors.append(f"{link_path}.$occurrence must be a positive integer")
+            continue
+        expected_properties = {
+            key: value for key, value in expected_span.items() if key not in {"$occurrence", "count"}
+        }
         linked_spans = [
             candidate for candidate in spans_by_id.get(link["span_id"], []) if candidate["trace_id"] == link["trace_id"]
         ]
@@ -344,6 +354,28 @@ def _link_expectation_errors(
         ]
         matching_count = sum(not candidate_errors for candidate_errors in expectation_errors)
         if matching_count == expected_count:
+            if expected_occurrence is not None:
+                candidates = {
+                    (candidate["trace_id"], candidate["span_id"]): candidate
+                    for candidate in spans
+                    if _matches_span(expected_properties, candidate, feature_disparities)
+                }
+                ordered_candidates = sorted(
+                    candidates,
+                    key=lambda key: (
+                        candidates[key]["start_time"],
+                        candidates[key]["end_time"],
+                        key[0],
+                        key[1],
+                    ),
+                )
+                linked_key = (link["trace_id"], link["span_id"])
+                actual_occurrence = ordered_candidates.index(linked_key) + 1
+                if actual_occurrence != expected_occurrence:
+                    errors.append(
+                        f"{link_path}.$occurrence: linked span is occurrence "
+                        f"{actual_occurrence}, expected {expected_occurrence}"
+                    )
             continue
         if len(linked_spans) == 1 and expected_count == 1:
             errors.extend(expectation_errors[0])
@@ -533,6 +565,7 @@ def _span_assertion_errors(
                     _link_expectation_errors(
                         expected["links"],
                         matched_span,
+                        spans,
                         spans_by_id,
                         path=f"{expectation_path}.links",
                         feature_disparities=feature_disparities,
@@ -589,10 +622,6 @@ def validate_trace(
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")
-
-    inconsistent = [span.span_id for span in trace.spans if span.trace_id != trace.trace_id]
-    if inconsistent:
-        errors.append("Canonical trace contains spans with a different trace id: " + ", ".join(inconsistent))
 
     for span in trace.spans:
         if span.start_time > span.end_time:
