@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -16,7 +17,10 @@ from aws_durable_execution_conformance_tests_otel.model import (
     Trace,
     normalize_id,
 )
-from aws_durable_execution_conformance_tests_otel.polling import BackendError
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendError,
+    RetryableBackendError,
+)
 from aws_durable_execution_conformance_tests_otel.redaction import environment_secrets, redact
 
 _HTTP_ERROR_BODY_LIMIT = 2048
@@ -41,6 +45,22 @@ def _http_error_body(
     else:
         safe = json.dumps(redact(parsed, secrets=secrets), separators=(",", ":"))
     return f"{safe}{' [truncated]' if truncated else ''}"
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
+    if error.headers is None:
+        return None
+    for header in ("Retry-After", "X-RateLimit-Reset"):
+        value = error.headers.get(header)
+        if value is None:
+            continue
+        try:
+            seconds = float(value)
+        except ValueError:
+            continue
+        if seconds >= 0 and math.isfinite(seconds):
+            return seconds
+    return None
 
 
 class HttpClient(Protocol):
@@ -88,7 +108,13 @@ class JsonHttpClient:
             detail = f"HTTP {exc.code} {safe_reason}".rstrip()
             if response_body is not None:
                 detail = f"{detail}; response body={response_body!r}"
-            raise BackendError(f"Telemetry backend request to {safe_url!r} failed: {detail}") from exc
+            message = f"Telemetry backend request to {safe_url!r} failed: {detail}"
+            if exc.code == 429:
+                raise RetryableBackendError(
+                    message,
+                    retry_after_seconds=_retry_after_seconds(exc),
+                ) from exc
+            raise BackendError(message) from exc
         except (json.JSONDecodeError, urllib.error.URLError, TimeoutError) as exc:
             safe_url = redact(url, secrets=secrets)
             raise BackendError(f"Telemetry backend request to {safe_url!r} failed: {type(exc).__name__}") from exc
