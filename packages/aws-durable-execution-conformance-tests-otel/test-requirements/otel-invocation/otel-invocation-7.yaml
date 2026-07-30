@@ -92,7 +92,7 @@ TelemetryAssertions:
           durable.operation.id: ${MAP1}
           durable.operation.type: CONTEXT
           durable.operation.subtype: Map
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-map
         parent:
           name: Invocation
@@ -116,7 +116,7 @@ TelemetryAssertions:
           durable.operation.id: ${ITERATION1}
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-map-iteration-0
         parent:
           name: otel-map
@@ -170,7 +170,6 @@ TelemetryAssertions:
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-map-step-0
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
@@ -198,7 +197,7 @@ TelemetryAssertions:
           durable.operation.id: ${ITERATION2}
           durable.operation.type: CONTEXT
           durable.operation.subtype: MapIteration
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-map-iteration-1
         parent:
           name: otel-map
@@ -252,7 +251,6 @@ TelemetryAssertions:
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-map-step-1
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED

@@ -73,7 +73,7 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_CONTEXT}
           durable.operation.type: CONTEXT
           durable.operation.subtype: RunInChildContext
-          durable.operation.status: STARTED
+          durable.operation.status: FAILED
           durable.operation.name: otel-failed-child-context
         parent:
           name: Invocation
