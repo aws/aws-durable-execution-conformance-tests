@@ -118,7 +118,8 @@ resolves the linked span within the trace and applies a partial span assertion,
 using the same mechanism as `expect.parent`. When duplicate exports share the
 linked trace and span IDs, add `count` to the link item to require an exact
 positive number of candidates matching its other properties; the default is
-`1`. The
+`1`. Add `$occurrence` to require the link to target the 1-based chronological
+occurrence among spans matching the item's other properties. The
 `$any_of` matcher accepts a non-empty sequence of alternative expected values.
 Use it when repeated spans intentionally have one of a small set of shapes. The
 optional `expect.parent` mapping resolves the selected span's `parent_span_id`

@@ -278,6 +278,105 @@ def test_validates_parentage_and_links_across_correlated_traces() -> None:
     assert errors == []
 
 
+def test_link_occurrence_identifies_the_chronological_invocation() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    first_invocation = replace(
+        root,
+        trace_id="8" * 32,
+        span_id="6" * 16,
+        name="Invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+        },
+    )
+    second_invocation = replace(
+        first_invocation,
+        trace_id="9" * 32,
+        span_id="7" * 16,
+        start_time=first_invocation.start_time + timedelta(seconds=20),
+        end_time=first_invocation.end_time + timedelta(seconds=20),
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": False,
+        },
+    )
+    target_invocation = replace(
+        first_invocation,
+        trace_id="a" * 32,
+        span_id="8" * 16,
+        start_time=first_invocation.start_time + timedelta(seconds=10),
+        end_time=first_invocation.end_time + timedelta(seconds=10),
+        attributes={
+            "durable.execution.arn": "arn:target",
+            "durable.invocation.first": True,
+        },
+    )
+    operation = replace(
+        child,
+        start_time=second_invocation.start_time + timedelta(seconds=2),
+        end_time=second_invocation.start_time + timedelta(seconds=3),
+        links=(SpanLink(trace_id=second_invocation.trace_id, span_id=second_invocation.span_id),),
+    )
+    correlated_trace = replace(
+        trace,
+        spans=(operation, second_invocation, target_invocation, first_invocation),
+    )
+    link_expectation = {
+        "name": "Invocation",
+        "attributes": {"durable.execution.arn": "arn:test"},
+    }
+
+    assert (
+        validate_trace(
+            correlated_trace,
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "inside": {
+                            "$linked": True,
+                            "name": "Invocation",
+                        },
+                        "links": [
+                            {
+                                **link_expectation,
+                                "$occurrence": 2,
+                            }
+                        ],
+                    },
+                },
+                "allowed_execution_arns": ["arn:test", "arn:target"],
+            },
+            _query(),
+        )
+        == []
+    )
+    assert validate_trace(
+        correlated_trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "inside": {
+                        "$linked": True,
+                        "name": "Invocation",
+                    },
+                    "links": [
+                        {
+                            **link_expectation,
+                            "$occurrence": 1,
+                        }
+                    ],
+                },
+            },
+            "allowed_execution_arns": ["arn:test", "arn:target"],
+        },
+        _query(),
+    ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
+
+
 def test_span_link_disparity_skips_linked_temporal_relations() -> None:
     trace = _trace()
     root, child = trace.spans

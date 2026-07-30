@@ -70,7 +70,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: Invocation
+          - $occurrence: 1
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -92,7 +95,10 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: Invocation
+          - $occurrence: 1
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

@@ -59,6 +59,22 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
 
 def test_long_running_catalog_uses_configurable_delays() -> None:
     requirements = _requirements("otel-long-running")
+    second_invocation_descendants = {
+        1: {
+            "otel-after-long-wait",
+            "otel-after-long-wait attempt 1",
+            "otel-long-wait",
+        },
+        2: {
+            "otel-long-retry",
+            "otel-long-retry attempt 2",
+        },
+        3: {
+            "${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}",
+            "otel-long-callback",
+        },
+        4: {"otel-long-invoke"},
+    }
 
     for case_number in range(1, 5):
         requirement = load_yaml_file(requirements[f"otel-long-running-{case_number}"])
@@ -98,12 +114,25 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             if assertion["select"]["name"] in {"Workflow", "Invocation"}:
                 assert assertion["expect"]["links"] == []
                 continue
-            assert assertion["expect"]["links"] == [{"name": "Invocation"}]
-            if inside := assertion["expect"].get("inside"):
-                assert inside == {
+            assert assertion["expect"]["links"] == [
+                {
+                    "$occurrence": (
+                        2 if assertion["select"]["name"] in second_invocation_descendants.get(case_number, set()) else 1
+                    ),
+                    "name": "Invocation",
+                    "attributes": {
+                        "durable.execution.arn": "${EXECUTION_ARN}",
+                    },
+                }
+            ]
+            expected_attributes = assertion["expect"]["attributes"]
+            if "durable.attempt.outcome" in expected_attributes:
+                assert assertion["expect"]["inside"] == {
                     "$linked": True,
                     "name": "Invocation",
                 }
+            else:
+                assert "inside" not in assertion["expect"]
         expected_workflow_arns = ["${EXECUTION_ARN}"]
         if case_number == 4:
             expected_workflow_arns.append("${TARGET_EXECUTION_ARN}")
@@ -468,6 +497,31 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
     execution_requirements = _requirements("otel-execution")
     invocation_requirements = _requirements("otel-invocation")
     ambient_only_cases = {15, 19}
+    second_invocation_descendants = {
+        2: {
+            "otel-after-resume",
+            "otel-after-resume attempt 1",
+            "otel-wait",
+        },
+        3: {
+            "otel-retry",
+            "otel-retry attempt 2",
+        },
+        9: {
+            "otel-condition",
+            "otel-condition attempt 2",
+        },
+        10: {
+            "${/^otel-callback(?: create callback id|-callback)$/}",
+            "otel-callback",
+        },
+        11: {"otel-invoke"},
+        17: {
+            "${/^otel-failed-callback(?: create callback id|-callback)$/}",
+            "otel-failed-callback",
+        },
+        18: {"otel-failed-invoke"},
+    }
 
     for case_number in range(1, 20):
         requirement = load_yaml_file(execution_requirements[f"otel-execution-{case_number}"])
@@ -530,9 +584,18 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
         descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
         assert bool(descendants) is (case_number not in ambient_only_cases)
         for descendant in descendants:
+            selected_name = descendant["select"]["name"]
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
-            assert expected["links"] == [{"name": "Invocation"}]
+            assert expected["links"] == [
+                {
+                    "$occurrence": (2 if selected_name in second_invocation_descendants.get(case_number, set()) else 1),
+                    "name": "Invocation",
+                    "attributes": {
+                        "durable.execution.arn": "${EXECUTION_ARN}",
+                    },
+                }
+            ]
             if "durable.attempt.outcome" in expected["attributes"]:
                 assert expected["inside"] == {
                     "$linked": True,
@@ -598,7 +661,15 @@ def test_callback_submitter_assertions_emit_once_without_retry(
         ]
         assert submitter_assertion["expect"]["parent"]["status"] == "UNSET"
     else:
-        assert submitter_assertion["expect"]["links"] == [{"name": "Invocation"}]
+        assert submitter_assertion["expect"]["links"] == [
+            {
+                "$occurrence": 1,
+                "name": "Invocation",
+                "attributes": {
+                    "durable.execution.arn": "${EXECUTION_ARN}",
+                },
+            }
+        ]
         assert "inside" not in submitter_assertion["expect"]
 
 

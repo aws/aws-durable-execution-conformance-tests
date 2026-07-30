@@ -128,7 +128,10 @@ TelemetryAssertions:
         status: ERROR
         service_name: invocation
         links:
-          - name: Invocation
+          - $occurrence: 2
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
