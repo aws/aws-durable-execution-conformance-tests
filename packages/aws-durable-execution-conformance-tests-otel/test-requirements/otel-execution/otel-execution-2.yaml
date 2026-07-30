@@ -69,7 +69,7 @@ TelemetryAssertions:
           durable.invocation.first: false
           durable.invocation.status: SUCCEEDED
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
         kind: INTERNAL
@@ -91,7 +91,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - $occurrence: 2
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -117,7 +120,10 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - $occurrence: 2
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -143,10 +149,13 @@ TelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - $occurrence: 2
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         inside:
           $linked: true
-          name: invocation
+          name: Invocation
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

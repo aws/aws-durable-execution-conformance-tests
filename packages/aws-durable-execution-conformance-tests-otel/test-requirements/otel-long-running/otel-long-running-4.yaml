@@ -228,7 +228,9 @@ ExecutionTelemetryAssertions:
   minimum_spans: 8
   require_execution_correlation: true
   minimum_invocations: 4
-  allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
+  allowed_execution_arns:
+    - ${EXECUTION_ARN}
+    - ${TARGET_EXECUTION_ARN}
   span_assertions:
     - select:
         name: Workflow
@@ -236,7 +238,7 @@ ExecutionTelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent_span_id:
+        parent_span_id: null
         status: OK
         service_name: invocation
         links: []
@@ -245,82 +247,107 @@ ExecutionTelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.execution.status: SUCCEEDED
     - select:
-        name: '${/^[Ii]nvocation$/}'
+        name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of:
+            - INTERNAL
+            - SERVER
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.invocation.first: true
+          durable.invocation.status: PENDING
         before:
-          name: '${/^[Ii]nvocation$/}'
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
-        name: '${/^[Ii]nvocation$/}'
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-      expect:
-        status: UNSET
-        service_name: invocation
-        links: []
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-        after:
-          name: '${/^[Ii]nvocation$/}'
-          attributes:
-            durable.execution.arn: ${TARGET_EXECUTION_ARN}
-            durable.invocation.first: false
-    - select:
-        name: '${/^[Ii]nvocation$/}'
+        name: Invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
+          durable.invocation.status: PENDING
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of:
+            - INTERNAL
+            - SERVER
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: true
+          durable.invocation.status: PENDING
         before:
-          name: '${/^[Ii]nvocation$/}'
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
-        name: '${/^[Ii]nvocation$/}'
+        name: Invocation
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
       expect:
-        status: UNSET
+        status: OK
         service_name: invocation
         links: []
-        kind: INTERNAL
+        kind:
+          $any_of:
+            - INTERNAL
+            - SERVER
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
           durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
         after:
-          name: '${/^[Ii]nvocation$/}'
+          name: Invocation
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
             durable.invocation.first: true
+            durable.invocation.status: PENDING
         before:
-          name: '${/^[Ii]nvocation$/}'
+          name: Invocation
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: invocation
+        links: []
+        kind:
+          $any_of:
+            - INTERNAL
+            - SERVER
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
     - select:
         name: otel-long-invoke
         attributes:
@@ -329,7 +356,10 @@ ExecutionTelemetryAssertions:
         status: OK
         service_name: invocation
         links:
-          - name: invocation
+          - $occurrence: 2
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

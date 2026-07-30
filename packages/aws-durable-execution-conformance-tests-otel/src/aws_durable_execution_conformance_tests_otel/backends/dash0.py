@@ -91,20 +91,23 @@ class Dash0Backend(PollingBackend):
         self._http = http or JsonHttpClient()
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
-        params = urllib.parse.urlencode(
-            {
-                "service.name": query.service_name,
-                "durable.execution.arn": query.execution_arn,
-                "from": query.started_at.isoformat(),
-                "to": query.ended_at.isoformat(),
-            }
-        )
-        response = self._http.request_json(
-            "GET",
-            f"{self._endpoint}/api/traces?{params}",
-            headers=self._headers,
-        )
-        return matching_trace(normalize_dash0(response), query)
+        traces: list[Trace] = []
+        for execution_arn in query.execution_arns or (query.execution_arn,):
+            params = urllib.parse.urlencode(
+                {
+                    "service.name": query.service_name,
+                    "durable.execution.arn": execution_arn,
+                    "from": query.started_at.isoformat(),
+                    "to": query.ended_at.isoformat(),
+                }
+            )
+            response = self._http.request_json(
+                "GET",
+                f"{self._endpoint}/api/traces?{params}",
+                headers=self._headers,
+            )
+            traces.extend(normalize_dash0(response))
+        return matching_trace(traces, query)
 
 
 class Dash0BackendFactory:
