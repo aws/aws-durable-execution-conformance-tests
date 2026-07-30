@@ -6,15 +6,20 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from typing import Any
 
 import pytest
 
 from aws_durable_execution_conformance_tests_otel.backends._common import (
+    JsonHttpClient,
     matching_trace,
 )
 from aws_durable_execution_conformance_tests_otel.backends.collector import (
@@ -65,6 +70,79 @@ def _query() -> TelemetryQuery:
         started_at=now - timedelta(minutes=1),
         ended_at=now + timedelta(minutes=1),
     )
+
+
+def test_json_http_client_reports_redacted_http_error_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATADOG_ACCESS_TOKEN", "access-secret")
+
+    def fail_request(
+        _request: urllib.request.Request,
+        *,
+        timeout: int,
+    ) -> None:
+        del timeout
+        body = json.dumps(
+            {
+                "errors": ["Forbidden"],
+                "token": "response-secret",
+                "echo": "access-secret",
+            }
+        ).encode()
+        raise urllib.error.HTTPError(
+            "https://api.datadoghq.com/api/v2/spans/events/search",
+            403,
+            "Forbidden",
+            Message(),
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_request)
+
+    with pytest.raises(BackendError) as raised:
+        JsonHttpClient().request_json(
+            "POST",
+            "https://api.datadoghq.com/api/v2/spans/events/search",
+            headers={"Authorization": "Bearer access-secret"},
+            body={"query": "request details are not diagnostic output"},
+        )
+
+    message = str(raised.value)
+    assert "HTTP 403 Forbidden" in message
+    assert 'response body=\'{"errors":["Forbidden"],"token":"[REDACTED]","echo":"[REDACTED]"}\'' in message
+    assert "access-secret" not in message
+    assert "response-secret" not in message
+    assert "Authorization" not in message
+    assert "request details" not in message
+
+
+def test_json_http_client_bounds_http_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_request(
+        _request: urllib.request.Request,
+        *,
+        timeout: int,
+    ) -> None:
+        del timeout
+        raise urllib.error.HTTPError(
+            "https://example.com/search",
+            500,
+            "Internal Server Error",
+            Message(),
+            io.BytesIO(b"x" * 4096),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_request)
+
+    with pytest.raises(BackendError) as raised:
+        JsonHttpClient().request_json("GET", "https://example.com/search")
+
+    message = str(raised.value)
+    assert "HTTP 500 Internal Server Error" in message
+    assert "[truncated]" in message
+    assert len(message) < 2200
 
 
 @pytest.mark.parametrize(
