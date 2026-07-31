@@ -1,0 +1,81 @@
+---
+# 10.11: Plugin parent linkage for nested operations
+description: Plugin operation hooks report parent id for a step nested in a child context
+handler: |
+  A handler that runs a child context containing a single step which returns a
+  greeting string, configured with an instrumentation plugin. The plugin logs a
+  JSON object to plain stdout from the operation-end hook for every operation
+  that reaches a terminal status:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "parent": "<parent_id or NONE>", "status": "<status enum token>"}`,
+  where `op` and `parent` are the operation id and parent id received in the
+  hook's info parameter (`parent` is the literal string `NONE` when the info
+  carries no parent id). The logged ids must equal the ids and ParentId linkage
+  the execution history checkpointed.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `runInChildContext(child_fn)` where `child_fn` runs
+    `context.step(greet(event))`. The SDK checkpoints ContextStarted for the
+    child context (top-level, no parent), StepStarted/StepSucceeded for the inner
+    step with ParentId pointing at the child context, then ContextSucceeded for
+    the child context. The plugin's operation-end hook fires for the step with
+    `parent` equal to the child context's operation id, and for the child context
+    with no parent (`parent=NONE`). Execution succeeds in a single invocation.
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, ${INPUT_1}!
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${STEP1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Inner step ends with the child context as its parent
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${STEP1}
+      parent: ${CTX1}
+      status: SUCCEEDED
+    count: 1
+  # Child context ends with no parent
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${CTX1}
+      parent: NONE
+      status: SUCCEEDED
+    count: 1

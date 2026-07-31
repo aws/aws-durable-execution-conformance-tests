@@ -1,0 +1,70 @@
+---
+# 10.9: Plugin observes externally-updated operation on re-invocation
+description: Plugin sees a wait completed externally between invocations as an updated operation
+handler: |
+  A handler with a single 2-second wait, configured with an instrumentation
+  plugin. The plugin logs a JSON object to plain stdout for wait-type operations
+  it observes:
+  - from the invocation-start hook, one record per wait operation reported by the
+    SDK as updated externally since the previous invocation (e.g. a timer that
+    fired):
+    `{"plugin": "CONFPLUGIN", "hook": "updated-on-invoke", "op": "<operation_id>", "status": "<status enum token>", "first": <is_first_invocation>}`.
+    SDKs that surface externally-updated operations through a dedicated
+    operation-change/replay notification rather than on the invocation-start info
+    emit the same record from that hook instead — the record's semantics (a wait
+    this execution did not complete in-process was completed externally before
+    this invocation) are what is asserted, not the specific hook name.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.wait(2 seconds)`, SDK checkpoints WaitStarted,
+    invocation completes, execution suspends. No updated-operation record is
+    emitted on the first invocation (nothing was updated externally yet).
+  - Replay 1: The wait timer fires and the function is re-invoked. The plugin
+    reports the wait operation as externally updated with its SUCCEEDED status
+    and the id the execution history checkpointed for the wait. Execution
+    succeeds.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # The externally-completed wait is reported exactly once, on the replay
+  # invocation (first=false), with the history-checkpointed id
+  - match:
+      plugin: CONFPLUGIN
+      hook: updated-on-invoke
+      op: ${ID1}
+      status: SUCCEEDED
+      first: false
+    count: 1
+  # Nothing is reported as externally updated on the first invocation
+  - match:
+      plugin: CONFPLUGIN
+      hook: updated-on-invoke
+      first: true
+    count: 0
