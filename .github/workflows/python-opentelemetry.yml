@@ -51,11 +51,6 @@ on:
         required: false
         default: ""
         type: string
-      resource_namespace:
-        description: Optional suffix used to isolate deployed test resources
-        required: false
-        default: ""
-        type: string
       python_sdk_ref:
         description: Python SDK Git ref to test
         required: true
@@ -152,7 +147,6 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
-      resource_namespace: ${{ inputs.resource_namespace || '' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -168,7 +162,6 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
-      resource_namespace: ${{ inputs.resource_namespace || '' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -186,7 +179,6 @@ jobs:
           || inputs.phase == 'short')
           && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      resource_namespace: ${{ inputs.resource_namespace || '' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -204,6 +196,5 @@ jobs:
           || inputs.phase == 'short')
           && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      resource_namespace: ${{ inputs.resource_namespace || '' }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit

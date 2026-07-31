@@ -222,13 +222,11 @@ def test_python_workflow_accepts_a_ref_or_resolves_main_and_propagates_the_commi
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
     assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
-    assert entry_workflow.count("resource_namespace: ${{ inputs.resource_namespace || '' }}") == 4
     for workflow in (suite_workflow, long_running_workflow):
         assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
         assert 'PYTHONUNBUFFERED: "1"' in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
-        assert "      resource_namespace:" in workflow
 
 
 def test_python_workflows_check_out_their_own_conformance_revision() -> None:
