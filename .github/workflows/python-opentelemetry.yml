@@ -29,6 +29,54 @@ on:
       - packages/aws-durable-execution-conformance-tests-otel/examples/python/**
   schedule:
     - cron: "0 7 * * *"
+  workflow_call:
+    inputs:
+      phase:
+        description: Run short tests, launch a long run, or check the active long run
+        required: false
+        default: short
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "82800"
+        type: string
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
+      otlp_endpoint:
+        description: OTLP ingest endpoint for community-layer jobs
+        required: false
+        default: ""
+        type: string
+      python_sdk_ref:
+        description: Full Python SDK commit SHA to test
+        required: true
+        type: string
+    secrets:
+      CONFORMANCE_TEST_ROLE_ARN:
+        description: AWS role assumed by the test jobs
+        required: true
+      CONFORMANCE_TEST_ACCOUNT_ID:
+        description: Expected AWS account ID
+        required: true
+      CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN:
+        description: Execution role assigned to test Lambda functions
+        required: true
+      DASH0_AUTH_TOKEN:
+        description: Dash0 API and OTLP authentication token
+        required: true
+      DD_API_KEY:
+        description: Datadog API key
+        required: false
+      DD_APPLICATION_KEY:
+        description: Datadog application key
+        required: false
+      DATADOG_OTLP_HEADERS:
+        description: Datadog OTLP request headers
+        required: false
   workflow_dispatch:
     inputs:
       phase:
@@ -61,25 +109,46 @@ permissions:
 
 jobs:
   resolve-sdk-main:
-    name: Resolve Python SDK main
+    name: Resolve Python SDK ref
     runs-on: ubuntu-latest
     outputs:
       python_sdk_ref: ${{ steps.resolve.outputs.ref }}
     steps:
-      - name: Resolve Python SDK main commit
-        id: resolve
+      - name: Validate phase
+        env:
+          REQUESTED_PHASE: ${{ inputs.phase || 'short' }}
         run: |
-          PYTHON_SDK_REF=$(
-            git ls-remote \
-              https://github.com/aws/aws-durable-execution-sdk-python.git \
-              refs/heads/main |
-              awk '{print $1}'
-          )
+          case "$REQUESTED_PHASE" in
+            short|launch|check) ;;
+            *)
+              echo "phase must be one of: short, launch, check"
+              exit 1
+              ;;
+          esac
+
+      - name: Resolve Python SDK commit
+        id: resolve
+        env:
+          REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
+        run: |
+          PYTHON_SDK_REF="$REQUESTED_PYTHON_SDK_REF"
           if [ -z "$PYTHON_SDK_REF" ]; then
-            echo "Could not resolve aws-durable-execution-sdk-python main"
+            PYTHON_SDK_REF=$(
+              git ls-remote \
+                https://github.com/aws/aws-durable-execution-sdk-python.git \
+                refs/heads/main |
+                awk '{print $1}'
+            )
+          fi
+          if [ -z "$PYTHON_SDK_REF" ]; then
+            echo "Could not resolve an aws-durable-execution-sdk-python commit"
             exit 1
           fi
-          echo "Using Python SDK main commit $PYTHON_SDK_REF"
+          if [[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "python_sdk_ref must be a full 40-character commit SHA"
+            exit 1
+          fi
+          echo "Using Python SDK commit $PYTHON_SDK_REF"
           echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"
 
   invocation:
