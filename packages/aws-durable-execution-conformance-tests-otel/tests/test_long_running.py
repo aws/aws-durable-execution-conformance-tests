@@ -717,6 +717,11 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert workflow_config["jobs"]["run"]["env"]["TEST_NAME"] == (
         f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}"
         "${{ inputs.phase == 'short' && '-short' || '' }}"
+        + (
+            "${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}"
+            if language == "python"
+            else ""
+        )
     )
     assert "github.run_number" not in workflow
     assert "github.run_attempt" not in workflow

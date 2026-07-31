@@ -22,6 +22,11 @@ on:
         required: false
         default: us-west-2
         type: string
+      resource_namespace:
+        description: Optional suffix used to isolate deployed test resources
+        required: false
+        default: ""
+        type: string
       python_sdk_ref:
         description: Python SDK Git ref to test
         required: true
@@ -33,7 +38,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: python-otel-long-running-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
+  group: python-otel-long-running-${{ inputs.resource_namespace || 'default' }}-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
   cancel-in-progress: false
 
 env:
@@ -46,6 +51,7 @@ env:
   PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
   PYTHONUNBUFFERED: "1"
   REPORT_FILE: /tmp/python-otel-long-running-report
+  RESOURCE_SUFFIX: ${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
   TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template-long-running.yaml
 
 jobs:
@@ -60,7 +66,7 @@ jobs:
     env:
       OTEL_VIEW: ${{ inputs.view }}
       STATE_ARTIFACT: python-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
-      TEST_NAME: p-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
+      TEST_NAME: p-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
     steps:
       - name: Find active run state
         if: env.PHASE != 'short'

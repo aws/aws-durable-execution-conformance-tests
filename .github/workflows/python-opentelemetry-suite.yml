@@ -20,6 +20,11 @@ on:
         description: OTLP ingest endpoint for community-layer jobs
         required: false
         type: string
+      resource_namespace:
+        description: Optional suffix used to isolate deployed test resources
+        required: false
+        default: ""
+        type: string
       python_sdk_ref:
         description: Python SDK Git ref to test
         required: true
@@ -30,7 +35,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: python-otel-${{ inputs.suite }}-${{ inputs.aws_region }}
+  group: python-otel-${{ inputs.resource_namespace || 'default' }}-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
 
 env:
@@ -41,6 +46,7 @@ env:
   PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
   PYTHONUNBUFFERED: "1"
   PYTHON_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/python/template.yaml
+  RESOURCE_SUFFIX: ${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
 
 jobs:
   xray:
@@ -51,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      TEST_NAME: python-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: python-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -192,7 +198,7 @@ jobs:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
-      TEST_NAME: python-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: python-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -254,7 +260,7 @@ jobs:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       DASH0_OTLP_ENDPOINT: https://ingress.us-west-2.aws.dash0.com
       OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}
-      TEST_NAME: python-dash0-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: python-dash0-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -368,8 +374,8 @@ jobs:
     env:
       COLLECTOR_LAYER_NAME: durable-execution-conformance-python-s3-collector
       OTEL_LAMBDA_CHECKOUT: .build/opentelemetry-lambda
-      TEST_STACK_NAME: conformance-tests-python-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
-      TEST_NAME: python-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_STACK_NAME: conformance-tests-python-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
+      TEST_NAME: python-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}${{ inputs.resource_namespace == '' && '' || format('-{0}', inputs.resource_namespace) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -458,7 +464,7 @@ jobs:
           TEST_ACCOUNT_ID: ${{ secrets.PYTHON_TEST_ACCOUNT_ID }}
           TEST_ROLE_ARN: ${{ secrets.PYTHON_TEST_ROLE_ARN }}
         run: |
-          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
+          OTEL_S3_BUCKET="dex-otel-python-${OTEL_VIEW_SUFFIX}${RESOURCE_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
           OTEL_S3_PREFIX=traces
           {
             echo "OTEL_S3_BUCKET=$OTEL_S3_BUCKET"

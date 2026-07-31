@@ -65,7 +65,8 @@ def test_suite_workflows_use_language_and_view_specific_resources() -> None:
         assert f"name: {language}-otel-xray-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
         assert f"name: {language}-otel-dash0-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
         assert f"name: {language}-otel-s3-${{{{ inputs.suite }}}}-${{{{ github.run_id }}}}" in workflow
-        assert f"dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}-" in workflow
+        resource_suffix = "${RESOURCE_SUFFIX}" if language == "python" else ""
+        assert f"dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}{resource_suffix}-" in workflow
 
     python_workflow = SUITE_WORKFLOWS["python"].read_text(encoding="utf-8")
     assert f"TEST_NAME: python-datadog-{VIEW_SUFFIX}" in python_workflow
@@ -98,10 +99,11 @@ def test_dash0_jobs_match_xray_coverage_and_use_repository_credentials() -> None
 def test_s3_collector_resources_are_stable_and_retained() -> None:
     for language, path in SUITE_WORKFLOWS.items():
         workflow = path.read_text(encoding="utf-8")
+        resource_suffix = "${RESOURCE_SUFFIX}" if language == "python" else ""
 
         assert (
-            f'OTEL_S3_BUCKET="dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}-${{TEST_ACCOUNT_ID}}-${{AWS_REGION}}"'
-            in workflow
+            f'OTEL_S3_BUCKET="dex-otel-{language}-${{OTEL_VIEW_SUFFIX}}'
+            f'{resource_suffix}-${{TEST_ACCOUNT_ID}}-${{AWS_REGION}}"' in workflow
         )
         assert "aws s3api head-bucket" in workflow
         assert 'aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive' in workflow
