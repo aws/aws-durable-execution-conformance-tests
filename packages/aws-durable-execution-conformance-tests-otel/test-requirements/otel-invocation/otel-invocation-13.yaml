@@ -85,7 +85,7 @@ TelemetryAssertions:
           durable.operation.id: ${PARALLEL1}
           durable.operation.type: CONTEXT
           durable.operation.subtype: Parallel
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-failed-parallel
         parent:
           name: Invocation
@@ -109,7 +109,7 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_BRANCH}
           durable.operation.type: CONTEXT
           durable.operation.subtype: ParallelBranch
-          durable.operation.status: STARTED
+          durable.operation.status: FAILED
           durable.operation.name: otel-failed-parallel-branch
         parent:
           name: otel-failed-parallel

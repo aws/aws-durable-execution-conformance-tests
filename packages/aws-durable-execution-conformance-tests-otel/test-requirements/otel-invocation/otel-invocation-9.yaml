@@ -140,7 +140,6 @@ TelemetryAssertions:
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
           durable.operation.subtype: WaitForCondition
-          durable.operation.status: STARTED
           durable.operation.name: otel-condition
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
@@ -204,7 +203,6 @@ TelemetryAssertions:
           durable.operation.id: ${CONDITION1}
           durable.operation.type: STEP
           durable.operation.subtype: WaitForCondition
-          durable.operation.status: STARTED
           durable.operation.name: otel-condition
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED

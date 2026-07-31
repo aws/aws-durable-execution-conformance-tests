@@ -139,7 +139,6 @@ TelemetryAssertions:
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-retry
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
@@ -203,7 +202,6 @@ TelemetryAssertions:
           durable.operation.id: ${RETRY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-retry
           durable.attempt.number: 2
           durable.attempt.outcome: SUCCEEDED

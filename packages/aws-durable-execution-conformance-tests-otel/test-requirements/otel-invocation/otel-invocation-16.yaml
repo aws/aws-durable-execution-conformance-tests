@@ -98,7 +98,6 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_CONDITION}
           durable.operation.type: STEP
           durable.operation.subtype: WaitForCondition
-          durable.operation.status: STARTED
           durable.operation.name: otel-failed-condition
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED

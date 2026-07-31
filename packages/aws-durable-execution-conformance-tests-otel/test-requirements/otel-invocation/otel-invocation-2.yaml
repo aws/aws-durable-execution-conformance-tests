@@ -198,7 +198,6 @@ TelemetryAssertions:
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-after-resume
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED

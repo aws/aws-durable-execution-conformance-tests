@@ -4,21 +4,19 @@ description: Map with a custom item namer assigns per-iteration names while prod
   index-ordered results
 handler: |
   Handler invokes the map operation over the items [1, 2] with a custom item namer that derives a
-  name for each iteration from the item and its index (for example "item-1", "item-2"). The map
-  function returns item * 10 directly for each item. Max-concurrency is 1 for a deterministic
-  execution history. The custom name affects observability (the iteration operation name) but not
-  replay determinism or results, so the history is asserted with wildcard iteration ids. The
-  handler returns the ordered array of successful item results, in item index order.
-  Note: the item namer is a JS/Python MapConfig option; the Java MapConfig has no item-namer field,
-  so this requirement is expected to be uncovered for the Java SDK rather than satisfied by a
-  hand-rolled substitute.
+  name for each iteration from the item, producing "item-1" and "item-2". The map function returns
+  item * 10 directly for each item. Max-concurrency is 1 for a deterministic execution history.
+  The custom name affects observability (the iteration operation name) but not replay determinism
+  or results, so iteration ids are asserted with placeholders while the iteration Name is asserted
+  literally -- an SDK that accepts an item namer and then ignores it must fail this requirement.
+  The handler returns the ordered array of successful item results, in item index order.
 invocations: |
   - Handler invokes map(name="named-items", items=[1, 2], mapFunc, max-concurrency=1, itemNamer set)
-    where the item namer names each iteration from its item/index. The SDK checkpoints
-    ContextStarted (SubType Map). For item 0 it checkpoints ContextStarted / ContextSucceeded
-    (SubType MapIteration) carrying result 10, then for item 1 ContextStarted / ContextSucceeded
-    carrying result 20. The SDK checkpoints ContextSucceeded (SubType Map) and the invocation
-    completes returning [10, 20].
+    where the item namer names each iteration from its item. The SDK checkpoints ContextStarted
+    (SubType Map) named "named-items". For item 0 it checkpoints ContextStarted / ContextSucceeded
+    (SubType MapIteration) named "item-1" carrying result 10, then for item 1 ContextStarted /
+    ContextSucceeded named "item-2" carrying result 20. The SDK checkpoints ContextSucceeded
+    (SubType Map) and the invocation completes returning [10, 20].
 Input:
   - 1
   - 2
@@ -32,6 +30,7 @@ ExpectedExecutionHistory:
     SubType: Map
     EventId: 2
     Id: ${CTX_M}
+    Name: named-items
     EventTimestamp: '*'
     ContextStartedDetails: {}
   - EventType: ContextStarted
@@ -39,6 +38,7 @@ ExpectedExecutionHistory:
     EventId: 3
     Id: ${ITER0}
     ParentId: ${CTX_M}
+    Name: item-1
     EventTimestamp: '*'
     ContextStartedDetails: {}
   - EventType: ContextSucceeded
@@ -46,6 +46,7 @@ ExpectedExecutionHistory:
     EventId: 4
     Id: ${ITER0}
     ParentId: ${CTX_M}
+    Name: item-1
     EventTimestamp: '*'
     ContextSucceededDetails:
       Result:
@@ -55,6 +56,7 @@ ExpectedExecutionHistory:
     EventId: 5
     Id: ${ITER1}
     ParentId: ${CTX_M}
+    Name: item-2
     EventTimestamp: '*'
     ContextStartedDetails: {}
   - EventType: ContextSucceeded
@@ -62,6 +64,7 @@ ExpectedExecutionHistory:
     EventId: 6
     Id: ${ITER1}
     ParentId: ${CTX_M}
+    Name: item-2
     EventTimestamp: '*'
     ContextSucceededDetails:
       Result:
@@ -70,6 +73,7 @@ ExpectedExecutionHistory:
     SubType: Map
     EventId: 7
     Id: ${CTX_M}
+    Name: named-items
     EventTimestamp: '*'
     ContextSucceededDetails: '*'
   - EventType: InvocationCompleted
