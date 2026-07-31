@@ -1,0 +1,138 @@
+---
+# 10.13: Plugin replay flag on operation-start
+description: Non-terminal operations replay with replay=true; terminal operations are not re-emitted
+handler: |
+  A handler with two sequential steps, configured with an instrumentation plugin.
+  Step A succeeds on its first attempt. Step B fails on its first attempt and
+  succeeds on the second, using a retry strategy (max attempts >= 2, ~1s delay).
+  The plugin, filtering to step-type operations, logs a JSON object to plain
+  stdout from the operation lifecycle hooks:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "replay": <is_replayed boolean>}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`,
+  where `op` is the operation id received in the hook's info parameter and
+  `replay` is the hook's is-replayed indicator (false for a live first START,
+  true when a previously checkpointed non-terminal operation is observed or
+  re-started during replay).
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler runs step A (succeeds, terminal) then step B with a retry strategy;
+    step B throws, SDK checkpoints StepFailed with RetryDetails
+    (CurrentAttempt=1), invocation completes, execution suspends. The plugin saw
+    `operation-start replay=false` for both steps. Step B's retryable attempt-1
+    failure is NOT terminal, so the plugin's operation-end hook must never
+    report FAILED for step B.
+  - Replay 1: Re-invoked after the retry delay. Step A is terminal, so its
+    operation-start MUST NOT fire again. Step B is non-terminal (pending retry),
+    so the plugin observes it during replay with `replay=true` (it may fire more
+    than once if the SDK also reports the retry attempt's re-START — asserted as
+    at-least-once). Step B succeeds; each step's terminal operation-end fires
+    exactly once across the whole execution.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Operation succeeded
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 8
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Step A: exactly one live start, never a replayed start (it is terminal
+  # before the replay invocation), exactly one terminal end
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
+      replay: false
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
+      replay: true
+    count: 0
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: SUCCEEDED
+    count: 1
+  # Step B: one live start, at least one replayed start on the retry
+  # invocation, exactly one terminal end
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID2}
+      replay: false
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID2}
+      replay: true
+    min_count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID2}
+      status: SUCCEEDED
+    count: 1
+  # Step B's retryable attempt-1 failure is non-terminal: operation-end must
+  # never report FAILED for it
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID2}
+      status: FAILED
+    count: 0

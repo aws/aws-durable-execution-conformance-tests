@@ -1,0 +1,77 @@
+---
+# 10.10: Plugin operation hooks for a wait operation
+description: Plugin operation-start and operation-end hooks fire for wait-type operations
+handler: |
+  A handler with a single 2-second wait, configured with an instrumentation
+  plugin. The plugin, filtering to wait-type operations only, logs a JSON object
+  to plain stdout from each hook:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "type": "<operation type token>"}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "type": "<operation type token>", "status": "<status enum token>"}`,
+  where `op` is the operation id received in the hook's info parameter and `type`
+  is the operation's type token as reported by the SDK, normalized to upper-case
+  (WAIT). The logged id must equal the id the execution history checkpointed for
+  the wait.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.wait(2 seconds)`, the plugin's operation-start hook
+    fires when the wait's STARTED checkpoint is observed, SDK checkpoints
+    WaitStarted, invocation completes, execution suspends.
+  - Replay 1: Re-invoked after the wait completes, the wait reaches its terminal
+    SUCCEEDED status and the plugin's operation-end hook fires with that status.
+    Operation hooks may be dispatched asynchronously, so their relative log order
+    is not asserted — only that each fires with the history-consistent operation
+    id and the WAIT type token. Because the wait's STARTED state is replayed on
+    the second invocation, operation-start may fire more than once (once live,
+    once as a replay); it must fire at least once and never with a wrong type.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Operation-start fires for the wait with the WAIT type (>=1: live + optional replay)
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
+      type: WAIT
+    min_count: 1
+  # Terminal end fires exactly once with SUCCEEDED
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      type: WAIT
+      status: SUCCEEDED
+    count: 1
+  # The wait never reaches a FAILED terminal status
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: FAILED
+    count: 0

@@ -1,0 +1,83 @@
+---
+# 10.14: Plugin operation-end payload semantics
+description: Operation-end info carries the checkpointed result on success and the error on failure
+handler: |
+  A handler with two sequential steps, configured with an instrumentation plugin.
+  Step A returns the constant string "task-a" and succeeds on its first attempt.
+  Step B always throws an error with message "boom" and is configured with no
+  retries (max attempts 1), so the execution fails. The plugin, filtering to
+  step-type operations, logs a JSON object to plain stdout from the
+  operation-end hook:
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>", "result": "<raw serialized result or NONE>", "error": "<error message or NONE>"}`,
+  where `result` is the operation's checkpointed serialized result exactly as
+  received in the hook's info parameter (the literal string `NONE` when absent)
+  and `error` is the error message from the info's error object (the literal
+  string `NONE` when absent).
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler runs step A, which succeeds returning "task-a"; the plugin's
+    operation-end hook receives SUCCEEDED with the serialized result and no
+    error. Handler then runs step B with a no-retry strategy; it throws "boom",
+    the step is checkpointed as failed, and the plugin's operation-end hook
+    receives FAILED with the error message "boom" and no result. The execution
+    fails in a single invocation.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"task-a"'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: boom
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Step A ends SUCCEEDED with the serialized result and no error
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: SUCCEEDED
+      result: '"task-a"'
+      error: NONE
+    count: 1
+  # Step B ends FAILED with the error message and no result
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID2}
+      status: FAILED
+      result: NONE
+      error: boom
+    count: 1

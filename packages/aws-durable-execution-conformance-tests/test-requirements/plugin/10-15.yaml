@@ -1,0 +1,143 @@
+---
+# 10.15: Plugin attempt hooks through retry exhaustion
+description: Attempt hooks fire for every attempt until exhaustion, then operation-end reports FAILED
+handler: |
+  A handler with a single step that always throws, configured with a retry
+  strategy allowing 2 total attempts (1 initial + 1 retry, ~1s delay) and an
+  instrumentation plugin. The plugin, filtering to step-type operations, logs a
+  JSON object to plain stdout when a step attempt's user function starts and
+  ends, and when the operation reaches a terminal status:
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-start", "n": <attempt>, "op": "<operation_id>"}`,
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-end", "n": <attempt>, "outcome": "<SUCCEEDED|FAILED>", "op": "<operation_id>"}`, and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "status": "<status enum token>"}`.
+  Attempt hooks run on the same thread as the user function, so their relative
+  order is deterministic; operation-end may be dispatched asynchronously, so its
+  ordering relative to the attempt hooks within an invocation is not asserted —
+  but it must be emitted after attempt 2 has started, tying the terminal FAILED
+  report to the exhausted attempt rather than the first retryable failure.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes `context.step(always_fail, config={ retryStrategy: maxAttempts=2, ~1s delay })`,
+    the plugin logs `attempt-start n=1`, the step throws, the plugin logs
+    `attempt-end n=1 outcome=FAILED`, SDK checkpoints StepFailed with
+    RetryDetails (CurrentAttempt=1), invocation completes, execution suspends.
+  - Replay 1: Re-invoked after the retry delay, the plugin logs
+    `attempt-start n=2`, the step throws again, the plugin logs
+    `attempt-end n=2 outcome=FAILED`, retries are exhausted, SDK checkpoints the
+    terminal StepFailed (CurrentAttempt=2, no next delay), the plugin's
+    operation-end hook fires with FAILED, and the execution fails.
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload: {}
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Attempt 1 starts and fails
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      n: 1
+      op: ${ID1}
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      n: 1
+      outcome: FAILED
+      op: ${ID1}
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        n: 1
+        op: ${ID1}
+  # Attempt 2 starts after attempt 1 ended, and fails
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      n: 2
+      op: ${ID1}
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-end
+        n: 1
+        outcome: FAILED
+        op: ${ID1}
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      n: 2
+      outcome: FAILED
+      op: ${ID1}
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        n: 2
+        op: ${ID1}
+  # Exhaustion: no third attempt, no successful attempt, terminal FAILED end
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      n: 3
+    count: 0
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      outcome: SUCCEEDED
+    count: 0
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      status: FAILED
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        n: 2
+        op: ${ID1}
