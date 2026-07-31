@@ -210,7 +210,7 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
-def test_python_workflow_accepts_a_ref_or_resolves_main_and_propagates_the_commit() -> None:
+def test_python_workflow_accepts_a_commit_or_resolves_main_and_propagates_the_commit() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -243,6 +243,19 @@ def test_python_workflow_accepts_a_ref_or_resolves_main_and_propagates_the_commi
         assert 'PYTHONUNBUFFERED: "1"' in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
+
+
+def test_python_workflow_validates_reusable_inputs() -> None:
+    workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    resolve_steps = workflow["jobs"]["resolve-sdk-main"]["steps"]
+
+    phase_validation = next(step for step in resolve_steps if step.get("name") == "Validate phase")
+    assert 'case "$REQUESTED_PHASE" in' in phase_validation["run"]
+    assert "short|launch|check)" in phase_validation["run"]
+
+    sdk_resolution = next(step for step in resolve_steps if step.get("name") == "Resolve Python SDK commit")
+    assert '[[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]' in sdk_resolution["run"]
+    assert "python_sdk_ref must be a full 40-character commit SHA" in sdk_resolution["run"]
 
 
 def test_python_workflows_check_out_their_own_conformance_revision() -> None:

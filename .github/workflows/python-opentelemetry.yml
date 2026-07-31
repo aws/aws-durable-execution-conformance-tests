@@ -52,7 +52,7 @@ on:
         default: ""
         type: string
       python_sdk_ref:
-        description: Python SDK Git ref to test
+        description: Full Python SDK commit SHA to test
         required: true
         type: string
     secrets:
@@ -114,6 +114,18 @@ jobs:
     outputs:
       python_sdk_ref: ${{ steps.resolve.outputs.ref }}
     steps:
+      - name: Validate phase
+        env:
+          REQUESTED_PHASE: ${{ inputs.phase || 'short' }}
+        run: |
+          case "$REQUESTED_PHASE" in
+            short|launch|check) ;;
+            *)
+              echo "phase must be one of: short, launch, check"
+              exit 1
+              ;;
+          esac
+
       - name: Resolve Python SDK commit
         id: resolve
         env:
@@ -130,6 +142,10 @@ jobs:
           fi
           if [ -z "$PYTHON_SDK_REF" ]; then
             echo "Could not resolve an aws-durable-execution-sdk-python commit"
+            exit 1
+          fi
+          if [[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "python_sdk_ref must be a full 40-character commit SHA"
             exit 1
           fi
           echo "Using Python SDK commit $PYTHON_SDK_REF"
