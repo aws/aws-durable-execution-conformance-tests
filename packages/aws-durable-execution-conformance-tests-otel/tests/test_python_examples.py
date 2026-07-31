@@ -210,21 +210,77 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
-def test_python_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+def test_python_workflow_accepts_a_commit_or_resolves_main_and_propagates_the_commit() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    assert "  workflow_call:" in entry_workflow
+    assert "REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in entry_workflow
     assert entry_workflow.count("git ls-remote") == 1
     assert "refs/heads/main" in entry_workflow
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
     assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    for secret in (
+        "CONFORMANCE_TEST_ROLE_ARN",
+        "CONFORMANCE_TEST_ACCOUNT_ID",
+        "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
+    ):
+        assert f"      {secret}:" in entry_workflow
+        assert f"secrets.{secret}" in suite_workflow
+        assert f"secrets.{secret}" in long_running_workflow
+    for retired_secret in (
+        "PYTHON_TEST_ROLE_ARN",
+        "PYTHON_TEST_ACCOUNT_ID",
+        "PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN",
+    ):
+        assert retired_secret not in entry_workflow
+        assert retired_secret not in suite_workflow
+        assert retired_secret not in long_running_workflow
     for workflow in (suite_workflow, long_running_workflow):
         assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
         assert 'PYTHONUNBUFFERED: "1"' in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
+
+
+def test_python_workflow_validates_reusable_inputs() -> None:
+    workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    resolve_steps = workflow["jobs"]["resolve-sdk-main"]["steps"]
+
+    phase_validation = next(step for step in resolve_steps if step.get("name") == "Validate phase")
+    assert 'case "$REQUESTED_PHASE" in' in phase_validation["run"]
+    assert "short|launch|check)" in phase_validation["run"]
+
+    sdk_resolution = next(step for step in resolve_steps if step.get("name") == "Resolve Python SDK commit")
+    assert '[[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]' in sdk_resolution["run"]
+    assert "python_sdk_ref must be a full 40-character commit SHA" in sdk_resolution["run"]
+
+
+def test_python_workflows_check_out_their_own_conformance_revision() -> None:
+    suite_workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    long_running_workflow = yaml.safe_load(LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+    suite_checkouts = [
+        step
+        for job in suite_workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("name") == "Check out repository"
+    ]
+    assert len(suite_checkouts) == 4
+    for checkout in suite_checkouts:
+        assert checkout["with"]["repository"] == "${{ job.workflow_repository }}"
+        assert checkout["with"]["ref"] == "${{ job.workflow_sha }}"
+
+    long_running_checkout = next(
+        step for step in long_running_workflow["jobs"]["run"]["steps"] if step.get("name") == "Check out repository"
+    )
+    assert long_running_checkout["with"]["repository"] == "${{ job.workflow_repository }}"
+    assert long_running_checkout["with"]["ref"] == ("${{ steps.state.outputs.source_revision || job.workflow_sha }}")
+    assert '--source-revision "$CONFORMANCE_REF"' in "\n".join(
+        step.get("run", "") for step in long_running_workflow["jobs"]["run"]["steps"]
+    )
 
 
 def test_python_s3_job_builds_and_queries_the_collector() -> None:
