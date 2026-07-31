@@ -52,9 +52,8 @@ on:
         default: ""
         type: string
       conformance_test_ref:
-        description: Conformance test commit SHA or branch name
+        description: Optional conformance test commit SHA or branch name
         required: false
-        default: main
         type: string
       python_sdk_ref:
         description: Full Python SDK commit SHA to test
@@ -108,9 +107,8 @@ on:
         required: false
         type: string
       conformance_test_ref:
-        description: Conformance test commit SHA or branch name
-        required: true
-        default: main
+        description: Optional conformance test commit SHA or branch name
+        required: false
         type: string
 permissions:
   actions: write

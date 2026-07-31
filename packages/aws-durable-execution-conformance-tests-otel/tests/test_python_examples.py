@@ -212,10 +212,18 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
 
 def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    entry_workflow_config = yaml.safe_load(entry_workflow)
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "  workflow_call:" in entry_workflow
+    triggers = entry_workflow_config.get("on") or entry_workflow_config[True]
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        assert triggers[trigger]["inputs"]["conformance_test_ref"] == {
+            "description": "Optional conformance test commit SHA or branch name",
+            "required": False,
+            "type": "string",
+        }
     assert "github.repository == job.workflow_repository && job.workflow_sha" in entry_workflow
     assert "|| 'main'" in entry_workflow
     assert "REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in entry_workflow
