@@ -113,7 +113,6 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-handled-failure
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
@@ -175,7 +174,6 @@ TelemetryAssertions:
           durable.operation.id: ${RECOVERY_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-recovery-step
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED

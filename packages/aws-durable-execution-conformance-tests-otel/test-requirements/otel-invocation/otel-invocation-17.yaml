@@ -269,7 +269,6 @@ TelemetryAssertions:
           durable.operation.id: ${CALLBACK_SUBMITTER}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED

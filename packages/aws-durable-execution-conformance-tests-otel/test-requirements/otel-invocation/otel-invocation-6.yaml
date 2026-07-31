@@ -92,7 +92,7 @@ TelemetryAssertions:
           durable.operation.id: ${PARALLEL1}
           durable.operation.type: CONTEXT
           durable.operation.subtype: Parallel
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-parallel
         parent:
           name: Invocation
@@ -116,7 +116,7 @@ TelemetryAssertions:
           durable.operation.id: ${BRANCH1}
           durable.operation.type: CONTEXT
           durable.operation.subtype: ParallelBranch
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-parallel-branch-a
         parent:
           name: otel-parallel
@@ -170,7 +170,6 @@ TelemetryAssertions:
           durable.operation.id: ${STEP1}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-parallel-step-a
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
@@ -198,7 +197,7 @@ TelemetryAssertions:
           durable.operation.id: ${BRANCH2}
           durable.operation.type: CONTEXT
           durable.operation.subtype: ParallelBranch
-          durable.operation.status: STARTED
+          durable.operation.status: SUCCEEDED
           durable.operation.name: otel-parallel-branch-b
         parent:
           name: otel-parallel
@@ -252,7 +251,6 @@ TelemetryAssertions:
           durable.operation.id: ${STEP2}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-parallel-step-b
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED

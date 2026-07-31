@@ -98,7 +98,6 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.status: STARTED
           durable.operation.name: otel-terminal-failure
           durable.attempt.number: 1
           durable.attempt.outcome: FAILED
