@@ -23,7 +23,7 @@ on:
         default: us-west-2
         type: string
       python_sdk_ref:
-        description: Resolved commit from the Python SDK main branch
+        description: Python SDK Git ref to test
         required: true
         type: string
 
@@ -109,7 +109,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.state.outputs.source_revision || github.sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ steps.state.outputs.source_revision || job.workflow_sha }}
 
       - name: Set up Python
         if: env.PHASE == 'short' || steps.state.outputs.active == 'true'
@@ -170,6 +171,7 @@ jobs:
         if: steps.state.outputs.phase == 'launch'
         id: launch
         env:
+          CONFORMANCE_REF: ${{ job.workflow_sha }}
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
@@ -179,7 +181,7 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --state-file "$STATE_FILE" \
-            --source-revision "$GITHUB_SHA" \
+            --source-revision "$CONFORMANCE_REF" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN"
@@ -187,6 +189,7 @@ jobs:
       - name: Run short long-running conformance executions
         if: env.PHASE == 'short'
         env:
+          CONFORMANCE_REF: ${{ job.workflow_sha }}
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
@@ -196,7 +199,7 @@ jobs:
             --region "$AWS_REGION" \
             --name "$TEST_NAME" \
             --state-file "$STATE_FILE" \
-            --source-revision "$GITHUB_SHA" \
+            --source-revision "$CONFORMANCE_REF" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN" \

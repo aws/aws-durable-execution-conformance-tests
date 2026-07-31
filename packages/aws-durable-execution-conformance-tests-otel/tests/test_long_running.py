@@ -682,9 +682,11 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     )
     assert 'echo "active=false"' not in workflow
     assert "inputs.delay_seconds || '82800'" in workflow
-    assert workflow.count('--source-revision "$GITHUB_SHA"') == 2
+    source_revision = "$CONFORMANCE_REF" if language == "python" else "$GITHUB_SHA"
+    assert workflow.count(f'--source-revision "{source_revision}"') == 2
     assert "source_revision=$(jq -r '.source_revision // empty' \"$STATE_FILE\")" in workflow
-    assert "ref: ${{ steps.state.outputs.source_revision || github.sha }}" in workflow
+    checkout_fallback = "job.workflow_sha" if language == "python" else "github.sha"
+    assert f"ref: ${{{{ steps.state.outputs.source_revision || {checkout_fallback} }}}}" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
