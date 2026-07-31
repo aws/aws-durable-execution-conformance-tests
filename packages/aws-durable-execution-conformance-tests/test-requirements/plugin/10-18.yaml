@@ -13,15 +13,21 @@ handler: |
   The handler is configured with an instrumentation plugin that, filtering to
   wait-type operations, logs a JSON object to plain stdout from the operation
   lifecycle hooks:
-  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "type": "WAIT", "name": "<operation name>", "replay": <is_replayed boolean>}` and
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "type": "WAIT", "name": "<operation name>", "replay": <is_replayed boolean>, "pending": <boolean>}` and
   `{"plugin": "CONFPLUGIN", "hook": "operation-end", "type": "WAIT", "name": "<operation name>", "status": "<status enum token>"}`,
   where `name` is the operation's name received in the hook's info parameter
   (correlating each record to a specific wait — operation ids are not used
   because branch event ids are nondeterministic under concurrency, but the
-  stable wait names are deterministic), and `replay` is the hook's is-replayed
+  stable wait names are deterministic), `replay` is the hook's is-replayed
   indicator (false for a live first START; true when a previously checkpointed
-  NON-terminal operation is observed during a replayed invocation). `type` is
-  the operation's type token normalized to upper-case.
+  NON-terminal operation is observed during a replayed invocation), and
+  `pending` is whether the operation is still non-terminal at hook time,
+  computed from the hook info's own operation state (the SDK's reported
+  operation status token, or equivalently a null/absent end timestamp — real
+  per-SDK info surface, no cross-invocation plugin state). `type` is the
+  operation's type token normalized to upper-case. Stamping `pending`
+  discriminates the pending-replay observation from any (buggy) re-emission of
+  an already-terminal operation during a later replay.
   Every emitted record also carries a `durableExecutionArn` field — the
   execution ARN received via the invocation-start hook's info parameter
   (captured by the plugin and stamped on subsequent records) — so
@@ -33,15 +39,19 @@ invocations: |
     for "long"), the invocation completes, and the execution suspends.
   - Replay 1 (~2s): Re-invoked because the "short" wait completed and is
     therefore terminal at this point. The "long" wait is still NON-terminal, so
-    the plugin MUST observe it with `operation-start name=long replay=true`
-    (asserted at-least-once). The terminal "short" wait must NEVER re-fire
-    operation-start with replay=true — the stable per-wait names make this
-    distinguishable, so a (buggy) replayed start of the terminal short wait
-    cannot satisfy the long-wait assertion.
+    the plugin MUST observe it with `operation-start name=long replay=true
+    pending=true` (asserted at-least-once). The terminal "short" wait must
+    NEVER re-fire operation-start with replay=true — the stable per-wait names
+    make this distinguishable, so a (buggy) replayed start of the terminal
+    short wait cannot satisfy the long-wait assertion.
   - Replay 2 (~8s): Re-invoked because the "long" wait completed; both waits are
     now terminal (the plugin logged `operation-end status=SUCCEEDED` once per
     wait name across the execution), both branches return, and the execution
-    succeeds returning ["short-done", "long-done"].
+    succeeds returning ["short-done", "long-done"]. No replayed operation-start
+    may ever carry `pending=false`: a replay record emitted only after "long"
+    becomes terminal (or for any already-terminal operation) is prohibited, so
+    the pending-replay requirement cannot be satisfied by a terminal-phase
+    re-emission.
   Because branch scheduling under concurrency makes per-branch EventIds
   nondeterministic, only the deterministic parent ContextStarted event is
   asserted in the history (the matcher ignores unlisted events); the behavior
@@ -73,16 +83,27 @@ ExpectedLogs:
       name: long
       replay: false
     count: 1
-  # The still-pending "long" wait is observed on replay. Stable wait-name
-  # correlation prevents a replayed start of terminal "short" from satisfying
-  # this gap-catching assertion.
+  # The still-pending "long" wait is observed on replay WHILE non-terminal.
+  # Stable wait-name correlation plus the pending discriminator prevent a
+  # replayed start of terminal "short" — or a re-emission after "long" itself
+  # becomes terminal — from satisfying this gap-catching assertion.
   - match:
       plugin: CONFPLUGIN
       hook: operation-start
       type: WAIT
       name: long
       replay: true
+      pending: true
     min_count: 1
+  # No replayed operation-start may be emitted for an already-terminal
+  # operation (rule 3), regardless of wait name
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      type: WAIT
+      replay: true
+      pending: false
+    count: 0
   # The "short" wait is terminal at every replay and must never re-fire
   - match:
       plugin: CONFPLUGIN
