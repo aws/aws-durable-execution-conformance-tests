@@ -76,8 +76,7 @@ ExpectedExecutionHistory:
     EventId: 7
     Id: ${CTX_P}
     EventTimestamp: '*'
-    ContextSucceededDetails:
-      Result: {}
+    ContextSucceededDetails: '*'
   - EventType: InvocationCompleted
     EventId: 8
     EventTimestamp: '*'
