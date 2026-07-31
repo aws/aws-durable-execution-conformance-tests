@@ -56,13 +56,13 @@ on:
         required: true
         type: string
     secrets:
-      PYTHON_TEST_ROLE_ARN:
+      CONFORMANCE_TEST_ROLE_ARN:
         description: AWS role assumed by the test jobs
         required: true
-      PYTHON_TEST_ACCOUNT_ID:
+      CONFORMANCE_TEST_ACCOUNT_ID:
         description: Expected AWS account ID
         required: true
-      PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN:
+      CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN:
         description: Execution role assigned to test Lambda functions
         required: true
       DASH0_AUTH_TOKEN:

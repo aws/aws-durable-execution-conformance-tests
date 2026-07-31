@@ -222,6 +222,22 @@ def test_python_workflow_accepts_a_ref_or_resolves_main_and_propagates_the_commi
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
     assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    for secret in (
+        "CONFORMANCE_TEST_ROLE_ARN",
+        "CONFORMANCE_TEST_ACCOUNT_ID",
+        "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
+    ):
+        assert f"      {secret}:" in entry_workflow
+        assert f"secrets.{secret}" in suite_workflow
+        assert f"secrets.{secret}" in long_running_workflow
+    for retired_secret in (
+        "PYTHON_TEST_ROLE_ARN",
+        "PYTHON_TEST_ACCOUNT_ID",
+        "PYTHON_TEST_LAMBDA_EXECUTION_ROLE_ARN",
+    ):
+        assert retired_secret not in entry_workflow
+        assert retired_secret not in suite_workflow
+        assert retired_secret not in long_running_workflow
     for workflow in (suite_workflow, long_running_workflow):
         assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
         assert 'PYTHONUNBUFFERED: "1"' in workflow
