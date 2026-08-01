@@ -210,17 +210,29 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
-def test_python_workflow_accepts_a_commit_or_resolves_main_and_propagates_the_commit() -> None:
+def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    entry_workflow_config = yaml.safe_load(entry_workflow)
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "  workflow_call:" in entry_workflow
+    triggers = entry_workflow_config.get("on") or entry_workflow_config[True]
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        assert triggers[trigger]["inputs"]["conformance_test_ref"] == {
+            "description": "Optional conformance test commit SHA or branch name",
+            "required": False,
+            "type": "string",
+        }
+    assert "github.repository == job.workflow_repository && job.workflow_sha" in entry_workflow
+    assert "|| 'main'" in entry_workflow
     assert "REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in entry_workflow
-    assert entry_workflow.count("git ls-remote") == 1
+    assert entry_workflow.count("git ls-remote") == 2
     assert "refs/heads/main" in entry_workflow
+    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
+    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 4
     assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
@@ -241,6 +253,7 @@ def test_python_workflow_accepts_a_commit_or_resolves_main_and_propagates_the_co
     for workflow in (suite_workflow, long_running_workflow):
         assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
         assert 'PYTHONUNBUFFERED: "1"' in workflow
+        assert "      conformance_test_sha:" in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
 
@@ -257,8 +270,15 @@ def test_python_workflow_validates_reusable_inputs() -> None:
     assert '[[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]' in sdk_resolution["run"]
     assert "python_sdk_ref must be a full 40-character commit SHA" in sdk_resolution["run"]
 
+    conformance_resolution = next(
+        step for step in resolve_steps if step.get("name") == "Resolve conformance test commit"
+    )
+    assert 'CONFORMANCE_TEST_REF="refs/heads/$CONFORMANCE_TEST_REF"' in conformance_resolution["run"]
+    assert "aws/aws-durable-execution-conformance-tests.git" in conformance_resolution["run"]
+    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in conformance_resolution["run"]
 
-def test_python_workflows_check_out_their_own_conformance_revision() -> None:
+
+def test_python_workflows_check_out_the_resolved_conformance_revision() -> None:
     suite_workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
     long_running_workflow = yaml.safe_load(LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8"))
 
@@ -271,13 +291,15 @@ def test_python_workflows_check_out_their_own_conformance_revision() -> None:
     assert len(suite_checkouts) == 4
     for checkout in suite_checkouts:
         assert checkout["with"]["repository"] == "${{ job.workflow_repository }}"
-        assert checkout["with"]["ref"] == "${{ job.workflow_sha }}"
+        assert checkout["with"]["ref"] == "${{ inputs.conformance_test_sha }}"
 
     long_running_checkout = next(
         step for step in long_running_workflow["jobs"]["run"]["steps"] if step.get("name") == "Check out repository"
     )
     assert long_running_checkout["with"]["repository"] == "${{ job.workflow_repository }}"
-    assert long_running_checkout["with"]["ref"] == ("${{ steps.state.outputs.source_revision || job.workflow_sha }}")
+    assert long_running_checkout["with"]["ref"] == (
+        "${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}"
+    )
     assert '--source-revision "$CONFORMANCE_REF"' in "\n".join(
         step.get("run", "") for step in long_running_workflow["jobs"]["run"]["steps"]
     )

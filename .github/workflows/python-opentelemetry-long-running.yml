@@ -22,6 +22,10 @@ on:
         required: false
         default: us-west-2
         type: string
+      conformance_test_sha:
+        description: Conformance test commit SHA to run
+        required: true
+        type: string
       python_sdk_ref:
         description: Python SDK Git ref to test
         required: true
@@ -110,7 +114,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ steps.state.outputs.source_revision || job.workflow_sha }}
+          ref: ${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}
 
       - name: Set up Python
         if: env.PHASE == 'short' || steps.state.outputs.active == 'true'
@@ -171,7 +175,7 @@ jobs:
         if: steps.state.outputs.phase == 'launch'
         id: launch
         env:
-          CONFORMANCE_REF: ${{ job.workflow_sha }}
+          CONFORMANCE_REF: ${{ inputs.conformance_test_sha }}
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
@@ -189,7 +193,7 @@ jobs:
       - name: Run short long-running conformance executions
         if: env.PHASE == 'short'
         env:
-          CONFORMANCE_REF: ${{ job.workflow_sha }}
+          CONFORMANCE_REF: ${{ inputs.conformance_test_sha }}
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
