@@ -58,7 +58,10 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     ExporterOptions,
     normalize_runtime,
 )
-from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.extension import (
+    DEFAULT_OTEL_SERVICE_NAME,
+    OtelExtension,
+)
 from aws_durable_execution_conformance_tests_otel.model import parse_timestamp
 
 SUITE = "otel-long-running"
@@ -232,17 +235,18 @@ def _otel_options(
         "suite": [SUITE],
         "otel_backend": backend,
         "otel_exporter": "adot",
-        "otel_service_name": _query_service_name(language, view),
+        "otel_service_name": DEFAULT_OTEL_SERVICE_NAME,
+        "otel_discovery_service_name": _discovery_service_name(language, view),
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
     }
 
 
-def _query_service_name(language: str, view: str) -> str:
-    if normalize_runtime(language) == "java" and view == "execution":
-        return "workflow"
-    return "invocation"
+def _discovery_service_name(language: str, view: str) -> str | None:
+    if normalize_runtime(language) == "java":
+        return "Workflow" if view == "execution" else "Invocation"
+    return None
 
 
 def _resolved_input(
@@ -285,7 +289,7 @@ def launch(args: argparse.Namespace) -> int:
             runtime=runtime,
             region=args.region,
             endpoint=None,
-            service_name="invocation",
+            service_name=DEFAULT_OTEL_SERVICE_NAME,
             layer_arn=args.otel_layer_arn,
         )
     )

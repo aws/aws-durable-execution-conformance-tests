@@ -15,8 +15,8 @@ Parameters:
     Description: Exporter profile wrapper accepted for compatibility and intentionally unused
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelView:
     Type: String
     Default: invocation

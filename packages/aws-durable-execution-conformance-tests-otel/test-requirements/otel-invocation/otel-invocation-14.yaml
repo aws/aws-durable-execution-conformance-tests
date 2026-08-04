@@ -47,7 +47,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -61,7 +61,7 @@ TelemetryAssertions:
           durable.invocation.status: FAILED
       expect:
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -74,7 +74,7 @@ TelemetryAssertions:
           durable.operation.id: ${MAP1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -98,7 +98,7 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_ITERATION}
       expect:
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:

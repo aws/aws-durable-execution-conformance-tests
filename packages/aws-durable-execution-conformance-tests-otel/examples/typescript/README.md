@@ -82,7 +82,7 @@ durable-execution-conformance \
     OtelCollectorPrefix=traces \
   --otel-exporter community \
   --otel-endpoint http://localhost:4318 \
-  --otel-service-name invocation \
+  --otel-service-name durable-execution-conformance \
   --otel-backend collector \
   --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
 ```

@@ -29,7 +29,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -43,7 +43,7 @@ TelemetryAssertions:
           durable.invocation.status: FAILED
       expect:
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -56,7 +56,7 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_CONTEXT}
       expect:
         status: ERROR
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - $occurrence: 1
             name: Invocation

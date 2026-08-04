@@ -258,6 +258,13 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
         assert "        required: true" in workflow
 
 
+def test_python_workflow_separates_resource_and_xray_discovery_service_names() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert workflow.count("--otel-service-name durable-execution-conformance") == 3
+    assert "--otel-discovery-service-name" not in workflow
+
+
 def test_python_workflow_validates_reusable_inputs() -> None:
     workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
     resolve_steps = workflow["jobs"]["resolve-sdk-main"]["steps"]

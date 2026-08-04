@@ -37,7 +37,10 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                                 Resource.create(
                                         Attributes.of(
                                                 AttributeKey.stringKey("service.name"),
-                                                System.getenv().getOrDefault("OTEL_SERVICE_NAME", "invocation"))));
+                                                System.getenv()
+                                                        .getOrDefault(
+                                                                "OTEL_SERVICE_NAME",
+                                                                "durable-execution-conformance"))));
         var plugin = createPlugin(
                 SdkTracerProvider.builder()
                         .setResource(resource)

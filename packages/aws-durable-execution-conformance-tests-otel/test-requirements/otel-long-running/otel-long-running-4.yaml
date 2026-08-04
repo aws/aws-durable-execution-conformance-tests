@@ -44,7 +44,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -58,7 +58,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -72,7 +72,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -94,7 +94,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -116,7 +116,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -144,7 +144,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -166,7 +166,7 @@ TelemetryAssertions:
       expect:
         status:
           $any_of: [UNSET, OK]
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           $any_of:
             - - name: Workflow
@@ -199,7 +199,7 @@ TelemetryAssertions:
       expect:
         status:
           $any_of: [UNSET, OK]
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           $any_of:
             - - name: Workflow
@@ -240,7 +240,7 @@ ExecutionTelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -254,7 +254,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of:
@@ -278,7 +278,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of:
@@ -302,7 +302,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of:
@@ -332,7 +332,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind:
           $any_of:
@@ -354,7 +354,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${INVOKE1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - $occurrence: 2
             name: Invocation

@@ -162,6 +162,7 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
+    assert '"durable-execution-conformance"' in handler
     assert "AwsXrayUdpSpanExporterBuilder" in handler
     assert '"AWS_XRAY_DAEMON_ADDRESS"' in handler
     assert "OtlpGrpcSpanExporter" in handler
@@ -193,8 +194,11 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "-Dexpression=project.version" in workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
     assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
-    assert workflow.count('"OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME"') == workflow.count("hatch run validate")
-    assert '--otel-service-name "$OTEL_QUERY_SERVICE_NAME"' in workflow
+    assert workflow.count('"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
+    assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
+    assert workflow.count('--otel-discovery-service-name "$OTEL_XRAY_DISCOVERY_SERVICE_NAME"') == 1
+    assert "OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance" in workflow
+    assert "'Invocation' || 'Workflow'" in workflow
     assert "${OTEL_SUITE}-${case_number}-target" in workflow
 
 

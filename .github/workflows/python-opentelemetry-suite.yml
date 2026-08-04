@@ -132,7 +132,7 @@ jobs:
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-service-name invocation \
+            --otel-service-name durable-execution-conformance \
             --otel-backend xray
 
       - name: Show Lambda logs
@@ -309,7 +309,7 @@ jobs:
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
             --otel-endpoint "$DASH0_OTLP_ENDPOINT" \
-            --otel-service-name invocation \
+            --otel-service-name durable-execution-conformance \
             --otel-backend dash0
 
       - name: Show Lambda logs
@@ -557,7 +557,7 @@ jobs:
               "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
             --otel-exporter community \
             --otel-endpoint http://localhost:4318 \
-            --otel-service-name invocation \
+            --otel-service-name durable-execution-conformance \
             --otel-backend collector \
             --otel-backend-endpoint "$OTEL_S3_URI" \
             --otel-poll-timeout 90 \

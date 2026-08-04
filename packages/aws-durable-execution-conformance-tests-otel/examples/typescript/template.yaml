@@ -35,8 +35,8 @@ Parameters:
     Description: Lambda execution wrapper supplied by the exporter profile
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelTracesExporter:
     Type: String
     Default: otlp

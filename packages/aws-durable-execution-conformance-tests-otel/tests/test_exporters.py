@@ -124,6 +124,7 @@ def _args(exporter: str, backend: str) -> argparse.Namespace:
         otel_endpoint="http://collector:4318",
         otel_backend_endpoint=None,
         otel_service_name="test",
+        otel_discovery_service_name=None,
         otel_layer_arn="arn:aws:lambda:us-west-2:123456789012:layer:adot:1" if exporter == "adot" else None,
         otel_poll_timeout=10.0,
         otel_poll_interval=0.0,
@@ -162,10 +163,39 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
 
 
+def test_service_name_arguments_keep_resource_and_discovery_separate() -> None:
+    parser = argparse.ArgumentParser()
+    OtelExtension().add_arguments(parser)
+
+    defaults = parser.parse_args([])
+    configured = parser.parse_args(
+        [
+            "--otel-service-name",
+            "resource-service",
+            "--otel-discovery-service-name",
+            "discovery-service",
+        ]
+    )
+
+    assert defaults.otel_service_name == "durable-execution-conformance"
+    assert defaults.otel_discovery_service_name is None
+    assert configured.otel_service_name == "resource-service"
+    assert configured.otel_discovery_service_name == "discovery-service"
+
+
+@pytest.mark.parametrize(
+    ("discovery_service_name", "expected_query_service_name"),
+    [
+        (None, "test"),
+        ("xray-discovery-service", "xray-discovery-service"),
+    ],
+)
 def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    discovery_service_name: str | None,
+    expected_query_service_name: str,
 ) -> None:
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
@@ -243,12 +273,16 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "STEP1": "step-id",
                 "TARGET_EXECUTION_ARN": "arn:target",
             },
-            options=vars(_args("adot", "xray")),
+            options={
+                **vars(_args("adot", "xray")),
+                "otel_discovery_service_name": discovery_service_name,
+            },
             aws_clients={"xray": object()},
         )
     )
 
     assert errors == []
+    assert received_queries[0].service_name == expected_query_service_name
     assert received_queries[0].execution_arns == ("arn:execution", "arn:target")
     assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
     assert received["span_assertions"]["select"]["attributes"] == {

@@ -36,7 +36,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -50,7 +50,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -63,7 +63,7 @@ TelemetryAssertions:
           durable.operation.id: ${CTX1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - $occurrence: 1
             name: Invocation
@@ -88,7 +88,7 @@ TelemetryAssertions:
           durable.operation.id: ${STEP1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - $occurrence: 1
             name: Invocation
@@ -113,7 +113,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - $occurrence: 1
             name: Invocation

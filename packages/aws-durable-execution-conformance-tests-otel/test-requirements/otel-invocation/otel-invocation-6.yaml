@@ -54,7 +54,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -68,7 +68,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links: []
         kind: INTERNAL
         attributes:
@@ -81,7 +81,7 @@ TelemetryAssertions:
           durable.operation.subtype: Parallel
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -105,7 +105,7 @@ TelemetryAssertions:
           durable.operation.subtype: ParallelBranch
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -132,7 +132,7 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -159,7 +159,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -186,7 +186,7 @@ TelemetryAssertions:
           durable.operation.subtype: ParallelBranch
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -213,7 +213,7 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:
@@ -240,7 +240,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         status: OK
-        service_name: invocation
+        service_name: durable-execution-conformance
         links:
           - name: Workflow
             attributes:

@@ -42,6 +42,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 from aws_durable_execution_conformance_tests_otel.redaction import redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
+
 BUILTIN_EXPORTERS = {
     "adot": AdotExporterProfile,
     "community": CommunityExporterProfile,
@@ -111,8 +113,13 @@ class OtelExtension:
         )
         group.add_argument(
             "--otel-service-name",
-            default="durable-execution-conformance",
-            help="Service name used to correlate telemetry.",
+            default=DEFAULT_OTEL_SERVICE_NAME,
+            help="OpenTelemetry resource service name configured on the test function.",
+        )
+        group.add_argument(
+            "--otel-discovery-service-name",
+            default=None,
+            help="Backend lookup service name; defaults to --otel-service-name.",
         )
         group.add_argument(
             "--otel-layer-arn",
@@ -223,7 +230,7 @@ class OtelExtension:
                 additional_execution_arns = ()
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
-                service_name=str(options["otel_service_name"]),
+                service_name=str(options.get("otel_discovery_service_name") or options["otel_service_name"]),
                 started_at=datetime.fromtimestamp(
                     context.invocation_started_at_ms / 1000,
                     tz=UTC,
