@@ -512,9 +512,11 @@ def test_deferred_check_finishes_after_sending_the_due_callback(
     sleeps: list[float] = []
     monotonic_values = iter([0.0, 0.0])
     validated_histories: list[dict[str, Any]] = []
+    validated_finished_at_ms: list[int] = []
 
     def fake_validate_terminal_execution(**kwargs: Any) -> Any:
         validated_histories.append(kwargs["history"])
+        validated_finished_at_ms.append(kwargs["finished_at_ms"])
         return long_running.ReportEntry(
             id=CALLBACK_CASE,
             suite=long_running.SUITE,
@@ -526,7 +528,8 @@ def test_deferred_check_finishes_after_sending_the_due_callback(
     monkeypatch.setattr(long_running, "_requirement_cases", lambda: {CALLBACK_CASE: tmp_path / "requirement.yaml"})
     monkeypatch.setattr(long_running, "_validate_terminal_execution", fake_validate_terminal_execution)
     monkeypatch.setattr(long_running, "_emit_report", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(long_running.time, "time", lambda: 11.0)
+    time_values = iter([11.0, 31.0])
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
     monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(long_running.time, "sleep", sleeps.append)
 
@@ -544,6 +547,7 @@ def test_deferred_check_finishes_after_sending_the_due_callback(
     assert json.loads(result_path.read_text(encoding="utf-8")) == {
         "status": "passed",
         "state_changed": True,
+        "rollover_ready": True,
     }
     assert RunState.load(state_path).executions[0].callback_sent_at_ms == 11000
     assert client.requests == [
@@ -554,6 +558,7 @@ def test_deferred_check_finishes_after_sending_the_due_callback(
     ]
     assert sleeps == [15.0]
     assert validated_histories == [terminal_history]
+    assert validated_finished_at_ms == [31000]
 
 
 def test_callback_completion_poll_preserves_pending_state_at_timeout(
@@ -602,6 +607,241 @@ def test_callback_completion_poll_preserves_pending_state_at_timeout(
 
     assert statuses == {CALLBACK_CASE: "RUNNING"}
     assert sleeps == [15.0]
+
+
+def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    premature_execution = ExecutionState(
+        description_id="otel-long-running-1",
+        function_name="OtelLongRunning1Wait",
+        execution_arn="arn:premature",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    callback_execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:callback",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[premature_execution, callback_execution],
+    ).save(state_path)
+    premature_history = {
+        "ExecutionStatus": "FAILED",
+        "Events": [
+            {
+                "EventType": "ExecutionFailed",
+                "EventTimestamp": 10.0,
+            }
+        ],
+    }
+    pending_history = {
+        "ExecutionStatus": "RUNNING",
+        "Events": [
+            {
+                "EventType": "CallbackStarted",
+                "CallbackStartedDetails": {"CallbackId": "callback-1"},
+            }
+        ],
+    }
+    histories = iter([premature_history, pending_history, pending_history])
+    client = _CallbackClient()
+    monotonic_values = iter([0.0, 0.0, 901.0])
+    time_values = iter([11.0, 31.0])
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
+    monkeypatch.setattr(
+        long_running,
+        "_requirement_cases",
+        lambda: {
+            premature_execution.description_id: tmp_path / "premature.yaml",
+            CALLBACK_CASE: tmp_path / "callback.yaml",
+        },
+    )
+    monkeypatch.setattr(
+        long_running,
+        "_emit_report",
+        lambda *_args, **_kwargs: pytest.fail("pending executions must not emit a terminal report"),
+    )
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", lambda _seconds: None)
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "pending",
+        "state_changed": True,
+        "rollover_ready": False,
+    }
+    assert RunState.load(state_path).executions[1].callback_sent_at_ms == 11000
+    assert client.requests == [
+        {
+            "CallbackId": "callback-1",
+            "Result": b'"callback-complete"',
+        }
+    ]
+
+
+def test_terminal_premature_failure_is_rollover_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    requirement_path = tmp_path / "requirement.yaml"
+    requirement_path.write_text("description: premature execution\n", encoding="utf-8")
+    execution = ExecutionState(
+        description_id="otel-long-running-1",
+        function_name="OtelLongRunning1Wait",
+        execution_arn="arn:premature",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    ).save(state_path)
+    history = {
+        "ExecutionStatus": "FAILED",
+        "Events": [
+            {
+                "EventType": "ExecutionFailed",
+                "EventTimestamp": 10.0,
+            }
+        ],
+    }
+    reports: list[Any] = []
+    time_values = iter([11.0, 12.0])
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": object()})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: history)
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {execution.description_id: requirement_path})
+    monkeypatch.setattr(long_running, "_emit_report", lambda report, *_args, **_kwargs: reports.append(report))
+    monkeypatch.setattr(
+        long_running,
+        "_validate_terminal_execution",
+        lambda **_kwargs: pytest.fail("premature executions must not run terminal validation"),
+    )
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 1
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "failed",
+        "state_changed": False,
+        "rollover_ready": True,
+    }
+    assert len(reports) == 1
+    assert reports[0].exit_code() == 1
+
+
+def test_callback_state_survives_a_transient_polling_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    ).save(state_path)
+    pending_history = {
+        "ExecutionStatus": "RUNNING",
+        "Events": [
+            {
+                "EventType": "CallbackStarted",
+                "CallbackStartedDetails": {"CallbackId": "callback-1"},
+            }
+        ],
+    }
+    histories = iter([pending_history, None])
+    client = _CallbackClient()
+    monotonic_values = iter([0.0, 0.0, 901.0])
+    time_values = iter([11.0, 31.0])
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {CALLBACK_CASE: tmp_path / "requirement.yaml"})
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", lambda _seconds: None)
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "pending",
+        "state_changed": True,
+        "rollover_ready": False,
+    }
+    assert RunState.load(state_path).executions[0].callback_sent_at_ms == 11000
+    assert len(client.requests) == 1
 
 
 def test_short_run_polls_again_after_sending_the_due_callback(
@@ -824,6 +1064,17 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "phase=check" in workflow
     assert "check_status: ${{ steps.check.outputs.status }}" in workflow
     assert "value: ${{ jobs.run.outputs.check_status }}" in workflow
+    assert "rollover_ready: ${{ steps.check.outputs.rollover_ready }}" in workflow
+    assert "value: ${{ jobs.run.outputs.rollover_ready }}" in workflow
+    run_steps = {step["name"]: step for step in workflow_config["jobs"]["run"]["steps"]}
+    check_script = run_steps["Check long-running conformance executions"]["run"]
+    assert 'echo "rollover_ready=false" >> "$GITHUB_OUTPUT"' in check_script
+    assert "'.rollover_ready // false'" in check_script
+    assert run_steps["Persist updated callback state"]["if"] == (
+        "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
+    )
+    retire_script = run_steps["Retire previous state artifact"]["run"]
+    assert '[ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]' in retire_script
 
     sdk_ref = f"{language}_sdk_ref"
     for view in ("invocation", "execution"):
@@ -831,8 +1082,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         condition = rollover["if"]
         assert rollover["needs"] == ["resolve-sdk-main", f"long-running-{view}"]
         assert "always()" in condition
-        assert f"needs.long-running-{view}.outputs.check_status == 'passed'" in condition
-        assert f"needs.long-running-{view}.outputs.check_status == 'failed'" in condition
+        assert f"needs.long-running-{view}.outputs.rollover_ready == 'true'" in condition
         assert rollover["uses"] == f"./.github/workflows/{language}-opentelemetry-long-running.yml"
         expected_inputs = {
             "phase": "launch",

@@ -146,8 +146,7 @@ jobs:
     needs: [resolve-sdk-main, long-running-invocation]
     if: >-
       always() &&
-      (needs.long-running-invocation.outputs.check_status == 'passed' ||
-      needs.long-running-invocation.outputs.check_status == 'failed')
+      needs.long-running-invocation.outputs.rollover_ready == 'true'
     uses: ./.github/workflows/typescript-opentelemetry-long-running.yml
     with:
       phase: launch
@@ -162,8 +161,7 @@ jobs:
     needs: [resolve-sdk-main, long-running-execution]
     if: >-
       always() &&
-      (needs.long-running-execution.outputs.check_status == 'passed' ||
-      needs.long-running-execution.outputs.check_status == 'failed')
+      needs.long-running-execution.outputs.rollover_ready == 'true'
     uses: ./.github/workflows/typescript-opentelemetry-long-running.yml
     with:
       phase: launch

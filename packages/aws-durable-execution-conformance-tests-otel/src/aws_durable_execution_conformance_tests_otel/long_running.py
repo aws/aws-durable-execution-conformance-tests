@@ -460,6 +460,7 @@ def _write_check_result(
     *,
     status: str,
     state_changed: bool,
+    rollover_ready: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -467,6 +468,7 @@ def _write_check_result(
             {
                 "status": status,
                 "state_changed": state_changed,
+                "rollover_ready": rollover_ready,
             },
             indent=2,
         ),
@@ -520,50 +522,32 @@ def _poll_pending_executions(
         )
         time.sleep(min(interval, remaining))
         for execution in pending:
-            _refresh_execution_history(
-                execution,
-                lambda_client,
-                histories,
-                statuses,
-                output_dir,
-            )
+            try:
+                _refresh_execution_history(
+                    execution,
+                    lambda_client,
+                    histories,
+                    statuses,
+                    output_dir,
+                )
+            except RuntimeError as exc:
+                print(f"History refresh failed while polling {execution.description_id}: {exc}", file=sys.stderr)
         pending = [execution for execution in pending if statuses[execution.description_id] not in TERMINAL_STATUSES]
 
 
-def _fail_premature_executions(
+def _premature_report_entry(
     state: RunState,
-    executions: list[ExecutionState],
-    requirements: Mapping[str, Path],
-    result_path: Path,
-    report_file: str,
-    now_ms: int,
-    *,
-    delete_terminal_stack: bool,
-) -> int:
-    report = _new_report(state, now_ms)
-    for execution in executions:
-        report.add(
-            ReportEntry(
-                id=execution.description_id,
-                suite=SUITE,
-                status=ReportStatus.FAILED,
-                function=execution.function_name,
-                description=load_yaml_file(str(requirements[execution.description_id])).get("description"),
-                errors=[
-                    "Execution reached a terminal state before the "
-                    f"configured {state.delay_seconds}-second delay elapsed"
-                ],
-            )
-        )
-    _emit_report(report, report_file)
-    _write_check_result(
-        result_path,
-        status="failed",
-        state_changed=False,
+    execution: ExecutionState,
+    requirement_path: Path,
+) -> ReportEntry:
+    return ReportEntry(
+        id=execution.description_id,
+        suite=SUITE,
+        status=ReportStatus.FAILED,
+        function=execution.function_name,
+        description=load_yaml_file(str(requirement_path)).get("description"),
+        errors=[f"Execution reached a terminal state before the configured {state.delay_seconds}-second delay elapsed"],
     )
-    if delete_terminal_stack:
-        delete_stack(state.stack_name, state.region)
-    return 1
 
 
 def _validate_terminal_execution(
@@ -661,18 +645,6 @@ def check(
             output_dir,
         )
 
-    premature = _premature_executions(state, statuses, histories)
-    if premature:
-        return _fail_premature_executions(
-            state,
-            premature,
-            requirements,
-            result_path,
-            args.report_file,
-            now_ms,
-            delete_terminal_stack=delete_terminal_stack,
-        )
-
     callback_progressed = False
     for execution in state.executions:
         callback_was_pending = execution.callback_sent_at_ms is None
@@ -703,18 +675,8 @@ def check(
             timeout=args.check_timeout,
             interval=args.check_interval,
         )
-        premature = _premature_executions(state, statuses, histories)
-        if premature:
-            return _fail_premature_executions(
-                state,
-                premature,
-                requirements,
-                result_path,
-                args.report_file,
-                now_ms,
-                delete_terminal_stack=delete_terminal_stack,
-            )
 
+    now_ms = int(time.time() * 1000)
     pending = {description_id: status for description_id, status in statuses.items() if status not in TERMINAL_STATUSES}
     if pending:
         print(
@@ -725,11 +687,22 @@ def check(
             result_path,
             status="pending",
             state_changed=state_changed,
+            rollover_ready=False,
         )
         return 0
 
+    premature_ids = {execution.description_id for execution in _premature_executions(state, statuses, histories)}
     report = _new_report(state, now_ms)
     for execution in state.executions:
+        if execution.description_id in premature_ids:
+            report.add(
+                _premature_report_entry(
+                    state,
+                    execution,
+                    requirements[execution.description_id],
+                )
+            )
+            continue
         report.add(
             _validate_terminal_execution(
                 state=state,
@@ -750,6 +723,7 @@ def check(
         result_path,
         status=status,
         state_changed=state_changed,
+        rollover_ready=True,
     )
     if delete_terminal_stack:
         delete_stack(state.stack_name, state.region)

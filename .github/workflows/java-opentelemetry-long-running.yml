@@ -30,6 +30,9 @@ on:
       check_status:
         description: Terminal or pending status from a deferred check
         value: ${{ jobs.run.outputs.check_status }}
+      rollover_ready:
+        description: Whether every deferred execution reached a terminal state
+        value: ${{ jobs.run.outputs.rollover_ready }}
 
 permissions:
   actions: write
@@ -56,6 +59,7 @@ jobs:
   run:
     outputs:
       check_status: ${{ steps.check.outputs.status }}
+      rollover_ready: ${{ steps.check.outputs.rollover_ready }}
     name: >-
       ${{ inputs.view }} /
       ${{ inputs.phase == 'short' && 'Short run'
@@ -281,15 +285,17 @@ jobs:
           if [ ! -f "$RESULT_FILE" ]; then
             echo "status=error" >> "$GITHUB_OUTPUT"
             echo "state_changed=false" >> "$GITHUB_OUTPUT"
+            echo "rollover_ready=false" >> "$GITHUB_OUTPUT"
             echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "status=$(jq -r .status "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
           echo "state_changed=$(jq -r .state_changed "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
+          echo "rollover_ready=$(jq -r '.rollover_ready // false' "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
           echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
 
       - name: Persist updated callback state
-        if: steps.check.outputs.status == 'pending' && steps.check.outputs.state_changed == 'true'
+        if: steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STATE_ARTIFACT }}
@@ -314,15 +320,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.state.outputs.artifact_id }}
-          STATUS: ${{ steps.check.outputs.status }}
           STATE_CHANGED: ${{ steps.check.outputs.state_changed }}
-          CHECK_EXIT_CODE: ${{ steps.check.outputs.check_exit_code }}
+          ROLLOVER_READY: ${{ steps.check.outputs.rollover_ready }}
         run: |
-          if [ "$STATUS" = "pending" ] && [ "$STATE_CHANGED" = "true" ]; then
-            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
-          elif [ "$STATUS" = "failed" ]; then
-            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
-          elif [ "$STATUS" = "passed" ] && [ "$CHECK_EXIT_CODE" = "0" ]; then
+          if [ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]; then
             gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
           fi
 
