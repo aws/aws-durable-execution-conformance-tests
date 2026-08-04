@@ -289,9 +289,39 @@ jobs:
             echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "status=$(jq -r .status "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
+          status=$(jq -r .status "$RESULT_FILE")
+          rollover_ready=false
+          if jq -e 'has("rollover_ready")' "$RESULT_FILE" > /dev/null; then
+            rollover_ready=$(jq -r .rollover_ready "$RESULT_FILE")
+          elif [ "$status" = "passed" ] || [ "$status" = "failed" ]; then
+            history_files=()
+            histories_complete=true
+            while IFS= read -r description_id; do
+              history_file="$HISTORY_DIR/$description_id.json"
+              if [ ! -f "$history_file" ]; then
+                histories_complete=false
+                break
+              fi
+              history_files+=("$history_file")
+            done < <(jq -r '.executions[].description_id' "$STATE_FILE")
+            if [ "$histories_complete" = "true" ] && [ "${#history_files[@]}" -gt 0 ]; then
+              rollover_ready=$(
+                jq -s -r '
+                  def is_terminal:
+                    (.ExecutionStatus // "") as $status
+                    | ((["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] | index($status)) != null)
+                      or any((.Events // .events // [])[]?;
+                        .EventType as $event_type
+                        | (["ExecutionSucceeded", "ExecutionFailed", "ExecutionTimedOut",
+                            "ExecutionCancelled"] | index($event_type)) != null);
+                  all(.[]; is_terminal)
+                ' "${history_files[@]}"
+              )
+            fi
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "state_changed=$(jq -r .state_changed "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
-          echo "rollover_ready=$(jq -r '.rollover_ready // false' "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
+          echo "rollover_ready=$rollover_ready" >> "$GITHUB_OUTPUT"
           echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
 
       - name: Persist updated callback state

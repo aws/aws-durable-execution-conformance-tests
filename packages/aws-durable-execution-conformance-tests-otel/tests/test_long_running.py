@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -1069,7 +1072,10 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     run_steps = {step["name"]: step for step in workflow_config["jobs"]["run"]["steps"]}
     check_script = run_steps["Check long-running conformance executions"]["run"]
     assert 'echo "rollover_ready=false" >> "$GITHUB_OUTPUT"' in check_script
-    assert "'.rollover_ready // false'" in check_script
+    assert "if jq -e 'has(\"rollover_ready\")'" in check_script
+    assert "done < <(jq -r '.executions[].description_id' \"$STATE_FILE\")" in check_script
+    assert 'elif [ "$status" = "passed" ] || [ "$status" = "failed" ]; then' in check_script
+    assert "all(.[]; is_terminal)" in check_script
     assert run_steps["Persist updated callback state"]["if"] == (
         "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
     )
@@ -1142,3 +1148,98 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     )
     assert "github.run_number" not in workflow
     assert "github.run_attempt" not in workflow
+
+
+@pytest.mark.parametrize(
+    ("legacy_status", "history_payloads", "expected_rollover_ready"),
+    [
+        (
+            "passed",
+            [
+                {"ExecutionStatus": "SUCCEEDED"},
+                {"Events": [{"EventType": "ExecutionSucceeded"}]},
+            ],
+            "true",
+        ),
+        (
+            "failed",
+            [
+                {"ExecutionStatus": "FAILED"},
+                {"Events": [{"EventType": "ExecutionTimedOut"}]},
+            ],
+            "true",
+        ),
+        (
+            "failed",
+            [
+                {"ExecutionStatus": "FAILED"},
+                {"ExecutionStatus": "RUNNING"},
+            ],
+            "false",
+        ),
+    ],
+)
+def test_workflow_derives_legacy_rollover_readiness_from_all_histories(
+    tmp_path: Path,
+    legacy_status: str,
+    history_payloads: list[dict[str, Any]],
+    expected_rollover_ready: str,
+) -> None:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("workflow compatibility test requires bash and jq")
+
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    check_script = next(
+        step["run"]
+        for step in workflow["jobs"]["run"]["steps"]
+        if step["name"] == "Check long-running conformance executions"
+    )
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    history_dir = tmp_path / "history"
+    output_path = tmp_path / "github-output"
+    bin_dir = tmp_path / "bin"
+    history_dir.mkdir()
+    bin_dir.mkdir()
+    descriptions = [f"otel-long-running-{index}" for index in range(1, len(history_payloads) + 1)]
+    state_path.write_text(
+        json.dumps({"executions": [{"description_id": description_id} for description_id in descriptions]}),
+        encoding="utf-8",
+    )
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": legacy_status,
+                "state_changed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for description_id, history in zip(descriptions, history_payloads, strict=True):
+        (history_dir / f"{description_id}.json").write_text(
+            json.dumps(history),
+            encoding="utf-8",
+        )
+    fake_hatch = bin_dir / "hatch"
+    fake_hatch.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_hatch.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "STATE_FILE": str(state_path),
+        "RESULT_FILE": str(result_path),
+        "HISTORY_DIR": str(history_dir),
+        "REPORT_FILE": str(tmp_path / "report"),
+        "GITHUB_OUTPUT": str(output_path),
+    }
+    subprocess.run(
+        ["bash", "-c", check_script],
+        check=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+    assert outputs["status"] == legacy_status
+    assert outputs["rollover_ready"] == expected_rollover_ready
