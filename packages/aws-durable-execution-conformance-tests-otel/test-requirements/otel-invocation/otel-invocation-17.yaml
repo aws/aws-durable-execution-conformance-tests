@@ -156,7 +156,7 @@ TelemetryAssertions:
           durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
           durable.operation.type: CONTEXT
           durable.operation.subtype: WaitForCallback
-          durable.operation.status: STARTED
+          durable.operation.status: FAILED
           durable.operation.name: otel-failed-callback
         after:
           name: otel-failed-callback
