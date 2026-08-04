@@ -64,6 +64,8 @@ from aws_durable_execution_conformance_tests_otel.model import parse_timestamp
 SUITE = "otel-long-running"
 STATE_VERSION = 3
 MAX_DELAY_SECONDS = 86400
+DEFAULT_CHECK_TIMEOUT = 900.0
+DEFAULT_CHECK_INTERVAL = 15.0
 CALLBACK_CASE = "otel-long-running-3"
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"})
 TERMINAL_EVENT_TYPES = frozenset(
@@ -471,6 +473,98 @@ def _write_check_result(
     )
 
 
+def _refresh_execution_history(
+    execution: ExecutionState,
+    lambda_client: Any,
+    histories: dict[str, dict[str, Any]],
+    statuses: dict[str, str | None],
+    output_dir: Path,
+) -> None:
+    history = get_execution_history(
+        execution.execution_arn,
+        lambda_client,
+    )
+    if history is None:
+        raise RuntimeError(f"Could not retrieve history for {execution.description_id}")
+    histories[execution.description_id] = history
+    statuses[execution.description_id] = get_execution_status(history)
+    save_execution_history(
+        execution.description_id,
+        history,
+        output_dir=output_dir,
+    )
+
+
+def _poll_pending_executions(
+    state: RunState,
+    lambda_client: Any,
+    histories: dict[str, dict[str, Any]],
+    statuses: dict[str, str | None],
+    output_dir: Path,
+    *,
+    timeout: float,
+    interval: float,
+) -> None:
+    pending = [
+        execution for execution in state.executions if statuses[execution.description_id] not in TERMINAL_STATUSES
+    ]
+    deadline = time.monotonic() + timeout
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        print(
+            "Waiting for callback-triggered executions to finish: "
+            + ", ".join(execution.description_id for execution in pending)
+        )
+        time.sleep(min(interval, remaining))
+        for execution in pending:
+            _refresh_execution_history(
+                execution,
+                lambda_client,
+                histories,
+                statuses,
+                output_dir,
+            )
+        pending = [execution for execution in pending if statuses[execution.description_id] not in TERMINAL_STATUSES]
+
+
+def _fail_premature_executions(
+    state: RunState,
+    executions: list[ExecutionState],
+    requirements: Mapping[str, Path],
+    result_path: Path,
+    report_file: str,
+    now_ms: int,
+    *,
+    delete_terminal_stack: bool,
+) -> int:
+    report = _new_report(state, now_ms)
+    for execution in executions:
+        report.add(
+            ReportEntry(
+                id=execution.description_id,
+                suite=SUITE,
+                status=ReportStatus.FAILED,
+                function=execution.function_name,
+                description=load_yaml_file(str(requirements[execution.description_id])).get("description"),
+                errors=[
+                    "Execution reached a terminal state before the "
+                    f"configured {state.delay_seconds}-second delay elapsed"
+                ],
+            )
+        )
+    _emit_report(report, report_file)
+    _write_check_result(
+        result_path,
+        status="failed",
+        state_changed=False,
+    )
+    if delete_terminal_stack:
+        delete_stack(state.stack_name, state.region)
+    return 1
+
+
 def _validate_terminal_execution(
     *,
     state: RunState,
@@ -558,58 +652,67 @@ def check(
     histories: dict[str, dict[str, Any]] = {}
     statuses: dict[str, str | None] = {}
     for execution in state.executions:
-        history = get_execution_history(
-            execution.execution_arn,
+        _refresh_execution_history(
+            execution,
             clients["lambda"],
+            histories,
+            statuses,
+            output_dir,
         )
-        if history is None:
-            raise RuntimeError(f"Could not retrieve history for {execution.description_id}")
-        histories[execution.description_id] = history
-        save_execution_history(
-            execution.description_id,
-            history,
-            output_dir=output_dir,
-        )
-
-        statuses[execution.description_id] = get_execution_status(history)
 
     premature = _premature_executions(state, statuses, histories)
     if premature:
-        report = _new_report(state, now_ms)
-        for execution in premature:
-            report.add(
-                ReportEntry(
-                    id=execution.description_id,
-                    suite=SUITE,
-                    status=ReportStatus.FAILED,
-                    function=execution.function_name,
-                    description=load_yaml_file(str(requirements[execution.description_id])).get("description"),
-                    errors=[
-                        "Execution reached a terminal state before the "
-                        f"configured {state.delay_seconds}-second delay elapsed"
-                    ],
-                )
-            )
-        _emit_report(report, args.report_file)
-        _write_check_result(
+        return _fail_premature_executions(
+            state,
+            premature,
+            requirements,
             result_path,
-            status="failed",
-            state_changed=False,
+            args.report_file,
+            now_ms,
+            delete_terminal_stack=delete_terminal_stack,
         )
-        if delete_terminal_stack:
-            delete_stack(state.stack_name, state.region)
-        return 1
 
+    callback_progressed = False
     for execution in state.executions:
-        state_changed |= _send_due_callback(
+        callback_was_pending = execution.callback_sent_at_ms is None
+        execution_changed = _send_due_callback(
             state,
             execution,
             histories[execution.description_id],
             clients["lambda"],
             now_ms,
         )
+        state_changed |= execution_changed
+        callback_progressed |= (
+            execution_changed
+            and callback_was_pending
+            and execution.callback_sent_at_ms is not None
+            and statuses[execution.description_id] not in TERMINAL_STATUSES
+        )
     if state_changed:
         state.save(state_path)
+
+    if callback_progressed:
+        _poll_pending_executions(
+            state,
+            clients["lambda"],
+            histories,
+            statuses,
+            output_dir,
+            timeout=args.check_timeout,
+            interval=args.check_interval,
+        )
+        premature = _premature_executions(state, statuses, histories)
+        if premature:
+            return _fail_premature_executions(
+                state,
+                premature,
+                requirements,
+                result_path,
+                args.report_file,
+                now_ms,
+                delete_terminal_stack=delete_terminal_stack,
+            )
 
     pending = {description_id: status for description_id, status in statuses.items() if status not in TERMINAL_STATUSES}
     if pending:
@@ -758,6 +861,16 @@ def _parser() -> argparse.ArgumentParser:
         default=True,
         help="Delete the stack after terminal validation (pass --no-cleanup to retain it).",
     )
+    check_parser.add_argument(
+        "--check-timeout",
+        type=float,
+        default=DEFAULT_CHECK_TIMEOUT,
+    )
+    check_parser.add_argument(
+        "--check-interval",
+        type=float,
+        default=DEFAULT_CHECK_INTERVAL,
+    )
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--template", required=True)
@@ -793,12 +906,12 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--check-timeout",
         type=float,
-        default=900.0,
+        default=DEFAULT_CHECK_TIMEOUT,
     )
     run_parser.add_argument(
         "--check-interval",
         type=float,
-        default=15.0,
+        default=DEFAULT_CHECK_INTERVAL,
     )
     return parser
 
@@ -808,10 +921,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.phase == "launch":
             return launch(args)
-        if args.phase == "check":
-            return check(args, delete_terminal_stack=args.cleanup)
         if args.check_timeout <= 0 or args.check_interval <= 0:
             raise ValueError("check timeout and interval must be positive")
+        if args.phase == "check":
+            return check(args, delete_terminal_stack=args.cleanup)
         return run_to_completion(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Long-running OTel {args.phase} failed: {exc}", file=sys.stderr)

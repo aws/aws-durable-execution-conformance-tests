@@ -30,6 +30,10 @@ on:
         description: Python SDK Git ref to test
         required: true
         type: string
+    outputs:
+      check_status:
+        description: Terminal or pending status from a deferred check
+        value: ${{ jobs.run.outputs.check_status }}
 
 permissions:
   actions: write
@@ -54,6 +58,8 @@ env:
 
 jobs:
   run:
+    outputs:
+      check_status: ${{ steps.check.outputs.status }}
     name: >-
       ${{ inputs.view }} /
       ${{ inputs.phase == 'short' && 'Short run'
