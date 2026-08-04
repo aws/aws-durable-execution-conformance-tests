@@ -69,6 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
+      CURRENT_CHECKER: ${{ github.workspace }}/.build/current-conformance-tests
       OTEL_VIEW: ${{ inputs.view }}
       STATE_ARTIFACT: typescript-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
       TEST_NAME: t-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
@@ -121,6 +122,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.state.outputs.source_revision || github.sha }}
+
+      - name: Check out current conformance checker
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .build/current-conformance-tests
 
       - name: Check out TypeScript SDK main
         if: env.PHASE == 'short' || steps.state.outputs.phase == 'launch'
@@ -279,30 +288,59 @@ jobs:
           rollover_ready=false
           if jq -e 'has("rollover_ready")' "$RESULT_FILE" > /dev/null; then
             rollover_ready=$(jq -r .rollover_ready "$RESULT_FILE")
-          elif [ "$status" = "passed" ] || [ "$status" = "failed" ]; then
-            history_files=()
-            histories_complete=true
-            while IFS= read -r description_id; do
-              history_file="$HISTORY_DIR/$description_id.json"
-              if [ ! -f "$history_file" ]; then
-                histories_complete=false
-                break
+          else
+            if [ "$status" = "passed" ] || [ "$status" = "failed" ]; then
+              history_files=()
+              histories_complete=true
+              while IFS= read -r description_id; do
+                history_file="$HISTORY_DIR/$description_id.json"
+                if [ ! -f "$history_file" ]; then
+                  histories_complete=false
+                  break
+                fi
+                history_files+=("$history_file")
+              done < <(jq -r '.executions[].description_id' "$STATE_FILE")
+              if [ "$histories_complete" = "true" ] && [ "${#history_files[@]}" -gt 0 ]; then
+                rollover_ready=$(
+                  jq -s -r '
+                    def is_terminal:
+                      (.ExecutionStatus // "") as $status
+                      | ((["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] | index($status)) != null)
+                        or any((.Events // .events // [])[]?;
+                          .EventType as $event_type
+                          | (["ExecutionSucceeded", "ExecutionFailed", "ExecutionTimedOut",
+                              "ExecutionCancelled"] | index($event_type)) != null);
+                    all(.[]; is_terminal)
+                  ' "${history_files[@]}"
+                )
               fi
-              history_files+=("$history_file")
-            done < <(jq -r '.executions[].description_id' "$STATE_FILE")
-            if [ "$histories_complete" = "true" ] && [ "${#history_files[@]}" -gt 0 ]; then
-              rollover_ready=$(
-                jq -s -r '
-                  def is_terminal:
-                    (.ExecutionStatus // "") as $status
-                    | ((["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] | index($status)) != null)
-                      or any((.Events // .events // [])[]?;
-                        .EventType as $event_type
-                        | (["ExecutionSucceeded", "ExecutionFailed", "ExecutionTimedOut",
-                            "ExecutionCancelled"] | index($event_type)) != null);
-                  all(.[]; is_terminal)
-                ' "${history_files[@]}"
+            fi
+            if [ "$rollover_ready" != "true" ] && \
+              { [ "$status" = "pending" ] || [ "$status" = "failed" ]; }; then
+              echo "Migrating incomplete legacy result with the current callback-aware checker"
+              rm -f "$RESULT_FILE"
+              set +e
+              (
+                cd "$CURRENT_CHECKER"
+                hatch run python -m aws_durable_execution_conformance_tests_otel.long_running check \
+                  --state-file "$STATE_FILE" \
+                  --result-file "$RESULT_FILE" \
+                  --history-dir "$HISTORY_DIR" \
+                  --report-file "$REPORT_FILE" \
+                  --otel-backend xray \
+                  --no-cleanup
               )
+              exit_code=$?
+              set -e
+              if [ ! -f "$RESULT_FILE" ]; then
+                echo "status=error" >> "$GITHUB_OUTPUT"
+                echo "state_changed=false" >> "$GITHUB_OUTPUT"
+                echo "rollover_ready=false" >> "$GITHUB_OUTPUT"
+                echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              status=$(jq -r .status "$RESULT_FILE")
+              rollover_ready=$(jq -r '.rollover_ready // false' "$RESULT_FILE")
             fi
           fi
           echo "status=$status" >> "$GITHUB_OUTPUT"

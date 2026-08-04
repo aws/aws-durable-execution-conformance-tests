@@ -677,12 +677,31 @@ def check(
         )
 
     now_ms = int(time.time() * 1000)
+    premature = _premature_executions(state, statuses, histories)
     pending = {description_id: status for description_id, status in statuses.items() if status not in TERMINAL_STATUSES}
     if pending:
         print(
             "Long-running executions are still pending: "
             + ", ".join(f"{description_id}={status or 'UNKNOWN'}" for description_id, status in sorted(pending.items()))
         )
+        if premature:
+            report = _new_report(state, now_ms)
+            for execution in premature:
+                report.add(
+                    _premature_report_entry(
+                        state,
+                        execution,
+                        requirements[execution.description_id],
+                    )
+                )
+            _emit_report(report, args.report_file)
+            _write_check_result(
+                result_path,
+                status="failed",
+                state_changed=state_changed,
+                rollover_ready=False,
+            )
+            return report.exit_code()
         _write_check_result(
             result_path,
             status="pending",
@@ -691,7 +710,7 @@ def check(
         )
         return 0
 
-    premature_ids = {execution.description_id for execution in _premature_executions(state, statuses, histories)}
+    premature_ids = {execution.description_id for execution in premature}
     report = _new_report(state, now_ms)
     for execution in state.executions:
         if execution.description_id in premature_ids:

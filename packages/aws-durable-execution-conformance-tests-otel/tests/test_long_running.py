@@ -612,7 +612,7 @@ def test_callback_completion_poll_preserves_pending_state_at_timeout(
     assert sleeps == [15.0]
 
 
-def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
+def test_premature_failure_is_reported_after_advancing_a_pending_callback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -664,8 +664,11 @@ def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
     }
     histories = iter([premature_history, pending_history, pending_history])
     client = _CallbackClient()
+    reports: list[Any] = []
     monotonic_values = iter([0.0, 0.0, 901.0])
     time_values = iter([11.0, 31.0])
+    premature_requirement = tmp_path / "premature.yaml"
+    premature_requirement.write_text("description: premature execution\n", encoding="utf-8")
 
     monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
     monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
@@ -673,15 +676,11 @@ def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
         long_running,
         "_requirement_cases",
         lambda: {
-            premature_execution.description_id: tmp_path / "premature.yaml",
+            premature_execution.description_id: premature_requirement,
             CALLBACK_CASE: tmp_path / "callback.yaml",
         },
     )
-    monkeypatch.setattr(
-        long_running,
-        "_emit_report",
-        lambda *_args, **_kwargs: pytest.fail("pending executions must not emit a terminal report"),
-    )
+    monkeypatch.setattr(long_running, "_emit_report", lambda report, *_args, **_kwargs: reports.append(report))
     monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
     monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(long_running.time, "sleep", lambda _seconds: None)
@@ -696,9 +695,9 @@ def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
         check_interval=15.0,
     )
 
-    assert long_running.check(args, delete_terminal_stack=False) == 0
+    assert long_running.check(args, delete_terminal_stack=False) == 1
     assert json.loads(result_path.read_text(encoding="utf-8")) == {
-        "status": "pending",
+        "status": "failed",
         "state_changed": True,
         "rollover_ready": False,
     }
@@ -709,6 +708,8 @@ def test_premature_failure_does_not_roll_over_while_an_execution_is_pending(
             "Result": b'"callback-complete"',
         }
     ]
+    assert len(reports) == 1
+    assert [entry.id for entry in reports[0].entries] == [premature_execution.description_id]
 
 
 def test_terminal_premature_failure_is_rollover_ready(
@@ -1074,8 +1075,18 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert 'echo "rollover_ready=false" >> "$GITHUB_OUTPUT"' in check_script
     assert "if jq -e 'has(\"rollover_ready\")'" in check_script
     assert "done < <(jq -r '.executions[].description_id' \"$STATE_FILE\")" in check_script
-    assert 'elif [ "$status" = "passed" ] || [ "$status" = "failed" ]; then' in check_script
+    assert 'if [ "$status" = "passed" ] || [ "$status" = "failed" ]; then' in check_script
     assert "all(.[]; is_terminal)" in check_script
+    assert 'cd "$CURRENT_CHECKER"' in check_script
+    current_checker_checkout = run_steps["Check out current conformance checker"]
+    assert current_checker_checkout["if"] == (
+        "steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'"
+    )
+    assert current_checker_checkout["with"] == {
+        "repository": "${{ job.workflow_repository }}",
+        "ref": "${{ job.workflow_sha }}",
+        "path": ".build/current-conformance-tests",
+    }
     assert run_steps["Persist updated callback state"]["if"] == (
         "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
     )
@@ -1169,14 +1180,6 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
             ],
             "true",
         ),
-        (
-            "failed",
-            [
-                {"ExecutionStatus": "FAILED"},
-                {"ExecutionStatus": "RUNNING"},
-            ],
-            "false",
-        ),
     ],
 )
 def test_workflow_derives_legacy_rollover_readiness_from_all_histories(
@@ -1243,3 +1246,122 @@ def test_workflow_derives_legacy_rollover_readiness_from_all_histories(
     outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
     assert outputs["status"] == legacy_status
     assert outputs["rollover_ready"] == expected_rollover_ready
+
+
+def test_workflow_migrates_legacy_failure_before_retaining_pending_callback(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("workflow compatibility test requires bash and jq")
+
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    check_script = next(
+        step["run"]
+        for step in workflow["jobs"]["run"]["steps"]
+        if step["name"] == "Check long-running conformance executions"
+    )
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    history_dir = tmp_path / "history"
+    output_path = tmp_path / "github-output"
+    hatch_calls_path = tmp_path / "hatch-calls"
+    bin_dir = tmp_path / "bin"
+    current_checker = tmp_path / "current-checker"
+    history_dir.mkdir()
+    bin_dir.mkdir()
+    current_checker.mkdir()
+    state_path.write_text(
+        json.dumps(
+            {
+                "executions": [
+                    {
+                        "description_id": "otel-long-running-1",
+                    },
+                    {
+                        "description_id": CALLBACK_CASE,
+                        "callback_sent_at_ms": None,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "state_changed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (history_dir / "otel-long-running-1.json").write_text(
+        json.dumps(
+            {
+                "ExecutionStatus": "FAILED",
+                "Events": [{"EventType": "ExecutionFailed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (history_dir / f"{CALLBACK_CASE}.json").write_text(
+        json.dumps(
+            {
+                "ExecutionStatus": "RUNNING",
+                "Events": [
+                    {
+                        "EventType": "CallbackStarted",
+                        "CallbackStartedDetails": {"CallbackId": "callback-1"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_hatch = bin_dir / "hatch"
+    fake_hatch.write_text(
+        """#!/bin/sh
+printf '%s\n' "$PWD" >> "$HATCH_CALLS"
+if [ "$PWD" != "$CURRENT_CHECKER" ]; then
+  exit 1
+fi
+jq '.executions[1].callback_sent_at_ms = 11000' "$STATE_FILE" > "$STATE_FILE.tmp"
+mv "$STATE_FILE.tmp" "$STATE_FILE"
+printf '%s\n' '{"status":"failed","state_changed":true,"rollover_ready":false}' > "$RESULT_FILE"
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_hatch.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "CURRENT_CHECKER": str(current_checker),
+        "STATE_FILE": str(state_path),
+        "RESULT_FILE": str(result_path),
+        "HISTORY_DIR": str(history_dir),
+        "REPORT_FILE": str(tmp_path / "report"),
+        "GITHUB_OUTPUT": str(output_path),
+        "HATCH_CALLS": str(hatch_calls_path),
+    }
+    subprocess.run(
+        ["bash", "-c", check_script],
+        check=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+    migrated_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert outputs == {
+        "status": "failed",
+        "state_changed": "true",
+        "rollover_ready": "false",
+        "check_exit_code": "1",
+    }
+    assert migrated_state["executions"][1]["callback_sent_at_ms"] == 11000
+    assert hatch_calls_path.read_text(encoding="utf-8").splitlines() == [
+        str(ROOT),
+        str(current_checker),
+    ]
