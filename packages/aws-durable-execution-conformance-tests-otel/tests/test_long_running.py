@@ -120,6 +120,10 @@ def test_java_execution_view_uses_the_plugin_service_name() -> None:
     assert _query_service_name("python", "execution") == "invocation"
 
 
+def test_long_running_checks_always_write_trace_artifacts() -> None:
+    assert long_running._otel_options("python", "invocation", "us-west-2")["otel_write_trace_artifact"] is True
+
+
 def test_requirement_input_uses_the_workflow_delay_override() -> None:
     requirement = yaml.safe_load(_requirement_cases()["otel-long-running-1"].read_text(encoding="utf-8"))
 

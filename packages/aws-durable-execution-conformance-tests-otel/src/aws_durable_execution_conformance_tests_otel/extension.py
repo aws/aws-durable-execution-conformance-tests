@@ -260,7 +260,7 @@ class OtelExtension:
                 query,
                 feature_disparities=backend.feature_disparities,
             )
-            if errors:
+            if errors or bool(options.get("otel_write_trace_artifact")):
                 self._write_artifact(context, trace_to_dict(trace))
             return [f"OpenTelemetry: {error}" for error in errors]
         except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:

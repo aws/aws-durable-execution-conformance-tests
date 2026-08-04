@@ -238,6 +238,7 @@ def _otel_options(
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
+        "otel_write_trace_artifact": True,
     }
 
 
