@@ -183,7 +183,8 @@ def test_service_name_argument_configures_the_resource_name() -> None:
     [
         (None, False, "test", []),
         ("invocation", True, "Invocation", ["physical-function"]),
-        ("execution", True, "Execution", ["physical-function"]),
+        ("execution", True, "Workflow", ["physical-function"]),
+        (" execution ", True, "Workflow", ["physical-function"]),
     ],
 )
 def test_telemetry_assertions_resolve_history_and_execution_variables(
@@ -340,6 +341,41 @@ def test_xray_plugin_mode_service_name_requires_a_deployed_value(
     )
 
     with pytest.raises(ValueError, match="must define a non-empty OTEL_PLUGIN_MODE"):
+        OtelExtension._query_service_name(
+            context,
+            "xray",
+            {BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME},
+        )
+
+
+@pytest.mark.parametrize("plugin_mode", ["unknown", "Invocation", "workflow"])
+def test_xray_plugin_mode_service_name_rejects_unsupported_mode(
+    tmp_path: Path,
+    plugin_mode: str,
+) -> None:
+    class LambdaClient:
+        def get_function_configuration(self, *, FunctionName: str) -> dict[str, Any]:
+            assert FunctionName == "physical-function"
+            return {"Environment": {"Variables": {"OTEL_PLUGIN_MODE": plugin_mode}}}
+
+    context = ValidationContext(
+        description_id="otel-invocation-1",
+        function_name="LogicalFunction",
+        execution_arn=(
+            "arn:aws:lambda:us-west-2:123456789012:function:physical-function:$LATEST/durable-execution/execution/test"
+        ),
+        invocation_started_at_ms=1,
+        invocation_finished_at_ms=2,
+        region="us-west-2",
+        language="java",
+        requirement={},
+        execution_history={},
+        output_dir=tmp_path,
+        options={"otel_service_name": "test"},
+        aws_clients={"lambda": LambdaClient()},
+    )
+
+    with pytest.raises(ValueError, match="expected 'invocation' or 'execution'"):
         OtelExtension._query_service_name(
             context,
             "xray",

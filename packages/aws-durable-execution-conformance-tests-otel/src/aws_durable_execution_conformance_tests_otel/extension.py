@@ -46,6 +46,8 @@ from aws_durable_execution_conformance_tests_otel.redaction import redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
+INVOCATION_SPAN_NAME = "Invocation"
+EXECUTION_SPAN_NAME = "Workflow"
 
 BUILTIN_EXPORTERS = {
     "adot": AdotExporterProfile,
@@ -317,7 +319,15 @@ class OtelExtension:
                 f"Lambda function {deployed_function_name!r} must define a non-empty OTEL_PLUGIN_MODE "
                 "when the X-Ray PLUGIN_MODE_SERVICE_NAME feature disparity is enabled"
             )
-        return plugin_mode.strip().capitalize()
+        plugin_mode = plugin_mode.strip()
+        if plugin_mode == "invocation":
+            return INVOCATION_SPAN_NAME
+        if plugin_mode == "execution":
+            return EXECUTION_SPAN_NAME
+        raise ValueError(
+            f"Lambda function {deployed_function_name!r} has unsupported OTEL_PLUGIN_MODE "
+            f"{plugin_mode!r}; expected 'invocation' or 'execution'"
+        )
 
     def _exporter_options(self, args: argparse.Namespace) -> ExporterOptions:
         return ExporterOptions(
