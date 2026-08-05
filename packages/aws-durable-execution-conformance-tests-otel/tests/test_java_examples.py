@@ -161,8 +161,8 @@ def test_java_examples_use_agent_initialized_otel_plugin() -> None:
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
+        "opentelemetry-sdk",
     } <= artifacts
-    assert "opentelemetry-sdk" not in artifacts
     assert "opentelemetry-exporter-otlp" not in artifacts
     assert "aws-distro-opentelemetry-xray-udp-span-exporter" not in artifacts
     sdk_versions = {
