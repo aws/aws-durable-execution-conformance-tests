@@ -135,6 +135,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
     assert "/opt/collector-config/config-s3.yaml" in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
@@ -233,8 +234,8 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 4
-    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 6
+    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 6
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
@@ -257,6 +258,12 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
         assert "      conformance_test_sha:" in workflow
         assert "      python_sdk_ref:" in workflow
         assert "        required: true" in workflow
+
+
+def test_python_workflow_uses_the_resource_service_name() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert workflow.count("--otel-service-name durable-execution-conformance") == 3
 
 
 def test_python_workflow_validates_reusable_inputs() -> None:

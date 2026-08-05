@@ -58,12 +58,17 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     ExporterOptions,
     normalize_runtime,
 )
-from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.extension import (
+    DEFAULT_OTEL_SERVICE_NAME,
+    OtelExtension,
+)
 from aws_durable_execution_conformance_tests_otel.model import parse_timestamp
 
 SUITE = "otel-long-running"
-STATE_VERSION = 3
+STATE_VERSION = 4
 MAX_DELAY_SECONDS = 86400
+DEFAULT_CHECK_TIMEOUT = 900.0
+DEFAULT_CHECK_INTERVAL = 15.0
 CALLBACK_CASE = "otel-long-running-3"
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"})
 TERMINAL_EVENT_TYPES = frozenset(
@@ -137,6 +142,7 @@ class RunState:
     launched_at_ms: int
     executions: list[ExecutionState]
     source_revision: str
+    otel_service_name: str = DEFAULT_OTEL_SERVICE_NAME
     version: int = STATE_VERSION
     suite: str = SUITE
 
@@ -159,6 +165,7 @@ class RunState:
             launched_at_ms=int(value["launched_at_ms"]),
             executions=[ExecutionState.from_dict(item) for item in value["executions"]],
             source_revision=str(value["source_revision"]),
+            otel_service_name=str(value["otel_service_name"]),
         )
         if state.suite != SUITE:
             raise ValueError(f"State suite is {state.suite!r}; expected {SUITE!r}")
@@ -183,6 +190,7 @@ class RunState:
             "launched_at_ms": self.launched_at_ms,
             "executions": [execution.to_dict() for execution in self.executions],
             "source_revision": self.source_revision,
+            "otel_service_name": self.otel_service_name,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -225,6 +233,8 @@ def _otel_options(
     view: str,
     region: str,
     backend: str = "xray",
+    *,
+    service_name: str = DEFAULT_OTEL_SERVICE_NAME,
 ) -> dict[str, Any]:
     return {
         "language": language,
@@ -232,17 +242,12 @@ def _otel_options(
         "suite": [SUITE],
         "otel_backend": backend,
         "otel_exporter": "adot",
-        "otel_service_name": _query_service_name(language, view),
+        "otel_service_name": service_name,
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
+        "otel_write_trace_artifact": True,
     }
-
-
-def _query_service_name(language: str, view: str) -> str:
-    if normalize_runtime(language) == "java" and view == "execution":
-        return "workflow"
-    return "invocation"
 
 
 def _resolved_input(
@@ -285,7 +290,7 @@ def launch(args: argparse.Namespace) -> int:
             runtime=runtime,
             region=args.region,
             endpoint=None,
-            service_name="invocation",
+            service_name=args.otel_service_name,
             layer_arn=args.otel_layer_arn,
         )
     )
@@ -360,6 +365,7 @@ def launch(args: argparse.Namespace) -> int:
         launched_at_ms=launched_at_ms,
         executions=executions,
         source_revision=str(args.source_revision),
+        otel_service_name=str(args.otel_service_name),
     ).save(state_path)
     print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
     return 0
@@ -457,6 +463,7 @@ def _write_check_result(
     *,
     status: str,
     state_changed: bool,
+    rollover_ready: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -464,10 +471,85 @@ def _write_check_result(
             {
                 "status": status,
                 "state_changed": state_changed,
+                "rollover_ready": rollover_ready,
             },
             indent=2,
         ),
         encoding="utf-8",
+    )
+
+
+def _refresh_execution_history(
+    execution: ExecutionState,
+    lambda_client: Any,
+    histories: dict[str, dict[str, Any]],
+    statuses: dict[str, str | None],
+    output_dir: Path,
+) -> None:
+    history = get_execution_history(
+        execution.execution_arn,
+        lambda_client,
+    )
+    if history is None:
+        raise RuntimeError(f"Could not retrieve history for {execution.description_id}")
+    histories[execution.description_id] = history
+    statuses[execution.description_id] = get_execution_status(history)
+    save_execution_history(
+        execution.description_id,
+        history,
+        output_dir=output_dir,
+    )
+
+
+def _poll_pending_executions(
+    state: RunState,
+    lambda_client: Any,
+    histories: dict[str, dict[str, Any]],
+    statuses: dict[str, str | None],
+    output_dir: Path,
+    *,
+    timeout: float,
+    interval: float,
+) -> None:
+    pending = [
+        execution for execution in state.executions if statuses[execution.description_id] not in TERMINAL_STATUSES
+    ]
+    deadline = time.monotonic() + timeout
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        print(
+            "Waiting for callback-triggered executions to finish: "
+            + ", ".join(execution.description_id for execution in pending)
+        )
+        time.sleep(min(interval, remaining))
+        for execution in pending:
+            try:
+                _refresh_execution_history(
+                    execution,
+                    lambda_client,
+                    histories,
+                    statuses,
+                    output_dir,
+                )
+            except RuntimeError as exc:
+                print(f"History refresh failed while polling {execution.description_id}: {exc}", file=sys.stderr)
+        pending = [execution for execution in pending if statuses[execution.description_id] not in TERMINAL_STATUSES]
+
+
+def _premature_report_entry(
+    state: RunState,
+    execution: ExecutionState,
+    requirement_path: Path,
+) -> ReportEntry:
+    return ReportEntry(
+        id=execution.description_id,
+        suite=SUITE,
+        status=ReportStatus.FAILED,
+        function=execution.function_name,
+        description=load_yaml_file(str(requirement_path)).get("description"),
+        errors=[f"Execution reached a terminal state before the configured {state.delay_seconds}-second delay elapsed"],
     )
 
 
@@ -523,7 +605,13 @@ def _validate_terminal_execution(
                 **match_result.resolved_placeholders,
                 "EXECUTION_ARN": execution.execution_arn,
             },
-            options=_otel_options(state.language, state.view, state.region, backend),
+            options=_otel_options(
+                state.language,
+                state.view,
+                state.region,
+                backend,
+                service_name=state.otel_service_name,
+            ),
             aws_clients=clients,
         )
         errors.extend(OtelExtension().validate_telemetry(validation_context))
@@ -558,74 +646,91 @@ def check(
     histories: dict[str, dict[str, Any]] = {}
     statuses: dict[str, str | None] = {}
     for execution in state.executions:
-        history = get_execution_history(
-            execution.execution_arn,
+        _refresh_execution_history(
+            execution,
             clients["lambda"],
-        )
-        if history is None:
-            raise RuntimeError(f"Could not retrieve history for {execution.description_id}")
-        histories[execution.description_id] = history
-        save_execution_history(
-            execution.description_id,
-            history,
-            output_dir=output_dir,
+            histories,
+            statuses,
+            output_dir,
         )
 
-        statuses[execution.description_id] = get_execution_status(history)
-
-    premature = _premature_executions(state, statuses, histories)
-    if premature:
-        report = _new_report(state, now_ms)
-        for execution in premature:
-            report.add(
-                ReportEntry(
-                    id=execution.description_id,
-                    suite=SUITE,
-                    status=ReportStatus.FAILED,
-                    function=execution.function_name,
-                    description=load_yaml_file(str(requirements[execution.description_id])).get("description"),
-                    errors=[
-                        "Execution reached a terminal state before the "
-                        f"configured {state.delay_seconds}-second delay elapsed"
-                    ],
-                )
-            )
-        _emit_report(report, args.report_file)
-        _write_check_result(
-            result_path,
-            status="failed",
-            state_changed=False,
-        )
-        if delete_terminal_stack:
-            delete_stack(state.stack_name, state.region)
-        return 1
-
+    callback_progressed = False
     for execution in state.executions:
-        state_changed |= _send_due_callback(
+        callback_was_pending = execution.callback_sent_at_ms is None
+        execution_changed = _send_due_callback(
             state,
             execution,
             histories[execution.description_id],
             clients["lambda"],
             now_ms,
         )
+        state_changed |= execution_changed
+        callback_progressed |= (
+            execution_changed
+            and callback_was_pending
+            and execution.callback_sent_at_ms is not None
+            and statuses[execution.description_id] not in TERMINAL_STATUSES
+        )
     if state_changed:
         state.save(state_path)
 
+    if callback_progressed:
+        _poll_pending_executions(
+            state,
+            clients["lambda"],
+            histories,
+            statuses,
+            output_dir,
+            timeout=args.check_timeout,
+            interval=args.check_interval,
+        )
+
+    now_ms = int(time.time() * 1000)
+    premature = _premature_executions(state, statuses, histories)
     pending = {description_id: status for description_id, status in statuses.items() if status not in TERMINAL_STATUSES}
     if pending:
         print(
             "Long-running executions are still pending: "
             + ", ".join(f"{description_id}={status or 'UNKNOWN'}" for description_id, status in sorted(pending.items()))
         )
+        if premature:
+            report = _new_report(state, now_ms)
+            for execution in premature:
+                report.add(
+                    _premature_report_entry(
+                        state,
+                        execution,
+                        requirements[execution.description_id],
+                    )
+                )
+            _emit_report(report, args.report_file)
+            _write_check_result(
+                result_path,
+                status="failed",
+                state_changed=state_changed,
+                rollover_ready=False,
+            )
+            return report.exit_code()
         _write_check_result(
             result_path,
             status="pending",
             state_changed=state_changed,
+            rollover_ready=False,
         )
         return 0
 
+    premature_ids = {execution.description_id for execution in premature}
     report = _new_report(state, now_ms)
     for execution in state.executions:
+        if execution.description_id in premature_ids:
+            report.add(
+                _premature_report_entry(
+                    state,
+                    execution,
+                    requirements[execution.description_id],
+                )
+            )
+            continue
         report.add(
             _validate_terminal_execution(
                 state=state,
@@ -646,6 +751,7 @@ def check(
         result_path,
         status=status,
         state_changed=state_changed,
+        rollover_ready=True,
     )
     if delete_terminal_stack:
         delete_stack(state.stack_name, state.region)
@@ -741,6 +847,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     launch_parser.add_argument("--lambda-execution-role-arn", required=True)
     launch_parser.add_argument("--otel-layer-arn", required=True)
+    launch_parser.add_argument(
+        "--otel-service-name",
+        default=DEFAULT_OTEL_SERVICE_NAME,
+        help="OpenTelemetry resource service name configured on the test functions.",
+    )
 
     check_parser = subparsers.add_parser("check")
     check_parser.add_argument("--state-file", required=True)
@@ -757,6 +868,16 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Delete the stack after terminal validation (pass --no-cleanup to retain it).",
+    )
+    check_parser.add_argument(
+        "--check-timeout",
+        type=float,
+        default=DEFAULT_CHECK_TIMEOUT,
+    )
+    check_parser.add_argument(
+        "--check-interval",
+        type=float,
+        default=DEFAULT_CHECK_INTERVAL,
     )
 
     run_parser = subparsers.add_parser("run")
@@ -782,6 +903,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--lambda-execution-role-arn", required=True)
     run_parser.add_argument("--otel-layer-arn", required=True)
+    run_parser.add_argument(
+        "--otel-service-name",
+        default=DEFAULT_OTEL_SERVICE_NAME,
+        help="OpenTelemetry resource service name configured on the test functions.",
+    )
     run_parser.add_argument("--result-file", required=True)
     run_parser.add_argument("--history-dir", required=True)
     run_parser.add_argument("--report-file", required=True)
@@ -793,12 +919,12 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--check-timeout",
         type=float,
-        default=900.0,
+        default=DEFAULT_CHECK_TIMEOUT,
     )
     run_parser.add_argument(
         "--check-interval",
         type=float,
-        default=15.0,
+        default=DEFAULT_CHECK_INTERVAL,
     )
     return parser
 
@@ -808,10 +934,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.phase == "launch":
             return launch(args)
-        if args.phase == "check":
-            return check(args, delete_terminal_stack=args.cleanup)
         if args.check_timeout <= 0 or args.check_interval <= 0:
             raise ValueError("check timeout and interval must be positive")
+        if args.phase == "check":
+            return check(args, delete_terminal_stack=args.cleanup)
         return run_to_completion(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Long-running OTel {args.phase} failed: {exc}", file=sys.stderr)

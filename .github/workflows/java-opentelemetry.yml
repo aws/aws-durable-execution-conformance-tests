@@ -140,3 +140,33 @@ jobs:
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
     secrets: inherit
+
+  next-long-running-invocation:
+    name: Launch next long running invocation view
+    needs: [resolve-sdk-main, long-running-invocation]
+    if: >-
+      always() &&
+      needs.long-running-invocation.outputs.rollover_ready == 'true'
+    uses: ./.github/workflows/java-opentelemetry-long-running.yml
+    with:
+      phase: launch
+      view: invocation
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
+    secrets: inherit
+
+  next-long-running-execution:
+    name: Launch next long running execution view
+    needs: [resolve-sdk-main, long-running-execution]
+    if: >-
+      always() &&
+      needs.long-running-execution.outputs.rollover_ready == 'true'
+    uses: ./.github/workflows/java-opentelemetry-long-running.yml
+    with:
+      phase: launch
+      view: execution
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}
+    secrets: inherit

@@ -42,6 +42,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 from aws_durable_execution_conformance_tests_otel.redaction import redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
+
 BUILTIN_EXPORTERS = {
     "adot": AdotExporterProfile,
     "community": CommunityExporterProfile,
@@ -111,8 +113,8 @@ class OtelExtension:
         )
         group.add_argument(
             "--otel-service-name",
-            default="durable-execution-conformance",
-            help="Service name used to correlate telemetry.",
+            default=DEFAULT_OTEL_SERVICE_NAME,
+            help="OpenTelemetry resource service name configured on the test function.",
         )
         group.add_argument(
             "--otel-layer-arn",
@@ -210,6 +212,7 @@ class OtelExtension:
             placeholders = PlaceholderContext()
             for name, value in context.placeholders.items():
                 placeholders.bind(name, value)
+            placeholders.bind("SERVICE_NAME", str(options["otel_service_name"]))
             assertions = placeholders.substitute(raw_assertions)
             allowed_execution_arns = assertions.get("allowed_execution_arns", ())
             additional_execution_arns: tuple[str, ...]
@@ -260,7 +263,7 @@ class OtelExtension:
                 query,
                 feature_disparities=backend.feature_disparities,
             )
-            if errors:
+            if errors or bool(options.get("otel_write_trace_artifact")):
                 self._write_artifact(context, trace_to_dict(trace))
             return [f"OpenTelemetry: {error}" for error in errors]
         except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:

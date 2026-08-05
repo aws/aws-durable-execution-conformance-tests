@@ -48,7 +48,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -62,7 +62,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -75,7 +75,7 @@ TelemetryAssertions:
           durable.operation.id: ${PARALLEL1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -100,7 +100,7 @@ TelemetryAssertions:
           durable.operation.id: ${BRANCH1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -124,7 +124,7 @@ TelemetryAssertions:
           durable.operation.id: ${STEP1}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -149,7 +149,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -177,7 +177,7 @@ TelemetryAssertions:
           durable.operation.id: ${BRANCH2}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -201,7 +201,7 @@ TelemetryAssertions:
           durable.operation.id: ${STEP2}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -226,7 +226,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation

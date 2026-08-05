@@ -142,6 +142,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
 
@@ -213,6 +214,7 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
+    assert workflow.count("--otel-service-name durable-execution-conformance") == 3
 
 
 def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> None:
@@ -224,7 +226,7 @@ def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> N
     assert "refs/heads/main" in entry_workflow
     assert 'echo "ref=$TYPESCRIPT_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("typescript_sdk_ref: ${{ needs.resolve-sdk-main.outputs.typescript_sdk_ref }}") == 4
+    assert entry_workflow.count("typescript_sdk_ref: ${{ needs.resolve-sdk-main.outputs.typescript_sdk_ref }}") == 6
     for workflow in (suite_workflow, long_running_workflow):
         assert "TYPESCRIPT_SDK_REF: ${{ inputs.typescript_sdk_ref }}" in workflow
         assert "      typescript_sdk_ref:" in workflow

@@ -40,7 +40,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -54,7 +54,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -75,7 +75,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -94,7 +94,7 @@ TelemetryAssertions:
           durable.operation.id: ${RETRY_STEP}
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 2
             name: Invocation
@@ -120,7 +120,7 @@ TelemetryAssertions:
           durable.attempt.outcome: FAILED
       expect:
         status: ERROR
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
             name: Invocation
@@ -155,7 +155,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 2
             name: Invocation
