@@ -24,7 +24,9 @@ def otel_plugin() -> DurableInstrumentationPlugin:
         return ExecutionOtelPlugin(
             OtelPluginConfig(use_default_tracer_provider=True),
         )
-    return InvocationOtelPlugin()
+    return InvocationOtelPlugin(
+        OtelPluginConfig(use_default_tracer_provider=True),
+    )
 
 
 def require_scenario(event: Mapping[str, Any], expected: str) -> None:

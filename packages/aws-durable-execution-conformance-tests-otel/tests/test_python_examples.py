@@ -207,6 +207,7 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
     common = (EXAMPLES_DIR / "src" / "common.py").read_text(encoding="utf-8")
     assert "ExecutionOtelPlugin" in common
     assert "InvocationOtelPlugin" in common
+    assert "use_default_tracer_provider=True" in common
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
