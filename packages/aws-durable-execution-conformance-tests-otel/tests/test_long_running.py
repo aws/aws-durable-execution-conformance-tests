@@ -1133,8 +1133,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert 'cd "$CURRENT_CHECKER"' in check_script
     workflow_support_checkout = run_steps["Check out workflow support"]
     assert workflow_support_checkout["with"] == {
-        "repository": "${{ inputs.conformance_repository }}",
-        "ref": "${{ inputs.conformance_test_sha }}",
+        "repository": "${{ job.workflow_repository }}",
+        "ref": "${{ job.workflow_sha }}",
         "path": ".build/workflow-support",
     }
     assert run_steps["Persist updated callback state"]["if"] == (

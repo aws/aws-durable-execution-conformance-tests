@@ -203,6 +203,33 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     assert "--report console github" in text
 
 
+def test_workers_load_support_from_their_own_workflow_revision() -> None:
+    expected_support_checkout = {
+        "repository": "${{ job.workflow_repository }}",
+        "ref": "${{ job.workflow_sha }}",
+        "path": ".build/workflow-support",
+    }
+    expected_action = "./.build/workflow-support/.github/actions/prepare-otel-example"
+
+    for path, job_names, conformance_ref in (
+        (SUITE_WORKFLOW, ("backend", "datadog", "s3_collector"), "${{ inputs.conformance_test_sha }}"),
+        (
+            LONG_RUNNING_WORKFLOW,
+            ("run",),
+            "${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}",
+        ),
+    ):
+        workflow = _load(path)
+        for job_name in job_names:
+            steps = {step["name"]: step for step in workflow["jobs"][job_name]["steps"]}
+            assert steps["Check out conformance tests"]["with"] == {
+                "repository": "${{ inputs.conformance_repository }}",
+                "ref": conformance_ref,
+            }
+            assert steps["Check out workflow support"]["with"] == expected_support_checkout
+            assert steps["Prepare conformance example"]["uses"] == expected_action
+
+
 def test_dash0_and_s3_resources_remain_stable() -> None:
     workflow = _load(SUITE_WORKFLOW)
     backend = workflow["jobs"]["backend"]
@@ -246,8 +273,6 @@ def test_long_running_worker_is_reusable_and_language_neutral() -> None:
     assert "aws cloudformation delete-stack" not in text
     assert "setup-java" not in text
     assert "setup-node" not in text
-    assert "job.workflow_repository" not in text
-    assert "job.workflow_sha" not in text
 
 
 def test_otel_workflows_only_delete_rolled_back_stacks() -> None:

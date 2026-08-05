@@ -139,8 +139,15 @@ jobs:
           repository: ${{ inputs.conformance_repository }}
           ref: ${{ inputs.conformance_test_sha }}
 
+      - name: Check out workflow support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .build/workflow-support
+
       - name: Prepare conformance example
-        uses: ./.github/actions/prepare-otel-example
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
         with:
           aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
           aws-region: ${{ env.AWS_REGION }}
@@ -322,8 +329,15 @@ jobs:
           repository: ${{ inputs.conformance_repository }}
           ref: ${{ inputs.conformance_test_sha }}
 
+      - name: Check out workflow support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .build/workflow-support
+
       - name: Prepare conformance example
-        uses: ./.github/actions/prepare-otel-example
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
         with:
           aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
           aws-region: ${{ env.AWS_REGION }}
@@ -378,6 +392,13 @@ jobs:
           repository: ${{ inputs.conformance_repository }}
           ref: ${{ inputs.conformance_test_sha }}
 
+      - name: Check out workflow support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .build/workflow-support
+
       - name: Check out OpenTelemetry Lambda collector
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -394,7 +415,7 @@ jobs:
             ${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/lambdacomponents/go.sum
 
       - name: Prepare conformance example
-        uses: ./.github/actions/prepare-otel-example
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
         with:
           aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
           aws-region: ${{ env.AWS_REGION }}
