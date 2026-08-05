@@ -228,7 +228,7 @@ def test_java_workflow_resolves_main_once_and_propagates_the_commit() -> None:
     assert "refs/heads/main" in entry_workflow
     assert 'echo "ref=$JAVA_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}") == 4
+    assert entry_workflow.count("java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}") == 6
     for workflow in (suite_workflow, long_running_workflow):
         assert "JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}" in workflow
         assert "      java_sdk_ref:" in workflow
