@@ -101,6 +101,7 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Default: /opt/otel-instrument" in template
     assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
     assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
+    assert "OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf" in template
     assert "HasOtelCollectorLayer: !Not" in template
     assert "HasOtelExporterEndpoint: !Not" in template
     assert "HasOtelExporterHeaders: !Not" in template
@@ -245,7 +246,7 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "--compatible-runtimes java21" in workflow
     assert "--language java" in workflow
     assert "--otel-exporter community" in workflow
-    assert "--otel-endpoint http://localhost:4317" in workflow
+    assert "--otel-endpoint http://localhost:4318" in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow

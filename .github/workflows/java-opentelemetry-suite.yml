@@ -613,7 +613,7 @@ jobs:
               "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
-            --otel-endpoint http://localhost:4317 \
+            --otel-endpoint http://localhost:4318 \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
             --otel-backend collector \
             --otel-backend-endpoint "$OTEL_S3_URI" \
