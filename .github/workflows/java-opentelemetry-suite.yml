@@ -139,7 +139,7 @@ jobs:
             --region "$AWS_REGION" \
             --query LayerVersionArn \
             --output text > /dev/null
-          echo "Using AWSOpenTelemetryDistroJava layer $ADOT_LAYER_ARN with its Java agent disabled"
+          echo "Using AWSOpenTelemetryDistroJava layer $ADOT_LAYER_ARN"
           echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
 
       - name: Compile Java handlers with SDK main

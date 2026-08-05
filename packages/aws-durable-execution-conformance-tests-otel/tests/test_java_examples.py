@@ -96,9 +96,15 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
-    assert "AWS_LAMBDA_EXEC_WRAPPER" not in template
+    assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
     assert "Default: /opt/otel-instrument" in template
+    assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
+    assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
     assert "HasOtelCollectorLayer: !Not" in template
+    assert "HasOtelExporterEndpoint: !Not" in template
+    assert "HasOtelExporterHeaders: !Not" in template
+    assert "          - HasOtelExporterEndpoint" in template
+    assert "          - HasOtelExporterHeaders" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
@@ -132,6 +138,14 @@ def test_java_example_template_handlers_have_sources() -> None:
         assert f"      Handler: {handler}" in template
 
 
+def test_java_long_running_template_enables_agent_extension() -> None:
+    template = (EXAMPLES_DIR / "template-long-running.yaml").read_text(encoding="utf-8")
+
+    assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
+    assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
+    assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
+
+
 def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     pom_path = EXAMPLES_DIR / "pom.xml"
     root = ET.parse(pom_path).getroot()
@@ -146,9 +160,9 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
-        "aws-distro-opentelemetry-xray-udp-span-exporter",
         "opentelemetry-exporter-otlp",
     } <= artifacts
+    assert "aws-distro-opentelemetry-xray-udp-span-exporter" not in artifacts
     sdk_versions = {
         element.findtext("m:version", namespaces=namespace)
         for element in dependencies
@@ -162,26 +176,33 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
     assert ".setResource(resource)" in handler
     assert 'AttributeKey.stringKey("service.name")' in handler
-    assert "AwsXrayUdpSpanExporterBuilder" in handler
-    assert '"AWS_XRAY_DAEMON_ADDRESS"' in handler
+    assert '"invocation"' in handler
+    assert "AwsXrayUdpSpanExporterBuilder" not in handler
+    assert '"AWS_XRAY_DAEMON_ADDRESS"' not in handler
     assert "OtlpGrpcSpanExporter" in handler
     assert '"OTEL_EXPORTER_OTLP_ENDPOINT"' in handler
     assert '"OTEL_EXPORTER_OTLP_HEADERS"' in handler
     assert "URLDecoder.decode" in handler
-    assert "builder::addHeader" in handler
+    assert "exporterBuilder::addHeader" in handler
     assert '"software.amazon.lambda.durable.otel.InvocationOtelPlugin"' in handler
     assert '"software.amazon.lambda.durable.otel.ExecutionOtelPlugin"' in handler
     assert '"software.amazon.lambda.durable.otel.OtelPlugin"' in handler
     assert '"OTEL_PLUGIN_MODE"' in handler
+    assert "pluginClass.getConstructor().newInstance()" in handler
+    pom = pom_path.read_text(encoding="utf-8")
+    assert "<id>copy-otel-javaagent-extension</id>" in pom
+    assert "<destFileName>otel-plugin-extension.jar</destFileName>" in pom
+    assert "<outputDirectory>${project.build.outputDirectory}/lib</outputDirectory>" in pom
 
 
-def test_java_workflow_uses_current_adot_distro_with_agent_disabled() -> None:
+def test_java_workflow_uses_current_adot_distro_with_agent_enabled() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "AWSOpenTelemetryDistroJava" in workflow
     assert "aws-observability/aws-otel-java-instrumentation/releases/latest" in workflow
     assert "github.base_ref == 'main'" in workflow
     assert "--otel-allow-missing-span-identity-attributes" not in workflow
+    assert "with its Java agent disabled" not in workflow
 
 
 def test_java_workflow_builds_handlers_with_sdk_main() -> None:
