@@ -236,17 +236,10 @@ def _otel_options(
         "otel_backend": backend,
         "otel_exporter": "adot",
         "otel_service_name": DEFAULT_OTEL_SERVICE_NAME,
-        "otel_discovery_service_name": _discovery_service_name(language, view),
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
     }
-
-
-def _discovery_service_name(language: str, view: str) -> str | None:
-    if normalize_runtime(language) == "java":
-        return "Workflow" if view == "execution" else "Invocation"
-    return None
 
 
 def _resolved_input(

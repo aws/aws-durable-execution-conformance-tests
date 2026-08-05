@@ -36,7 +36,6 @@ env:
   JAVA_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance
-  OTEL_XRAY_DISCOVERY_SERVICE_NAME: ${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Workflow' }}
   OTEL_SUITE: ${{ inputs.suite }}
   OTEL_VIEW_SUFFIX: ${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TEST_NAME: java-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
@@ -170,7 +169,6 @@ jobs:
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
-            --otel-discovery-service-name "$OTEL_XRAY_DISCOVERY_SERVICE_NAME" \
             --otel-backend xray
 
       - name: Show Lambda logs

@@ -25,7 +25,6 @@ from aws_durable_execution_conformance_tests_otel.long_running import (
     SUPPORTED_VIEWS,
     ExecutionState,
     RunState,
-    _discovery_service_name,
     _premature_executions,
     _requirement_cases,
     _requirement_for_view,
@@ -113,17 +112,14 @@ def test_runtime_accepts_supported_telemetry_views(language: str, view: str) -> 
     assert _validate_view(language, view) == view
 
 
-def test_long_running_separates_resource_and_xray_discovery_service_names() -> None:
+def test_long_running_uses_resource_service_name_for_discovery() -> None:
     assert SUPPORTED_VIEWS["java"] == {"execution", "invocation"}
-    assert _discovery_service_name("java", "execution") == "Workflow"
-    assert _discovery_service_name("java", "invocation") == "Invocation"
-    assert _discovery_service_name("python", "execution") is None
     options = long_running._otel_options("java", "execution", "us-west-2")
     assert options["otel_service_name"] == "durable-execution-conformance"
-    assert options["otel_discovery_service_name"] == "Workflow"
+    assert "otel_discovery_service_name" not in options
     python_options = long_running._otel_options("python", "execution", "us-west-2")
     assert python_options["otel_service_name"] == "durable-execution-conformance"
-    assert python_options["otel_discovery_service_name"] is None
+    assert "otel_discovery_service_name" not in python_options
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:

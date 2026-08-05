@@ -58,12 +58,10 @@ durable-execution-conformance \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_JAVA_LAYER_ARN" \
   --otel-service-name durable-execution-conformance \
-  --otel-discovery-service-name Invocation \
   --otel-backend xray
 ```
 
-Run the execution suite separately with `--suite otel-execution` and
-`--otel-discovery-service-name Workflow`.
+Run the execution suite separately with `--suite otel-execution`.
 
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
