@@ -8,7 +8,10 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import yaml
+
 from aws_durable_execution_conformance_tests.validate import (
+    _CfnSafeLoader,
     parse_function_descriptions,
     parse_not_implemented,
 )
@@ -71,6 +74,14 @@ def test_java_example_template_maps_every_otel_requirement() -> None:
 
 def test_java_example_implements_execution_view() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
+
+
+def test_java_example_selects_otlp_protocol_by_exporter_profile() -> None:
+    with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
+        template = yaml.load(stream, Loader=_CfnSafeLoader)
+
+    environment = template["Globals"]["Function"]["Environment"]["Variables"]
+    assert environment["OTEL_EXPORTER_OTLP_PROTOCOL"] == {"If": ["HasOtelExporterEndpoint", "http/protobuf", "grpc"]}
 
 
 def test_java_example_template_accepts_runner_parameters() -> None:
@@ -245,7 +256,7 @@ def test_java_s3_job_builds_and_queries_the_collector() -> None:
     assert "--compatible-runtimes java21" in workflow
     assert "--language java" in workflow
     assert "--otel-exporter community" in workflow
-    assert "--otel-endpoint http://localhost:4317" in workflow
+    assert "--otel-endpoint http://localhost:4318" in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow
