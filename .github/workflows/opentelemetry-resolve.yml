@@ -1,0 +1,166 @@
+name: OpenTelemetry Resolve Revisions
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: Stable language key used in resource and artifact names
+        required: true
+        type: string
+      resource_prefix:
+        description: Short prefix used by long-running Lambda resources
+        required: true
+        type: string
+      sdk_repository:
+        description: GitHub repository containing the language SDK
+        required: true
+        type: string
+      sdk_ref:
+        description: Full SDK commit SHA; defaults to the SDK main branch
+        required: false
+        default: ""
+        type: string
+      conformance_repository:
+        description: GitHub repository containing the conformance tests
+        required: false
+        default: aws/aws-durable-execution-conformance-tests
+        type: string
+      conformance_test_ref:
+        description: Optional conformance test commit SHA or branch name
+        required: false
+        default: ""
+        type: string
+      adot_release_repository:
+        description: GitHub repository whose latest release lists regional ADOT layers
+        required: false
+        default: ""
+        type: string
+      adot_layer_arn:
+        description: Optional fixed ADOT layer ARN, bypassing release discovery
+        required: false
+        default: ""
+        type: string
+      phase:
+        description: Run short tests, launch a long run, or check the active long run
+        required: false
+        default: short
+        type: string
+    outputs:
+      conformance_test_sha:
+        description: Full conformance test commit SHA
+        value: ${{ jobs.resolve.outputs.conformance_test_sha }}
+      sdk_ref:
+        description: Full SDK commit SHA
+        value: ${{ jobs.resolve.outputs.sdk_ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve test commits
+    runs-on: ubuntu-latest
+    outputs:
+      conformance_test_sha: ${{ steps.resolve-conformance.outputs.sha }}
+      sdk_ref: ${{ steps.resolve-sdk.outputs.ref }}
+    steps:
+      - name: Validate workflow inputs
+        env:
+          ADOT_LAYER_ARN: ${{ inputs.adot_layer_arn }}
+          ADOT_RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
+          CONFORMANCE_REPOSITORY: ${{ inputs.conformance_repository }}
+          LANGUAGE: ${{ inputs.language }}
+          REQUESTED_PHASE: ${{ inputs.phase }}
+          RESOURCE_PREFIX: ${{ inputs.resource_prefix }}
+          SDK_REPOSITORY: ${{ inputs.sdk_repository }}
+        run: |
+          case "$REQUESTED_PHASE" in
+            short|launch|check) ;;
+            *)
+              echo "phase must be one of: short, launch, check"
+              exit 1
+              ;;
+          esac
+          if [[ ! "$LANGUAGE" =~ ^[a-z][a-z0-9-]{0,19}$ ]]; then
+            echo "language must contain 1-20 lowercase resource-safe characters"
+            exit 1
+          fi
+          if [[ ! "$RESOURCE_PREFIX" =~ ^[a-z][a-z0-9-]{0,11}$ ]]; then
+            echo "resource_prefix must contain 1-12 lowercase resource-safe characters"
+            exit 1
+          fi
+          for required_repository in \
+            "conformance_repository:$CONFORMANCE_REPOSITORY" \
+            "sdk_repository:$SDK_REPOSITORY"; do
+            name=${required_repository%%:*}
+            repository=${required_repository#*:}
+            if [ -z "$repository" ]; then
+              echo "$name is required"
+              exit 1
+            fi
+          done
+          for repository in \
+            "$CONFORMANCE_REPOSITORY" \
+            "$SDK_REPOSITORY" \
+            "$ADOT_RELEASE_REPOSITORY"; do
+            if [ -n "$repository" ] && [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+              echo "Invalid GitHub repository: $repository"
+              exit 1
+            fi
+          done
+          if [ -z "$ADOT_LAYER_ARN" ] && [ -z "$ADOT_RELEASE_REPOSITORY" ]; then
+            echo "adot_release_repository or adot_layer_arn is required"
+            exit 1
+          fi
+
+      - name: Resolve conformance test commit
+        id: resolve-conformance
+        env:
+          CONFORMANCE_REPOSITORY: ${{ inputs.conformance_repository }}
+          REQUESTED_CONFORMANCE_TEST_REF: >-
+            ${{ inputs.conformance_test_ref
+              || (github.repository == inputs.conformance_repository && github.sha)
+              || 'main' }}
+        run: |
+          CONFORMANCE_TEST_REF="$REQUESTED_CONFORMANCE_TEST_REF"
+          if [[ "$CONFORMANCE_TEST_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            CONFORMANCE_TEST_SHA="$CONFORMANCE_TEST_REF"
+          else
+            if [[ "$CONFORMANCE_TEST_REF" != refs/* ]]; then
+              CONFORMANCE_TEST_REF="refs/heads/$CONFORMANCE_TEST_REF"
+            fi
+            CONFORMANCE_TEST_SHA=$(
+              git ls-remote \
+                "https://github.com/$CONFORMANCE_REPOSITORY.git" \
+                "$CONFORMANCE_TEST_REF" |
+                awk -v ref="$CONFORMANCE_TEST_REF" '$2 == ref {print $1; exit}'
+            )
+          fi
+          if [[ ! "$CONFORMANCE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve conformance test ref $REQUESTED_CONFORMANCE_TEST_REF"
+            exit 1
+          fi
+          echo "Using conformance test commit $CONFORMANCE_TEST_SHA"
+          echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve SDK commit
+        id: resolve-sdk
+        env:
+          REQUESTED_SDK_REF: ${{ inputs.sdk_ref }}
+          SDK_REPOSITORY: ${{ inputs.sdk_repository }}
+        run: |
+          SDK_REF="$REQUESTED_SDK_REF"
+          if [ -z "$SDK_REF" ]; then
+            SDK_REF=$(
+              git ls-remote \
+                "https://github.com/$SDK_REPOSITORY.git" \
+                refs/heads/main |
+                awk '{print $1}'
+            )
+          fi
+          if [[ ! "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sdk_ref must resolve to a full 40-character commit SHA"
+            exit 1
+          fi
+          echo "Using $SDK_REPOSITORY commit $SDK_REF"
+          echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"

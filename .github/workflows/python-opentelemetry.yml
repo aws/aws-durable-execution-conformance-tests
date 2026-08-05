@@ -7,7 +7,9 @@ on:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/python-opentelemetry.yml
       - .github/workflows/opentelemetry.yml
+      - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running-orchestrator.yml
       - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
@@ -22,7 +24,9 @@ on:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/python-opentelemetry.yml
       - .github/workflows/opentelemetry.yml
+      - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running-orchestrator.yml
       - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
@@ -121,16 +125,29 @@ permissions:
   id-token: write
 
 jobs:
-  conformance:
-    uses: ./.github/workflows/opentelemetry.yml
+  resolve:
+    name: Resolve test commits
+    uses: ./.github/workflows/opentelemetry-resolve.yml
     with:
       language: python
       resource_prefix: p
       sdk_repository: aws/aws-durable-execution-sdk-python
       sdk_ref: ${{ inputs.python_sdk_ref || '' }}
       conformance_test_ref: ${{ inputs.conformance_test_ref || '' }}
+      adot_release_repository: aws-observability/aws-otel-python-instrumentation
+      phase: ${{ inputs.phase || 'short' }}
+
+  conformance:
+    name: Conformance
+    needs: resolve
+    uses: ./.github/workflows/opentelemetry.yml
+    with:
+      language: python
+      sdk_repository: aws/aws-durable-execution-sdk-python
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: false
-      contract_test_command: >-
+      contract_test_command: &contract_test_command >-
         hatch run test:all
         packages/aws-durable-execution-conformance-tests-otel/tests/test_python_examples.py
       adot_release_repository: aws-observability/aws-otel-python-instrumentation
@@ -138,7 +155,24 @@ jobs:
       collector_otlp_endpoint: http://localhost:4318
       suite_timeout_minutes: 30
       phase: ${{ inputs.phase || 'short' }}
-      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
+    secrets: inherit
+
+  long-running:
+    name: Long running
+    needs: resolve
+    uses: ./.github/workflows/opentelemetry-long-running-orchestrator.yml
+    with:
+      language: python
+      resource_prefix: p
+      sdk_repository: aws/aws-durable-execution-sdk-python
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      checkout_sdk: false
+      contract_test_command: *contract_test_command
+      adot_release_repository: aws-observability/aws-otel-python-instrumentation
+      phase: ${{ inputs.phase || 'short' }}
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
     secrets: inherit

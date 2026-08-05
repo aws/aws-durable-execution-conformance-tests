@@ -84,9 +84,14 @@ workflow discovers the latest Python layer from the ADOT release.
 
 ## Reusable Workflow
 
-The hosted tests use the language-neutral
-`.github/workflows/opentelemetry.yml` reusable workflow. Language presets
-provide repository and runtime metadata plus three optional shell hooks:
+The hosted tests use separate language-neutral reusable workflows for suites
+and long-running views:
+
+- `.github/workflows/opentelemetry.yml`
+- `.github/workflows/opentelemetry-long-running-orchestrator.yml`
+
+Language presets invoke both as sibling jobs and provide repository and runtime
+metadata plus three optional shell hooks:
 
 - `setup_command` installs or selects any SDK toolchain.
 - `contract_test_command` validates the example and template contract.
@@ -103,25 +108,50 @@ setup_command: bash "$SDK_CHECKOUT/.github/scripts/setup-conformance-toolchain.s
 
 The shared workflows do not enumerate SDK toolchains. A future Go, Rust, or
 other runtime can supply its own setup and build commands without changing the
-orchestrator, suite worker, long-running worker, or setup action. For example,
-a Rust preset can select its toolchain with `rustup`:
+orchestrators, workers, or setup action. For example, a Rust preset can select
+its toolchain with `rustup`:
 
 ```yaml
 jobs:
-  otel:
-    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry.yml@main
+  resolve:
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-resolve.yml@main
     with:
       language: rust
       resource_prefix: rs
       sdk_repository: example/aws-durable-execution-sdk-rust
       sdk_ref: ${{ github.sha }}
-      setup_command: |
+      adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
+
+  conformance:
+    needs: resolve
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry.yml@main
+    with:
+      language: rust
+      sdk_repository: example/aws-durable-execution-sdk-rust
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      setup_command: &setup_command |
         rustup toolchain install stable --profile minimal
         rustup default stable
-      prepare_command: cargo build --release --manifest-path "$EXAMPLES_DIR/Cargo.toml"
+      prepare_command: &prepare_command >-
+        cargo build --release --manifest-path "$EXAMPLES_DIR/Cargo.toml"
       adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
       collector_compatible_runtime: provided.al2023
       collector_otlp_endpoint: http://localhost:4318
+    secrets: inherit
+
+  long-running:
+    needs: resolve
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-long-running-orchestrator.yml@main
+    with:
+      language: rust
+      resource_prefix: rs
+      sdk_repository: example/aws-durable-execution-sdk-rust
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      setup_command: *setup_command
+      prepare_command: *prepare_command
+      adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
     secrets: inherit
 ```
 

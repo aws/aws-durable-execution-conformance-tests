@@ -18,7 +18,11 @@ from aws_durable_execution_conformance_tests.validate import (
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
 ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry.yml"
+RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
+LONG_RUNNING_ORCHESTRATOR_PATH = (
+    EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running-orchestrator.yml"
+)
 LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 SOURCE_DIR = (
@@ -221,17 +225,25 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "${OTEL_SUITE}-${case_number}-target" in workflow
 
 
-def test_java_workflow_resolves_main_once_and_propagates_the_commit() -> None:
+def test_java_workflows_share_revision_resolution_and_propagate_the_commit() -> None:
     entry_workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
     orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
+    long_running_orchestrator = LONG_RUNNING_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    resolver_preset = entry_workflow["jobs"]["resolve"]["with"]
     preset = entry_workflow["jobs"]["conformance"]["with"]
+    assert resolver_preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
     assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
-    assert "refs/heads/main" in orchestrator
-    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in orchestrator
-    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert "refs/heads/main" in resolver
+    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
+    for workflow in (orchestrator, long_running_orchestrator):
+        assert workflow.count("sdk_ref: ${{ inputs.sdk_ref }}") == 2
+    for job in ("conformance", "long-running"):
+        assert entry_workflow["jobs"][job]["needs"] == "resolve"
+        assert entry_workflow["jobs"][job]["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
     for workflow in (suite_workflow, long_running_workflow):
         assert "SDK_REF: ${{ inputs.sdk_ref }}" in workflow
         assert "      sdk_ref:" in workflow

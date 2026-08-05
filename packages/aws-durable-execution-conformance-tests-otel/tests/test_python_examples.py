@@ -19,7 +19,11 @@ from aws_durable_execution_conformance_tests.validate import (
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
 ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry.yml"
+RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
+LONG_RUNNING_ORCHESTRATOR_PATH = (
+    EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running-orchestrator.yml"
+)
 LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
@@ -216,6 +220,8 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
     orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
+    long_running_orchestrator = LONG_RUNNING_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
@@ -227,17 +233,24 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
             "required": False,
             "type": "string",
         }
+    resolver_preset = entry_workflow_config["jobs"]["resolve"]["with"]
     preset = entry_workflow_config["jobs"]["conformance"]["with"]
     assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-python"
-    assert preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
-    assert preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
-    assert "github.repository == inputs.conformance_repository && github.sha" in orchestrator
-    assert "|| 'main'" in orchestrator
-    assert orchestrator.count("git ls-remote") == 2
-    assert "refs/heads/main" in orchestrator
-    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in orchestrator
-    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in orchestrator
-    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert resolver_preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
+    assert resolver_preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
+    assert "github.repository == inputs.conformance_repository && github.sha" in resolver
+    assert "|| 'main'" in resolver
+    assert resolver.count("git ls-remote") == 2
+    assert "refs/heads/main" in resolver
+    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in resolver
+    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
+    for workflow in (orchestrator, long_running_orchestrator):
+        assert workflow.count("sdk_ref: ${{ inputs.sdk_ref }}") == 2
+    for job in ("conformance", "long-running"):
+        assert entry_workflow_config["jobs"][job]["needs"] == "resolve"
+        job_inputs = entry_workflow_config["jobs"][job]["with"]
+        assert job_inputs["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+        assert job_inputs["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
@@ -269,7 +282,7 @@ def test_python_workflow_uses_the_resource_service_name() -> None:
 
 
 def test_python_workflow_validates_reusable_inputs() -> None:
-    workflow = yaml.safe_load(ORCHESTRATOR_PATH.read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(RESOLVER_PATH.read_text(encoding="utf-8"))
     resolve_steps = workflow["jobs"]["resolve"]["steps"]
 
     phase_validation = next(step for step in resolve_steps if step.get("name") == "Validate workflow inputs")
