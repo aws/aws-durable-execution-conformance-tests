@@ -24,7 +24,7 @@ Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
 The long-running suite applies both invocation and execution views to waits,
 retry delays, callbacks, and chained invokes that can remain suspended for up
-to one day. Python and TypeScript run both views; Java runs the invocation view
+to one day. Python and JavaScript run both views; Java runs the invocation view
 because its SDK does not provide `ExecutionOtelPlugin`. Dedicated daily X-Ray
 workflows run at midnight PDT (07:00 UTC), launch a suite when no run is active,
 and validate active executions on later runs. They can also be dispatched
@@ -82,6 +82,53 @@ ADOT layer ARN with `--otel-layer-arn` or the runtime-specific
 `ADOT_<RUNTIME>_LAYER_ARN` environment variable. The hosted integration
 workflow discovers the latest Python layer from the ADOT release.
 
+## Reusable Workflow
+
+The hosted tests use the language-neutral
+`.github/workflows/opentelemetry.yml` reusable workflow. Language presets
+provide repository and runtime metadata plus three optional shell hooks:
+
+- `setup_command` installs or selects any SDK toolchain.
+- `contract_test_command` validates the example and template contract.
+- `prepare_command` builds the handlers against the resolved SDK commit.
+
+The hooks run in one Bash process after the optional SDK checkout, so setup
+exports remain available to the contract and preparation commands. They receive
+`SDK_CHECKOUT`, `SDK_REF`, and the shared workflow environment, including
+`EXAMPLES_DIR`. A preset can therefore keep setup logic with its SDK:
+
+```yaml
+setup_command: bash "$SDK_CHECKOUT/.github/scripts/setup-conformance-toolchain.sh"
+```
+
+The shared workflows do not enumerate SDK toolchains. A future Go, Rust, or
+other runtime can supply its own setup and build commands without changing the
+orchestrator, suite worker, long-running worker, or setup action. For example,
+a Rust preset can select its toolchain with `rustup`:
+
+```yaml
+jobs:
+  otel:
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry.yml@main
+    with:
+      language: rust
+      resource_prefix: rs
+      sdk_repository: example/aws-durable-execution-sdk-rust
+      sdk_ref: ${{ github.sha }}
+      setup_command: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+      prepare_command: cargo build --release --manifest-path "$EXAMPLES_DIR/Cargo.toml"
+      adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
+      collector_compatible_runtime: provided.al2023
+      collector_otlp_endpoint: http://localhost:4318
+    secrets: inherit
+```
+
+The runtime still needs conformance templates, exporter support, and test
+handlers before its jobs can pass; adding that support does not require another
+copy of the workflow.
+
 ## Dash0
 
 The `dash0` backend queries Dash0's OTLP/JSON spans API with `POST /api/spans`.
@@ -92,7 +139,7 @@ dataset. The backend first locates a correlated span by service name and
 durable execution ARN, then retrieves every span in that trace with adaptive
 sampling disabled.
 
-The hosted Java, Python, and TypeScript suite workflows run Dash0 beside X-Ray
+The hosted Java, Python, and JavaScript suite workflows run Dash0 beside X-Ray
 using the `us-west-2` Dash0 API and ingress endpoints. They use
 `DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
 
@@ -127,7 +174,7 @@ The stock OpenTelemetry Lambda collector layer does not include
 [`build-lambda-layer.sh`](collector/build-lambda-layer.sh) adds that
 upstream component to a pinned `opentelemetry-lambda` checkout and builds a
 custom extension layer containing `config-s3.yaml`. Separate Python, Java, and
-TypeScript hosted workflows publish temporary language-compatible layer
+JavaScript hosted workflows publish temporary language-compatible layer
 versions, send each function's OTLP traffic to the local extension, query the
 resulting S3 objects through the `collector` backend, and remove every
 temporary stack, bucket, and layer version afterward.
@@ -151,11 +198,12 @@ The project builds one shaded JAR containing all handlers and attaches the
 remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
 gRPC endpoint from the deployment environment.
 
-## TypeScript Examples
+## JavaScript Examples
 
 The self-contained
-[TypeScript SAM project](examples/typescript/README.md) implements all OTel
-requirements on Node.js 22. It builds the JavaScript SDK and OTel plugin from
+[JavaScript SAM project](examples/javascript/README.md), authored in
+TypeScript, implements all OTel requirements on Node.js 22. It builds the
+JavaScript SDK and OTel plugin from
 their `main` branch, bundles the handlers, and exercises both
 `InvocationOtelPlugin` and `ExecutionOtelPlugin` with the tracer provider
 registered by the Lambda instrumentation layer.

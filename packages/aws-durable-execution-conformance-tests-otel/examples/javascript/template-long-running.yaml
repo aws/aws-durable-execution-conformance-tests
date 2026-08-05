@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: TypeScript SDK examples for long-running durable execution OTel conformance
+Description: JavaScript SDK examples for long-running durable execution OTel conformance
 
 Parameters:
   LambdaExecutionRoleArn:

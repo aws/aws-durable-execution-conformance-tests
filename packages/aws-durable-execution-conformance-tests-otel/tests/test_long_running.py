@@ -1002,7 +1002,7 @@ def test_short_run_retains_stack_after_poll_timeout(
     assert deleted == []
 
 
-@pytest.mark.parametrize("language", ["java", "python", "typescript"])
+@pytest.mark.parametrize("language", ["java", "javascript", "python"])
 def test_long_running_templates_map_the_complete_suite(language: str) -> None:
     template_path = EXAMPLES_DIR / language / "template-long-running.yaml"
 
@@ -1050,7 +1050,7 @@ def test_python_long_running_handler_names_match_requirement_numbers() -> None:
 
 def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     python_source = EXAMPLES_DIR / "python" / "src"
-    typescript_source = EXAMPLES_DIR / "typescript" / "handlers"
+    javascript_source = EXAMPLES_DIR / "javascript" / "handlers"
     java_source = (
         EXAMPLES_DIR
         / "java"
@@ -1072,25 +1072,22 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     assert "long_delay_seconds(event)" in (python_source / "otel_long_running_4_chained_invoke.py").read_text(
         encoding="utf-8"
     )
-    assert "longDelaySeconds(event)" in (typescript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
-    assert "longDelaySeconds(event)" in (typescript_source / "otel_23_long_chained_invoke.ts").read_text(
+    assert "longDelaySeconds(event)" in (javascript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
+    assert "longDelaySeconds(event)" in (javascript_source / "otel_23_long_chained_invoke.ts").read_text(
         encoding="utf-8"
     )
     assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning2Retry.java").read_text(encoding="utf-8")
     assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning4InvokeTarget.java").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("language", ["java", "python", "typescript"])
+@pytest.mark.parametrize("language", ["java", "javascript", "python"])
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
-    workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").read_text(encoding="utf-8")
+    orchestrator = (WORKFLOWS_DIR / "opentelemetry.yml").read_text(encoding="utf-8")
+    orchestrator_config = yaml.safe_load(orchestrator)
+    workflow = (WORKFLOWS_DIR / "opentelemetry-long-running.yml").read_text(encoding="utf-8")
     workflow_config = yaml.safe_load(workflow)
-    display_name = {
-        "java": "Java",
-        "python": "Python",
-        "typescript": "TypeScript",
-    }[language]
 
     assert "  pull_request:" in entry_workflow
     assert "  push:" in entry_workflow
@@ -1098,16 +1095,20 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "  schedule:" in entry_workflow
     assert "  workflow_dispatch:" in entry_workflow
     assert 'cron: "0 7 * * *"' in entry_workflow
-    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in entry_workflow
-    assert "github.event_name == 'schedule' && 'auto'" in entry_workflow
-    assert "&& 'short'" in entry_workflow
-    assert "&& '60'" in entry_workflow
     assert 'default: "82800"' in entry_workflow
-    assert f"uses: ./.github/workflows/{language}-opentelemetry-long-running.yml" in entry_workflow
+    preset = entry_workflow_config["jobs"]["conformance"]
+    assert preset["uses"] == "./.github/workflows/opentelemetry.yml"
+    assert preset["with"]["language"] == language
+
+    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in orchestrator
+    assert "github.event_name == 'schedule' && 'auto'" in orchestrator
+    assert "&& 'short'" in orchestrator
+    assert "&& '60'" in orchestrator
     for view in ("invocation", "execution"):
-        delay_expression = entry_workflow_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
+        delay_expression = orchestrator_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
         assert "inputs.phase == 'short'" in delay_expression
         assert "&& '60'" in delay_expression
+
     assert "  workflow_call:" in workflow
     assert 'default: "60"' in workflow
     assert "  pull_request:" not in workflow
@@ -1130,14 +1131,11 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert 'if [ "$status" = "passed" ] || [ "$status" = "failed" ]; then' in check_script
     assert "all(.[]; is_terminal)" in check_script
     assert 'cd "$CURRENT_CHECKER"' in check_script
-    current_checker_checkout = run_steps["Check out current conformance checker"]
-    assert current_checker_checkout["if"] == (
-        "steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'"
-    )
-    assert current_checker_checkout["with"] == {
-        "repository": "${{ job.workflow_repository }}",
-        "ref": "${{ job.workflow_sha }}",
-        "path": ".build/current-conformance-tests",
+    workflow_support_checkout = run_steps["Check out workflow support"]
+    assert workflow_support_checkout["with"] == {
+        "repository": "${{ inputs.conformance_repository }}",
+        "ref": "${{ inputs.conformance_test_sha }}",
+        "path": ".build/workflow-support",
     }
     assert run_steps["Persist updated callback state"]["if"] == (
         "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
@@ -1145,39 +1143,25 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     retire_script = run_steps["Retire previous state artifact"]["run"]
     assert '[ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]' in retire_script
 
-    sdk_ref = f"{language}_sdk_ref"
     for view in ("invocation", "execution"):
-        rollover = entry_workflow_config["jobs"][f"next-long-running-{view}"]
+        rollover = orchestrator_config["jobs"][f"next-long-running-{view}"]
         condition = rollover["if"]
-        assert rollover["needs"] == ["resolve-sdk-main", f"long-running-{view}"]
+        assert rollover["needs"] == ["resolve", f"long-running-{view}"]
         assert "always()" in condition
         assert f"needs.long-running-{view}.outputs.rollover_ready == 'true'" in condition
-        assert rollover["uses"] == f"./.github/workflows/{language}-opentelemetry-long-running.yml"
-        expected_inputs = {
-            "phase": "launch",
-            "view": view,
-            "delay_seconds": "${{ inputs.delay_seconds || '82800' }}",
-            "aws_region": "${{ inputs.aws_region || 'us-west-2' }}",
-            sdk_ref: f"${{{{ needs.resolve-sdk-main.outputs.{sdk_ref} }}}}",
-        }
-        if language == "python":
-            expected_inputs["conformance_test_sha"] = "${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}"
-        assert rollover["with"] == expected_inputs
+        assert rollover["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
+        assert rollover["with"]["phase"] == "launch"
+        assert rollover["with"]["view"] == view
+        assert rollover["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+        assert rollover["with"]["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
         assert rollover["secrets"] == "inherit"
-    assert (
-        f"""if [ -z "$artifact_id" ]; then
-            echo "No active {display_name} $OTEL_VIEW long-running OTel run."
-            exit 1
-          fi"""
-        in workflow
-    )
+
+    assert 'echo "No active $LANGUAGE $OTEL_VIEW long-running OTel run."' in workflow
     assert 'echo "active=false"' not in workflow
     assert "inputs.delay_seconds || '82800'" in workflow
-    source_revision = "$CONFORMANCE_REF" if language == "python" else "$GITHUB_SHA"
-    assert workflow.count(f'--source-revision "{source_revision}"') == 2
+    assert workflow.count('--source-revision "$CONFORMANCE_TEST_SHA"') == 2
     assert "source_revision=$(jq -r '.source_revision // empty' \"$STATE_FILE\")" in workflow
-    checkout_fallback = "inputs.conformance_test_sha" if language == "python" else "github.sha"
-    assert f"ref: ${{{{ steps.state.outputs.source_revision || {checkout_fallback} }}}}" in workflow
+    assert "ref: ${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow
     assert "aws_durable_execution_conformance_tests_otel.long_running launch" in workflow
@@ -1185,7 +1169,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "aws_durable_execution_conformance_tests_otel.long_running run" in workflow
     assert "--check-timeout 900" in workflow
     assert "--check-interval 15" in workflow
-    assert "aws-observability/aws-otel-" in workflow
+    assert 'gh api "repos/$RELEASE_REPOSITORY/releases/latest"' in workflow
     assert '--view "$OTEL_VIEW"' in workflow
     assert "--otel-layer-arn" in workflow
     assert workflow.count('--otel-service-name "$OTEL_SERVICE_NAME"') == 2
@@ -1204,10 +1188,10 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     )
     assert "matrix:" not in workflow
     assert workflow_config["jobs"]["run"]["env"]["STATE_ARTIFACT"] == (
-        f"{language}-otel-long-running-${{{{ inputs.view }}}}-${{{{ inputs.aws_region || 'us-west-2' }}}}-state"
+        "${{ inputs.language }}-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state"
     )
     assert workflow_config["jobs"]["run"]["env"]["TEST_NAME"] == (
-        f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}"
+        "${{ inputs.resource_prefix }}-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}"
         "${{ inputs.phase == 'short' && '-short' || '' }}"
     )
     assert workflow_config["env"]["OTEL_SERVICE_NAME"] == "durable-execution-conformance"
@@ -1245,7 +1229,7 @@ def test_workflow_derives_legacy_rollover_readiness_from_all_histories(
     if shutil.which("bash") is None or shutil.which("jq") is None:
         pytest.skip("workflow compatibility test requires bash and jq")
 
-    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "opentelemetry-long-running.yml").read_text(encoding="utf-8"))
     check_script = next(
         step["run"]
         for step in workflow["jobs"]["run"]["steps"]
@@ -1308,7 +1292,7 @@ def test_workflow_migrates_legacy_failure_before_retaining_pending_callback(
     if shutil.which("bash") is None or shutil.which("jq") is None:
         pytest.skip("workflow compatibility test requires bash and jq")
 
-    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "opentelemetry-long-running.yml").read_text(encoding="utf-8"))
     check_script = next(
         step["run"]
         for step in workflow["jobs"]["run"]["steps"]

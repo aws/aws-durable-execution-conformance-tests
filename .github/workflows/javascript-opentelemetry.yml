@@ -1,11 +1,11 @@
-name: Java OpenTelemetry
+name: JavaScript OpenTelemetry
 
 on:
   pull_request:
     branches: [main]
     paths:
       - .github/actions/prepare-otel-example/**
-      - .github/workflows/java-opentelemetry.yml
+      - .github/workflows/javascript-opentelemetry.yml
       - .github/workflows/opentelemetry.yml
       - .github/workflows/opentelemetry-suite.yml
       - .github/workflows/opentelemetry-long-running.yml
@@ -15,12 +15,12 @@ on:
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
       - packages/aws-durable-execution-conformance-tests-otel/collector/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/javascript/**
   push:
     branches: [main]
     paths:
       - .github/actions/prepare-otel-example/**
-      - .github/workflows/java-opentelemetry.yml
+      - .github/workflows/javascript-opentelemetry.yml
       - .github/workflows/opentelemetry.yml
       - .github/workflows/opentelemetry-suite.yml
       - .github/workflows/opentelemetry-long-running.yml
@@ -30,7 +30,7 @@ on:
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-execution/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-long-running/**
       - packages/aws-durable-execution-conformance-tests-otel/collector/**
-      - packages/aws-durable-execution-conformance-tests-otel/examples/java/**
+      - packages/aws-durable-execution-conformance-tests-otel/examples/javascript/**
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
@@ -64,44 +64,31 @@ jobs:
   conformance:
     uses: ./.github/workflows/opentelemetry.yml
     with:
-      language: java
-      resource_prefix: j
-      sdk_repository: aws/aws-durable-execution-sdk-java
+      language: javascript
+      resource_prefix: js
+      sdk_repository: aws/aws-durable-execution-sdk-js
       checkout_sdk: true
       setup_command: |
-        if [ -z "${JAVA_HOME_21_X64:-}" ]; then
-          echo "The runner does not provide Java 21"
-          exit 1
-        fi
-        export JAVA_HOME="$JAVA_HOME_21_X64"
-        export PATH="$JAVA_HOME/bin:$PATH"
-        java -version
+        export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+        source "$NVM_DIR/nvm.sh"
+        nvm install 22
+        nvm use 22
+        node --version
       prepare_command: |
-        JAVA_SDK_VERSION=$(
-          mvn -B -q \
-            --file "$SDK_CHECKOUT/pom.xml" \
-            -Dstyle.color=never \
-            -Dexpression=project.version \
-            -DforceStdout \
-            help:evaluate
-        )
-        mvn -B -q \
-          --file "$SDK_CHECKOUT/pom.xml" \
-          --projects sdk,otel-plugin \
-          --also-make \
-          -DskipTests \
-          install
-        echo "Using Java SDK version $JAVA_SDK_VERSION"
-        echo "JAVA_SDK_VERSION=$JAVA_SDK_VERSION" >> "$GITHUB_ENV"
-        mvn -B -q -DskipTests package \
-          -Ddurable.sdk.version="$JAVA_SDK_VERSION" \
-          --file "$EXAMPLES_DIR/pom.xml"
+        export SDK_SOURCE_DIR="$SDK_CHECKOUT"
+        cd "$EXAMPLES_DIR"
+        npm ci
+        npm run install-sdk-main
+        npm run typecheck
+        npm run build
       contract_test_command: >-
         hatch run test:all
-        packages/aws-durable-execution-conformance-tests-otel/tests/test_java_examples.py
-      adot_release_repository: aws-observability/aws-otel-java-instrumentation
-      collector_compatible_runtime: java21
-      collector_otlp_endpoint: http://localhost:4317
+        packages/aws-durable-execution-conformance-tests-otel/tests/test_javascript_examples.py
+      adot_release_repository: aws-observability/aws-otel-js-instrumentation
+      collector_compatible_runtime: nodejs22.x
+      collector_otlp_endpoint: http://localhost:4318
+      # Clean up rolled-back stacks created before the JavaScript rename.
+      legacy_stack_prefix: durable-execution-conformance-tests-typescript
       phase: ${{ inputs.phase || 'short' }}
       delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}

@@ -1,0 +1,613 @@
+name: OpenTelemetry Conformance Suite
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: Stable language key used in resource and artifact names
+        required: true
+        type: string
+      conformance_repository:
+        description: GitHub repository containing the conformance tests
+        required: true
+        type: string
+      sdk_repository:
+        description: GitHub repository containing the language SDK
+        required: true
+        type: string
+      sdk_ref:
+        description: Full SDK commit SHA
+        required: true
+        type: string
+      conformance_test_sha:
+        description: Conformance test commit SHA to run
+        required: true
+        type: string
+      checkout_sdk:
+        description: Check out the SDK before preparing handlers
+        required: false
+        default: true
+        type: boolean
+      setup_command:
+        description: Shell command that installs or selects the language toolchain
+        required: false
+        default: ""
+        type: string
+      prepare_command:
+        description: Shell command that prepares the language handlers
+        required: false
+        default: ""
+        type: string
+      contract_test_command:
+        description: Optional shell command that validates the language example contract
+        required: false
+        default: ""
+        type: string
+      adot_release_repository:
+        description: GitHub repository whose latest release lists regional ADOT layers
+        required: false
+        default: ""
+        type: string
+      adot_layer_arn:
+        description: Optional fixed ADOT layer ARN
+        required: false
+        default: ""
+        type: string
+      collector_compatible_runtime:
+        description: Lambda runtime recorded on the test collector layer
+        required: true
+        type: string
+      collector_otlp_endpoint:
+        description: Local collector OTLP endpoint used by the runtime
+        required: true
+        type: string
+      legacy_stack_prefix:
+        description: Optional legacy stack prefix cleaned up only after rollback
+        required: false
+        default: ""
+        type: string
+      suite_timeout_minutes:
+        description: Timeout for X-Ray, Dash0, and Datadog jobs
+        required: false
+        default: 40
+        type: number
+      suite:
+        description: OTel requirement suite to run
+        required: true
+        type: string
+      case_count:
+        description: Number of cases in the selected suite
+        required: true
+        type: number
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
+      otlp_endpoint:
+        description: OTLP ingest endpoint for an optional Datadog job
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  EXAMPLES_DIR: packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}
+  LANGUAGE: ${{ inputs.language }}
+  OTEL_CASE_COUNT: ${{ inputs.case_count }}
+  OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance
+  OTEL_SUITE: ${{ inputs.suite }}
+  OTEL_VIEW_SUFFIX: ${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+  PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
+  PYTHONUNBUFFERED: "1"
+  SDK_REF: ${{ inputs.sdk_ref }}
+  TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}/template.yaml
+
+jobs:
+  backend:
+    name: ${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [xray, dash0]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.suite_timeout_minutes }}
+    env:
+      DASH0_API_URL: https://api.us-west-2.aws.dash0.com
+      DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
+      DASH0_OTLP_ENDPOINT: https://ingress.us-west-2.aws.dash0.com
+      HISTORY_DIR: /tmp/${{ inputs.language }}-otel-${{ matrix.backend }}-history
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}
+      REPORT_FILE: /tmp/${{ inputs.language }}-otel-${{ matrix.backend }}-report
+      TEST_NAME: ${{ inputs.language }}-${{ matrix.backend }}-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_STACK_NAME: conformance-tests-${{ inputs.language }}-${{ matrix.backend }}-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+    steps:
+      - name: Check out conformance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ inputs.conformance_test_sha }}
+
+      - name: Prepare conformance example
+        uses: ./.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-${{ matrix.backend }}
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Resolve ADOT layer
+        if: matrix.backend == 'xray'
+        env:
+          CONFIGURED_ADOT_LAYER_ARN: ${{ inputs.adot_layer_arn }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
+        run: |
+          ADOT_LAYER_ARN="$CONFIGURED_ADOT_LAYER_ARN"
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            ADOT_LAYER_ARN=$(
+              gh api "repos/$RELEASE_REPOSITORY/releases/latest" \
+                --jq .body |
+                awk -F '|' -v region="$AWS_REGION" '
+                  $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                    print $3
+                    exit
+                  }
+                '
+            )
+          fi
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            echo "Could not resolve an ADOT layer for $LANGUAGE in $AWS_REGION"
+            exit 1
+          fi
+          aws lambda get-layer-version-by-arn \
+            --arn "$ADOT_LAYER_ARN" \
+            --region "$AWS_REGION" \
+            --query LayerVersionArn \
+            --output text > /dev/null
+          echo "Using ADOT layer $ADOT_LAYER_ARN"
+          echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
+
+      - name: Delete rolled-back test stacks
+        env:
+          LEGACY_STACK_PREFIX: ${{ inputs.legacy_stack_prefix }}
+        run: |
+          stack_names=("$TEST_STACK_NAME")
+          if [ -n "$LEGACY_STACK_PREFIX" ]; then
+            stack_names+=("$LEGACY_STACK_PREFIX-${{ matrix.backend }}")
+          fi
+          for stack_name in "${stack_names[@]}"; do
+            stack_status=$(
+              aws cloudformation describe-stacks \
+                --stack-name "$stack_name" \
+                --query "Stacks[0].StackStatus" \
+                --output text 2>/dev/null || true
+            )
+            if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+              aws cloudformation delete-stack --stack-name "$stack_name"
+              aws cloudformation wait stack-delete-complete --stack-name "$stack_name"
+            fi
+          done
+
+      - name: Run conformance tests
+        env:
+          BACKEND: ${{ matrix.backend }}
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          command=(
+            hatch run validate
+            --template "$TEST_TEMPLATE"
+            --language "$LANGUAGE"
+            --region "$AWS_REGION"
+            --name "$TEST_NAME"
+            --no-cleanup
+            --suite "$OTEL_SUITE"
+            --history-dir "$HISTORY_DIR"
+            --report console json junit github
+            --report-file "$REPORT_FILE"
+            --fail-on failed+uncovered
+            --parameter-overrides
+              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"
+              "OtelSuite=$OTEL_SUITE"
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"
+          )
+          if [ "$BACKEND" = "xray" ]; then
+            command+=(
+              --otel-exporter adot
+              --otel-layer-arn "$ADOT_LAYER_ARN"
+              --otel-backend xray
+            )
+          else
+            command+=(
+              --otel-exporter community
+              --otel-endpoint "$DASH0_OTLP_ENDPOINT"
+              --otel-backend dash0
+            )
+          fi
+          "${command[@]}"
+
+      - name: Show CloudFormation diagnostics
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$TEST_STACK_NAME" \
+            --query "StackEvents[?ResourceStatus == 'CREATE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]" \
+            --output table || true
+
+      - name: Show Lambda logs
+        if: failure()
+        run: |
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 20m --format short || true
+            echo "::endgroup::"
+          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 20m --format short || true
+              echo "::endgroup::"
+            done
+          fi
+
+      - name: Show execution history diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show normalized trace diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*-otel.json; do
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.language }}-otel-${{ matrix.backend }}-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
+
+  datadog:
+    name: Community layer + Datadog
+    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.suite_timeout_minutes }}
+    env:
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
+      DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
+      TEST_NAME: ${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+    steps:
+      - name: Check out conformance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ inputs.conformance_test_sha }}
+
+      - name: Prepare conformance example
+        uses: ./.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-datadog
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Run Datadog conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --no-cleanup \
+            --suite "$OTEL_SUITE" \
+            --report console github \
+            --parameter-overrides \
+              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
+              "OtelSuite=$OTEL_SUITE" \
+            --otel-exporter community \
+            --otel-endpoint "${{ inputs.otlp_endpoint }}" \
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
+            --otel-backend datadog
+
+  s3_collector:
+    name: Community layer + S3 collector
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      COLLECTOR_LAYER_NAME: durable-execution-conformance-${{ inputs.language }}-s3-collector
+      HISTORY_DIR: /tmp/${{ inputs.language }}-otel-s3-history
+      OTEL_LAMBDA_CHECKOUT: .build/opentelemetry-lambda
+      REPORT_FILE: /tmp/${{ inputs.language }}-otel-s3-report
+      TEST_STACK_NAME: conformance-tests-${{ inputs.language }}-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: ${{ inputs.language }}-s3-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+    steps:
+      - name: Check out conformance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ inputs.conformance_test_sha }}
+
+      - name: Check out OpenTelemetry Lambda collector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: open-telemetry/opentelemetry-lambda
+          ref: layer-collector/0.22.0
+          path: ${{ env.OTEL_LAMBDA_CHECKOUT }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.mod
+          cache-dependency-path: |
+            ${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.sum
+            ${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/lambdacomponents/go.sum
+
+      - name: Prepare conformance example
+        uses: ./.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-s3
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Test collector contract
+        run: hatch run test:all packages/aws-durable-execution-conformance-tests-otel/tests/test_collector.py
+
+      - name: Build S3 collector Lambda layer
+        run: |
+          bash packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh \
+            "$OTEL_LAMBDA_CHECKOUT" \
+            "$RUNNER_TEMP/opentelemetry-s3-collector-layer.zip"
+
+      - name: Publish S3 collector Lambda layer
+        run: |
+          COLLECTOR_LAYER_ARN=$(
+            aws lambda publish-layer-version \
+              --layer-name "$COLLECTOR_LAYER_NAME" \
+              --description "OpenTelemetry S3 collector for conformance run $GITHUB_RUN_ID" \
+              --zip-file "fileb://$RUNNER_TEMP/opentelemetry-s3-collector-layer.zip" \
+              --compatible-runtimes "${{ inputs.collector_compatible_runtime }}" \
+              --compatible-architectures x86_64 \
+              --query LayerVersionArn \
+              --output text
+          )
+          echo "COLLECTOR_LAYER_ARN=$COLLECTOR_LAYER_ARN" >> "$GITHUB_ENV"
+          aws lambda get-layer-version-by-arn \
+            --arn "$COLLECTOR_LAYER_ARN" \
+            --query LayerVersionArn \
+            --output text > /dev/null
+          echo "Using S3 collector layer $COLLECTOR_LAYER_ARN"
+
+      - name: Prepare stable S3 telemetry bucket
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+          TEST_ACCOUNT_ID: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          TEST_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+        run: |
+          OTEL_S3_BUCKET="dex-otel-${LANGUAGE}-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"
+          OTEL_S3_PREFIX=traces
+          {
+            echo "OTEL_S3_BUCKET=$OTEL_S3_BUCKET"
+            echo "OTEL_S3_PREFIX=$OTEL_S3_PREFIX"
+            echo "OTEL_S3_URI=s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX"
+          } >> "$GITHUB_ENV"
+          if ! aws s3api head-bucket --bucket "$OTEL_S3_BUCKET" 2>/dev/null; then
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$OTEL_S3_BUCKET"
+            else
+              aws s3api create-bucket \
+                --bucket "$OTEL_S3_BUCKET" \
+                --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+            fi
+          fi
+          aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive
+          aws s3api put-public-access-block \
+            --bucket "$OTEL_S3_BUCKET" \
+            --public-access-block-configuration \
+              BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          BUCKET_POLICY=$(
+            jq -n \
+              --arg bucket "$OTEL_S3_BUCKET" \
+              --arg prefix "$OTEL_S3_PREFIX" \
+              --arg reader "$TEST_ROLE_ARN" \
+              --arg writer "$LAMBDA_EXECUTION_ROLE_ARN" \
+              '{
+                Version: "2012-10-17",
+                Statement: [
+                  {
+                    Sid: "CollectorWrite",
+                    Effect: "Allow",
+                    Principal: {AWS: $writer},
+                    Action: ["s3:PutObject", "s3:AbortMultipartUpload"],
+                    Resource: ("arn:aws:s3:::" + $bucket + "/" + $prefix + "/*")
+                  },
+                  {
+                    Sid: "RunnerList",
+                    Effect: "Allow",
+                    Principal: {AWS: $reader},
+                    Action: "s3:ListBucket",
+                    Resource: ("arn:aws:s3:::" + $bucket),
+                    Condition: {StringLike: {"s3:prefix": [$prefix, ($prefix + "/*")]}}
+                  },
+                  {
+                    Sid: "RunnerRead",
+                    Effect: "Allow",
+                    Principal: {AWS: $reader},
+                    Action: ["s3:GetObject", "s3:DeleteObject"],
+                    Resource: ("arn:aws:s3:::" + $bucket + "/" + $prefix + "/*")
+                  }
+                ]
+              }'
+          )
+          aws s3api put-bucket-policy \
+            --bucket "$OTEL_S3_BUCKET" \
+            --policy "$BUCKET_POLICY"
+
+      - name: Delete rolled-back test stack
+        run: |
+          stack_status=$(
+            aws cloudformation describe-stacks \
+              --stack-name "$TEST_STACK_NAME" \
+              --query "Stacks[0].StackStatus" \
+              --output text 2>/dev/null || true
+          )
+          if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+            aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
+            aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME"
+          fi
+
+      - name: Run S3 collector conformance tests
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run validate \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --no-cleanup \
+            --suite "$OTEL_SUITE" \
+            --history-dir "$HISTORY_DIR" \
+            --report console json junit github \
+            --report-file "$REPORT_FILE" \
+            --fail-on failed+uncovered \
+            --parameter-overrides \
+              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
+              "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
+              "OtelCollectorBucket=$OTEL_S3_BUCKET" \
+              "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
+              "OtelSuite=$OTEL_SUITE" \
+            --otel-exporter community \
+            --otel-endpoint "${{ inputs.collector_otlp_endpoint }}" \
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
+            --otel-backend collector \
+            --otel-backend-endpoint "$OTEL_S3_URI" \
+            --otel-poll-timeout 90 \
+            --otel-poll-attempts 45
+
+      - name: Show CloudFormation diagnostics
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$TEST_STACK_NAME" \
+            --query "StackEvents[?ResourceStatus == 'CREATE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]" \
+            --output table || true
+
+      - name: Show Lambda logs
+        if: failure()
+        run: |
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 30m --format short || true
+            echo "::endgroup::"
+          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 30m --format short || true
+              echo "::endgroup::"
+            done
+          fi
+
+      - name: Show execution history diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show normalized S3 trace diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*-otel.json; do
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show S3 collector objects
+        if: failure() && env.OTEL_S3_BUCKET != ''
+        run: |
+          aws s3api list-objects-v2 \
+            --bucket "$OTEL_S3_BUCKET" \
+            --prefix "$OTEL_S3_PREFIX/" \
+            --query "Contents[].[LastModified,Size,Key]" \
+            --output table || true
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.language }}-otel-s3-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
