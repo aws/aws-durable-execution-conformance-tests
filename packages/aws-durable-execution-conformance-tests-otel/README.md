@@ -87,7 +87,7 @@ workflow discovers the latest Python layer from the ADOT release.
 The hosted tests use separate language-neutral reusable workflows for suites
 and long-running views:
 
-- `.github/workflows/opentelemetry.yml`
+- `.github/workflows/opentelemetry-suite-orchestrator.yml`
 - `.github/workflows/opentelemetry-long-running-orchestrator.yml`
 
 Language presets invoke both as sibling jobs and provide repository and runtime
@@ -124,7 +124,7 @@ jobs:
 
   conformance:
     needs: resolve
-    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry.yml@main
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-suite-orchestrator.yml@main
     with:
       language: rust
       sdk_repository: example/aws-durable-execution-sdk-rust

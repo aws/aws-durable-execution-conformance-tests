@@ -18,7 +18,7 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
-ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry.yml"
+ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite-orchestrator.yml"
 RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
 LONG_RUNNING_ORCHESTRATOR_PATH = (

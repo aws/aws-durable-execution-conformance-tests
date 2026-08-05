@@ -6,7 +6,7 @@ on:
     paths:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/java-opentelemetry.yml
-      - .github/workflows/opentelemetry.yml
+      - .github/workflows/opentelemetry-suite-orchestrator.yml
       - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
       - .github/workflows/opentelemetry-long-running-orchestrator.yml
@@ -23,7 +23,7 @@ on:
     paths:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/java-opentelemetry.yml
-      - .github/workflows/opentelemetry.yml
+      - .github/workflows/opentelemetry-suite-orchestrator.yml
       - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
       - .github/workflows/opentelemetry-long-running-orchestrator.yml
@@ -78,7 +78,7 @@ jobs:
   conformance:
     name: Conformance
     needs: resolve
-    uses: ./.github/workflows/opentelemetry.yml
+    uses: ./.github/workflows/opentelemetry-suite-orchestrator.yml
     with:
       language: java
       sdk_repository: aws/aws-durable-execution-sdk-java

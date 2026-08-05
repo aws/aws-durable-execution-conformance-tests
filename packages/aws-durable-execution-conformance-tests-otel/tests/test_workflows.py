@@ -12,7 +12,7 @@ WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 LANGUAGES = ("java", "javascript", "python")
 DISPLAY_NAMES = {"java": "Java", "javascript": "JavaScript", "python": "Python"}
 LANGUAGE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry.yml" for language in LANGUAGES}
-ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry.yml"
+ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-suite-orchestrator.yml"
 RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
 SUITE_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-suite.yml"
 LONG_RUNNING_ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml"
@@ -136,7 +136,7 @@ def test_language_workflows_are_thin_presets() -> None:
 
         assert set(workflow["jobs"]) == {"resolve", "conformance", "long-running"}
         assert resolver_preset["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
-        assert preset["uses"] == "./.github/workflows/opentelemetry.yml"
+        assert preset["uses"] == "./.github/workflows/opentelemetry-suite-orchestrator.yml"
         assert long_running_preset["uses"] == "./.github/workflows/opentelemetry-long-running-orchestrator.yml"
         assert preset["needs"] == "resolve"
         assert long_running_preset["needs"] == "resolve"

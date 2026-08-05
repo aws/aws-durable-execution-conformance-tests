@@ -1084,7 +1084,7 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
-    orchestrator = (WORKFLOWS_DIR / "opentelemetry.yml").read_text(encoding="utf-8")
+    orchestrator = (WORKFLOWS_DIR / "opentelemetry-suite-orchestrator.yml").read_text(encoding="utf-8")
     orchestrator_config = yaml.safe_load(orchestrator)
     long_running_orchestrator = (WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml").read_text(
         encoding="utf-8"
@@ -1101,7 +1101,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert 'cron: "0 7 * * *"' in entry_workflow
     assert 'default: "82800"' in entry_workflow
     preset = entry_workflow_config["jobs"]["conformance"]
-    assert preset["uses"] == "./.github/workflows/opentelemetry.yml"
+    assert preset["uses"] == "./.github/workflows/opentelemetry-suite-orchestrator.yml"
     assert preset["with"]["language"] == language
     long_running_preset = entry_workflow_config["jobs"]["long-running"]
     assert long_running_preset["uses"] == "./.github/workflows/opentelemetry-long-running-orchestrator.yml"
