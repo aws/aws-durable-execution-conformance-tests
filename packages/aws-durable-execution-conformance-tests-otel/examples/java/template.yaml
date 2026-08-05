@@ -86,6 +86,7 @@ Globals:
         OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+        OTEL_PLUGIN_MODE: invocation
         OTEL_PROPAGATORS: xray
         OTEL_S3_BUCKET: !Ref OtelCollectorBucket
         OTEL_S3_PREFIX: !Ref OtelCollectorPrefix

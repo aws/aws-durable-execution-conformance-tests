@@ -142,6 +142,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
 

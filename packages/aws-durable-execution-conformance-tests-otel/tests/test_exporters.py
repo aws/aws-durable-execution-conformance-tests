@@ -182,8 +182,8 @@ def test_service_name_argument_configures_the_resource_name() -> None:
     ),
     [
         (None, False, "test", []),
-        ("invocation", True, "Invocation", ["function"]),
-        ("execution", True, "Execution", ["function"]),
+        ("invocation", True, "Invocation", ["physical-function"]),
+        ("execution", True, "Execution", ["physical-function"]),
     ],
 )
 def test_telemetry_assertions_resolve_history_and_execution_variables(
@@ -195,6 +195,9 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     expected_query_service_name: str,
     expected_configuration_calls: list[str],
 ) -> None:
+    execution_arn = (
+        "arn:aws:lambda:us-west-2:123456789012:function:physical-function:$LATEST/durable-execution/execution/test"
+    )
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
     received_disparities: list[object] = []
@@ -253,8 +256,8 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     errors = OtelExtension().validate_telemetry(
         ValidationContext(
             description_id="otel-invocation-5",
-            function_name="function",
-            execution_arn="arn:execution",
+            function_name="LogicalFunction",
+            execution_arn=execution_arn,
             invocation_started_at_ms=1,
             invocation_finished_at_ms=2,
             region="us-west-2",
@@ -281,7 +284,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
             execution_history={},
             output_dir=tmp_path,
             placeholders={
-                "EXECUTION_ARN": "arn:execution",
+                "EXECUTION_ARN": execution_arn,
                 "STEP1": "step-id",
                 "TARGET_EXECUTION_ARN": "arn:target",
             },
@@ -293,14 +296,14 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     assert errors == []
     assert received_queries[0].service_name == expected_query_service_name
     assert configuration_calls == expected_configuration_calls
-    assert received_queries[0].execution_arns == ("arn:execution", "arn:target")
+    assert received_queries[0].execution_arns == (execution_arn, "arn:target")
     disparity_names = ", ".join(sorted(disparity.name for disparity in disparities))
     assert (
         capsys.readouterr().out
         == f"  OpenTelemetry backend feature disparity flags enabled for xray: {disparity_names}\n"
     )
     assert received["span_assertions"]["select"]["attributes"] == {
-        "durable.execution.arn": "arn:execution",
+        "durable.execution.arn": execution_arn,
         "durable.operation.id": "step-id",
     }
     assert received["span_assertions"]["expect"]["service_name"] == "test"
@@ -313,14 +316,16 @@ def test_xray_plugin_mode_service_name_requires_a_deployed_value(
 ) -> None:
     class LambdaClient:
         def get_function_configuration(self, *, FunctionName: str) -> dict[str, Any]:
-            assert FunctionName == "function"
+            assert FunctionName == "physical-function"
             variables = {} if plugin_mode is None else {"OTEL_PLUGIN_MODE": plugin_mode}
             return {"Environment": {"Variables": variables}}
 
     context = ValidationContext(
         description_id="otel-invocation-1",
-        function_name="function",
-        execution_arn="arn:execution",
+        function_name="LogicalFunction",
+        execution_arn=(
+            "arn:aws:lambda:us-west-2:123456789012:function:physical-function:$LATEST/durable-execution/execution/test"
+        ),
         invocation_started_at_ms=1,
         invocation_finished_at_ms=2,
         region="us-west-2",

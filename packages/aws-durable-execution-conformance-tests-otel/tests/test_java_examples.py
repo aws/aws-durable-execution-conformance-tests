@@ -92,6 +92,7 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXPECTED_EXECUTION_MAPPINGS) + 2
     assert "ExecutionTimeout: 5" in template
     assert "Runtime: java21" in template

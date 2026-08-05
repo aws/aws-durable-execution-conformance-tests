@@ -62,6 +62,17 @@ SUPPORT_MATRIX = frozenset(
 )
 
 
+def _function_name_from_execution_arn(execution_arn: str) -> str:
+    lambda_arn, separator, _ = execution_arn.partition("/durable-execution/")
+    if not separator:
+        raise ValueError(f"Could not derive Lambda function name from execution ARN {execution_arn!r}")
+    _, function_separator, qualified_name = lambda_arn.partition(":function:")
+    function_name = qualified_name.partition(":")[0]
+    if not function_separator or not function_name:
+        raise ValueError(f"Could not derive Lambda function name from execution ARN {execution_arn!r}")
+    return function_name
+
+
 class OtelExtension:
     name = "otel"
     requires_core = ">=1.0.0,<2.0.0"
@@ -288,13 +299,14 @@ class OtelExtension:
         if backend_name != "xray":
             raise ValueError("PLUGIN_MODE_SERVICE_NAME is only supported by the X-Ray backend")
 
+        deployed_function_name = _function_name_from_execution_arn(context.execution_arn)
         try:
             configuration = context.aws_clients["lambda"].get_function_configuration(
-                FunctionName=context.function_name,
+                FunctionName=deployed_function_name,
             )
         except (BotoCoreError, ClientError) as exc:
             raise ValueError(
-                f"Could not read OTEL_PLUGIN_MODE from Lambda function {context.function_name!r}: {exc}"
+                f"Could not read OTEL_PLUGIN_MODE from Lambda function {deployed_function_name!r}: {exc}"
             ) from exc
 
         environment = configuration.get("Environment", {})
@@ -302,7 +314,7 @@ class OtelExtension:
         plugin_mode = variables.get("OTEL_PLUGIN_MODE") if isinstance(variables, Mapping) else None
         if not isinstance(plugin_mode, str) or not plugin_mode.strip():
             raise ValueError(
-                f"Lambda function {context.function_name!r} must define a non-empty OTEL_PLUGIN_MODE "
+                f"Lambda function {deployed_function_name!r} must define a non-empty OTEL_PLUGIN_MODE "
                 "when the X-Ray PLUGIN_MODE_SERVICE_NAME feature disparity is enabled"
             )
         return plugin_mode.strip().capitalize()
