@@ -214,7 +214,6 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "--language javascript" in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
     assert workflow.count("--otel-service-name durable-execution-conformance") == 3
-    assert "--otel-discovery-service-name" not in workflow
 
 
 def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> None:

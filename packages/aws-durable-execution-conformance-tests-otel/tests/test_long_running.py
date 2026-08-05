@@ -112,14 +112,12 @@ def test_runtime_accepts_supported_telemetry_views(language: str, view: str) -> 
     assert _validate_view(language, view) == view
 
 
-def test_long_running_uses_resource_service_name_for_discovery() -> None:
+def test_long_running_uses_the_resource_service_name_by_default() -> None:
     assert SUPPORTED_VIEWS["java"] == {"execution", "invocation"}
     options = long_running._otel_options("java", "execution", "us-west-2")
     assert options["otel_service_name"] == "durable-execution-conformance"
-    assert "otel_discovery_service_name" not in options
     python_options = long_running._otel_options("python", "execution", "us-west-2")
     assert python_options["otel_service_name"] == "durable-execution-conformance"
-    assert "otel_discovery_service_name" not in python_options
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:

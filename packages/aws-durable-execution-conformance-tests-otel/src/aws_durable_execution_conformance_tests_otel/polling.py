@@ -25,6 +25,7 @@ class TelemetryTimeout(BackendError):
 class BackendFeatureDisparity(StrEnum):
     """Known fidelity gaps in a backend's normalized telemetry."""
 
+    PLUGIN_MODE_SERVICE_NAME = "plugin-mode-service-name"
     SPAN_LINKS = "span-links"
     UNSET_STATUS = "unset-status"
 

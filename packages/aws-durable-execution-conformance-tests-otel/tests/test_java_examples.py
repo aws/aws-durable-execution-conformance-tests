@@ -196,7 +196,6 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
     assert workflow.count('"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
     assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
-    assert "--otel-discovery-service-name" not in workflow
     assert "OTEL_XRAY_DISCOVERY_SERVICE_NAME" not in workflow
     assert "OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance" in workflow
     assert "${OTEL_SUITE}-${case_number}-target" in workflow

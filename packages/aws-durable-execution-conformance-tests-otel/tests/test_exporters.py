@@ -124,7 +124,6 @@ def _args(exporter: str, backend: str) -> argparse.Namespace:
         otel_endpoint="http://collector:4318",
         otel_backend_endpoint=None,
         otel_service_name="test",
-        otel_discovery_service_name=None,
         otel_layer_arn="arn:aws:lambda:us-west-2:123456789012:layer:adot:1" if exporter == "adot" else None,
         otel_poll_timeout=10.0,
         otel_poll_interval=0.0,
@@ -163,44 +162,50 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
 
 
-def test_service_name_arguments_keep_resource_and_discovery_separate() -> None:
+def test_service_name_argument_configures_the_resource_name() -> None:
     parser = argparse.ArgumentParser()
     OtelExtension().add_arguments(parser)
 
     defaults = parser.parse_args([])
-    configured = parser.parse_args(
-        [
-            "--otel-service-name",
-            "resource-service",
-            "--otel-discovery-service-name",
-            "discovery-service",
-        ]
-    )
+    configured = parser.parse_args(["--otel-service-name", "resource-service"])
 
     assert defaults.otel_service_name == "durable-execution-conformance"
-    assert defaults.otel_discovery_service_name is None
     assert configured.otel_service_name == "resource-service"
-    assert configured.otel_discovery_service_name == "discovery-service"
 
 
 @pytest.mark.parametrize(
-    ("discovery_service_name", "expected_query_service_name"),
+    (
+        "plugin_mode",
+        "plugin_mode_service_name",
+        "expected_query_service_name",
+        "expected_configuration_calls",
+    ),
     [
-        (None, "test"),
-        ("xray-discovery-service", "xray-discovery-service"),
+        (None, False, "test", []),
+        ("invocation", True, "Invocation", ["function"]),
+        ("execution", True, "Execution", ["function"]),
     ],
 )
 def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    discovery_service_name: str | None,
+    plugin_mode: str | None,
+    plugin_mode_service_name: bool,
     expected_query_service_name: str,
+    expected_configuration_calls: list[str],
 ) -> None:
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
     received_disparities: list[object] = []
     received_queries: list[TelemetryQuery] = []
+    configuration_calls: list[str] = []
+
+    class LambdaClient:
+        def get_function_configuration(self, *, FunctionName: str) -> dict[str, Any]:
+            configuration_calls.append(FunctionName)
+            variables = {} if plugin_mode is None else {"OTEL_PLUGIN_MODE": plugin_mode}
+            return {"Environment": {"Variables": variables}}
 
     def capture_assertions(
         _trace: Trace,
@@ -218,7 +223,12 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         assert accept(trace)
         return trace
 
-    disparities = frozenset({BackendFeatureDisparity.UNSET_STATUS})
+    disparities = frozenset(
+        {
+            BackendFeatureDisparity.UNSET_STATUS,
+            *((BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME,) if plugin_mode_service_name else ()),
+        }
+    )
     backend = SimpleNamespace(
         feature_disparities=disparities,
         find_trace=find_trace,
@@ -273,21 +283,55 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "STEP1": "step-id",
                 "TARGET_EXECUTION_ARN": "arn:target",
             },
-            options={
-                **vars(_args("adot", "xray")),
-                "otel_discovery_service_name": discovery_service_name,
-            },
-            aws_clients={"xray": object()},
+            options=vars(_args("adot", "xray")),
+            aws_clients={"lambda": LambdaClient(), "xray": object()},
         )
     )
 
     assert errors == []
     assert received_queries[0].service_name == expected_query_service_name
+    assert configuration_calls == expected_configuration_calls
     assert received_queries[0].execution_arns == ("arn:execution", "arn:target")
-    assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
+    disparity_names = ", ".join(sorted(disparity.name for disparity in disparities))
+    assert (
+        capsys.readouterr().out
+        == f"  OpenTelemetry backend feature disparity flags enabled for xray: {disparity_names}\n"
+    )
     assert received["span_assertions"]["select"]["attributes"] == {
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",
     }
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
+@pytest.mark.parametrize("plugin_mode", [None, "", "   "])
+def test_xray_plugin_mode_service_name_requires_a_deployed_value(
+    tmp_path: Path,
+    plugin_mode: str | None,
+) -> None:
+    class LambdaClient:
+        def get_function_configuration(self, *, FunctionName: str) -> dict[str, Any]:
+            assert FunctionName == "function"
+            variables = {} if plugin_mode is None else {"OTEL_PLUGIN_MODE": plugin_mode}
+            return {"Environment": {"Variables": variables}}
+
+    context = ValidationContext(
+        description_id="otel-invocation-1",
+        function_name="function",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1,
+        invocation_finished_at_ms=2,
+        region="us-west-2",
+        language="python",
+        requirement={},
+        execution_history={},
+        output_dir=tmp_path,
+        options={"otel_service_name": "test"},
+        aws_clients={"lambda": LambdaClient()},
+    )
+
+    with pytest.raises(ValueError, match="must define a non-empty OTEL_PLUGIN_MODE"):
+        OtelExtension._query_service_name(
+            context,
+            "xray",
+            {BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME},
+        )

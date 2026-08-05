@@ -71,6 +71,7 @@ def _query() -> TelemetryQuery:
             XRayBackend,
             frozenset(
                 {
+                    BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME,
                     BackendFeatureDisparity.SPAN_LINKS,
                     BackendFeatureDisparity.UNSET_STATUS,
                 }

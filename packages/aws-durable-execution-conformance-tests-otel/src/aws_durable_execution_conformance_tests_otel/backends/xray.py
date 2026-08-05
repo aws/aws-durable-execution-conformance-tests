@@ -104,6 +104,7 @@ class XRayBackend(PollingBackend):
     name = "xray"
     feature_disparities = frozenset(
         {
+            BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME,
             BackendFeatureDisparity.SPAN_LINKS,
             BackendFeatureDisparity.UNSET_STATUS,
         }

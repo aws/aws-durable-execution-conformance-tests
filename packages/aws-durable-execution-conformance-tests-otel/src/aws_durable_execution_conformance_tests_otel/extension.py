@@ -8,11 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 from aws_durable_execution_conformance_tests.extensions import (
     RequirementSuite,
@@ -37,6 +39,7 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
+    BackendFeatureDisparity,
     PollingPolicy,
 )
 from aws_durable_execution_conformance_tests_otel.redaction import redact
@@ -115,11 +118,6 @@ class OtelExtension:
             "--otel-service-name",
             default=DEFAULT_OTEL_SERVICE_NAME,
             help="OpenTelemetry resource service name configured on the test function.",
-        )
-        group.add_argument(
-            "--otel-discovery-service-name",
-            default=None,
-            help="Backend lookup service name; defaults to --otel-service-name.",
         )
         group.add_argument(
             "--otel-layer-arn",
@@ -230,7 +228,11 @@ class OtelExtension:
                 additional_execution_arns = ()
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
-                service_name=str(options.get("otel_discovery_service_name") or options["otel_service_name"]),
+                service_name=self._query_service_name(
+                    context,
+                    backend_name,
+                    backend.feature_disparities,
+                ),
                 started_at=datetime.fromtimestamp(
                     context.invocation_started_at_ms / 1000,
                     tz=UTC,
@@ -272,6 +274,37 @@ class OtelExtension:
             return [f"OpenTelemetry: {error}" for error in errors]
         except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
+
+    @staticmethod
+    def _query_service_name(
+        context: ValidationContext,
+        backend_name: str,
+        feature_disparities: Collection[BackendFeatureDisparity],
+    ) -> str:
+        options = context.options
+        if BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME not in feature_disparities:
+            return str(options["otel_service_name"])
+        if backend_name != "xray":
+            raise ValueError("PLUGIN_MODE_SERVICE_NAME is only supported by the X-Ray backend")
+
+        try:
+            configuration = context.aws_clients["lambda"].get_function_configuration(
+                FunctionName=context.function_name,
+            )
+        except (BotoCoreError, ClientError) as exc:
+            raise ValueError(
+                f"Could not read OTEL_PLUGIN_MODE from Lambda function {context.function_name!r}: {exc}"
+            ) from exc
+
+        environment = configuration.get("Environment", {})
+        variables = environment.get("Variables", {}) if isinstance(environment, Mapping) else {}
+        plugin_mode = variables.get("OTEL_PLUGIN_MODE") if isinstance(variables, Mapping) else None
+        if not isinstance(plugin_mode, str) or not plugin_mode.strip():
+            raise ValueError(
+                f"Lambda function {context.function_name!r} must define a non-empty OTEL_PLUGIN_MODE "
+                "when the X-Ray PLUGIN_MODE_SERVICE_NAME feature disparity is enabled"
+            )
+        return plugin_mode.strip().capitalize()
 
     def _exporter_options(self, args: argparse.Namespace) -> ExporterOptions:
         return ExporterOptions(
