@@ -163,11 +163,23 @@ def test_secret_otlp_headers_are_returned_as_redacted_deployment_input(
     assert secrets == {"OtelExporterHeaders": "authorization=secret"}
 
 
+def test_service_name_argument_configures_the_resource_name() -> None:
+    parser = argparse.ArgumentParser()
+    OtelExtension().add_arguments(parser)
+
+    defaults = parser.parse_args([])
+    configured = parser.parse_args(["--otel-service-name", "resource-service"])
+
+    assert defaults.otel_service_name == "durable-execution-conformance"
+    assert configured.otel_service_name == "resource-service"
+
+
 def test_telemetry_assertions_resolve_history_and_execution_variables(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    execution_arn = "arn:execution"
     trace = Trace(trace_id="1" * 32, spans=())
     received: dict[str, Any] = {}
     received_disparities: list[object] = []
@@ -214,8 +226,8 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     errors = OtelExtension().validate_telemetry(
         ValidationContext(
             description_id="otel-invocation-5",
-            function_name="function",
-            execution_arn="arn:execution",
+            function_name="LogicalFunction",
+            execution_arn=execution_arn,
             invocation_started_at_ms=1,
             invocation_finished_at_ms=2,
             region="us-west-2",
@@ -233,14 +245,16 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                                 "durable.operation.id": "${STEP1}",
                             },
                         },
-                        "expect": {},
+                        "expect": {
+                            "service_name": "${SERVICE_NAME}",
+                        },
                     },
                 },
             },
             execution_history={},
             output_dir=tmp_path,
             placeholders={
-                "EXECUTION_ARN": "arn:execution",
+                "EXECUTION_ARN": execution_arn,
                 "STEP1": "step-id",
                 "TARGET_EXECUTION_ARN": "arn:target",
             },
@@ -253,12 +267,18 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     )
 
     assert errors == []
-    assert received_queries[0].execution_arns == ("arn:execution", "arn:target")
-    assert capsys.readouterr().out == "  OpenTelemetry backend feature disparity flags enabled for xray: UNSET_STATUS\n"
+    assert received_queries[0].service_name == "test"
+    assert received_queries[0].execution_arns == (execution_arn, "arn:target")
+    disparity_names = ", ".join(sorted(disparity.name for disparity in disparities))
+    assert (
+        capsys.readouterr().out
+        == f"  OpenTelemetry backend feature disparity flags enabled for xray: {disparity_names}\n"
+    )
     assert received["span_assertions"]["select"]["attributes"] == {
-        "durable.execution.arn": "arn:execution",
+        "durable.execution.arn": execution_arn,
         "durable.operation.id": "step-id",
     }
+    assert received["span_assertions"]["expect"]["service_name"] == "test"
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
     assert json.loads((tmp_path / "otel-invocation-5-otel.json").read_text(encoding="utf-8")) == {

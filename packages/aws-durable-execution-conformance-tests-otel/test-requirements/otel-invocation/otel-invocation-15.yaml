@@ -30,7 +30,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -43,7 +43,7 @@ TelemetryAssertions:
           durable.operation.id: ${INTERRUPTED_WAIT}
       expect:
         status: UNSET
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}

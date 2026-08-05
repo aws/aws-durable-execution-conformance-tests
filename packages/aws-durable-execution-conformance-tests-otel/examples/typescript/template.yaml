@@ -35,8 +35,8 @@ Parameters:
     Description: Lambda execution wrapper supplied by the exporter profile
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelTracesExporter:
     Type: String
     Default: otlp
@@ -88,6 +88,7 @@ Globals:
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
         OTEL_NODE_ENABLED_INSTRUMENTATIONS: aws-lambda
+        OTEL_PLUGIN_MODE: invocation
         OTEL_PROPAGATORS: xray
         OTEL_S3_BUCKET: !Ref OtelCollectorBucket
         OTEL_S3_PREFIX: !Ref OtelCollectorPrefix

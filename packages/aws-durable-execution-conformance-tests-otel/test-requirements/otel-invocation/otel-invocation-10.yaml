@@ -59,7 +59,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -73,7 +73,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -94,7 +94,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -114,7 +114,7 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCallback
       expect:
         status: UNSET
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:
@@ -142,7 +142,7 @@ TelemetryAssertions:
           durable.operation.subtype: WaitForCallback
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: otel-callback
             attributes:
@@ -172,7 +172,7 @@ TelemetryAssertions:
           durable.operation.status: STARTED
       expect:
         status: UNSET
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:
@@ -201,7 +201,7 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: "${/^otel-callback(?: create callback id|-callback)$/}"
             attributes:
@@ -234,7 +234,7 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:
@@ -261,7 +261,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         status: OK
-        service_name: invocation
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:

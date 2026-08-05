@@ -58,11 +58,14 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     ExporterOptions,
     normalize_runtime,
 )
-from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
+from aws_durable_execution_conformance_tests_otel.extension import (
+    DEFAULT_OTEL_SERVICE_NAME,
+    OtelExtension,
+)
 from aws_durable_execution_conformance_tests_otel.model import parse_timestamp
 
 SUITE = "otel-long-running"
-STATE_VERSION = 3
+STATE_VERSION = 4
 MAX_DELAY_SECONDS = 86400
 DEFAULT_CHECK_TIMEOUT = 900.0
 DEFAULT_CHECK_INTERVAL = 15.0
@@ -139,6 +142,7 @@ class RunState:
     launched_at_ms: int
     executions: list[ExecutionState]
     source_revision: str
+    otel_service_name: str = DEFAULT_OTEL_SERVICE_NAME
     version: int = STATE_VERSION
     suite: str = SUITE
 
@@ -161,6 +165,7 @@ class RunState:
             launched_at_ms=int(value["launched_at_ms"]),
             executions=[ExecutionState.from_dict(item) for item in value["executions"]],
             source_revision=str(value["source_revision"]),
+            otel_service_name=str(value["otel_service_name"]),
         )
         if state.suite != SUITE:
             raise ValueError(f"State suite is {state.suite!r}; expected {SUITE!r}")
@@ -185,6 +190,7 @@ class RunState:
             "launched_at_ms": self.launched_at_ms,
             "executions": [execution.to_dict() for execution in self.executions],
             "source_revision": self.source_revision,
+            "otel_service_name": self.otel_service_name,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -227,6 +233,8 @@ def _otel_options(
     view: str,
     region: str,
     backend: str = "xray",
+    *,
+    service_name: str = DEFAULT_OTEL_SERVICE_NAME,
 ) -> dict[str, Any]:
     return {
         "language": language,
@@ -234,18 +242,12 @@ def _otel_options(
         "suite": [SUITE],
         "otel_backend": backend,
         "otel_exporter": "adot",
-        "otel_service_name": _query_service_name(language, view),
+        "otel_service_name": service_name,
         "otel_poll_timeout": 120.0,
         "otel_poll_interval": 2.0,
         "otel_poll_attempts": 60,
         "otel_write_trace_artifact": True,
     }
-
-
-def _query_service_name(language: str, view: str) -> str:
-    if normalize_runtime(language) == "java" and view == "execution":
-        return "workflow"
-    return "invocation"
 
 
 def _resolved_input(
@@ -288,7 +290,7 @@ def launch(args: argparse.Namespace) -> int:
             runtime=runtime,
             region=args.region,
             endpoint=None,
-            service_name="invocation",
+            service_name=args.otel_service_name,
             layer_arn=args.otel_layer_arn,
         )
     )
@@ -363,6 +365,7 @@ def launch(args: argparse.Namespace) -> int:
         launched_at_ms=launched_at_ms,
         executions=executions,
         source_revision=str(args.source_revision),
+        otel_service_name=str(args.otel_service_name),
     ).save(state_path)
     print(f"Saved {len(executions)} deferred execution(s) to {state_path}")
     return 0
@@ -602,7 +605,13 @@ def _validate_terminal_execution(
                 **match_result.resolved_placeholders,
                 "EXECUTION_ARN": execution.execution_arn,
             },
-            options=_otel_options(state.language, state.view, state.region, backend),
+            options=_otel_options(
+                state.language,
+                state.view,
+                state.region,
+                backend,
+                service_name=state.otel_service_name,
+            ),
             aws_clients=clients,
         )
         errors.extend(OtelExtension().validate_telemetry(validation_context))
@@ -838,6 +847,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     launch_parser.add_argument("--lambda-execution-role-arn", required=True)
     launch_parser.add_argument("--otel-layer-arn", required=True)
+    launch_parser.add_argument(
+        "--otel-service-name",
+        default=DEFAULT_OTEL_SERVICE_NAME,
+        help="OpenTelemetry resource service name configured on the test functions.",
+    )
 
     check_parser = subparsers.add_parser("check")
     check_parser.add_argument("--state-file", required=True)
@@ -889,6 +903,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--lambda-execution-role-arn", required=True)
     run_parser.add_argument("--otel-layer-arn", required=True)
+    run_parser.add_argument(
+        "--otel-service-name",
+        default=DEFAULT_OTEL_SERVICE_NAME,
+        help="OpenTelemetry resource service name configured on the test functions.",
+    )
     run_parser.add_argument("--result-file", required=True)
     run_parser.add_argument("--history-dir", required=True)
     run_parser.add_argument("--report-file", required=True)

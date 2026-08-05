@@ -54,6 +54,7 @@ env:
   STATE_FILE: /tmp/python-otel-long-running-state.json
   RESULT_FILE: /tmp/python-otel-long-running-result.json
   HISTORY_DIR: /tmp/python-otel-long-running-history
+  OTEL_SERVICE_NAME: durable-execution-conformance
   PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
   PYTHONUNBUFFERED: "1"
   REPORT_FILE: /tmp/python-otel-long-running-report
@@ -207,7 +208,8 @@ jobs:
             --source-revision "$CONFORMANCE_REF" \
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
-            --otel-layer-arn "$ADOT_LAYER_ARN"
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME"
 
       - name: Run short long-running conformance executions
         if: env.PHASE == 'short'
@@ -226,6 +228,7 @@ jobs:
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME" \
             --result-file "$RESULT_FILE" \
             --history-dir "$HISTORY_DIR" \
             --report-file "$REPORT_FILE" \

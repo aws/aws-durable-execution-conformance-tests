@@ -35,8 +35,7 @@ env:
   JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}
   JAVA_TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
-  OTEL_DEPLOYMENT_SERVICE_NAME: invocation
-  OTEL_QUERY_SERVICE_NAME: ${{ inputs.suite == 'otel-invocation' && 'invocation' || 'workflow' }}
+  OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance
   OTEL_SUITE: ${{ inputs.suite }}
   OTEL_VIEW_SUFFIX: ${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   TEST_NAME: java-xray-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
@@ -165,11 +164,11 @@ jobs:
             --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
-              "OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME" \
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter adot \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-service-name "$OTEL_QUERY_SERVICE_NAME" \
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
             --otel-backend xray
 
       - name: Show Lambda logs
@@ -326,11 +325,11 @@ jobs:
             --fail-on failed+uncovered \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
-              "OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME" \
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
             --otel-endpoint "$DASH0_OTLP_ENDPOINT" \
-            --otel-service-name "$OTEL_QUERY_SERVICE_NAME" \
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
             --otel-backend dash0
 
       - name: Show Lambda logs
@@ -611,11 +610,11 @@ jobs:
               "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
               "OtelCollectorBucket=$OTEL_S3_BUCKET" \
               "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
-              "OtelServiceName=$OTEL_DEPLOYMENT_SERVICE_NAME" \
+              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
             --otel-endpoint http://localhost:4317 \
-            --otel-service-name "$OTEL_QUERY_SERVICE_NAME" \
+            --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
             --otel-backend collector \
             --otel-backend-endpoint "$OTEL_S3_URI" \
             --otel-poll-timeout 90 \

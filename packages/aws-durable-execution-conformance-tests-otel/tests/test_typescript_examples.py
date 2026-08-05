@@ -142,6 +142,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
 
@@ -213,6 +214,7 @@ def test_typescript_workflow_uses_current_adot_distro() -> None:
     assert "npm run install-sdk-main" in workflow
     assert "--language javascript" in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
+    assert workflow.count("--otel-service-name durable-execution-conformance") == 3
 
 
 def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> None:

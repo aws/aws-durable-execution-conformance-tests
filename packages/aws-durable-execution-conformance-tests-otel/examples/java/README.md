@@ -53,13 +53,15 @@ pip install \
 durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml \
   --language java \
-  --suite otel-invocation otel-execution \
+  --suite otel-invocation \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_JAVA_LAYER_ARN" \
-  --otel-service-name invocation \
+  --otel-service-name durable-execution-conformance \
   --otel-backend xray
 ```
+
+Run the execution suite separately with `--suite otel-execution`.
 
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
@@ -87,7 +89,7 @@ durable-execution-conformance \
     OtelCollectorPrefix=traces \
   --otel-exporter community \
   --otel-endpoint http://localhost:4317 \
-  --otel-service-name invocation \
+  --otel-service-name durable-execution-conformance \
   --otel-backend collector \
   --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
 ```

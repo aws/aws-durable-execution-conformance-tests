@@ -15,8 +15,8 @@ Parameters:
     Description: OpenTelemetry Java agent execution wrapper
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelView:
     Type: String
     Default: invocation
