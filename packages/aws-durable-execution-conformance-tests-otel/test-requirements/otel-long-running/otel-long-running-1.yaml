@@ -44,7 +44,7 @@ TelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -58,7 +58,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -80,7 +80,7 @@ TelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind:
           $any_of: [INTERNAL, SERVER]
@@ -102,7 +102,7 @@ TelemetryAssertions:
       expect:
         status:
           $any_of: [UNSET, OK]
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           $any_of:
             - - name: Workflow
@@ -137,7 +137,7 @@ TelemetryAssertions:
           durable.operation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:
@@ -166,7 +166,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           - name: Workflow
             attributes:
@@ -198,7 +198,7 @@ ExecutionTelemetryAssertions:
       expect:
         parent_span_id: null
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:
@@ -212,7 +212,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind:
           $any_of:
@@ -236,7 +236,7 @@ ExecutionTelemetryAssertions:
           durable.invocation.status: SUCCEEDED
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind:
           $any_of:
@@ -258,7 +258,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${WAIT1}
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 2
             name: Invocation
@@ -287,7 +287,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${STEP1}
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 2
             name: Invocation
@@ -316,7 +316,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${STEP1}
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 2
             name: Invocation

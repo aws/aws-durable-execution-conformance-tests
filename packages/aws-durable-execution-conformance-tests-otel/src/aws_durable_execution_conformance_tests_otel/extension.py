@@ -215,6 +215,7 @@ class OtelExtension:
             placeholders = PlaceholderContext()
             for name, value in context.placeholders.items():
                 placeholders.bind(name, value)
+            placeholders.bind("SERVICE_NAME", str(options["otel_service_name"]))
             assertions = placeholders.substitute(raw_assertions)
             allowed_execution_arns = assertions.get("allowed_execution_arns", ())
             additional_execution_arns: tuple[str, ...]

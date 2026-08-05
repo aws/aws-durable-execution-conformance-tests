@@ -91,7 +91,7 @@ TelemetryAssertions:
         durable.operation.type: step
     expect:
       status: OK
-      service_name: conformance
+      service_name: ${SERVICE_NAME}
       parent:
         name: durable execution
         attributes:
@@ -108,6 +108,10 @@ backend response, for example by selecting spans with
 each `expect.attributes` mapping. Attributes from ADOT, Lambda resource
 detection, and telemetry backends remain outside that prefix and do not make
 the requirement provider-specific.
+
+The OTel validator binds `${SERVICE_NAME}` to the configured
+`--otel-service-name`. Use this placeholder for `expect.service_name` so a
+requirement remains independent of the deployed resource name.
 
 Both `select` and `expect` can use any canonical span property: `trace_id`,
 `span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,

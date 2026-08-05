@@ -24,7 +24,7 @@ TelemetryAssertions:
           durable.invocation.status: PENDING
       expect:
         status: OK
-        service_name: durable-execution-conformance
+        service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
         attributes:

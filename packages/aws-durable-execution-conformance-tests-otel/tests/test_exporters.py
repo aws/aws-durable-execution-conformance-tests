@@ -272,7 +272,9 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                                 "durable.operation.id": "${STEP1}",
                             },
                         },
-                        "expect": {},
+                        "expect": {
+                            "service_name": "${SERVICE_NAME}",
+                        },
                     },
                 },
             },
@@ -301,6 +303,7 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         "durable.execution.arn": "arn:execution",
         "durable.operation.id": "step-id",
     }
+    assert received["span_assertions"]["expect"]["service_name"] == "test"
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
 @pytest.mark.parametrize("plugin_mode", [None, "", "   "])
