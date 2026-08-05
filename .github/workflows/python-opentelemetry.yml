@@ -51,6 +51,10 @@ on:
         required: false
         default: ""
         type: string
+      conformance_test_ref:
+        description: Optional conformance test commit SHA or branch name
+        required: false
+        type: string
       python_sdk_ref:
         description: Full Python SDK commit SHA to test
         required: true
@@ -102,6 +106,10 @@ on:
         description: OTLP ingest endpoint for community-layer jobs
         required: false
         type: string
+      conformance_test_ref:
+        description: Optional conformance test commit SHA or branch name
+        required: false
+        type: string
 permissions:
   actions: write
   contents: read
@@ -109,9 +117,10 @@ permissions:
 
 jobs:
   resolve-sdk-main:
-    name: Resolve Python SDK ref
+    name: Resolve test commits
     runs-on: ubuntu-latest
     outputs:
+      conformance_test_sha: ${{ steps.resolve-conformance.outputs.sha }}
       python_sdk_ref: ${{ steps.resolve.outputs.ref }}
     steps:
       - name: Validate phase
@@ -125,6 +134,35 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Resolve conformance test commit
+        id: resolve-conformance
+        env:
+          REQUESTED_CONFORMANCE_TEST_REF: >-
+            ${{ inputs.conformance_test_ref
+              || (github.repository == job.workflow_repository && job.workflow_sha)
+              || 'main' }}
+        run: |
+          CONFORMANCE_TEST_REF="$REQUESTED_CONFORMANCE_TEST_REF"
+          if [[ "$CONFORMANCE_TEST_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            CONFORMANCE_TEST_SHA="$CONFORMANCE_TEST_REF"
+          else
+            if [[ "$CONFORMANCE_TEST_REF" != refs/* ]]; then
+              CONFORMANCE_TEST_REF="refs/heads/$CONFORMANCE_TEST_REF"
+            fi
+            CONFORMANCE_TEST_SHA=$(
+              git ls-remote \
+                https://github.com/aws/aws-durable-execution-conformance-tests.git \
+                "$CONFORMANCE_TEST_REF" |
+                awk -v ref="$CONFORMANCE_TEST_REF" '$2 == ref {print $1; exit}'
+            )
+          fi
+          if [[ ! "$CONFORMANCE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve conformance test ref $REQUESTED_CONFORMANCE_TEST_REF"
+            exit 1
+          fi
+          echo "Using conformance test commit $CONFORMANCE_TEST_SHA"
+          echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Resolve Python SDK commit
         id: resolve
@@ -163,6 +201,7 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -178,6 +217,7 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
       otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -195,6 +235,7 @@ jobs:
           || inputs.phase == 'short')
           && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
 
@@ -212,5 +253,6 @@ jobs:
           || inputs.phase == 'short')
           && '60' || (inputs.delay_seconds || '82800') }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit

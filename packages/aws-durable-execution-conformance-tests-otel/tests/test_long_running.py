@@ -685,7 +685,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     source_revision = "$CONFORMANCE_REF" if language == "python" else "$GITHUB_SHA"
     assert workflow.count(f'--source-revision "{source_revision}"') == 2
     assert "source_revision=$(jq -r '.source_revision // empty' \"$STATE_FILE\")" in workflow
-    checkout_fallback = "job.workflow_sha" if language == "python" else "github.sha"
+    checkout_fallback = "inputs.conformance_test_sha" if language == "python" else "github.sha"
     assert f"ref: ${{{{ steps.state.outputs.source_revision || {checkout_fallback} }}}}" in workflow
     assert "actions: write" in workflow
     assert "otel-long-running-state" in workflow

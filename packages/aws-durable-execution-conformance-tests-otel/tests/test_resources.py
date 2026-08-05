@@ -674,6 +674,40 @@ def test_callback_submitter_assertions_emit_once_without_retry(
 
 
 @pytest.mark.parametrize(
+    ("case_number", "context_name", "terminal_span_status", "terminal_operation_status"),
+    [
+        (10, "otel-callback", "OK", "SUCCEEDED"),
+        (17, "otel-failed-callback", "ERROR", "FAILED"),
+    ],
+)
+def test_invocation_callback_context_assertions_distinguish_suspension_from_terminal_result(
+    case_number: int,
+    context_name: str,
+    terminal_span_status: str,
+    terminal_operation_status: str,
+) -> None:
+    requirement = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
+    context_assertions = [
+        assertion
+        for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+        if assertion["select"]["name"] == context_name
+        and assertion["expect"]["attributes"].get("durable.operation.subtype") == "WaitForCallback"
+    ]
+
+    assert [
+        (
+            assertion["select"]["status"],
+            assertion["expect"]["status"],
+            assertion["expect"]["attributes"]["durable.operation.status"],
+        )
+        for assertion in context_assertions
+    ] == [
+        ("UNSET", "UNSET", "STARTED"),
+        (terminal_span_status, terminal_span_status, terminal_operation_status),
+    ]
+
+
+@pytest.mark.parametrize(
     ("suite_name", "ordered_cases"),
     [
         ("otel-execution", {2, 3, 8, 9, 10, 11, 17, 18}),
