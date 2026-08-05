@@ -8,13 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
-
-from botocore.exceptions import BotoCoreError, ClientError
 
 from aws_durable_execution_conformance_tests.extensions import (
     RequirementSuite,
@@ -39,15 +37,12 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
-    BackendFeatureDisparity,
     PollingPolicy,
 )
 from aws_durable_execution_conformance_tests_otel.redaction import redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
-INVOCATION_SPAN_NAME = "Invocation"
-EXECUTION_SPAN_NAME = "Workflow"
 
 BUILTIN_EXPORTERS = {
     "adot": AdotExporterProfile,
@@ -62,17 +57,6 @@ SUPPORT_MATRIX = frozenset(
         ("community", "collector"),
     }
 )
-
-
-def _function_name_from_execution_arn(execution_arn: str) -> str:
-    lambda_arn, separator, _ = execution_arn.partition("/durable-execution/")
-    if not separator:
-        raise ValueError(f"Could not derive Lambda function name from execution ARN {execution_arn!r}")
-    _, function_separator, qualified_name = lambda_arn.partition(":function:")
-    function_name = qualified_name.partition(":")[0]
-    if not function_separator or not function_name:
-        raise ValueError(f"Could not derive Lambda function name from execution ARN {execution_arn!r}")
-    return function_name
 
 
 class OtelExtension:
@@ -242,11 +226,7 @@ class OtelExtension:
                 additional_execution_arns = ()
             query = TelemetryQuery(
                 execution_arn=context.execution_arn,
-                service_name=self._query_service_name(
-                    context,
-                    backend_name,
-                    backend.feature_disparities,
-                ),
+                service_name=str(options["otel_service_name"]),
                 started_at=datetime.fromtimestamp(
                     context.invocation_started_at_ms / 1000,
                     tz=UTC,
@@ -288,46 +268,6 @@ class OtelExtension:
             return [f"OpenTelemetry: {error}" for error in errors]
         except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
-
-    @staticmethod
-    def _query_service_name(
-        context: ValidationContext,
-        backend_name: str,
-        feature_disparities: Collection[BackendFeatureDisparity],
-    ) -> str:
-        options = context.options
-        if BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME not in feature_disparities:
-            return str(options["otel_service_name"])
-        if backend_name != "xray":
-            raise ValueError("PLUGIN_MODE_SERVICE_NAME is only supported by the X-Ray backend")
-
-        deployed_function_name = _function_name_from_execution_arn(context.execution_arn)
-        try:
-            configuration = context.aws_clients["lambda"].get_function_configuration(
-                FunctionName=deployed_function_name,
-            )
-        except (BotoCoreError, ClientError) as exc:
-            raise ValueError(
-                f"Could not read OTEL_PLUGIN_MODE from Lambda function {deployed_function_name!r}: {exc}"
-            ) from exc
-
-        environment = configuration.get("Environment", {})
-        variables = environment.get("Variables", {}) if isinstance(environment, Mapping) else {}
-        plugin_mode = variables.get("OTEL_PLUGIN_MODE") if isinstance(variables, Mapping) else None
-        if not isinstance(plugin_mode, str) or not plugin_mode.strip():
-            raise ValueError(
-                f"Lambda function {deployed_function_name!r} must define a non-empty OTEL_PLUGIN_MODE "
-                "when the X-Ray PLUGIN_MODE_SERVICE_NAME feature disparity is enabled"
-            )
-        plugin_mode = plugin_mode.strip()
-        if plugin_mode == "invocation":
-            return INVOCATION_SPAN_NAME
-        if plugin_mode == "execution":
-            return EXECUTION_SPAN_NAME
-        raise ValueError(
-            f"Lambda function {deployed_function_name!r} has unsupported OTEL_PLUGIN_MODE "
-            f"{plugin_mode!r}; expected 'invocation' or 'execution'"
-        )
 
     def _exporter_options(self, args: argparse.Namespace) -> ExporterOptions:
         return ExporterOptions(

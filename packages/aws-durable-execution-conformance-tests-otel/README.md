@@ -51,10 +51,7 @@ Templates that support the Lambda-hosted S3 collector also accept optional
 `OtelCollectorLayerArn`, `OtelCollectorBucket`, and `OtelCollectorPrefix`
 parameters.
 `--otel-service-name` configures the OpenTelemetry resource identity used by
-the deployed function and the default backend lookup identity. X-Ray declares
-the `PLUGIN_MODE_SERVICE_NAME` feature disparity, so its lookup instead reads
-`OTEL_PLUGIN_MODE` from each deployed Lambda function and maps `invocation` to
-the `Invocation` span name or `execution` to the `Workflow` span name.
+the deployed function and the backend lookup identity.
 Credentials and OTLP headers remain in environment variables or the CI secret
 store; the runner redacts the secret parameter from commands and SAM output.
 
