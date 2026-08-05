@@ -3,18 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package software.amazon.lambda.durable.conformance.otel;
 
-import io.opentelemetry.api.common.AttributeKey;
-import io.opentelemetry.api.common.Attributes;
-import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
-import io.opentelemetry.sdk.resources.Resource;
-import io.opentelemetry.sdk.trace.SdkTracerProvider;
-import io.opentelemetry.sdk.trace.SdkTracerProviderBuilder;
-import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.BiConsumer;
 import software.amazon.lambda.durable.DurableConfig;
 import software.amazon.lambda.durable.DurableHandler;
 import software.amazon.lambda.durable.TypeToken;
@@ -28,37 +17,10 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
 
     @Override
     protected final DurableConfig createConfiguration() {
-        var otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
-        var plugin = otlpEndpoint == null || otlpEndpoint.isBlank()
-                ? createPlugin()
-                : createPlugin(createTracerProviderBuilder(otlpEndpoint));
-        return DurableConfig.builder().withPlugins(plugin).build();
-    }
-
-    private SdkTracerProviderBuilder createTracerProviderBuilder(String otlpEndpoint) {
-        var exporterBuilder = OtlpGrpcSpanExporter.builder().setEndpoint(otlpEndpoint);
-        applyOtlpHeaders(
-                System.getenv("OTEL_EXPORTER_OTLP_HEADERS"), exporterBuilder::addHeader);
-        var resource =
-                Resource.getDefault()
-                        .merge(
-                                Resource.create(
-                                        Attributes.of(
-                                                AttributeKey.stringKey("service.name"),
-                                                System.getenv()
-                                                        .getOrDefault(
-                                                                "OTEL_SERVICE_NAME",
-                                                                "durable-execution-conformance"))));
-        return SdkTracerProvider.builder()
-                .setResource(resource)
-                .addSpanProcessor(SimpleSpanProcessor.create(exporterBuilder.build()));
+        return DurableConfig.builder().withPlugins(createPlugin()).build();
     }
 
     private DurableExecutionPlugin createPlugin() {
-        return createPlugin(null);
-    }
-
-    private DurableExecutionPlugin createPlugin(SdkTracerProviderBuilder tracerProviderBuilder) {
         var executionView = "execution".equals(System.getenv("OTEL_PLUGIN_MODE"));
         var classNames = executionView
                 ? new String[] {"software.amazon.lambda.durable.otel.ExecutionOtelPlugin"}
@@ -69,12 +31,7 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
         for (var className : classNames) {
             try {
                 var pluginClass = Class.forName(className);
-                if (tracerProviderBuilder == null) {
-                    return (DurableExecutionPlugin) pluginClass.getConstructor().newInstance();
-                }
-                return (DurableExecutionPlugin) pluginClass
-                        .getConstructor(SdkTracerProviderBuilder.class)
-                        .newInstance(tracerProviderBuilder);
+                return (DurableExecutionPlugin) pluginClass.getConstructor().newInstance();
             } catch (ClassNotFoundException error) {
                 // The preview plugin was renamed after the 2.1.0 release.
             } catch (ReflectiveOperationException error) {
@@ -86,50 +43,6 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                 "No supported Java OpenTelemetry plugin is available for "
                         + (executionView ? "execution" : "invocation")
                         + " view");
-    }
-
-    static void applyOtlpHeaders(
-            String rawHeaders, BiConsumer<String, String> addHeader) {
-        parseOtlpHeaders(rawHeaders).forEach(addHeader);
-    }
-
-    private static Map<String, String> parseOtlpHeaders(String rawHeaders) {
-        var headers = new LinkedHashMap<String, String>();
-        if (rawHeaders == null || rawHeaders.isBlank()) {
-            return headers;
-        }
-
-        var entries = rawHeaders.split(",", -1);
-        for (int index = 0; index < entries.length; index++) {
-            var entry = entries[index];
-            var separator = entry.indexOf('=');
-            if (separator <= 0) {
-                throw invalidOtlpHeader(index, null);
-            }
-            String name;
-            String value;
-            try {
-                name =
-                        URLDecoder.decode(
-                                entry.substring(0, separator).trim(), StandardCharsets.UTF_8);
-                value =
-                        URLDecoder.decode(
-                                entry.substring(separator + 1).trim(), StandardCharsets.UTF_8);
-            } catch (IllegalArgumentException error) {
-                throw invalidOtlpHeader(index, error);
-            }
-            if (name.isBlank()) {
-                throw invalidOtlpHeader(index, null);
-            }
-            headers.put(name, value);
-        }
-        return headers;
-    }
-
-    private static IllegalArgumentException invalidOtlpHeader(
-            int index, IllegalArgumentException cause) {
-        return new IllegalArgumentException(
-                "Invalid OTEL_EXPORTER_OTLP_HEADERS entry at position " + (index + 1), cause);
     }
 
     protected final void requireScenario(Map<String, Object> event, String expected) {

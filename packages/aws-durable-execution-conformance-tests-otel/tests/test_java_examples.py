@@ -147,7 +147,7 @@ def test_java_long_running_template_enables_agent_extension() -> None:
     assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
 
 
-def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
+def test_java_examples_use_agent_initialized_otel_plugin() -> None:
     pom_path = EXAMPLES_DIR / "pom.xml"
     root = ET.parse(pom_path).getroot()
     namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
@@ -161,8 +161,9 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     assert {
         "aws-durable-execution-sdk-java",
         "aws-durable-execution-sdk-java-plugin-otel",
-        "opentelemetry-exporter-otlp",
+        "opentelemetry-sdk",
     } <= artifacts
+    assert "opentelemetry-exporter-otlp" not in artifacts
     assert "aws-distro-opentelemetry-xray-udp-span-exporter" not in artifacts
     sdk_versions = {
         element.findtext("m:version", namespaces=namespace)
@@ -175,16 +176,10 @@ def test_java_examples_require_sdk_main_version_and_otel_plugin() -> None:
     }
     assert sdk_versions == {"${durable.sdk.version}"}
     handler = (SOURCE_DIR / "OtelConformanceHandler.java").read_text(encoding="utf-8")
-    assert ".setResource(resource)" in handler
-    assert 'AttributeKey.stringKey("service.name")' in handler
-    assert '"durable-execution-conformance"' in handler
+    assert "SdkTracerProvider" not in handler
     assert "AwsXrayUdpSpanExporterBuilder" not in handler
     assert '"AWS_XRAY_DAEMON_ADDRESS"' not in handler
-    assert "OtlpGrpcSpanExporter" in handler
-    assert '"OTEL_EXPORTER_OTLP_ENDPOINT"' in handler
-    assert '"OTEL_EXPORTER_OTLP_HEADERS"' in handler
-    assert "URLDecoder.decode" in handler
-    assert "exporterBuilder::addHeader" in handler
+    assert "OtlpGrpcSpanExporter" not in handler
     assert '"software.amazon.lambda.durable.otel.InvocationOtelPlugin"' in handler
     assert '"software.amazon.lambda.durable.otel.ExecutionOtelPlugin"' in handler
     assert '"software.amazon.lambda.durable.otel.OtelPlugin"' in handler

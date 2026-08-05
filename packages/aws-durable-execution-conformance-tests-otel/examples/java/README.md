@@ -73,9 +73,9 @@ through the collector to X-Ray.
 ## Run Against the AWS S3 Collector
 
 The hosted S3 workflow publishes a temporary OpenTelemetry Lambda collector
-extension and run-scoped bucket. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the
-Java SDK plugin exports spans over OTLP gRPC to the extension on
-`localhost:4317` using its explicit tracer-provider builder.
+extension and run-scoped bucket. The OpenTelemetry Java agent exports both
+Lambda and Java SDK plugin spans over OTLP gRPC to the extension on
+`localhost:4317` using its global tracer provider.
 
 ```bash
 durable-execution-conformance \
