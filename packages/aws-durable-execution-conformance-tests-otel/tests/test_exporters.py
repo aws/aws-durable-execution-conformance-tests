@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -257,7 +258,10 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
                 "STEP1": "step-id",
                 "TARGET_EXECUTION_ARN": "arn:target",
             },
-            options=vars(_args("adot", "xray")),
+            options={
+                **vars(_args("adot", "xray")),
+                "otel_write_trace_artifact": True,
+            },
             aws_clients={"xray": object()},
         )
     )
@@ -277,3 +281,8 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     assert received["span_assertions"]["expect"]["service_name"] == "test"
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
+    assert json.loads((tmp_path / "otel-invocation-5-otel.json").read_text(encoding="utf-8")) == {
+        "trace_id": "1" * 32,
+        "log_trace_ids": [],
+        "spans": [],
+    }

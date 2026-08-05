@@ -256,3 +256,35 @@ jobs:
       conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
       python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
     secrets: inherit
+
+  next-long-running-invocation:
+    name: Launch next long running invocation view
+    needs: [resolve-sdk-main, long-running-invocation]
+    if: >-
+      always() &&
+      needs.long-running-invocation.outputs.rollover_ready == 'true'
+    uses: ./.github/workflows/python-opentelemetry-long-running.yml
+    with:
+      phase: launch
+      view: invocation
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
+    secrets: inherit
+
+  next-long-running-execution:
+    name: Launch next long running execution view
+    needs: [resolve-sdk-main, long-running-execution]
+    if: >-
+      always() &&
+      needs.long-running-execution.outputs.rollover_ready == 'true'
+    uses: ./.github/workflows/python-opentelemetry-long-running.yml
+    with:
+      phase: launch
+      view: execution
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
+      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
+    secrets: inherit

@@ -233,8 +233,8 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
     assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 4
-    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 6
+    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 6
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",

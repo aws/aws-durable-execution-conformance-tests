@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +121,10 @@ def test_long_running_uses_the_resource_service_name_by_default() -> None:
     assert options["otel_service_name"] == "durable-execution-conformance"
     python_options = long_running._otel_options("python", "execution", "us-west-2")
     assert python_options["otel_service_name"] == "durable-execution-conformance"
+
+
+def test_long_running_checks_always_write_trace_artifacts() -> None:
+    assert long_running._otel_options("python", "invocation", "us-west-2")["otel_write_trace_artifact"] is True
 
 
 def test_requirement_input_uses_the_workflow_delay_override() -> None:
@@ -455,6 +462,392 @@ def test_deferred_check_can_retain_a_terminal_stack(
     assert cleanup_options == [False]
 
 
+def test_deferred_check_finishes_after_sending_the_due_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    ).save(state_path)
+    pending_history = {
+        "ExecutionStatus": "RUNNING",
+        "Events": [
+            {
+                "EventType": "CallbackStarted",
+                "CallbackStartedDetails": {"CallbackId": "callback-1"},
+            }
+        ],
+    }
+    terminal_history = {
+        "ExecutionStatus": "SUCCEEDED",
+        "Events": [
+            *pending_history["Events"],
+            {
+                "EventType": "CallbackSucceeded",
+                "EventTimestamp": 11.5,
+            },
+            {
+                "EventType": "ExecutionSucceeded",
+                "EventTimestamp": 12.0,
+            },
+        ],
+    }
+    histories = iter([pending_history, terminal_history])
+    client = _CallbackClient()
+    sleeps: list[float] = []
+    monotonic_values = iter([0.0, 0.0])
+    validated_histories: list[dict[str, Any]] = []
+    validated_finished_at_ms: list[int] = []
+
+    def fake_validate_terminal_execution(**kwargs: Any) -> Any:
+        validated_histories.append(kwargs["history"])
+        validated_finished_at_ms.append(kwargs["finished_at_ms"])
+        return long_running.ReportEntry(
+            id=CALLBACK_CASE,
+            suite=long_running.SUITE,
+            status=long_running.ReportStatus.PASSED,
+        )
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {CALLBACK_CASE: tmp_path / "requirement.yaml"})
+    monkeypatch.setattr(long_running, "_validate_terminal_execution", fake_validate_terminal_execution)
+    monkeypatch.setattr(long_running, "_emit_report", lambda *_args, **_kwargs: None)
+    time_values = iter([11.0, 31.0])
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", sleeps.append)
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "passed",
+        "state_changed": True,
+        "rollover_ready": True,
+    }
+    assert RunState.load(state_path).executions[0].callback_sent_at_ms == 11000
+    assert client.requests == [
+        {
+            "CallbackId": "callback-1",
+            "Result": b'"callback-complete"',
+        }
+    ]
+    assert sleeps == [15.0]
+    assert validated_histories == [terminal_history]
+    assert validated_finished_at_ms == [31000]
+
+
+def test_callback_completion_poll_preserves_pending_state_at_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+        callback_sent_at_ms=11000,
+    )
+    state = RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    )
+    history = {"ExecutionStatus": "RUNNING", "Events": []}
+    histories = {CALLBACK_CASE: history}
+    statuses: dict[str, str | None] = {CALLBACK_CASE: "RUNNING"}
+    sleeps: list[float] = []
+    monotonic_values = iter([0.0, 0.0, 901.0])
+
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: history)
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", sleeps.append)
+
+    long_running._poll_pending_executions(
+        state,
+        _CallbackClient(),
+        histories,
+        statuses,
+        tmp_path / "history",
+        timeout=900.0,
+        interval=15.0,
+    )
+
+    assert statuses == {CALLBACK_CASE: "RUNNING"}
+    assert sleeps == [15.0]
+
+
+def test_premature_failure_is_reported_after_advancing_a_pending_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    premature_execution = ExecutionState(
+        description_id="otel-long-running-1",
+        function_name="OtelLongRunning1Wait",
+        execution_arn="arn:premature",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    callback_execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:callback",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[premature_execution, callback_execution],
+    ).save(state_path)
+    premature_history = {
+        "ExecutionStatus": "FAILED",
+        "Events": [
+            {
+                "EventType": "ExecutionFailed",
+                "EventTimestamp": 10.0,
+            }
+        ],
+    }
+    pending_history = {
+        "ExecutionStatus": "RUNNING",
+        "Events": [
+            {
+                "EventType": "CallbackStarted",
+                "CallbackStartedDetails": {"CallbackId": "callback-1"},
+            }
+        ],
+    }
+    histories = iter([premature_history, pending_history, pending_history])
+    client = _CallbackClient()
+    reports: list[Any] = []
+    monotonic_values = iter([0.0, 0.0, 901.0])
+    time_values = iter([11.0, 31.0])
+    premature_requirement = tmp_path / "premature.yaml"
+    premature_requirement.write_text("description: premature execution\n", encoding="utf-8")
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
+    monkeypatch.setattr(
+        long_running,
+        "_requirement_cases",
+        lambda: {
+            premature_execution.description_id: premature_requirement,
+            CALLBACK_CASE: tmp_path / "callback.yaml",
+        },
+    )
+    monkeypatch.setattr(long_running, "_emit_report", lambda report, *_args, **_kwargs: reports.append(report))
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", lambda _seconds: None)
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 1
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "failed",
+        "state_changed": True,
+        "rollover_ready": False,
+    }
+    assert RunState.load(state_path).executions[1].callback_sent_at_ms == 11000
+    assert client.requests == [
+        {
+            "CallbackId": "callback-1",
+            "Result": b'"callback-complete"',
+        }
+    ]
+    assert len(reports) == 1
+    assert [entry.id for entry in reports[0].entries] == [premature_execution.description_id]
+
+
+def test_terminal_premature_failure_is_rollover_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    requirement_path = tmp_path / "requirement.yaml"
+    requirement_path.write_text("description: premature execution\n", encoding="utf-8")
+    execution = ExecutionState(
+        description_id="otel-long-running-1",
+        function_name="OtelLongRunning1Wait",
+        execution_arn="arn:premature",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    ).save(state_path)
+    history = {
+        "ExecutionStatus": "FAILED",
+        "Events": [
+            {
+                "EventType": "ExecutionFailed",
+                "EventTimestamp": 10.0,
+            }
+        ],
+    }
+    reports: list[Any] = []
+    time_values = iter([11.0, 12.0])
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": object()})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: history)
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {execution.description_id: requirement_path})
+    monkeypatch.setattr(long_running, "_emit_report", lambda report, *_args, **_kwargs: reports.append(report))
+    monkeypatch.setattr(
+        long_running,
+        "_validate_terminal_execution",
+        lambda **_kwargs: pytest.fail("premature executions must not run terminal validation"),
+    )
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 1
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "failed",
+        "state_changed": False,
+        "rollover_ready": True,
+    }
+    assert len(reports) == 1
+    assert reports[0].exit_code() == 1
+
+
+def test_callback_state_survives_a_transient_polling_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    execution = ExecutionState(
+        description_id=CALLBACK_CASE,
+        function_name="OtelLongRunning3Callback",
+        execution_arn="arn:execution",
+        invocation_started_at_ms=1000,
+        bindings={},
+    )
+    RunState(
+        language="python",
+        view="invocation",
+        region="us-west-2",
+        name="test",
+        stack_name="stack",
+        template="template.yaml",
+        delay_seconds=10,
+        launched_at_ms=0,
+        source_revision="a" * 40,
+        executions=[execution],
+    ).save(state_path)
+    pending_history = {
+        "ExecutionStatus": "RUNNING",
+        "Events": [
+            {
+                "EventType": "CallbackStarted",
+                "CallbackStartedDetails": {"CallbackId": "callback-1"},
+            }
+        ],
+    }
+    histories = iter([pending_history, None])
+    client = _CallbackClient()
+    monotonic_values = iter([0.0, 0.0, 901.0])
+    time_values = iter([11.0, 31.0])
+
+    monkeypatch.setattr(long_running.AwsClients, "create", lambda *_args, **_kwargs: {"lambda": client})
+    monkeypatch.setattr(long_running, "get_execution_history", lambda *_args, **_kwargs: next(histories))
+    monkeypatch.setattr(long_running, "_requirement_cases", lambda: {CALLBACK_CASE: tmp_path / "requirement.yaml"})
+    monkeypatch.setattr(long_running.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(long_running.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(long_running.time, "sleep", lambda _seconds: None)
+
+    args = argparse.Namespace(
+        state_file=str(state_path),
+        result_file=str(result_path),
+        history_dir=str(tmp_path / "history"),
+        report_file=str(tmp_path / "report"),
+        otel_backend="xray",
+        check_timeout=900.0,
+        check_interval=15.0,
+    )
+
+    assert long_running.check(args, delete_terminal_stack=False) == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "status": "pending",
+        "state_changed": True,
+        "rollover_ready": False,
+    }
+    assert RunState.load(state_path).executions[0].callback_sent_at_ms == 11000
+    assert len(client.requests) == 1
+
+
 def test_short_run_polls_again_after_sending_the_due_callback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -673,6 +1066,52 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "env.PHASE != 'short'" in workflow
     assert "phase=launch" in workflow
     assert "phase=check" in workflow
+    assert "check_status: ${{ steps.check.outputs.status }}" in workflow
+    assert "value: ${{ jobs.run.outputs.check_status }}" in workflow
+    assert "rollover_ready: ${{ steps.check.outputs.rollover_ready }}" in workflow
+    assert "value: ${{ jobs.run.outputs.rollover_ready }}" in workflow
+    run_steps = {step["name"]: step for step in workflow_config["jobs"]["run"]["steps"]}
+    check_script = run_steps["Check long-running conformance executions"]["run"]
+    assert 'echo "rollover_ready=false" >> "$GITHUB_OUTPUT"' in check_script
+    assert "if jq -e 'has(\"rollover_ready\")'" in check_script
+    assert "done < <(jq -r '.executions[].description_id' \"$STATE_FILE\")" in check_script
+    assert 'if [ "$status" = "passed" ] || [ "$status" = "failed" ]; then' in check_script
+    assert "all(.[]; is_terminal)" in check_script
+    assert 'cd "$CURRENT_CHECKER"' in check_script
+    current_checker_checkout = run_steps["Check out current conformance checker"]
+    assert current_checker_checkout["if"] == (
+        "steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'"
+    )
+    assert current_checker_checkout["with"] == {
+        "repository": "${{ job.workflow_repository }}",
+        "ref": "${{ job.workflow_sha }}",
+        "path": ".build/current-conformance-tests",
+    }
+    assert run_steps["Persist updated callback state"]["if"] == (
+        "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
+    )
+    retire_script = run_steps["Retire previous state artifact"]["run"]
+    assert '[ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]' in retire_script
+
+    sdk_ref = f"{language}_sdk_ref"
+    for view in ("invocation", "execution"):
+        rollover = entry_workflow_config["jobs"][f"next-long-running-{view}"]
+        condition = rollover["if"]
+        assert rollover["needs"] == ["resolve-sdk-main", f"long-running-{view}"]
+        assert "always()" in condition
+        assert f"needs.long-running-{view}.outputs.rollover_ready == 'true'" in condition
+        assert rollover["uses"] == f"./.github/workflows/{language}-opentelemetry-long-running.yml"
+        expected_inputs = {
+            "phase": "launch",
+            "view": view,
+            "delay_seconds": "${{ inputs.delay_seconds || '82800' }}",
+            "aws_region": "${{ inputs.aws_region || 'us-west-2' }}",
+            sdk_ref: f"${{{{ needs.resolve-sdk-main.outputs.{sdk_ref} }}}}",
+        }
+        if language == "python":
+            expected_inputs["conformance_test_sha"] = "${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}"
+        assert rollover["with"] == expected_inputs
+        assert rollover["secrets"] == "inherit"
     assert (
         f"""if [ -z "$artifact_id" ]; then
             echo "No active {display_name} $OTEL_VIEW long-running OTel run."
@@ -720,3 +1159,209 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     )
     assert "github.run_number" not in workflow
     assert "github.run_attempt" not in workflow
+
+
+@pytest.mark.parametrize(
+    ("legacy_status", "history_payloads", "expected_rollover_ready"),
+    [
+        (
+            "passed",
+            [
+                {"ExecutionStatus": "SUCCEEDED"},
+                {"Events": [{"EventType": "ExecutionSucceeded"}]},
+            ],
+            "true",
+        ),
+        (
+            "failed",
+            [
+                {"ExecutionStatus": "FAILED"},
+                {"Events": [{"EventType": "ExecutionTimedOut"}]},
+            ],
+            "true",
+        ),
+    ],
+)
+def test_workflow_derives_legacy_rollover_readiness_from_all_histories(
+    tmp_path: Path,
+    legacy_status: str,
+    history_payloads: list[dict[str, Any]],
+    expected_rollover_ready: str,
+) -> None:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("workflow compatibility test requires bash and jq")
+
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    check_script = next(
+        step["run"]
+        for step in workflow["jobs"]["run"]["steps"]
+        if step["name"] == "Check long-running conformance executions"
+    )
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    history_dir = tmp_path / "history"
+    output_path = tmp_path / "github-output"
+    bin_dir = tmp_path / "bin"
+    history_dir.mkdir()
+    bin_dir.mkdir()
+    descriptions = [f"otel-long-running-{index}" for index in range(1, len(history_payloads) + 1)]
+    state_path.write_text(
+        json.dumps({"executions": [{"description_id": description_id} for description_id in descriptions]}),
+        encoding="utf-8",
+    )
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": legacy_status,
+                "state_changed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for description_id, history in zip(descriptions, history_payloads, strict=True):
+        (history_dir / f"{description_id}.json").write_text(
+            json.dumps(history),
+            encoding="utf-8",
+        )
+    fake_hatch = bin_dir / "hatch"
+    fake_hatch.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_hatch.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "STATE_FILE": str(state_path),
+        "RESULT_FILE": str(result_path),
+        "HISTORY_DIR": str(history_dir),
+        "REPORT_FILE": str(tmp_path / "report"),
+        "GITHUB_OUTPUT": str(output_path),
+    }
+    subprocess.run(
+        ["bash", "-c", check_script],
+        check=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+    assert outputs["status"] == legacy_status
+    assert outputs["rollover_ready"] == expected_rollover_ready
+
+
+def test_workflow_migrates_legacy_failure_before_retaining_pending_callback(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("workflow compatibility test requires bash and jq")
+
+    workflow = yaml.safe_load((WORKFLOWS_DIR / "python-opentelemetry-long-running.yml").read_text(encoding="utf-8"))
+    check_script = next(
+        step["run"]
+        for step in workflow["jobs"]["run"]["steps"]
+        if step["name"] == "Check long-running conformance executions"
+    )
+    state_path = tmp_path / "state.json"
+    result_path = tmp_path / "result.json"
+    history_dir = tmp_path / "history"
+    output_path = tmp_path / "github-output"
+    hatch_calls_path = tmp_path / "hatch-calls"
+    bin_dir = tmp_path / "bin"
+    current_checker = tmp_path / "current-checker"
+    history_dir.mkdir()
+    bin_dir.mkdir()
+    current_checker.mkdir()
+    state_path.write_text(
+        json.dumps(
+            {
+                "executions": [
+                    {
+                        "description_id": "otel-long-running-1",
+                    },
+                    {
+                        "description_id": CALLBACK_CASE,
+                        "callback_sent_at_ms": None,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "state_changed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (history_dir / "otel-long-running-1.json").write_text(
+        json.dumps(
+            {
+                "ExecutionStatus": "FAILED",
+                "Events": [{"EventType": "ExecutionFailed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (history_dir / f"{CALLBACK_CASE}.json").write_text(
+        json.dumps(
+            {
+                "ExecutionStatus": "RUNNING",
+                "Events": [
+                    {
+                        "EventType": "CallbackStarted",
+                        "CallbackStartedDetails": {"CallbackId": "callback-1"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_hatch = bin_dir / "hatch"
+    fake_hatch.write_text(
+        """#!/bin/sh
+printf '%s\n' "$PWD" >> "$HATCH_CALLS"
+if [ "$PWD" != "$CURRENT_CHECKER" ]; then
+  exit 1
+fi
+jq '.executions[1].callback_sent_at_ms = 11000' "$STATE_FILE" > "$STATE_FILE.tmp"
+mv "$STATE_FILE.tmp" "$STATE_FILE"
+printf '%s\n' '{"status":"failed","state_changed":true,"rollover_ready":false}' > "$RESULT_FILE"
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_hatch.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "CURRENT_CHECKER": str(current_checker),
+        "STATE_FILE": str(state_path),
+        "RESULT_FILE": str(result_path),
+        "HISTORY_DIR": str(history_dir),
+        "REPORT_FILE": str(tmp_path / "report"),
+        "GITHUB_OUTPUT": str(output_path),
+        "HATCH_CALLS": str(hatch_calls_path),
+    }
+    subprocess.run(
+        ["bash", "-c", check_script],
+        check=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+    migrated_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert outputs == {
+        "status": "failed",
+        "state_changed": "true",
+        "rollover_ready": "false",
+        "check_exit_code": "1",
+    }
+    assert migrated_state["executions"][1]["callback_sent_at_ms"] == 11000
+    assert hatch_calls_path.read_text(encoding="utf-8").splitlines() == [
+        str(ROOT),
+        str(current_checker),
+    ]
