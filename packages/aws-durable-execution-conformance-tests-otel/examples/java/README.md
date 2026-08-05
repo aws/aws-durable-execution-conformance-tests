@@ -67,7 +67,7 @@ The execution role must allow Durable Execution, logs, and X-Ray writes.
 
 The template starts the ADOT Java agent and loads the Java SDK OTel plugin JAR
 through `OTEL_JAVAAGENT_EXTENSIONS`. The plugin's no-argument constructor uses
-the agent-initialized global tracer provider, and ADOT sends its OTLP spans
+the agent-initialized global tracer provider, and ADOT sends its OTLP/gRPC spans
 through the collector to X-Ray.
 
 ## Run Against the AWS S3 Collector

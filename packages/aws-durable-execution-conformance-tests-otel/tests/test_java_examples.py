@@ -8,7 +8,10 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import yaml
+
 from aws_durable_execution_conformance_tests.validate import (
+    _CfnSafeLoader,
     parse_function_descriptions,
     parse_not_implemented,
 )
@@ -73,6 +76,14 @@ def test_java_example_implements_execution_view() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
+def test_java_example_selects_otlp_protocol_by_exporter_profile() -> None:
+    with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
+        template = yaml.load(stream, Loader=_CfnSafeLoader)
+
+    environment = template["Globals"]["Function"]["Environment"]["Variables"]
+    assert environment["OTEL_EXPORTER_OTLP_PROTOCOL"] == {"If": ["HasOtelExporterEndpoint", "http/protobuf", "grpc"]}
+
+
 def test_java_example_template_accepts_runner_parameters() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
 
@@ -101,7 +112,6 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Default: /opt/otel-instrument" in template
     assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
     assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
-    assert "OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf" in template
     assert "HasOtelCollectorLayer: !Not" in template
     assert "HasOtelExporterEndpoint: !Not" in template
     assert "HasOtelExporterHeaders: !Not" in template
