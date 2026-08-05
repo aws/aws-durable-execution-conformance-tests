@@ -116,7 +116,7 @@ jobs:
       check_status: ${{ steps.check.outputs.status }}
       rollover_ready: ${{ steps.check.outputs.rollover_ready }}
     name: >-
-      ${{ inputs.view }} /
+      ${{ inputs.view == 'invocation' && 'Invocation' || 'Execution' }} -
       ${{ inputs.phase == 'short' && 'Short run'
         || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -200,91 +200,6 @@ jobs:
           role-session-name: durableConformance-${{ inputs.language }}-long
           sdk-ref: ${{ inputs.sdk_ref }}
           sdk-repository: ${{ inputs.sdk_repository }}
-
-      - name: Resolve ADOT layer
-        if: env.PHASE == 'short' || steps.state.outputs.phase == 'launch'
-        env:
-          CONFIGURED_ADOT_LAYER_ARN: ${{ inputs.adot_layer_arn }}
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
-        run: |
-          ADOT_LAYER_ARN="$CONFIGURED_ADOT_LAYER_ARN"
-          if [ -z "$ADOT_LAYER_ARN" ]; then
-            ADOT_LAYER_ARN=$(
-              gh api "repos/$RELEASE_REPOSITORY/releases/latest" \
-                --jq .body |
-                awk -F '|' -v region="$AWS_REGION" '
-                  $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
-                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
-                    print $3
-                    exit
-                  }
-                '
-            )
-          fi
-          if [ -z "$ADOT_LAYER_ARN" ]; then
-            echo "Could not resolve an ADOT layer for $LANGUAGE in $AWS_REGION"
-            exit 1
-          fi
-          aws lambda get-layer-version-by-arn \
-            --arn "$ADOT_LAYER_ARN" \
-            --region "$AWS_REGION" \
-            --query LayerVersionArn \
-            --output text > /dev/null
-          echo "Using ADOT layer $ADOT_LAYER_ARN"
-          echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
-
-      - name: Launch long-running conformance executions
-        if: steps.state.outputs.phase == 'launch'
-        id: launch
-        env:
-          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
-        run: |
-          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
-            --template "$TEST_TEMPLATE" \
-            --language "$LANGUAGE" \
-            --view "$OTEL_VIEW" \
-            --region "$AWS_REGION" \
-            --name "$TEST_NAME" \
-            --state-file "$STATE_FILE" \
-            --source-revision "$CONFORMANCE_TEST_SHA" \
-            --delay-seconds "$DELAY_SECONDS" \
-            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
-            --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-service-name "$OTEL_SERVICE_NAME"
-
-      - name: Run short long-running conformance executions
-        if: env.PHASE == 'short'
-        env:
-          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
-        run: |
-          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
-            --template "$TEST_TEMPLATE" \
-            --language "$LANGUAGE" \
-            --view "$OTEL_VIEW" \
-            --region "$AWS_REGION" \
-            --name "$TEST_NAME" \
-            --state-file "$STATE_FILE" \
-            --source-revision "$CONFORMANCE_TEST_SHA" \
-            --delay-seconds "$DELAY_SECONDS" \
-            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
-            --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-service-name "$OTEL_SERVICE_NAME" \
-            --result-file "$RESULT_FILE" \
-            --history-dir "$HISTORY_DIR" \
-            --report-file "$REPORT_FILE" \
-            --otel-backend xray \
-            --check-timeout 900 \
-            --check-interval 15
-
-      - name: Persist active run state
-        if: steps.state.outputs.phase == 'launch'
-        id: persist
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ env.STATE_ARTIFACT }}
-          path: ${{ env.STATE_FILE }}
-          retention-days: 5
 
       - name: Check long-running conformance executions
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
@@ -370,6 +285,122 @@ jobs:
           echo "state_changed=$(jq -r .state_changed "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
           echo "rollover_ready=$rollover_ready" >> "$GITHUB_OUTPUT"
           echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Check out next conformance tests
+        if: steps.check.outputs.rollover_ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ inputs.conformance_test_sha }}
+          clean: false
+
+      - name: Prepare next conformance example
+        if: steps.check.outputs.rollover_ready == 'true'
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-long-next
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Resolve ADOT layer
+        if: >-
+          env.PHASE == 'short' ||
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        env:
+          CONFIGURED_ADOT_LAYER_ARN: ${{ inputs.adot_layer_arn }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
+        run: |
+          ADOT_LAYER_ARN="$CONFIGURED_ADOT_LAYER_ARN"
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            ADOT_LAYER_ARN=$(
+              gh api "repos/$RELEASE_REPOSITORY/releases/latest" \
+                --jq .body |
+                awk -F '|' -v region="$AWS_REGION" '
+                  $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                    print $3
+                    exit
+                  }
+                '
+            )
+          fi
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            echo "Could not resolve an ADOT layer for $LANGUAGE in $AWS_REGION"
+            exit 1
+          fi
+          aws lambda get-layer-version-by-arn \
+            --arn "$ADOT_LAYER_ARN" \
+            --region "$AWS_REGION" \
+            --query LayerVersionArn \
+            --output text > /dev/null
+          echo "Using ADOT layer $ADOT_LAYER_ARN"
+          echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
+
+      - name: Launch long-running conformance executions
+        if: >-
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        id: launch
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          rm -f "$STATE_FILE"
+          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --view "$OTEL_VIEW" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --state-file "$STATE_FILE" \
+            --source-revision "$CONFORMANCE_TEST_SHA" \
+            --delay-seconds "$DELAY_SECONDS" \
+            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME"
+
+      - name: Run short long-running conformance executions
+        if: env.PHASE == 'short'
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --view "$OTEL_VIEW" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --state-file "$STATE_FILE" \
+            --source-revision "$CONFORMANCE_TEST_SHA" \
+            --delay-seconds "$DELAY_SECONDS" \
+            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME" \
+            --result-file "$RESULT_FILE" \
+            --history-dir "$HISTORY_DIR" \
+            --report-file "$REPORT_FILE" \
+            --otel-backend xray \
+            --check-timeout 900 \
+            --check-interval 15
+
+      - name: Persist active run state
+        if: >-
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        id: persist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.STATE_ARTIFACT }}
+          path: ${{ env.STATE_FILE }}
+          retention-days: 5
 
       - name: Persist updated callback state
         if: steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'

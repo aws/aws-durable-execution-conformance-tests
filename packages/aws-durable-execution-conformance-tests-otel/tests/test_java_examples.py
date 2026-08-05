@@ -231,7 +231,7 @@ def test_java_workflow_resolves_main_once_and_propagates_the_commit() -> None:
     assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
     assert "refs/heads/main" in orchestrator
     assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in orchestrator
-    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 6
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
     for workflow in (suite_workflow, long_running_workflow):
         assert "SDK_REF: ${{ inputs.sdk_ref }}" in workflow
         assert "      sdk_ref:" in workflow

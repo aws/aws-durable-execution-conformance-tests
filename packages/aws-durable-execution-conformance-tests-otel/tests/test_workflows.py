@@ -159,7 +159,7 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         assert call["secrets"][secret]["required"] is True
 
 
-def test_orchestrator_owns_all_views_and_rollover() -> None:
+def test_orchestrator_owns_all_views() -> None:
     workflow = _load(ORCHESTRATOR)
     jobs = workflow["jobs"]
 
@@ -169,13 +169,9 @@ def test_orchestrator_owns_all_views_and_rollover() -> None:
     assert jobs["execution"]["with"]["suite"] == "otel-execution"
     for view in ("invocation", "execution"):
         initial = jobs[f"long-running-{view}"]
-        rollover = jobs[f"next-long-running-{view}"]
         assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
         assert initial["with"]["view"] == view
-        assert rollover["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
-        assert rollover["with"]["phase"] == "launch"
-        assert rollover["with"]["view"] == view
-        assert f"needs.long-running-{view}.outputs.rollover_ready == 'true'" in rollover["if"]
+        assert f"next-long-running-{view}" not in jobs
 
 
 def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
@@ -186,8 +182,14 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
 
     assert set(_triggers(workflow)) == {"workflow_call"}
     assert backend["strategy"]["matrix"]["backend"] == ["xray", "dash0"]
-    assert workflow["jobs"]["datadog"]["name"] == "Community layer + Datadog"
-    assert workflow["jobs"]["s3_collector"]["name"] == "Community layer + S3 collector"
+    view_label = "${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution' }} - "
+    assert backend["name"] == (
+        view_label + "${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}"
+    )
+    assert workflow["jobs"]["datadog"]["name"] == view_label + "Community layer + Datadog"
+    assert workflow["jobs"]["s3_collector"]["name"] == view_label + "Community layer + S3 collector"
+    for job in workflow["jobs"].values():
+        assert " / " not in job["name"]
     assert workflow["concurrency"]["group"] == (
         "${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}"
     )
@@ -228,6 +230,14 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
             }
             assert steps["Check out workflow support"]["with"] == expected_support_checkout
             assert steps["Prepare conformance example"]["uses"] == expected_action
+
+    long_running_steps = {step["name"]: step for step in _load(LONG_RUNNING_WORKFLOW)["jobs"]["run"]["steps"]}
+    assert long_running_steps["Check out next conformance tests"]["with"] == {
+        "repository": "${{ inputs.conformance_repository }}",
+        "ref": "${{ inputs.conformance_test_sha }}",
+        "clean": False,
+    }
+    assert long_running_steps["Prepare next conformance example"]["uses"] == expected_action
 
 
 def test_dash0_and_s3_resources_remain_stable() -> None:

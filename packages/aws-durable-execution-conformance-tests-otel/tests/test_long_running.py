@@ -1137,24 +1137,29 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         "ref": "${{ job.workflow_sha }}",
         "path": ".build/workflow-support",
     }
+    assert "Invocation" in workflow_config["jobs"]["run"]["name"]
+    assert "Execution" in workflow_config["jobs"]["run"]["name"]
+    assert " / " not in workflow_config["jobs"]["run"]["name"]
+    assert run_steps["Check out next conformance tests"]["with"] == {
+        "repository": "${{ inputs.conformance_repository }}",
+        "ref": "${{ inputs.conformance_test_sha }}",
+        "clean": False,
+    }
+    assert run_steps["Prepare next conformance example"]["if"] == ("steps.check.outputs.rollover_ready == 'true'")
+    launch_step = run_steps["Launch long-running conformance executions"]
+    assert "steps.state.outputs.phase == 'launch'" in launch_step["if"]
+    assert "steps.check.outputs.rollover_ready == 'true'" in launch_step["if"]
+    assert 'rm -f "$STATE_FILE"' in launch_step["run"]
+    persist_step = run_steps["Persist active run state"]
+    assert "steps.state.outputs.phase == 'launch'" in persist_step["if"]
+    assert "steps.check.outputs.rollover_ready == 'true'" in persist_step["if"]
     assert run_steps["Persist updated callback state"]["if"] == (
         "steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'"
     )
     retire_script = run_steps["Retire previous state artifact"]["run"]
     assert '[ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]' in retire_script
 
-    for view in ("invocation", "execution"):
-        rollover = orchestrator_config["jobs"][f"next-long-running-{view}"]
-        condition = rollover["if"]
-        assert rollover["needs"] == ["resolve", f"long-running-{view}"]
-        assert "always()" in condition
-        assert f"needs.long-running-{view}.outputs.rollover_ready == 'true'" in condition
-        assert rollover["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
-        assert rollover["with"]["phase"] == "launch"
-        assert rollover["with"]["view"] == view
-        assert rollover["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
-        assert rollover["with"]["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
-        assert rollover["secrets"] == "inherit"
+    assert not any(name.startswith("next-long-running-") for name in orchestrator_config["jobs"])
 
     assert 'echo "No active $LANGUAGE $OTEL_VIEW long-running OTel run."' in workflow
     assert 'echo "active=false"' not in workflow

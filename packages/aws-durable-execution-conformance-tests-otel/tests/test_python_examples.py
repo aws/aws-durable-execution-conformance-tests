@@ -237,7 +237,7 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     assert "refs/heads/main" in orchestrator
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in orchestrator
     assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in orchestrator
-    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 6
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
