@@ -113,9 +113,7 @@ env:
 
 jobs:
   backend:
-    name: >-
-      ${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution' }} -
-      ${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}
+    name: ${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}
     if: >-
       github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
@@ -315,9 +313,7 @@ jobs:
           if-no-files-found: ignore
 
   datadog:
-    name: >-
-      ${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution' }} -
-      Community layer + Datadog
+    name: Community layer + Datadog
     if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != ''
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
@@ -376,9 +372,7 @@ jobs:
             --otel-backend datadog
 
   s3_collector:
-    name: >-
-      ${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution' }} -
-      Community layer + S3 collector
+    name: Community layer + S3 collector
     if: >-
       github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)

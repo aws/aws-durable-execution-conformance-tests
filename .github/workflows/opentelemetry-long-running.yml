@@ -116,7 +116,6 @@ jobs:
       check_status: ${{ steps.check.outputs.status }}
       rollover_ready: ${{ steps.check.outputs.rollover_ready }}
     name: >-
-      ${{ inputs.view == 'invocation' && 'Invocation' || 'Execution' }} -
       ${{ inputs.phase == 'short' && 'Short run'
         || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

@@ -182,14 +182,9 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
 
     assert set(_triggers(workflow)) == {"workflow_call"}
     assert backend["strategy"]["matrix"]["backend"] == ["xray", "dash0"]
-    view_label = "${{ inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution' }} - "
-    assert backend["name"] == (
-        view_label + "${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}"
-    )
-    assert workflow["jobs"]["datadog"]["name"] == view_label + "Community layer + Datadog"
-    assert workflow["jobs"]["s3_collector"]["name"] == view_label + "Community layer + S3 collector"
-    for job in workflow["jobs"].values():
-        assert " / " not in job["name"]
+    assert backend["name"] == "${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}"
+    assert workflow["jobs"]["datadog"]["name"] == "Community layer + Datadog"
+    assert workflow["jobs"]["s3_collector"]["name"] == "Community layer + S3 collector"
     assert workflow["concurrency"]["group"] == (
         "${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}"
     )
