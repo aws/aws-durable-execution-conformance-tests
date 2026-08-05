@@ -1,4 +1,4 @@
-name: OpenTelemetry Conformance Long Running
+name: OpenTelemetry Long Running
 
 on:
   workflow_call:

@@ -1,4 +1,4 @@
-name: OpenTelemetry Conformance Suite
+name: OpenTelemetry Suite
 
 on:
   workflow_call:

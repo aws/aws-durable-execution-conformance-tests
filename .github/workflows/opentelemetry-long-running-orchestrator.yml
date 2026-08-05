@@ -1,4 +1,4 @@
-name: OpenTelemetry Long Running Views
+name: OpenTelemetry Long Running Orchestrator
 
 on:
   workflow_call:

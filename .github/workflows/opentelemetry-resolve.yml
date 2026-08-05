@@ -1,4 +1,4 @@
-name: OpenTelemetry Resolve Revisions
+name: OpenTelemetry Resolve
 
 on:
   workflow_call:
