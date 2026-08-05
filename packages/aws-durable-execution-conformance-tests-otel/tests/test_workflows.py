@@ -237,6 +237,9 @@ def test_long_running_worker_is_reusable_and_language_neutral() -> None:
         assert name in call["inputs"]
     assert "runtime_language" not in call["inputs"]
     assert workflow["concurrency"]["group"].startswith("${{ inputs.language }}-otel-long-running-")
+    assert workflow["env"]["EXAMPLES_DIR"] == (
+        "packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}"
+    )
     assert workflow["env"]["STATE_FILE"] == "/tmp/${{ inputs.language }}-otel-long-running-state.json"
     assert workflow["env"]["TEST_TEMPLATE"].endswith("examples/${{ inputs.language }}/template-long-running.yaml")
     assert '--language "$LANGUAGE"' in text

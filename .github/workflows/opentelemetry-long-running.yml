@@ -98,6 +98,7 @@ env:
   PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   CONFORMANCE_TEST_SHA: ${{ inputs.conformance_test_sha }}
+  EXAMPLES_DIR: packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}
   LANGUAGE: ${{ inputs.language }}
   STATE_FILE: /tmp/${{ inputs.language }}-otel-long-running-state.json
   RESULT_FILE: /tmp/${{ inputs.language }}-otel-long-running-result.json
