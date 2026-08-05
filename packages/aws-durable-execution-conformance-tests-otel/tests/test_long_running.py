@@ -72,6 +72,7 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
         delay_seconds=86400,
         launched_at_ms=1000,
         source_revision="a" * 40,
+        otel_service_name="custom-long-running-service",
         executions=[
             ExecutionState(
                 description_id=CALLBACK_CASE,
@@ -90,6 +91,7 @@ def test_run_state_round_trips_callback_progress(tmp_path: Path) -> None:
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload["version"] == STATE_VERSION
     assert payload["source_revision"] == "a" * 40
+    assert payload["otel_service_name"] == "custom-long-running-service"
 
 
 def test_run_state_rejects_an_old_schema_before_reading_new_fields(tmp_path: Path) -> None:
@@ -121,6 +123,51 @@ def test_long_running_uses_the_resource_service_name_by_default() -> None:
     assert options["otel_service_name"] == "durable-execution-conformance"
     python_options = long_running._otel_options("python", "execution", "us-west-2")
     assert python_options["otel_service_name"] == "durable-execution-conformance"
+    configured_options = long_running._otel_options(
+        "python",
+        "execution",
+        "us-west-2",
+        service_name="custom-long-running-service",
+    )
+    assert configured_options["otel_service_name"] == "custom-long-running-service"
+
+
+@pytest.mark.parametrize("phase", ["launch", "run"])
+def test_long_running_launch_commands_accept_the_resource_service_name(
+    phase: str,
+) -> None:
+    command = [
+        phase,
+        "--template",
+        "template.yaml",
+        "--language",
+        "python",
+        "--name",
+        "test",
+        "--state-file",
+        "state.json",
+        "--lambda-execution-role-arn",
+        "arn:role",
+        "--otel-layer-arn",
+        "arn:layer",
+        "--otel-service-name",
+        "custom-long-running-service",
+    ]
+    if phase == "run":
+        command.extend(
+            [
+                "--result-file",
+                "result.json",
+                "--history-dir",
+                "history",
+                "--report-file",
+                "report",
+            ]
+        )
+
+    args = long_running._parser().parse_args(command)
+
+    assert args.otel_service_name == "custom-long-running-service"
 
 
 def test_long_running_checks_always_write_trace_artifacts() -> None:
@@ -334,8 +381,11 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
         def __init__(self) -> None:
             self.parameter_overrides: dict[str, str] = {}
 
+    configured_options: list[Any] = []
+
     class _Profile:
-        def configure(self, _options: Any) -> _Exporter:
+        def configure(self, options: Any) -> _Exporter:
+            configured_options.append(options)
             return _Exporter()
 
     class _Deployer:
@@ -359,6 +409,7 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
         region="us-west-2",
         name="failed-deploy",
         otel_layer_arn="arn:layer",
+        otel_service_name="custom-long-running-service",
         lambda_execution_role_arn="arn:role",
         source_revision="a" * 40,
     )
@@ -375,6 +426,7 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
         long_running.launch(args)
 
     assert deleted == []
+    assert configured_options[0].service_name == "custom-long-running-service"
 
 
 def test_launch_rejects_duplicate_requirement_mappings(
@@ -1136,6 +1188,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "aws-observability/aws-otel-" in workflow
     assert '--view "$OTEL_VIEW"' in workflow
     assert "--otel-layer-arn" in workflow
+    assert workflow.count('--otel-service-name "$OTEL_SERVICE_NAME"') == 2
     assert "--otel-backend xray" in workflow
     assert "retention-days: 5" in workflow
     assert "actions/artifacts/$ARTIFACT_ID" in workflow
@@ -1157,6 +1210,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         f"{language[0]}-olr-${{{{ inputs.view == 'invocation' && 'i' || 'e' }}}}"
         "${{ inputs.phase == 'short' && '-short' || '' }}"
     )
+    assert workflow_config["env"]["OTEL_SERVICE_NAME"] == "durable-execution-conformance"
     assert "github.run_number" not in workflow
     assert "github.run_attempt" not in workflow
 

@@ -51,7 +51,8 @@ Templates that support the Lambda-hosted S3 collector also accept optional
 `OtelCollectorLayerArn`, `OtelCollectorBucket`, and `OtelCollectorPrefix`
 parameters.
 `--otel-service-name` configures the OpenTelemetry resource identity used by
-the deployed function and the backend lookup identity.
+the deployed function and the backend lookup identity. The long-running
+`launch` and `run` commands persist this value for their deferred validation.
 Credentials and OTLP headers remain in environment variables or the CI secret
 store; the runner redacts the secret parameter from commands and SAM output.
 
