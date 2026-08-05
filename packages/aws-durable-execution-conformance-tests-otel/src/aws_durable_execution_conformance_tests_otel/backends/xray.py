@@ -104,15 +104,22 @@ class XRayBackend(PollingBackend):
     name = "xray"
     feature_disparities = frozenset(
         {
-            BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME,
             BackendFeatureDisparity.SPAN_LINKS,
             BackendFeatureDisparity.UNSET_STATUS,
         }
     )
 
-    def __init__(self, client: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        plugin_mode_service_name: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._client = client
+        if plugin_mode_service_name:
+            self.feature_disparities = self.feature_disparities | {BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME}
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
         try:
@@ -158,13 +165,23 @@ class XRayBackend(PollingBackend):
 class XRayBackendFactory:
     name = "xray"
 
+    @staticmethod
+    def _plugin_mode_service_name(options: Mapping[str, Any]) -> bool:
+        return (
+            str(options.get("otel_exporter", "")).strip().lower() == "adot"
+            and str(options.get("language", "")).strip().lower() == "java"
+        )
+
     def create(
         self,
         options: Mapping[str, Any],
         *,
         region: str,
     ) -> PollingBackend:
-        return XRayBackend(boto3.client("xray", region_name=region))
+        return XRayBackend(
+            boto3.client("xray", region_name=region),
+            plugin_mode_service_name=self._plugin_mode_service_name(options),
+        )
 
     def create_with_clients(
         self,
@@ -174,9 +191,12 @@ class XRayBackendFactory:
         aws_clients: Mapping[str, Any],
     ) -> PollingBackend:
         """Create a backend from a client initialized before worker startup."""
-        del options, region
+        del region
         try:
             client = aws_clients["xray"]
         except KeyError as exc:
             raise BackendError("Pre-created X-Ray client is unavailable") from exc
-        return XRayBackend(client)
+        return XRayBackend(
+            client,
+            plugin_mode_service_name=self._plugin_mode_service_name(options),
+        )

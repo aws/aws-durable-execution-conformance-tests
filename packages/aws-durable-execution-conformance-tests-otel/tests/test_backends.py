@@ -27,7 +27,10 @@ from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
 from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DatadogBackend,
 )
-from aws_durable_execution_conformance_tests_otel.backends.xray import XRayBackend
+from aws_durable_execution_conformance_tests_otel.backends.xray import (
+    XRayBackend,
+    XRayBackendFactory,
+)
 from aws_durable_execution_conformance_tests_otel.model import Span, TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
@@ -71,7 +74,6 @@ def _query() -> TelemetryQuery:
             XRayBackend,
             frozenset(
                 {
-                    BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME,
                     BackendFeatureDisparity.SPAN_LINKS,
                     BackendFeatureDisparity.UNSET_STATUS,
                 }
@@ -87,6 +89,32 @@ def test_backends_declare_feature_disparities(
     expected: frozenset[BackendFeatureDisparity],
 ) -> None:
     assert backend_type.feature_disparities == expected
+
+
+@pytest.mark.parametrize(
+    ("language", "exporter", "expected"),
+    [
+        ("java", "adot", True),
+        ("python", "adot", False),
+        ("javascript", "adot", False),
+        ("java", "community", False),
+    ],
+)
+def test_xray_plugin_mode_service_name_is_scoped_to_java_adot(
+    language: str,
+    exporter: str,
+    expected: bool,
+) -> None:
+    backend = XRayBackendFactory().create_with_clients(
+        {
+            "language": language,
+            "otel_exporter": exporter,
+        },
+        region="us-west-2",
+        aws_clients={"xray": object()},
+    )
+
+    assert (BackendFeatureDisparity.PLUGIN_MODE_SERVICE_NAME in backend.feature_disparities) is expected
 
 
 def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:

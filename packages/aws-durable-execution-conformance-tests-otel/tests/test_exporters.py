@@ -309,6 +309,8 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
     assert received["span_assertions"]["expect"]["service_name"] == "test"
     assert received_disparities == [disparities, disparities]
     assert len(received_clients) == 1
+
+
 @pytest.mark.parametrize("plugin_mode", [None, "", "   "])
 def test_xray_plugin_mode_service_name_requires_a_deployed_value(
     tmp_path: Path,
