@@ -10,13 +10,11 @@ import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.SdkTracerProviderBuilder;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
-import io.opentelemetry.sdk.trace.export.SpanExporter;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.BiConsumer;
-import software.amazon.distro.opentelemetry.exporter.xray.udp.trace.AwsXrayUdpSpanExporterBuilder;
 import software.amazon.lambda.durable.DurableConfig;
 import software.amazon.lambda.durable.DurableHandler;
 import software.amazon.lambda.durable.TypeToken;
@@ -30,7 +28,17 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
 
     @Override
     protected final DurableConfig createConfiguration() {
-        var exporter = createExporter();
+        var otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
+        var plugin = otlpEndpoint == null || otlpEndpoint.isBlank()
+                ? createPlugin()
+                : createPlugin(createTracerProviderBuilder(otlpEndpoint));
+        return DurableConfig.builder().withPlugins(plugin).build();
+    }
+
+    private SdkTracerProviderBuilder createTracerProviderBuilder(String otlpEndpoint) {
+        var exporterBuilder = OtlpGrpcSpanExporter.builder().setEndpoint(otlpEndpoint);
+        applyOtlpHeaders(
+                System.getenv("OTEL_EXPORTER_OTLP_HEADERS"), exporterBuilder::addHeader);
         var resource =
                 Resource.getDefault()
                         .merge(
@@ -41,11 +49,13 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                                                         .getOrDefault(
                                                                 "OTEL_SERVICE_NAME",
                                                                 "durable-execution-conformance"))));
-        var plugin = createPlugin(
-                SdkTracerProvider.builder()
-                        .setResource(resource)
-                        .addSpanProcessor(SimpleSpanProcessor.create(exporter)));
-        return DurableConfig.builder().withPlugins(plugin).build();
+        return SdkTracerProvider.builder()
+                .setResource(resource)
+                .addSpanProcessor(SimpleSpanProcessor.create(exporterBuilder.build()));
+    }
+
+    private DurableExecutionPlugin createPlugin() {
+        return createPlugin(null);
     }
 
     private DurableExecutionPlugin createPlugin(SdkTracerProviderBuilder tracerProviderBuilder) {
@@ -58,10 +68,13 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                 };
         for (var className : classNames) {
             try {
-                return (DurableExecutionPlugin)
-                        Class.forName(className)
-                                .getConstructor(SdkTracerProviderBuilder.class)
-                                .newInstance(tracerProviderBuilder);
+                var pluginClass = Class.forName(className);
+                if (tracerProviderBuilder == null) {
+                    return (DurableExecutionPlugin) pluginClass.getConstructor().newInstance();
+                }
+                return (DurableExecutionPlugin) pluginClass
+                        .getConstructor(SdkTracerProviderBuilder.class)
+                        .newInstance(tracerProviderBuilder);
             } catch (ClassNotFoundException error) {
                 // The preview plugin was renamed after the 2.1.0 release.
             } catch (ReflectiveOperationException error) {
@@ -73,20 +86,6 @@ abstract class OtelConformanceHandler<O> extends DurableHandler<Map<String, Obje
                 "No supported Java OpenTelemetry plugin is available for "
                         + (executionView ? "execution" : "invocation")
                         + " view");
-    }
-
-    private SpanExporter createExporter() {
-        var otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
-        if (otlpEndpoint != null && !otlpEndpoint.isBlank()) {
-            var builder = OtlpGrpcSpanExporter.builder().setEndpoint(otlpEndpoint);
-            applyOtlpHeaders(System.getenv("OTEL_EXPORTER_OTLP_HEADERS"), builder::addHeader);
-            return builder.build();
-        }
-        return new AwsXrayUdpSpanExporterBuilder()
-                .setEndpoint(
-                        System.getenv()
-                                .getOrDefault("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"))
-                .build();
     }
 
     static void applyOtlpHeaders(
