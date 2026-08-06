@@ -1,0 +1,82 @@
+---
+# 10.22: Operation-change hook info field shape
+description: Operation-change hook info carries full operation items in the delta and full map
+handler: |
+  A handler with a single step named "greet" that returns the constant string
+  "task-a", configured with an instrumentation plugin implementing the
+  operation-change hook. This is an INTERFACE-SHAPE probe: every logged field
+  is read from the CURRENT hook's own info parameter — never reconstructed
+  from another hook or from plugin state. When the SDK's info type does not
+  expose a field, the plugin logs the corresponding `has_*` flag as false;
+  that omission is the honest signal of a missing API surface.
+  For each step-type operation present in the change info's
+  updated-operations delta the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "op": "<operation_id>", "status": "<status enum token>", "in_full_map": <bool>, "has_arn": <bool>, "item_name": "<operation name>", "item_type": "<type token upper-cased>", "item_has_result": <bool>, "item_has_end_time": <bool>, "item_has_attempt": <bool>, "item_has_replay": <bool>}`,
+  where `in_full_map` is whether the same operation id also appears in the
+  info's full operations map, `has_arn` is whether the change info itself
+  carries the execution ARN, and the `item_*` fields probe the DELTA ITEM's
+  own field surface: its name, type token, and whether the item exposes the
+  checkpointed serialized result, the end timestamp, the attempt number, and
+  a replay indicator. The reference item shape is the full operation info
+  (identity + status + payloads), not a reduced change-item record.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes the named step "greet"; it succeeds on the first attempt.
+    When the step's terminal SUCCEEDED checkpoint response is merged, the
+    operation-change hook fires with the step in the updated delta: the
+    logged record carries the history-checkpointed operation id, status
+    SUCCEEDED, in_full_map=true, has_arn=true, item_name "greet", item_type
+    STEP, and true presence flags for the item's serialized result, end
+    timestamp, attempt number, and replay indicator. A STARTED change is not
+    asserted (START may batch with the terminal status).
+  An SDK whose change-info items omit any probed field (e.g. a reduced item
+  record without result/attempt/replay) fails the corresponding assertion —
+  that red result is the parity signal this requirement exists to produce.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: task-a
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # The terminal change delta item carries the full operation field surface
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-change
+      op: ${ID1}
+      status: SUCCEEDED
+      in_full_map: true
+      has_arn: true
+      item_name: greet
+      item_type: STEP
+      item_has_result: true
+      item_has_end_time: true
+      item_has_attempt: true
+      item_has_replay: true
+    count: 1
+  # The step never surfaces a FAILED change
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-change
+      op: ${ID1}
+      status: FAILED
+    count: 0

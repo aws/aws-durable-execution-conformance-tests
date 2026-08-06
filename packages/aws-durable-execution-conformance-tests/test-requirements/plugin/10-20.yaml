@@ -1,0 +1,92 @@
+---
+# 10.20: Operation hook info field shape
+description: Operation-start and operation-end hook info carries the full operation field set
+handler: |
+  A handler with a single step named "greet" that returns the constant string
+  "task-a", configured with an instrumentation plugin filtering to step-type
+  operations. This is an INTERFACE-SHAPE probe: every logged field is read from
+  the CURRENT hook's own info parameter — never reconstructed from another hook
+  or from plugin state. When the SDK's info type does not expose a field, the
+  plugin logs the corresponding `has_*` flag as false (or omits the value
+  field); that omission is the honest signal of a missing API surface.
+  From the operation-start hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "replay": <is-replayed boolean>, "has_start_time": <bool>, "has_status": <bool>}`.
+  Only identity fields and the replay flag are asserted at operation-start:
+  population of status/attempt/start-time on a LIVE first start varies
+  legitimately by SDK (the operation may not be checkpointed yet when the hook
+  fires — some SDKs leave the timestamp unset while others synthesize the
+  current instant), so `has_start_time` and `has_status` are emitted for
+  observability but not asserted.
+  From the operation-end hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "replay": <bool>, "status": "<status enum token>", "has_result": <bool>, "result": "<serialized result>" (omitted when unavailable), "has_error": <bool>, "attempt": <int>, "has_end_time": <bool>}`,
+  where `result` is the operation's checkpointed serialized result exactly as
+  exposed on the info parameter.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Handler invokes the named step "greet"; it succeeds on the first attempt
+    and the execution completes in one invocation. The operation-start record
+    carries the history-checkpointed operation id, the name "greet", type
+    STEP, replay=false, and start-time presence. The operation-end record
+    carries the same identity fields plus status SUCCEEDED, the serialized
+    result '"task-a"', no error, attempt 1, and end-time presence.
+  An SDK whose operation info omits any probed field (e.g. no result, attempt,
+  or status accessor on the end info) fails the corresponding assertion — that
+  red result is the parity signal this requirement exists to produce.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: task-a
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Operation-start: identity fields and replay flag (start-time/status
+  # population at a live first start is SDK-divergent — unasserted)
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID1}
+      name: greet
+      type: STEP
+      replay: false
+    count: 1
+  # Operation-end: full field set including the checkpointed serialized result
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      name: greet
+      type: STEP
+      replay: false
+      status: SUCCEEDED
+      has_result: true
+      result: '"task-a"'
+      has_error: false
+      attempt: 1
+      has_end_time: true
+    count: 1
+  # A successful step never reports an error on the end info
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-end
+      op: ${ID1}
+      has_error: true
+    count: 0

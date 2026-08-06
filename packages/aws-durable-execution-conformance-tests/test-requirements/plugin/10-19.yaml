@@ -1,0 +1,117 @@
+---
+# 10.19: Invocation hook info field shape
+description: Invocation-start and invocation-end hook info carries the full invocation field set
+handler: |
+  A handler with a single 2-second wait that then returns "done-" concatenated
+  with the execution input, configured with an instrumentation plugin. This is
+  an INTERFACE-SHAPE probe: every logged field is read from the CURRENT hook's
+  own info parameter — never reconstructed from another hook or from plugin
+  state. When the SDK's info type does not expose a field, the plugin logs the
+  corresponding `has_*` flag as false (or omits the value field entirely);
+  that omission is the honest signal of a missing API surface.
+  From the invocation-start hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>, "has_request_id": <bool>, "has_input": <bool>, "input": <execution input value>, "has_operations": <bool>, "updated_nonempty": <bool>, "has_start_time": <bool>}`,
+  where `has_input`/`input` reflect the execution input exposed on the info,
+  `has_operations` is whether the info carries the execution's operations map,
+  `updated_nonempty` is whether the info's externally-updated-operations
+  collection is non-empty, and `has_start_time` is whether the info carries the
+  execution start timestamp.
+  From the invocation-end hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "first": <is_first_invocation from the END info itself>, "terminal": <bool>, "status": "<status enum token>", "has_result": <bool>, "has_error": <bool>}`,
+  where `terminal` is computed as status in (SUCCEEDED, FAILED), `has_result`
+  is whether the info exposes the execution's final result value, and `first`
+  MUST come from the invocation-end info parameter itself — capturing it at
+  invocation-start is forbidden here because the field's presence on the end
+  info is exactly what is under test.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Invocation 1: the wait starts and the execution suspends. The
+    invocation-start record carries first=true, the execution input value, and
+    presence flags for request id, operations map, and execution start time.
+    The invocation-end record carries first=true (from the end info) and a
+    NON-terminal status (terminal=false).
+  - Replay 1 (~2s): the wait completed externally between invocations, so the
+    invocation-start info's externally-updated-operations collection is
+    non-empty (updated_nonempty=true, first=false). The handler returns
+    "done-<input>" and the invocation-end record carries first=false,
+    terminal=true with status SUCCEEDED and has_result=true (the info exposes
+    the execution's final result).
+  An SDK whose invocation info omits any probed field fails the corresponding
+  assertion — that red result is the parity signal this requirement exists to
+  produce (the reference field set is the union across SDKs, anchored on the
+  richest current surface).
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: done-${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # First invocation-start: full field set including the execution input value
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: true
+      has_request_id: true
+      has_input: true
+      input: ${INPUT_1}
+      has_operations: true
+      has_start_time: true
+    count: 1
+  # Replay invocation-start: externally-completed wait appears in the info's
+  # updated-operations collection
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      first: false
+      updated_nonempty: true
+    count: 1
+  # Suspending invocation-end: first flag read from the END info itself
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      first: true
+      terminal: false
+    count: 1
+  # Terminal invocation-end: first flag, SUCCEEDED status, and the final
+  # execution result exposed on the end info
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      first: false
+      terminal: true
+      status: SUCCEEDED
+      has_result: true
+    count: 1
+  # The execution never surfaces an invocation-end error
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      has_error: true
+    count: 0

@@ -1,0 +1,156 @@
+---
+# 10.21: Attempt hook info field shape
+description: Attempt-start and attempt-end hook info carries the full attempt field set
+handler: |
+  A handler with a single step named "flaky" that throws on its first attempt
+  and succeeds on the second, using the SDK's real retry strategy (max
+  attempts >= 2, ~1s delay), returning "ok". The instrumentation plugin
+  filters to step-type operations and probes the per-attempt hooks (the SDK's
+  operation-attempt / user-function hooks). This is an INTERFACE-SHAPE probe:
+  every logged field is read from the CURRENT hook's own info parameter —
+  never reconstructed from another hook or from plugin state. When the SDK's
+  info type does not expose a field, the plugin logs the corresponding
+  `has_*` flag as false; that omission is the honest signal of a missing API
+  surface.
+  From the attempt-start hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "attempt": <1-based attempt>, "has_start_time": <bool>}`.
+  From the attempt-end hook the plugin logs
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "attempt": <int>, "outcome": "<SUCCEEDED|FAILED>", "has_error": <bool>}`,
+  where `outcome` is the attempt outcome as reported by the info parameter
+  (SDKs exposing a boolean success indicator map it to the equivalent token —
+  a presentation of the API's own data, not a reconstruction) and `has_error`
+  is whether the info carries the attempt's error object.
+  Replay indicators on attempt info are emitted for observability but not
+  asserted: their semantics on a retry re-invocation legitimately differ per
+  SDK and are covered by dedicated replay requirements.
+  Every emitted record also carries a `durableExecutionArn` field — the
+  execution ARN received via the invocation-start hook's info parameter
+  (captured by the plugin and stamped on subsequent records) — so
+  CloudWatch's execution-scoped log retrieval locates plugin records.
+invocations: |
+  - Invocation 1: attempt 1 of step "flaky" starts (attempt-start with the
+    checkpointed operation id, name, type STEP, attempt=1) and throws; the
+    attempt-end record carries attempt=1, outcome FAILED, and has_error=true
+    (the info exposes the attempt's error). The SDK checkpoints the retryable
+    failure and the execution suspends.
+  - Replay 1: attempt 2 starts after the retry delay (attempt-start with
+    attempt=2, after attempt 1's end) and succeeds; the attempt-end record
+    carries attempt=2, outcome SUCCEEDED, has_error=false. No third attempt
+    ever starts.
+  An SDK whose attempt info omits any probed field fails the corresponding
+  assertion — that red result is the parity signal this requirement exists to
+  produce.
+Input:
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: ok
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error: {}
+      RetryDetails:
+        CurrentAttempt: 1
+        NextAttemptDelaySeconds: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+      RetryDetails:
+        CurrentAttempt: 2
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # Attempt 1: full identity + attempt number on start; FAILED outcome with
+  # the error exposed on the end info
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      op: ${ID1}
+      name: flaky
+      type: STEP
+      attempt: 1
+      has_start_time: true
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      op: ${ID1}
+      name: flaky
+      type: STEP
+      attempt: 1
+      outcome: FAILED
+      has_error: true
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        op: ${ID1}
+        attempt: 1
+  # Attempt 2: starts after attempt 1 ended; SUCCEEDED outcome without error
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      op: ${ID1}
+      name: flaky
+      type: STEP
+      attempt: 2
+      has_start_time: true
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-end
+        op: ${ID1}
+        attempt: 1
+        outcome: FAILED
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      op: ${ID1}
+      name: flaky
+      type: STEP
+      attempt: 2
+      outcome: SUCCEEDED
+      has_error: false
+    count: 1
+    after:
+      - plugin: CONFPLUGIN
+        hook: attempt-start
+        op: ${ID1}
+        attempt: 2
+  # Exhaustive bounds: no third attempt, no successful attempt reports an error
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      attempt: 3
+    count: 0
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      outcome: SUCCEEDED
+      has_error: true
+    count: 0
