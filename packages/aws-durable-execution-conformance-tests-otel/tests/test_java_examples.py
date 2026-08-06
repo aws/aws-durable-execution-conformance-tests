@@ -210,7 +210,8 @@ def test_java_workflow_uses_current_adot_distro_with_agent_enabled() -> None:
 
     assert "adot_release_repository: aws-observability/aws-otel-java-instrumentation" in entry_workflow
     assert 'gh api "repos/$RELEASE_REPOSITORY/releases/latest"' in workflow
-    assert "github.base_ref == 'main'" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
+    assert "github.base_ref == 'main'" not in workflow
     assert "--otel-allow-missing-span-identity-attributes" not in workflow
     assert "with its Java agent disabled" not in workflow
 

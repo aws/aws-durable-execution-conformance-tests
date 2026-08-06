@@ -51,11 +51,6 @@ on:
         required: false
         default: us-west-2
         type: string
-      otlp_endpoint:
-        description: OTLP ingest endpoint for community-layer jobs
-        required: false
-        default: ""
-        type: string
       conformance_test_ref:
         description: Optional conformance test commit SHA or branch name
         required: false
@@ -77,15 +72,12 @@ on:
       DASH0_AUTH_TOKEN:
         description: Dash0 API and OTLP authentication token
         required: true
-      DD_API_KEY:
-        description: Datadog API key
-        required: false
-      DD_APPLICATION_KEY:
-        description: Datadog application key
-        required: false
-      DATADOG_OTLP_HEADERS:
-        description: Datadog OTLP request headers
-        required: false
+      DATADOG_ACCESS_TOKEN:
+        description: Datadog API access token used to query spans
+        required: true
+      DATADOG_API_KEY:
+        description: Datadog API key used for OTLP trace intake
+        required: true
   workflow_dispatch:
     inputs:
       phase:
@@ -106,10 +98,6 @@ on:
         description: AWS region
         required: true
         default: us-west-2
-        type: string
-      otlp_endpoint:
-        description: OTLP ingest endpoint for community-layer jobs
-        required: false
         type: string
       conformance_test_ref:
         description: Optional conformance test commit SHA or branch name
@@ -142,5 +130,4 @@ jobs:
       phase: ${{ inputs.phase || 'short' }}
       delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
     secrets: inherit

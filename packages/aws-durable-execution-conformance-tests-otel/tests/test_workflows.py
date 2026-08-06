@@ -78,6 +78,9 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert inputs["sdk_ref"]["default"] == ""
     assert inputs["conformance_test_ref"]["default"] == ""
     assert inputs["conformance_repository"]["default"] == ("aws/aws-durable-execution-conformance-tests")
+    assert "otlp_endpoint" not in inputs
+    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+        assert call["secrets"][secret]["required"] is True
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
     assert "setup-java" not in text
@@ -170,8 +173,12 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "CONFORMANCE_TEST_ACCOUNT_ID",
         "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
         "DASH0_AUTH_TOKEN",
+        "DATADOG_ACCESS_TOKEN",
+        "DATADOG_API_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
+    assert "otlp_endpoint" not in call["inputs"]
+    assert "otlp_endpoint" not in preset
 
 
 def test_orchestrator_owns_suite_and_long_running_views() -> None:
@@ -223,13 +230,13 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     assert call["inputs"]["language"]["required"] is True
     assert call["inputs"]["conformance_repository"]["required"] is True
     assert call["inputs"]["setup_command"]["default"] == ""
+    assert "otlp_endpoint" not in call["inputs"]
     assert "examples/${{ inputs.language }}/template.yaml" in text
     assert "runtime_language" not in call["inputs"]
     assert '--language "$LANGUAGE"' in text
     assert '"OtelSuite=$OTEL_SUITE"' in text
     assert '"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"' in text
     assert "--report console json junit github" in text
-    assert "--report console github" in text
 
 
 def test_workers_load_support_from_their_own_workflow_revision() -> None:
@@ -279,8 +286,7 @@ def test_dash0_and_s3_resources_remain_stable() -> None:
     assert backend["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == ("Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}")
     assert backend["if"] == s3["if"]
     assert backend["if"] == (
-        "github.event_name != 'pull_request' || "
-        "github.event.pull_request.head.repo.full_name == github.repository"
+        "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
     )
     assert s3["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-s3-")
     assert 'OTEL_S3_BUCKET="dex-otel-${LANGUAGE}-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"' in text
@@ -288,6 +294,32 @@ def test_dash0_and_s3_resources_remain_stable() -> None:
     assert 'aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive' in text
     assert "aws s3api delete-bucket" not in text
     assert "aws lambda delete-layer-version" not in text
+
+
+def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
+    workflow = _load(SUITE_WORKFLOW)
+    datadog = workflow["jobs"]["datadog"]
+    backend = workflow["jobs"]["backend"]
+    steps = {step["name"]: step for step in datadog["steps"]}
+    commands = "\n".join(step.get("run", "") for step in datadog["steps"])
+
+    assert datadog["if"] == backend["if"]
+    assert datadog["env"]["DATADOG_ACCESS_TOKEN"] == "${{ secrets.DATADOG_ACCESS_TOKEN }}"
+    assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com/v1/traces"
+    assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"
+    assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
+    assert "--otel-exporter community" in commands
+    assert '--otel-endpoint "$DATADOG_OTLP_ENDPOINT"' in commands
+    assert "--otel-poll-interval 15" in commands
+    assert "--otel-backend datadog" in commands
+    assert "--no-cleanup" in commands
+    assert "DD_API_KEY" not in datadog["env"]
+    assert "DD_APPLICATION_KEY" not in datadog["env"]
+    assert "DATADOG_OTLP_HEADERS" not in datadog["env"]
+    assert steps["Delete rolled-back test stacks"]["env"]["LEGACY_STACK_PREFIX"] == (
+        "${{ inputs.legacy_stack_prefix }}"
+    )
+    assert steps["Upload reports and histories"]["with"]["if-no-files-found"] == "ignore"
 
 
 def test_long_running_worker_is_reusable_and_language_neutral() -> None:
