@@ -117,7 +117,7 @@ jobs:
         packages/aws-durable-execution-conformance-tests-otel/tests/test_java_examples.py
       adot_release_repository: aws-observability/aws-otel-java-instrumentation
       collector_compatible_runtime: java21
-      collector_otlp_endpoint: http://localhost:4317
+      collector_otlp_endpoint: http://localhost:4318
       phase: ${{ inputs.phase || 'short' }}
       delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}

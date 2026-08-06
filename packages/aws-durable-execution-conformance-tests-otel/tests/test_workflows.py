@@ -110,7 +110,7 @@ def test_language_workflows_are_thin_presets() -> None:
             "sdk_repository": "aws/aws-durable-execution-sdk-java",
             "adot_release_repository": "aws-observability/aws-otel-java-instrumentation",
             "collector_compatible_runtime": "java21",
-            "collector_otlp_endpoint": "http://localhost:4317",
+            "collector_otlp_endpoint": "http://localhost:4318",
         },
         "python": {
             "resource_prefix": "p",

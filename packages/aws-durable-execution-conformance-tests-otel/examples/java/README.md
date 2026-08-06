@@ -67,15 +67,15 @@ The execution role must allow Durable Execution, logs, and X-Ray writes.
 
 The template starts the ADOT Java agent and loads the Java SDK OTel plugin JAR
 through `OTEL_JAVAAGENT_EXTENSIONS`. The plugin's no-argument constructor uses
-the agent-initialized global tracer provider, and ADOT sends its OTLP spans
+the agent-initialized global tracer provider, and ADOT sends its OTLP/gRPC spans
 through the collector to X-Ray.
 
 ## Run Against the AWS S3 Collector
 
 The hosted S3 workflow publishes a temporary OpenTelemetry Lambda collector
 extension and run-scoped bucket. The OpenTelemetry Java agent exports both
-Lambda and Java SDK plugin spans over OTLP gRPC to the extension on
-`localhost:4317` using its global tracer provider.
+Lambda and Java SDK plugin spans over OTLP HTTP to the extension on
+`localhost:4318` using its global tracer provider.
 
 ```bash
 durable-execution-conformance \
@@ -88,7 +88,7 @@ durable-execution-conformance \
     OtelCollectorBucket="$OTEL_S3_BUCKET" \
     OtelCollectorPrefix=traces \
   --otel-exporter community \
-  --otel-endpoint http://localhost:4317 \
+  --otel-endpoint http://localhost:4318 \
   --otel-service-name durable-execution-conformance \
   --otel-backend collector \
   --otel-backend-endpoint "s3://$OTEL_S3_BUCKET/traces"
