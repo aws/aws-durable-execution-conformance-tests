@@ -201,12 +201,8 @@ def test_typescript_examples_build_sdk_packages_from_main() -> None:
     assert "git clone --depth 1 --branch main" in bootstrap
     assert "--workspace packages/aws-durable-execution-sdk-js" in bootstrap
     assert "--workspace packages/aws-durable-execution-sdk-js-otel" in bootstrap
-    assert (
-        "InvocationOtelPlugin({ providerSource: ProviderSource.Global })" in common
-    )
-    assert (
-        "ExecutionOtelPlugin({ providerSource: ProviderSource.Global })" in common
-    )
+    assert "InvocationOtelPlugin({})" in common
+    assert "ExecutionOtelPlugin({})" in common
     assert 'process.env.OTEL_PLUGIN_MODE === "execution"' in common
 
 

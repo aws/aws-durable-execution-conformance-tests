@@ -14,7 +14,6 @@ from aws_durable_execution_sdk_python_otel import (
     ExecutionOtelPlugin,
     InvocationOtelPlugin,
     OtelPluginConfig,
-    ProviderSource,
 )
 
 
@@ -22,12 +21,8 @@ def otel_plugin() -> DurableInstrumentationPlugin:
     """Select the telemetry view configured for this deployed function."""
 
     if os.environ.get("OTEL_PLUGIN_MODE") == "execution":
-        return ExecutionOtelPlugin(
-            OtelPluginConfig(provider_source=ProviderSource.GLOBAL),
-        )
-    return InvocationOtelPlugin(
-        OtelPluginConfig(provider_source=ProviderSource.GLOBAL),
-    )
+        return ExecutionOtelPlugin(OtelPluginConfig())
+    return InvocationOtelPlugin(OtelPluginConfig())
 
 
 def require_scenario(event: Mapping[str, Any], expected: str) -> None:
