@@ -1,0 +1,68 @@
+---
+# insight-17: unnamed operation dropped entirely — operations array has exactly one entry
+description: An operation with no name is dropped entirely from the emitted record, so an execution with one named step and one unnamed step yields an operations array containing only the named step
+handler: |
+  Handler `insight_unnamed_operation_dropped` installs workflowInsight({}) with default config
+  and the sink exporter from env. It runs one named `context.step("named-step", ...)`
+  and one deliberately UNNAMED step, both succeeding. Because unnamed operations are
+  dropped entirely, only the named step appears in the record.
+invocations: |
+  - Single invocation: both steps succeed and the execution reaches terminal
+    SUCCEEDED. The unnamed step is dropped, so the operations array contains exactly
+    one entry — `named-step`.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: named-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: named-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: named-step}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+          absent: [parentId, result, error, truncated]
+        - select: {type: STEP}
+          count: 1

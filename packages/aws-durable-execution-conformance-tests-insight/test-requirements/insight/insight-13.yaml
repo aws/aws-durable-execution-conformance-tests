@@ -1,0 +1,74 @@
+---
+# insight-13: top-level detail — only the CONTEXT parent, all children dropped
+description: With the default operationDetail top-level, a parallel context surfaces only its top-level CONTEXT operation named parallel-work; every child with a parentId (branches and their nested steps) is dropped
+handler: |
+  Handler `insight_top_level_only` installs workflowInsight({}) with default config
+  (operationDetail top-level) and the sink exporter from env. It runs a real
+  `context.parallel("parallel-work", ...)` with two branches named `branch-a` and
+  `branch-b` whose steps are named `branch-a-step` and `branch-b-step`, all succeeding.
+invocations: |
+  - Single invocation: the parallel context and both branches succeed and the
+    execution reaches terminal SUCCEEDED. Under top-level detail only the
+    `parallel-work` CONTEXT operation (no parentId) is emitted; the branch operations,
+    which carry a parentId, are dropped.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+# The full parallel history shape is documented by the core reference
+# (parallel/8-1.yaml); here only the EventId-deterministic events are asserted
+# (see the note inside ExpectedExecutionHistory). No ExecutionSucceeded for
+# this sync, non-suspending case — confirmed at live validation.
+ExpectedExecutionHistory:
+  # Deliberately trimmed to the EventId-deterministic events (parity decision
+  # 2026-08-06, PF-5). Concurrent SDKs (e.g. Java) interleave the two branches'
+  # ContextStarted/Step*/ContextSucceeded events, so EventIds 3-10 are assigned
+  # nondeterministically and MUST NOT be pinned. EventId 2 (parallel context
+  # start), 11 (parallel context success, after all branches), and 12
+  # (InvocationCompleted) are position-stable across JS/Python/Java (confirmed
+  # against live histories). Branch/step semantics are still validated by the
+  # InsightAssertions block below (top-level-only filtering).
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    Name: parallel-work
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 11
+    Id: ${CTX_P}
+    Name: parallel-work
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: parallel-work}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: CONTEXT
+            subType: Parallel
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: branch-a}
+          count: 0
+        - select: {name: branch-b}
+          count: 0
+        - select: {name: branch-a-step}
+          count: 0
+        - select: {name: branch-b-step}
+          count: 0
