@@ -14,6 +14,7 @@ from aws_durable_execution_sdk_python_otel import (
     ExecutionOtelPlugin,
     InvocationOtelPlugin,
     OtelPluginConfig,
+    ProviderSource,
 )
 
 
@@ -22,10 +23,10 @@ def otel_plugin() -> DurableInstrumentationPlugin:
 
     if os.environ.get("OTEL_PLUGIN_MODE") == "execution":
         return ExecutionOtelPlugin(
-            OtelPluginConfig(use_default_tracer_provider=True),
+            OtelPluginConfig(provider_source=ProviderSource.GLOBAL),
         )
     return InvocationOtelPlugin(
-        OtelPluginConfig(use_default_tracer_provider=True),
+        OtelPluginConfig(provider_source=ProviderSource.GLOBAL),
     )
 
 
