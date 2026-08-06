@@ -2,27 +2,28 @@
 # 10.20: Operation hook info field shape
 description: Operation-start and operation-end hook info carries the full operation field set
 handler: |
-  A single step named "greet" that returns "task-a". This is an
-  INTERFACE-SHAPE probe: the instrumentation plugin (filtering to step-type
-  operations) reads every logged field from the CURRENT hook's OWN info
-  parameter — no cross-hook reconstruction — and reports a field the SDK's
-  info type does not expose as `has_*: false` (value key omitted).
-  From operation-start it logs
-  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "replay": <is-replayed boolean>, "has_start_time": <bool>, "has_status": <bool>}`
-  and from operation-end
-  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "replay": <bool>, "status": "<status enum token>", "has_result": <bool>, "result": "<serialized result>" (omitted when unavailable), "has_error": <bool>, "attempt": <int>, "has_end_time": <bool>}`.
-  `has_start_time`/`has_status` at a LIVE first start are emitted but NOT
-  asserted: pre-checkpoint population is legitimately SDK-divergent. Every
-  record also carries a `durableExecutionArn` field (ARN captured at
-  invocation-start, unasserted) so the runner's CloudWatch filter can scope
-  logs to the execution.
+  A single step named "greet" that returns "task-a". The instrumentation
+  plugin (filtering to step-type operations) logs ONE single-line JSON record
+  per operation hook event: a CANONICAL DUMP of that hook's OWN info
+  parameter. Every field the SDK's info type exposes is mapped one-to-one to
+  the canonical camelCase name; unset or unexposed fields are OMITTED (a
+  missing key fails its assertion — the parity signal); type/status tokens
+  upper-cased; timestamps as ISO-8601 strings; the serialized result as the
+  raw serialized string; errors as their message string.
+  Canonical schema (both hooks):
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start|operation-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
+  status/startTimestamp/attempt at a LIVE first start are dumped when the SDK
+  populates them but NOT asserted: pre-checkpoint population is legitimately
+  SDK-divergent. Every record also carries a `durableExecutionArn` field (ARN
+  captured at invocation-start, unasserted) so the runner's CloudWatch filter
+  can scope logs to the execution.
 invocations: |
   - Handler invokes the named step "greet"; it succeeds on the first attempt
     and the execution completes in one invocation. The operation-start record
     carries the history-checkpointed operation id, the name "greet", type
-    STEP, replay=false, and start-time presence. The operation-end record
-    carries the same identity fields plus status SUCCEEDED, the serialized
-    result '"task-a"', no error, attempt 1, and end-time presence.
+    STEP, and isReplay=false. The operation-end record carries the same
+    identity fields plus status SUCCEEDED, the serialized result '"task-a"',
+    an end timestamp, attempt 1, and no error key.
   An SDK whose operation info omits any probed field (e.g. no result, attempt,
   or status accessor on the end info) fails the corresponding assertion — that
   red result is the parity signal this requirement exists to produce.
@@ -49,35 +50,34 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # Operation-start: identity fields and replay flag (start-time/status
-  # population at a live first start is SDK-divergent — unasserted)
+  # Operation-start: identity fields and replay flag (live-start
+  # status/startTimestamp/attempt population is SDK-divergent — unasserted)
   - match:
       plugin: CONFPLUGIN
       hook: operation-start
-      op: ${ID1}
+      id: ${ID1}
       name: greet
       type: STEP
-      replay: false
+      isReplay: false
     count: 1
-  # Operation-end: full field set including the checkpointed serialized result
+  # Operation-end: full field set including the checkpointed serialized
+  # result BY VALUE and the end timestamp
   - match:
       plugin: CONFPLUGIN
       hook: operation-end
-      op: ${ID1}
+      id: ${ID1}
       name: greet
       type: STEP
-      replay: false
+      isReplay: false
       status: SUCCEEDED
-      has_result: true
       result: '"task-a"'
-      has_error: false
       attempt: 1
-      has_end_time: true
+      endTimestamp: /^\d{4}-/
     count: 1
   # A successful step never reports an error on the end info
   - match:
       plugin: CONFPLUGIN
       hook: operation-end
-      op: ${ID1}
-      has_error: true
+      id: ${ID1}
+      error: /.+/
     count: 0

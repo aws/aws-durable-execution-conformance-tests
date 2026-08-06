@@ -2,31 +2,37 @@
 # 10.22: Operation-change hook info field shape
 description: Operation-change hook info carries full operation items in the delta and full map
 handler: |
-  A single step named "greet" that returns "task-a". This is an
-  INTERFACE-SHAPE probe: the instrumentation plugin implements the
-  operation-change hook, reads every logged field from the hook's OWN info
-  parameter, and reports a field the info type does not expose as
-  `has_*: false`. For each step-type operation in the updated-operations
-  delta it logs
-  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "op": "<operation_id>", "status": "<status enum token>", "in_full_map": <bool>, "has_arn": <bool>, "item_name": "<operation name>", "item_type": "<type token upper-cased>", "item_has_result": <bool>, "item_has_end_time": <bool>, "item_has_attempt": <bool>, "item_has_replay": <bool>}`,
-  where `in_full_map` is whether the same id also appears in the info's full
-  operations map and the `item_*` fields probe the DELTA ITEM's own surface
-  (the reference item shape is the full operation info, not a reduced
-  change-item record). Every record also carries a `durableExecutionArn`
-  field (ARN captured at invocation-start, unasserted) so the runner's
-  CloudWatch filter can scope logs to the execution.
+  A single step named "greet" that returns "task-a". The instrumentation
+  plugin implements the operation-change hook and, for each step-type
+  operation in the updated-operations delta, logs ONE single-line JSON
+  record: a CANONICAL DUMP of that DELTA ITEM (the hook info's own map
+  entry). Every field the item type exposes is mapped one-to-one to the
+  canonical camelCase name; unset or unexposed fields are OMITTED (a missing
+  key fails its assertion — the parity signal); the reference item shape is
+  the full operation info, not a reduced change-item record. The record also
+  carries the hook-level fields: `executionArn` (from the change info
+  itself), `updatedOperationsCount` and `operationsCount` (map sizes), and
+  one derived scalar `inFullMap` := the same id also appears in the info's
+  full operations map.
+  Canonical schema (per delta item):
+  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "executionArn": "<arn>", "updatedOperationsCount": <int>, "operationsCount": <int>, "inFullMap": <bool>, "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
+  Replay indicators on items are dumped when exposed but not asserted (their
+  value semantics inside change maps are SDK-divergent). Every record also
+  carries a `durableExecutionArn` field (ARN captured at invocation-start,
+  unasserted) so the runner's CloudWatch filter can scope logs to the
+  execution.
 invocations: |
   - Handler invokes the named step "greet"; it succeeds on the first attempt.
     When the step's terminal SUCCEEDED checkpoint response is merged, the
     operation-change hook fires with the step in the updated delta: the
-    logged record carries the history-checkpointed operation id, status
-    SUCCEEDED, in_full_map=true, has_arn=true, item_name "greet", item_type
-    STEP, and true presence flags for the item's serialized result, end
-    timestamp, attempt number, and replay indicator. A STARTED change is not
-    asserted (START may batch with the terminal status).
+    logged record carries the history-checkpointed operation id, item name
+    "greet", type STEP, status SUCCEEDED, the serialized result '"task-a"'
+    BY VALUE, an end timestamp, attempt 1, inFullMap=true, the change info's
+    execution ARN, and a non-zero updated-operations count. A STARTED change
+    is not asserted (START may batch with the terminal status).
   An SDK whose change-info items omit any probed field (e.g. a reduced item
-  record without result/attempt/replay) fails the corresponding assertion —
-  that red result is the parity signal this requirement exists to produce.
+  record without result/attempt) fails the corresponding assertion — that
+  red result is the parity signal this requirement exists to produce.
 Input:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
@@ -50,25 +56,26 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # The terminal change delta item carries the full operation field surface
+  # The terminal change delta item carries the full operation field surface,
+  # with the serialized result asserted BY VALUE
   - match:
       plugin: CONFPLUGIN
       hook: operation-change
-      op: ${ID1}
+      id: ${ID1}
+      name: greet
+      type: STEP
       status: SUCCEEDED
-      in_full_map: true
-      has_arn: true
-      item_name: greet
-      item_type: STEP
-      item_has_result: true
-      item_has_end_time: true
-      item_has_attempt: true
-      item_has_replay: true
+      result: '"task-a"'
+      endTimestamp: /^\d{4}-/
+      attempt: 1
+      inFullMap: true
+      executionArn: /^arn:/
+      updatedOperationsCount: /^[1-9]\d*$/
     count: 1
   # The step never surfaces a FAILED change
   - match:
       plugin: CONFPLUGIN
       hook: operation-change
-      op: ${ID1}
+      id: ${ID1}
       status: FAILED
     count: 0
