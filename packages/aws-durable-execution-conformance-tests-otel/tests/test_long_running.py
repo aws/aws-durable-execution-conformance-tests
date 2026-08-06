@@ -1100,7 +1100,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert preset["uses"] == "./.github/workflows/opentelemetry-orchestrator.yml"
     assert preset["with"]["language"] == language
 
-    assert set(entry_workflow_config["jobs"]) == {"resolve", "conformance"}
+    assert set(entry_workflow_config["jobs"]) == {"conformance"}
+    assert orchestrator_config["jobs"]["resolve"]["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
     assert "github.event_name == 'pull_request' || github.event_name == 'push'" in orchestrator
     assert "github.event_name == 'schedule' && 'auto'" in orchestrator
     assert "&& 'short'" in orchestrator

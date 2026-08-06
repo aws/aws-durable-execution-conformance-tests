@@ -89,8 +89,9 @@ long-running views:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
 
-Language presets invoke it after resolving test revisions and provide repository
-and runtime metadata plus three optional shell hooks:
+Language presets invoke it with repository and runtime metadata plus three
+optional shell hooks. The orchestrator resolves test revisions once before
+launching any workers:
 
 - `setup_command` installs or selects any SDK toolchain.
 - `contract_test_command` validates the example and template contract.
@@ -112,24 +113,13 @@ its toolchain with `rustup`:
 
 ```yaml
 jobs:
-  resolve:
-    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-resolve.yml@main
-    with:
-      language: rust
-      resource_prefix: rs
-      sdk_repository: example/aws-durable-execution-sdk-rust
-      sdk_ref: ${{ github.sha }}
-      adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
-
   conformance:
-    needs: resolve
     uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-orchestrator.yml@main
     with:
       language: rust
       resource_prefix: rs
       sdk_repository: example/aws-durable-execution-sdk-rust
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      sdk_ref: ${{ github.sha }}
       setup_command: |
         rustup toolchain install stable --profile minimal
         rustup default stable

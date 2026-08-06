@@ -16,17 +16,19 @@ on:
         required: true
         type: string
       sdk_ref:
-        description: Full SDK commit SHA
-        required: true
+        description: Full SDK commit SHA; defaults to the SDK main branch
+        required: false
+        default: ""
         type: string
       conformance_repository:
         description: GitHub repository containing the conformance tests
         required: false
         default: aws/aws-durable-execution-conformance-tests
         type: string
-      conformance_test_sha:
-        description: Full conformance test commit SHA
-        required: true
+      conformance_test_ref:
+        description: Optional conformance test commit SHA or branch name
+        required: false
+        default: ""
         type: string
       checkout_sdk:
         description: Check out the SDK before running the preparation command
@@ -125,8 +127,23 @@ permissions:
   id-token: write
 
 jobs:
+  resolve:
+    name: Resolve test commits
+    uses: ./.github/workflows/opentelemetry-resolve.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ inputs.sdk_ref }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      conformance_test_ref: ${{ inputs.conformance_test_ref }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: ${{ inputs.phase }}
+
   invocation:
     name: Invocation view
+    needs: resolve
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -135,8 +152,8 @@ jobs:
       language: ${{ inputs.language }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ inputs.sdk_ref }}
-      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: ${{ inputs.checkout_sdk }}
       setup_command: ${{ inputs.setup_command }}
       prepare_command: ${{ inputs.prepare_command }}
@@ -155,6 +172,7 @@ jobs:
 
   execution:
     name: Execution view
+    needs: resolve
     if: >-
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
@@ -163,8 +181,8 @@ jobs:
       language: ${{ inputs.language }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ inputs.sdk_ref }}
-      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: ${{ inputs.checkout_sdk }}
       setup_command: ${{ inputs.setup_command }}
       prepare_command: ${{ inputs.prepare_command }}
@@ -183,14 +201,15 @@ jobs:
 
   long-running-invocation:
     name: Long running invocation view
+    needs: resolve
     uses: ./.github/workflows/opentelemetry-long-running.yml
     with:
       language: ${{ inputs.language }}
       resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ inputs.sdk_ref }}
-      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: ${{ inputs.checkout_sdk }}
       setup_command: ${{ inputs.setup_command }}
       prepare_command: ${{ inputs.prepare_command }}
@@ -210,14 +229,15 @@ jobs:
 
   long-running-execution:
     name: Long running execution view
+    needs: resolve
     uses: ./.github/workflows/opentelemetry-long-running.yml
     with:
       language: ${{ inputs.language }}
       resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ inputs.sdk_ref }}
-      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: ${{ inputs.checkout_sdk }}
       setup_command: ${{ inputs.setup_command }}
       prepare_command: ${{ inputs.prepare_command }}

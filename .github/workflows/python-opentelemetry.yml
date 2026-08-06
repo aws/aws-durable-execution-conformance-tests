@@ -123,28 +123,15 @@ permissions:
   id-token: write
 
 jobs:
-  resolve:
-    name: Resolve test commits
-    uses: ./.github/workflows/opentelemetry-resolve.yml
+  conformance:
+    name: Conformance
+    uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
       language: python
       resource_prefix: p
       sdk_repository: aws/aws-durable-execution-sdk-python
       sdk_ref: ${{ inputs.python_sdk_ref || '' }}
       conformance_test_ref: ${{ inputs.conformance_test_ref || '' }}
-      adot_release_repository: aws-observability/aws-otel-python-instrumentation
-      phase: ${{ inputs.phase || 'short' }}
-
-  conformance:
-    name: Conformance
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-orchestrator.yml
-    with:
-      language: python
-      resource_prefix: p
-      sdk_repository: aws/aws-durable-execution-sdk-python
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: false
       contract_test_command: >-
         hatch run test:all

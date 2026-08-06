@@ -238,16 +238,14 @@ def test_java_workflows_share_revision_resolution_and_propagate_the_commit() -> 
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    resolver_preset = entry_workflow["jobs"]["resolve"]["with"]
     preset = entry_workflow["jobs"]["conformance"]["with"]
-    assert resolver_preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
     assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
     assert "refs/heads/main" in resolver
     assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
-    assert orchestrator.count("sdk_ref: ${{ inputs.sdk_ref }}") == 4
-    assert set(entry_workflow["jobs"]) == {"resolve", "conformance"}
-    assert entry_workflow["jobs"]["conformance"]["needs"] == "resolve"
-    assert entry_workflow["jobs"]["conformance"]["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+    assert "uses: ./.github/workflows/opentelemetry-resolve.yml" in orchestrator
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert set(entry_workflow["jobs"]) == {"conformance"}
+    assert "needs" not in entry_workflow["jobs"]["conformance"]
     for workflow in (suite_workflow, long_running_workflow):
         assert "SDK_REF: ${{ inputs.sdk_ref }}" in workflow
         assert "      sdk_ref:" in workflow

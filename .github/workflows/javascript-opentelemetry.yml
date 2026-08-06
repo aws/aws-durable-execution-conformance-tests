@@ -63,26 +63,13 @@ permissions:
   id-token: write
 
 jobs:
-  resolve:
-    name: Resolve test commits
-    uses: ./.github/workflows/opentelemetry-resolve.yml
-    with:
-      language: javascript
-      resource_prefix: js
-      sdk_repository: aws/aws-durable-execution-sdk-js
-      adot_release_repository: aws-observability/aws-otel-js-instrumentation
-      phase: ${{ inputs.phase || 'short' }}
-
   conformance:
     name: Conformance
-    needs: resolve
     uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
       language: javascript
       resource_prefix: js
       sdk_repository: aws/aws-durable-execution-sdk-js
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: true
       setup_command: |
         export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"

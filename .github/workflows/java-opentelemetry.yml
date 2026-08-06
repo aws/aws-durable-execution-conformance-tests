@@ -63,26 +63,13 @@ permissions:
   id-token: write
 
 jobs:
-  resolve:
-    name: Resolve test commits
-    uses: ./.github/workflows/opentelemetry-resolve.yml
-    with:
-      language: java
-      resource_prefix: j
-      sdk_repository: aws/aws-durable-execution-sdk-java
-      adot_release_repository: aws-observability/aws-otel-java-instrumentation
-      phase: ${{ inputs.phase || 'short' }}
-
   conformance:
     name: Conformance
-    needs: resolve
     uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
       language: java
       resource_prefix: j
       sdk_repository: aws/aws-durable-execution-sdk-java
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: true
       setup_command: |
         if [ -z "${JAVA_HOME_21_X64:-}" ]; then

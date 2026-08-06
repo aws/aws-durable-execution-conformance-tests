@@ -229,23 +229,20 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
             "required": False,
             "type": "string",
         }
-    resolver_preset = entry_workflow_config["jobs"]["resolve"]["with"]
     preset = entry_workflow_config["jobs"]["conformance"]["with"]
     assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-python"
-    assert resolver_preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
-    assert resolver_preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
+    assert preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
+    assert preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
     assert "github.repository == inputs.conformance_repository && github.sha" in resolver
     assert "|| 'main'" in resolver
     assert resolver.count("git ls-remote") == 2
     assert "refs/heads/main" in resolver
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in resolver
     assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
-    assert orchestrator.count("sdk_ref: ${{ inputs.sdk_ref }}") == 4
-    assert set(entry_workflow_config["jobs"]) == {"resolve", "conformance"}
-    assert entry_workflow_config["jobs"]["conformance"]["needs"] == "resolve"
-    job_inputs = entry_workflow_config["jobs"]["conformance"]["with"]
-    assert job_inputs["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
-    assert job_inputs["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
+    assert "uses: ./.github/workflows/opentelemetry-resolve.yml" in orchestrator
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert set(entry_workflow_config["jobs"]) == {"conformance"}
+    assert "needs" not in entry_workflow_config["jobs"]["conformance"]
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
