@@ -1139,9 +1139,10 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         "ref": "${{ job.workflow_sha }}",
         "path": ".build/workflow-support",
     }
-    assert "Short run" in workflow_config["jobs"]["run"]["name"]
-    assert "Daily run" in workflow_config["jobs"]["run"]["name"]
-    assert "inputs.view" not in workflow_config["jobs"]["run"]["name"]
+    for phase in ("Short", "Daily", "Launch", "Check"):
+        assert f"'{phase}'" in workflow_config["jobs"]["run"]["name"]
+    assert "inputs.view == 'invocation'" in workflow_config["jobs"]["run"]["name"]
+    assert "'Invocation' || 'Execution'" in workflow_config["jobs"]["run"]["name"]
     assert run_steps["Check out next conformance tests"]["with"] == {
         "repository": "${{ inputs.conformance_repository }}",
         "ref": "${{ inputs.conformance_test_sha }}",

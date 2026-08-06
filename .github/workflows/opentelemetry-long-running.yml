@@ -116,8 +116,13 @@ jobs:
       check_status: ${{ steps.check.outputs.status }}
       rollover_ready: ${{ steps.check.outputs.rollover_ready }}
     name: >-
-      ${{ inputs.phase == 'short' && 'Short run'
-        || (inputs.phase == 'auto' && 'Daily run' || inputs.phase) }}
+      ${{ format(
+        '{0} - {1}',
+        inputs.view == 'invocation' && 'Invocation' || 'Execution',
+        inputs.phase == 'short' && 'Short'
+          || (inputs.phase == 'auto' && 'Daily'
+            || (inputs.phase == 'launch' && 'Launch' || 'Check'))
+      ) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120

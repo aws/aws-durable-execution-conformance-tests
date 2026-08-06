@@ -208,9 +208,14 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
 
     assert set(_triggers(workflow)) == {"workflow_call"}
     assert backend["strategy"]["matrix"]["backend"] == ["xray", "dash0"]
-    assert backend["name"] == "${{ matrix.backend == 'xray' && 'ADOT + X-Ray' || 'Community layer + Dash0' }}"
-    assert workflow["jobs"]["datadog"]["name"] == "Community layer + Datadog"
-    assert workflow["jobs"]["s3_collector"]["name"] == "Community layer + S3 collector"
+    for job in ("backend", "datadog", "s3_collector"):
+        name = workflow["jobs"][job]["name"]
+        assert "inputs.suite == 'otel-invocation'" in name
+        assert "'Invocation' || 'Execution'" in name
+    assert "ADOT/X-Ray" in backend["name"]
+    assert "Community/Dash0" in backend["name"]
+    assert "Community/Datadog" in workflow["jobs"]["datadog"]["name"]
+    assert "Community/S3" in workflow["jobs"]["s3_collector"]["name"]
     assert workflow["concurrency"]["group"] == (
         "${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}"
     )
