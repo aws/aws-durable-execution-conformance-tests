@@ -2,29 +2,20 @@
 # 10.20: Operation hook info field shape
 description: Operation-start and operation-end hook info carries the full operation field set
 handler: |
-  A handler with a single step named "greet" that returns the constant string
-  "task-a", configured with an instrumentation plugin filtering to step-type
-  operations. This is an INTERFACE-SHAPE probe: every logged field is read from
-  the CURRENT hook's own info parameter — never reconstructed from another hook
-  or from plugin state. When the SDK's info type does not expose a field, the
-  plugin logs the corresponding `has_*` flag as false (or omits the value
-  field); that omission is the honest signal of a missing API surface.
-  From the operation-start hook the plugin logs
-  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "replay": <is-replayed boolean>, "has_start_time": <bool>, "has_status": <bool>}`.
-  Only identity fields and the replay flag are asserted at operation-start:
-  population of status/attempt/start-time on a LIVE first start varies
-  legitimately by SDK (the operation may not be checkpointed yet when the hook
-  fires — some SDKs leave the timestamp unset while others synthesize the
-  current instant), so `has_start_time` and `has_status` are emitted for
-  observability but not asserted.
-  From the operation-end hook the plugin logs
-  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "replay": <bool>, "status": "<status enum token>", "has_result": <bool>, "result": "<serialized result>" (omitted when unavailable), "has_error": <bool>, "attempt": <int>, "has_end_time": <bool>}`,
-  where `result` is the operation's checkpointed serialized result exactly as
-  exposed on the info parameter.
-  Every emitted record also carries a `durableExecutionArn` field — the
-  execution ARN received via the invocation-start hook's info parameter
-  (captured by the plugin and stamped on subsequent records) — so
-  CloudWatch's execution-scoped log retrieval locates plugin records.
+  A single step named "greet" that returns "task-a". This is an
+  INTERFACE-SHAPE probe: the instrumentation plugin (filtering to step-type
+  operations) reads every logged field from the CURRENT hook's OWN info
+  parameter — no cross-hook reconstruction — and reports a field the SDK's
+  info type does not expose as `has_*: false` (value key omitted).
+  From operation-start it logs
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "replay": <is-replayed boolean>, "has_start_time": <bool>, "has_status": <bool>}`
+  and from operation-end
+  `{"plugin": "CONFPLUGIN", "hook": "operation-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "replay": <bool>, "status": "<status enum token>", "has_result": <bool>, "result": "<serialized result>" (omitted when unavailable), "has_error": <bool>, "attempt": <int>, "has_end_time": <bool>}`.
+  `has_start_time`/`has_status` at a LIVE first start are emitted but NOT
+  asserted: pre-checkpoint population is legitimately SDK-divergent. Every
+  record also carries a `durableExecutionArn` field (ARN captured at
+  invocation-start, unasserted) so the runner's CloudWatch filter can scope
+  logs to the execution.
 invocations: |
   - Handler invokes the named step "greet"; it succeeds on the first attempt
     and the execution completes in one invocation. The operation-start record

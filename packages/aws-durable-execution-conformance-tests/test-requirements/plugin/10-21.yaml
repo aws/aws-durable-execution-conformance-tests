@@ -2,31 +2,21 @@
 # 10.21: Attempt hook info field shape
 description: Attempt-start and attempt-end hook info carries the full attempt field set
 handler: |
-  A handler with a single step named "flaky" that throws on its first attempt
-  and succeeds on the second, using the SDK's real retry strategy (max
-  attempts >= 2, ~1s delay), returning "ok". The instrumentation plugin
-  filters to step-type operations and probes the per-attempt hooks (the SDK's
-  operation-attempt / user-function hooks). This is an INTERFACE-SHAPE probe:
-  every logged field is read from the CURRENT hook's own info parameter —
-  never reconstructed from another hook or from plugin state. When the SDK's
-  info type does not expose a field, the plugin logs the corresponding
-  `has_*` flag as false; that omission is the honest signal of a missing API
-  surface.
-  From the attempt-start hook the plugin logs
-  `{"plugin": "CONFPLUGIN", "hook": "attempt-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "attempt": <1-based attempt>, "has_start_time": <bool>}`.
-  From the attempt-end hook the plugin logs
+  A single step named "flaky" that throws on attempt 1 and succeeds on
+  attempt 2 using the SDK's real retry strategy (max attempts >= 2, ~1s
+  delay), returning "ok". This is an INTERFACE-SHAPE probe: the plugin
+  (filtering to step-type operations) reads every logged field from the
+  CURRENT per-attempt hook's OWN info parameter and reports a field the SDK's
+  info type does not expose as `has_*: false`.
+  From attempt-start it logs
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-start", "op": "<operation_id>", "name": "<operation name>", "type": "<type token upper-cased>", "attempt": <1-based attempt>, "has_start_time": <bool>}`
+  and from attempt-end
   `{"plugin": "CONFPLUGIN", "hook": "attempt-end", "op": "<operation_id>", "name": "<operation name>", "type": "<type token>", "attempt": <int>, "outcome": "<SUCCEEDED|FAILED>", "has_error": <bool>}`,
-  where `outcome` is the attempt outcome as reported by the info parameter
-  (SDKs exposing a boolean success indicator map it to the equivalent token —
-  a presentation of the API's own data, not a reconstruction) and `has_error`
-  is whether the info carries the attempt's error object.
-  Replay indicators on attempt info are emitted for observability but not
-  asserted: their semantics on a retry re-invocation legitimately differ per
-  SDK and are covered by dedicated replay requirements.
-  Every emitted record also carries a `durableExecutionArn` field — the
-  execution ARN received via the invocation-start hook's info parameter
-  (captured by the plugin and stamped on subsequent records) — so
-  CloudWatch's execution-scoped log retrieval locates plugin records.
+  where `outcome` presents the info's own success indicator as the shared
+  token. Replay indicators are emitted but not asserted (covered by dedicated
+  replay requirements). Every record also carries a `durableExecutionArn`
+  field (ARN captured at invocation-start, unasserted) so the runner's
+  CloudWatch filter can scope logs to the execution.
 invocations: |
   - Invocation 1: attempt 1 of step "flaky" starts (attempt-start with the
     checkpointed operation id, name, type STEP, attempt=1) and throws; the

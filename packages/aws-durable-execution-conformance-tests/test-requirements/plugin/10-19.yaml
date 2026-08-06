@@ -2,31 +2,20 @@
 # 10.19: Invocation hook info field shape
 description: Invocation-start and invocation-end hook info carries the full invocation field set
 handler: |
-  A handler with a single 2-second wait that then returns "done-" concatenated
-  with the execution input, configured with an instrumentation plugin. This is
-  an INTERFACE-SHAPE probe: every logged field is read from the CURRENT hook's
-  own info parameter — never reconstructed from another hook or from plugin
-  state. When the SDK's info type does not expose a field, the plugin logs the
-  corresponding `has_*` flag as false (or omits the value field entirely);
-  that omission is the honest signal of a missing API surface.
-  From the invocation-start hook the plugin logs
-  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>, "has_request_id": <bool>, "has_input": <bool>, "input": <execution input value>, "has_operations": <bool>, "updated_nonempty": <bool>, "has_start_time": <bool>}`,
-  where `has_input`/`input` reflect the execution input exposed on the info,
-  `has_operations` is whether the info carries the execution's operations map,
-  `updated_nonempty` is whether the info's externally-updated-operations
-  collection is non-empty, and `has_start_time` is whether the info carries the
-  execution start timestamp.
-  From the invocation-end hook the plugin logs
-  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "first": <is_first_invocation from the END info itself>, "terminal": <bool>, "status": "<status enum token>", "has_result": <bool>, "has_error": <bool>}`,
-  where `terminal` is computed as status in (SUCCEEDED, FAILED), `has_result`
-  is whether the info exposes the execution's final result value, and `first`
-  MUST come from the invocation-end info parameter itself — capturing it at
-  invocation-start is forbidden here because the field's presence on the end
-  info is exactly what is under test.
-  Every emitted record also carries a `durableExecutionArn` field — the
-  execution ARN received via the invocation-start hook's info parameter
-  (captured by the plugin and stamped on subsequent records) — so
-  CloudWatch's execution-scoped log retrieval locates plugin records.
+  A single 2-second wait, then return "done-" concatenated with the execution
+  input. This is an INTERFACE-SHAPE probe: the instrumentation plugin reads
+  every logged field from the CURRENT hook's OWN info parameter — never
+  reconstructed from another hook or plugin state — and reports a field the
+  SDK's info type does not expose as `has_*: false` (value key omitted).
+  From invocation-start it logs
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "first": <is_first_invocation>, "has_request_id": <bool>, "has_input": <bool>, "input": <execution input value>, "has_operations": <bool>, "updated_nonempty": <bool>, "has_start_time": <bool>}`
+  and from invocation-end
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "first": <is_first_invocation>, "terminal": <status in SUCCEEDED/FAILED>, "status": "<status enum token>", "has_result": <bool>, "has_error": <bool>}`.
+  `first` on the end record MUST come from the invocation-end info itself
+  (capturing it at invocation-start is forbidden — its presence on the end
+  info is what is under test). Every record also carries a
+  `durableExecutionArn` field (ARN captured at invocation-start, unasserted)
+  so the runner's CloudWatch filter can scope logs to the execution.
 invocations: |
   - Invocation 1: the wait starts and the execution suspends. The
     invocation-start record carries first=true, the execution input value, and
