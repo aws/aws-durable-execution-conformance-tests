@@ -84,14 +84,13 @@ workflow discovers the latest Python layer from the ADOT release.
 
 ## Reusable Workflow
 
-The hosted tests use separate language-neutral reusable workflows for suites
-and long-running views:
+The hosted tests use one language-neutral reusable workflow for suites and
+long-running views:
 
-- `.github/workflows/opentelemetry-suite-orchestrator.yml`
-- `.github/workflows/opentelemetry-long-running-orchestrator.yml`
+- `.github/workflows/opentelemetry-orchestrator.yml`
 
-Language presets invoke both as sibling jobs and provide repository and runtime
-metadata plus three optional shell hooks:
+Language presets invoke it after resolving test revisions and provide repository
+and runtime metadata plus three optional shell hooks:
 
 - `setup_command` installs or selects any SDK toolchain.
 - `contract_test_command` validates the example and template contract.
@@ -124,34 +123,21 @@ jobs:
 
   conformance:
     needs: resolve
-    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-suite-orchestrator.yml@main
-    with:
-      language: rust
-      sdk_repository: example/aws-durable-execution-sdk-rust
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      setup_command: &setup_command |
-        rustup toolchain install stable --profile minimal
-        rustup default stable
-      prepare_command: &prepare_command >-
-        cargo build --release --manifest-path "$EXAMPLES_DIR/Cargo.toml"
-      adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
-      collector_compatible_runtime: provided.al2023
-      collector_otlp_endpoint: http://localhost:4318
-    secrets: inherit
-
-  long-running:
-    needs: resolve
-    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-long-running-orchestrator.yml@main
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-orchestrator.yml@main
     with:
       language: rust
       resource_prefix: rs
       sdk_repository: example/aws-durable-execution-sdk-rust
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
       conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      setup_command: *setup_command
-      prepare_command: *prepare_command
+      setup_command: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+      prepare_command: >-
+        cargo build --release --manifest-path "$EXAMPLES_DIR/Cargo.toml"
       adot_layer_arn: arn:aws:lambda:us-west-2:123456789012:layer:example-rust-adot:1
+      collector_compatible_runtime: provided.al2023
+      collector_otlp_endpoint: http://localhost:4318
     secrets: inherit
 ```
 

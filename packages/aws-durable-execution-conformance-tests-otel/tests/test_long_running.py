@@ -1084,12 +1084,8 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
-    orchestrator = (WORKFLOWS_DIR / "opentelemetry-suite-orchestrator.yml").read_text(encoding="utf-8")
+    orchestrator = (WORKFLOWS_DIR / "opentelemetry-orchestrator.yml").read_text(encoding="utf-8")
     orchestrator_config = yaml.safe_load(orchestrator)
-    long_running_orchestrator = (WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml").read_text(
-        encoding="utf-8"
-    )
-    long_running_orchestrator_config = yaml.safe_load(long_running_orchestrator)
     workflow = (WORKFLOWS_DIR / "opentelemetry-long-running.yml").read_text(encoding="utf-8")
     workflow_config = yaml.safe_load(workflow)
 
@@ -1101,19 +1097,16 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert 'cron: "0 7 * * *"' in entry_workflow
     assert 'default: "82800"' in entry_workflow
     preset = entry_workflow_config["jobs"]["conformance"]
-    assert preset["uses"] == "./.github/workflows/opentelemetry-suite-orchestrator.yml"
+    assert preset["uses"] == "./.github/workflows/opentelemetry-orchestrator.yml"
     assert preset["with"]["language"] == language
-    long_running_preset = entry_workflow_config["jobs"]["long-running"]
-    assert long_running_preset["uses"] == "./.github/workflows/opentelemetry-long-running-orchestrator.yml"
-    assert long_running_preset["with"]["language"] == language
 
-    assert not any(name.startswith("long-running") for name in orchestrator_config["jobs"])
-    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in long_running_orchestrator
-    assert "github.event_name == 'schedule' && 'auto'" in long_running_orchestrator
-    assert "&& 'short'" in long_running_orchestrator
-    assert "&& '60'" in long_running_orchestrator
+    assert set(entry_workflow_config["jobs"]) == {"resolve", "conformance"}
+    assert "github.event_name == 'pull_request' || github.event_name == 'push'" in orchestrator
+    assert "github.event_name == 'schedule' && 'auto'" in orchestrator
+    assert "&& 'short'" in orchestrator
+    assert "&& '60'" in orchestrator
     for view in ("invocation", "execution"):
-        delay_expression = long_running_orchestrator_config["jobs"][view]["with"]["delay_seconds"]
+        delay_expression = orchestrator_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
         assert "inputs.phase == 'short'" in delay_expression
         assert "&& '60'" in delay_expression
 
@@ -1167,7 +1160,7 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     retire_script = run_steps["Retire previous state artifact"]["run"]
     assert '[ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]' in retire_script
 
-    assert not any(name.startswith("next-long-running-") for name in long_running_orchestrator_config["jobs"])
+    assert not any(name.startswith("next-long-running-") for name in orchestrator_config["jobs"])
 
     assert 'echo "No active $LANGUAGE $OTEL_VIEW long-running OTel run."' in workflow
     assert 'echo "active=false"' not in workflow

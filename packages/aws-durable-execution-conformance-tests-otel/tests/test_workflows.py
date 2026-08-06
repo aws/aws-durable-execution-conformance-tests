@@ -12,10 +12,9 @@ WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 LANGUAGES = ("java", "javascript", "python")
 DISPLAY_NAMES = {"java": "Java", "javascript": "JavaScript", "python": "Python"}
 LANGUAGE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry.yml" for language in LANGUAGES}
-ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-suite-orchestrator.yml"
+ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-orchestrator.yml"
 RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
 SUITE_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-suite.yml"
-LONG_RUNNING_ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml"
 LONG_RUNNING_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-long-running.yml"
 PREPARE_ACTION = ROOT / ".github" / "actions" / "prepare-otel-example" / "action.yml"
 ALL_OTEL_WORKFLOWS = {
@@ -23,7 +22,6 @@ ALL_OTEL_WORKFLOWS = {
     ORCHESTRATOR,
     RESOLVER_WORKFLOW,
     SUITE_WORKFLOW,
-    LONG_RUNNING_ORCHESTRATOR,
     LONG_RUNNING_WORKFLOW,
 }
 COLLECTOR_PATH_FILTER = "packages/aws-durable-execution-conformance-tests-otel/collector/**"
@@ -41,9 +39,10 @@ def test_one_shared_worker_owns_each_otel_lifecycle() -> None:
     assert ORCHESTRATOR.exists()
     assert RESOLVER_WORKFLOW.exists()
     assert SUITE_WORKFLOW.exists()
-    assert LONG_RUNNING_ORCHESTRATOR.exists()
     assert LONG_RUNNING_WORKFLOW.exists()
     assert PREPARE_ACTION.exists()
+    assert not (WORKFLOWS_DIR / "opentelemetry-suite-orchestrator.yml").exists()
+    assert not (WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml").exists()
 
     for language in LANGUAGES:
         assert not (WORKFLOWS_DIR / f"{language}-opentelemetry-suite.yml").exists()
@@ -58,6 +57,7 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert set(_triggers(workflow)) == {"workflow_call"}
     for name in (
         "language",
+        "resource_prefix",
         "sdk_repository",
         "sdk_ref",
         "conformance_repository",
@@ -69,6 +69,7 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
         "adot_layer_arn",
         "collector_compatible_runtime",
         "collector_otlp_endpoint",
+        "delay_seconds",
     ):
         assert name in inputs
     assert "runtime_language" not in inputs
@@ -132,29 +133,23 @@ def test_language_workflows_are_thin_presets() -> None:
         workflow = _load(path)
         resolver_preset = workflow["jobs"]["resolve"]
         preset = workflow["jobs"]["conformance"]
-        long_running_preset = workflow["jobs"]["long-running"]
 
-        assert set(workflow["jobs"]) == {"resolve", "conformance", "long-running"}
+        assert set(workflow["jobs"]) == {"resolve", "conformance"}
         assert resolver_preset["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
-        assert preset["uses"] == "./.github/workflows/opentelemetry-suite-orchestrator.yml"
-        assert long_running_preset["uses"] == "./.github/workflows/opentelemetry-long-running-orchestrator.yml"
+        assert preset["uses"] == "./.github/workflows/opentelemetry-orchestrator.yml"
         assert preset["needs"] == "resolve"
-        assert long_running_preset["needs"] == "resolve"
-        for job in (resolver_preset, preset, long_running_preset):
+        for job in (resolver_preset, preset):
             assert job["with"]["language"] == language
             assert job["with"]["sdk_repository"] == expected[language]["sdk_repository"]
         for name in ("resource_prefix", "adot_release_repository"):
             value = expected[language][name]
             assert resolver_preset["with"][name] == value
-            assert long_running_preset["with"][name] == value
+            assert preset["with"][name] == value
         for name in ("collector_compatible_runtime", "collector_otlp_endpoint"):
             assert preset["with"][name] == expected[language][name]
-            assert name not in long_running_preset["with"]
-        for job in (preset, long_running_preset):
-            assert job["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
-            assert job["with"]["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
-        for name in ("checkout_sdk", "setup_command", "prepare_command", "contract_test_command"):
-            assert long_running_preset["with"].get(name) == preset["with"].get(name)
+        assert preset["with"]["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+        assert preset["with"]["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
+        assert preset["with"]["delay_seconds"] == "${{ inputs.delay_seconds || '82800' }}"
         assert f"name: {DISPLAY_NAMES[language]} OpenTelemetry" in text
         assert "  pull_request:" in text
         assert "  push:" in text
@@ -169,15 +164,13 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
     call = _triggers(workflow)["workflow_call"]
     resolver = workflow["jobs"]["resolve"]["with"]
     preset = workflow["jobs"]["conformance"]["with"]
-    long_running = workflow["jobs"]["long-running"]["with"]
 
     assert call["inputs"]["python_sdk_ref"]["required"] is True
     assert "conformance_test_ref" in call["inputs"]
     assert resolver["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
     assert resolver["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
-    for job in (preset, long_running):
-        assert job["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
-        assert job["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
+    assert preset["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+    assert preset["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
@@ -187,18 +180,21 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         assert call["secrets"][secret]["required"] is True
 
 
-def test_orchestrators_split_suite_and_long_running_views() -> None:
-    suite_jobs = _load(ORCHESTRATOR)["jobs"]
-    long_running_jobs = _load(LONG_RUNNING_ORCHESTRATOR)["jobs"]
+def test_orchestrator_owns_suite_and_long_running_views() -> None:
+    jobs = _load(ORCHESTRATOR)["jobs"]
 
-    assert set(suite_jobs) == {"invocation", "execution"}
-    assert set(long_running_jobs) == {"invocation", "execution"}
-    assert suite_jobs["invocation"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
-    assert suite_jobs["execution"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
-    assert suite_jobs["invocation"]["with"]["suite"] == "otel-invocation"
-    assert suite_jobs["execution"]["with"]["suite"] == "otel-execution"
+    assert set(jobs) == {
+        "invocation",
+        "execution",
+        "long-running-invocation",
+        "long-running-execution",
+    }
+    assert jobs["invocation"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
+    assert jobs["execution"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
+    assert jobs["invocation"]["with"]["suite"] == "otel-invocation"
+    assert jobs["execution"]["with"]["suite"] == "otel-execution"
     for view in ("invocation", "execution"):
-        initial = long_running_jobs[view]
+        initial = jobs[f"long-running-{view}"]
         assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
         assert initial["with"]["view"] == view
 

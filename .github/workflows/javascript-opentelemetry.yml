@@ -6,10 +6,9 @@ on:
     paths:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/javascript-opentelemetry.yml
-      - .github/workflows/opentelemetry-suite-orchestrator.yml
+      - .github/workflows/opentelemetry-orchestrator.yml
       - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
-      - .github/workflows/opentelemetry-long-running-orchestrator.yml
       - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
@@ -23,10 +22,9 @@ on:
     paths:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/javascript-opentelemetry.yml
-      - .github/workflows/opentelemetry-suite-orchestrator.yml
+      - .github/workflows/opentelemetry-orchestrator.yml
       - .github/workflows/opentelemetry-resolve.yml
       - .github/workflows/opentelemetry-suite.yml
-      - .github/workflows/opentelemetry-long-running-orchestrator.yml
       - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
@@ -78,42 +76,7 @@ jobs:
   conformance:
     name: Conformance
     needs: resolve
-    uses: ./.github/workflows/opentelemetry-suite-orchestrator.yml
-    with:
-      language: javascript
-      sdk_repository: aws/aws-durable-execution-sdk-js
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      checkout_sdk: true
-      setup_command: &setup_command |
-        export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-        source "$NVM_DIR/nvm.sh"
-        nvm install 22
-        nvm use 22
-        node --version
-      prepare_command: &prepare_command |
-        export SDK_SOURCE_DIR="$SDK_CHECKOUT"
-        cd "$EXAMPLES_DIR"
-        npm ci
-        npm run install-sdk-main
-        npm run typecheck
-        npm run build
-      contract_test_command: &contract_test_command >-
-        hatch run test:all
-        packages/aws-durable-execution-conformance-tests-otel/tests/test_javascript_examples.py
-      adot_release_repository: aws-observability/aws-otel-js-instrumentation
-      collector_compatible_runtime: nodejs22.x
-      collector_otlp_endpoint: http://localhost:4318
-      # Clean up rolled-back stacks created before the JavaScript rename.
-      legacy_stack_prefix: durable-execution-conformance-tests-typescript
-      phase: ${{ inputs.phase || 'short' }}
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-    secrets: inherit
-
-  long-running:
-    name: Long running
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-long-running-orchestrator.yml
+    uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
       language: javascript
       resource_prefix: js
@@ -121,10 +84,27 @@ jobs:
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
       conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
       checkout_sdk: true
-      setup_command: *setup_command
-      prepare_command: *prepare_command
-      contract_test_command: *contract_test_command
+      setup_command: |
+        export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+        source "$NVM_DIR/nvm.sh"
+        nvm install 22
+        nvm use 22
+        node --version
+      prepare_command: |
+        export SDK_SOURCE_DIR="$SDK_CHECKOUT"
+        cd "$EXAMPLES_DIR"
+        npm ci
+        npm run install-sdk-main
+        npm run typecheck
+        npm run build
+      contract_test_command: >-
+        hatch run test:all
+        packages/aws-durable-execution-conformance-tests-otel/tests/test_javascript_examples.py
       adot_release_repository: aws-observability/aws-otel-js-instrumentation
+      collector_compatible_runtime: nodejs22.x
+      collector_otlp_endpoint: http://localhost:4318
+      # Clean up rolled-back stacks created before the JavaScript rename.
+      legacy_stack_prefix: durable-execution-conformance-tests-typescript
       phase: ${{ inputs.phase || 'short' }}
       delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}

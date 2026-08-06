@@ -1,10 +1,14 @@
-name: OpenTelemetry Suite Orchestrator
+name: OpenTelemetry Orchestrator
 
 on:
   workflow_call:
     inputs:
       language:
         description: Stable language key used in resource and artifact names
+        required: true
+        type: string
+      resource_prefix:
+        description: Short prefix used by long-running Lambda resources
         required: true
         type: string
       sdk_repository:
@@ -76,6 +80,11 @@ on:
         description: Run short tests, launch a long run, or check the active long run
         required: false
         default: short
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "82800"
         type: string
       aws_region:
         description: AWS region
@@ -170,4 +179,58 @@ jobs:
       case_count: 19
       aws_region: ${{ inputs.aws_region }}
       otlp_endpoint: ${{ inputs.otlp_endpoint }}
+    secrets: inherit
+
+  long-running-invocation:
+    name: Long running invocation view
+    uses: ./.github/workflows/opentelemetry-long-running.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ inputs.sdk_ref }}
+      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: invocation
+      delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
+          && '60' || inputs.delay_seconds }}
+      aws_region: ${{ inputs.aws_region }}
+    secrets: inherit
+
+  long-running-execution:
+    name: Long running execution view
+    uses: ./.github/workflows/opentelemetry-long-running.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ inputs.sdk_ref }}
+      conformance_test_sha: ${{ inputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: execution
+      delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
+          && '60' || inputs.delay_seconds }}
+      aws_region: ${{ inputs.aws_region }}
     secrets: inherit

@@ -18,12 +18,9 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
-ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite-orchestrator.yml"
+ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-orchestrator.yml"
 RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
 WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
-LONG_RUNNING_ORCHESTRATOR_PATH = (
-    EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running-orchestrator.yml"
-)
 LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
@@ -221,7 +218,6 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     entry_workflow_config = yaml.safe_load(entry_workflow)
     orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     resolver = RESOLVER_PATH.read_text(encoding="utf-8")
-    long_running_orchestrator = LONG_RUNNING_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
@@ -244,13 +240,12 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     assert "refs/heads/main" in resolver
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in resolver
     assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
-    for workflow in (orchestrator, long_running_orchestrator):
-        assert workflow.count("sdk_ref: ${{ inputs.sdk_ref }}") == 2
-    for job in ("conformance", "long-running"):
-        assert entry_workflow_config["jobs"][job]["needs"] == "resolve"
-        job_inputs = entry_workflow_config["jobs"][job]["with"]
-        assert job_inputs["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
-        assert job_inputs["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
+    assert orchestrator.count("sdk_ref: ${{ inputs.sdk_ref }}") == 4
+    assert set(entry_workflow_config["jobs"]) == {"resolve", "conformance"}
+    assert entry_workflow_config["jobs"]["conformance"]["needs"] == "resolve"
+    job_inputs = entry_workflow_config["jobs"]["conformance"]["with"]
+    assert job_inputs["sdk_ref"] == "${{ needs.resolve.outputs.sdk_ref }}"
+    assert job_inputs["conformance_test_sha"] == "${{ needs.resolve.outputs.conformance_test_sha }}"
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
