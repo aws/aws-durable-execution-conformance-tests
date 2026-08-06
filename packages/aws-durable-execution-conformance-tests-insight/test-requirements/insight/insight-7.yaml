@@ -1,0 +1,81 @@
+---
+# insight-7: repeated operation name — by-name summary aggregates, result/error dropped
+description: A name run multiple times aggregates into a single operationsByName summary with count 3; result and error are dropped because there is no single representative occurrence
+handler: |
+  Handler `insight_repeated_operation_name` installs workflowInsight({}) with
+  default config and the sink exporter from env. It runs `context.step("task", ...)`
+  three times in a loop; every occurrence uses the SAME operation name `task` and
+  succeeds.
+invocations: |
+  - Single invocation: three `task` steps succeed in sequence, the execution reaches
+    terminal SUCCEEDED, and the point-access sink emits one record whose
+    operationsByName["task"] aggregates all three occurrences (count 3).
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: task
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: task
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    Name: task
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    Name: task
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${ID3}
+    Name: task
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${ID3}
+    Name: task
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_BY_NAME]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations_by_name:
+        task:
+          expect:
+            type: STEP
+            subType: Step
+            count: 3
+            failedCount: 0
+            status: SUCCEEDED
+          absent: [result, error]

@@ -1,0 +1,75 @@
+---
+# insight-18: by-name summary maxAttempt — retried step reports maxAttempt 2
+description: The operationsByName summary for a step that retried once reports maxAttempt 2 with count 1 and failedCount 0, since the terminal occurrence succeeded
+handler: |
+  Handler `insight_retry_max_attempt` installs workflowInsight({}) with default
+  config and the sink exporter from env. It runs `context.step("retried-step", ...)`
+  with the same real SDK `retryStrategy` as insight-6: the step throws on attempt 1
+  (keyed off `stepContext.attempt`) and returns on attempt 2. The retry is driven
+  entirely by the SDK's own retry strategy — no manual re-invocation or hand-rolled
+  delay.
+invocations: |
+  - Single invocation: attempt 1 of `retried-step` throws; the SDK's retry strategy
+    reschedules it; attempt 2 succeeds; the execution reaches terminal SUCCEEDED and
+    the point-access sink emits one record. operationsByName["retried-step"] reports
+    count 1, failedCount 0, and maxAttempt 2.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_BY_NAME]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations_by_name:
+        retried-step:
+          expect:
+            type: STEP
+            subType: Step
+            count: 1
+            failedCount: 0
+            maxAttempt: 2
+            status: SUCCEEDED
+          absent: [result, error]
