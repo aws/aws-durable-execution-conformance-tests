@@ -202,6 +202,8 @@ def test_orchestrator_owns_suite_and_long_running_views() -> None:
     assert jobs["invocation"]["with"]["suite"] == "otel-invocation"
     assert jobs["execution"]["with"]["suite"] == "otel-execution"
     for view in ("invocation", "execution"):
+        assert jobs[view]["with"]["resource_prefix"] == "${{ inputs.resource_prefix }}"
+    for view in ("invocation", "execution"):
         initial = jobs[f"long-running-{view}"]
         assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
         assert initial["with"]["view"] == view
@@ -233,6 +235,7 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
         "${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}"
     )
     assert call["inputs"]["language"]["required"] is True
+    assert call["inputs"]["resource_prefix"]["required"] is True
     assert call["inputs"]["conformance_repository"]["required"] is True
     assert call["inputs"]["setup_command"]["default"] == ""
     assert "otlp_endpoint" not in call["inputs"]
@@ -313,6 +316,9 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
     assert datadog["env"]["DATADOG_ACCESS_TOKEN"] == "${{ secrets.DATADOG_ACCESS_TOKEN }}"
     assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com"
     assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"
+    assert datadog["env"]["TEST_NAME"] == (
+        "${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
+    )
     assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
     assert datadog["concurrency"] == {
         "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
@@ -338,6 +344,16 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
         "${{ inputs.legacy_stack_prefix }}"
     )
     assert steps["Upload reports and histories"]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_javascript_datadog_target_name_fits_lambda_limit() -> None:
+    javascript = _load(LANGUAGE_WORKFLOWS["javascript"])
+    resource_prefix = javascript["jobs"]["conformance"]["with"]["resource_prefix"]
+    test_name = f"{resource_prefix}-datadog-exec"
+    target_name = f"conformance-tests-{test_name}-otel-execution-11-target"
+
+    assert target_name == "conformance-tests-js-datadog-exec-otel-execution-11-target"
+    assert len(target_name) <= 64
 
 
 def test_datadog_retention_setup_is_optional(

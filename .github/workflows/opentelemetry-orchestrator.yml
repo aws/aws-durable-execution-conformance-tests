@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       resource_prefix:
-        description: Short prefix used by long-running Lambda resources
+        description: Short prefix used by Lambda resources
         required: true
         type: string
       sdk_repository:
@@ -145,6 +145,7 @@ jobs:
     uses: ./.github/workflows/opentelemetry-suite.yml
     with:
       language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
@@ -173,6 +174,7 @@ jobs:
     uses: ./.github/workflows/opentelemetry-suite.yml
     with:
       language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
