@@ -89,12 +89,12 @@ def test_javascript_example_declares_no_execution_plugin_gaps() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
-def test_wait_interrupted_functions_use_short_execution_timeout() -> None:
+def test_wait_interrupted_functions_use_consistent_execution_timeout() -> None:
     with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
         resources = yaml.load(stream, Loader=_CfnSafeLoader)["Resources"]
 
-    assert resources["Otel15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
-    assert resources["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
+    assert resources["Otel15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 15
+    assert resources["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 15
 
 
 def test_javascript_template_deploys_only_the_selected_otel_view() -> None:
@@ -133,7 +133,7 @@ def test_javascript_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
-    assert "ExecutionTimeout: 5" in template
+    assert template.count("        ExecutionTimeout: 15") == 2
     assert "Runtime: nodejs22.x" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
     assert "Default: /opt/otel-instrument" in template
