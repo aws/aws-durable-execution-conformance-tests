@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contract tests for the reusable OpenTelemetry workflows."""
 
+import runpy
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -17,6 +19,7 @@ RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
 SUITE_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-suite.yml"
 LONG_RUNNING_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-long-running.yml"
 PREPARE_ACTION = ROOT / ".github" / "actions" / "prepare-otel-example" / "action.yml"
+DATADOG_RETENTION_SCRIPT = ROOT / "scripts" / "configure-datadog-retention.py"
 ALL_OTEL_WORKFLOWS = {
     *LANGUAGE_WORKFLOWS.values(),
     ORCHESTRATOR,
@@ -79,8 +82,9 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert inputs["conformance_test_ref"]["default"] == ""
     assert inputs["conformance_repository"]["default"] == ("aws/aws-durable-execution-conformance-tests")
     assert "otlp_endpoint" not in inputs
-    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY", "DATADOG_APPLICATION_KEY"):
+    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
         assert call["secrets"][secret]["required"] is True
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
     assert "setup-java" not in text
@@ -175,9 +179,9 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "DASH0_AUTH_TOKEN",
         "DATADOG_ACCESS_TOKEN",
         "DATADOG_API_KEY",
-        "DATADOG_APPLICATION_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
     assert "otlp_endpoint" not in call["inputs"]
     assert "otlp_endpoint" not in preset
 
@@ -334,6 +338,21 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
         "${{ inputs.legacy_stack_prefix }}"
     )
     assert steps["Upload reports and histories"]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_datadog_retention_setup_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("DATADOG_API_KEY", "api-secret")
+    monkeypatch.delenv("DATADOG_APPLICATION_KEY", raising=False)
+    namespace = runpy.run_path(str(DATADOG_RETENTION_SCRIPT), run_name="datadog_retention_script")
+
+    namespace["main"]()
+
+    assert capsys.readouterr().out == (
+        "Skipping Datadog retention setup because DATADOG_APPLICATION_KEY is not configured\n"
+    )
 
 
 def test_long_running_worker_is_reusable_and_language_neutral() -> None:
