@@ -105,10 +105,11 @@ def test_python_template_deploys_only_the_selected_otel_view() -> None:
     for logical_id, resource in template["Resources"].items():
         expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
         assert resource["Condition"] == expected_condition
-    assert template["Resources"]["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"] == {
-        "ExecutionTimeout": 5,
-        "RetentionPeriodInDays": 1,
-    }
+    for logical_id in ("Otel15WaitInterrupted", "OtelExecution15WaitInterrupted"):
+        assert template["Resources"][logical_id]["Properties"]["DurableConfig"] == {
+            "ExecutionTimeout": 15,
+            "RetentionPeriodInDays": 1,
+        }
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:
@@ -131,7 +132,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
-    assert "ExecutionTimeout: 5" in template
+    assert template.count("        ExecutionTimeout: 15") == 2
     assert "HasOtelCollectorLayer: !Not" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
