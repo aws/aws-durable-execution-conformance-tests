@@ -27,12 +27,18 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 )
 
 
-def _options(runtime: str = "python", *, layer_arn: str | None = None) -> ExporterOptions:
+def _options(
+    runtime: str = "python",
+    *,
+    backend: str = "datadog",
+    layer_arn: str | None = None,
+) -> ExporterOptions:
     return ExporterOptions(
         runtime=runtime,
         region="us-west-2",
         endpoint="https://collector.example/v1/traces",
         service_name="conformance",
+        backend=backend,
         layer_arn=layer_arn,
     )
 
@@ -93,31 +99,24 @@ def test_community_configures_each_supported_runtime(runtime: str) -> None:
     assert "OtelSecretEnvironmentNames" in config.parameter_overrides
 
 
-@pytest.mark.parametrize(
-    ("endpoint", "expected"),
-    [
-        ("https://collector.example", "https://collector.example/v1/traces"),
-        ("https://collector.example/v1/traces", "https://collector.example/v1/traces"),
-    ],
-)
-def test_community_javascript_sets_signal_specific_trace_endpoint(
-    endpoint: str,
-    expected: str,
-) -> None:
-    options = ExporterOptions(
-        runtime="javascript",
-        region="us-west-2",
-        endpoint=endpoint,
-        service_name="conformance",
-    )
+def test_community_javascript_datadog_disables_metrics_export() -> None:
+    config = CommunityExporterProfile().configure(_options("javascript"))
 
-    config = CommunityExporterProfile().configure(options)
-
-    assert config.environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == endpoint
-    assert config.environment["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == expected
+    assert config.environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example/v1/traces"
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in config.environment
     assert config.environment["OTEL_METRICS_EXPORTER"] == "none"
-    assert config.parameter_overrides["OtelExporterTracesEndpoint"] == expected
     assert config.parameter_overrides["OtelMetricsExporter"] == "none"
+
+
+@pytest.mark.parametrize("backend", ["collector", "dash0"])
+def test_community_javascript_other_backends_use_the_base_endpoint(backend: str) -> None:
+    config = CommunityExporterProfile().configure(_options("javascript", backend=backend))
+
+    assert config.environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example/v1/traces"
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in config.environment
+    assert "OTEL_METRICS_EXPORTER" not in config.environment
+    assert "OtelExporterTracesEndpoint" not in config.parameter_overrides
+    assert "OtelMetricsExporter" not in config.parameter_overrides
 
 
 @pytest.mark.parametrize("runtime", ["java", "python"])
