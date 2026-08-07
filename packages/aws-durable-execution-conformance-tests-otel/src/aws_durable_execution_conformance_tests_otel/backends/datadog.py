@@ -199,6 +199,7 @@ class DatadogBackend(PollingBackend):
     name = "datadog"
     feature_disparities = frozenset(
         {
+            BackendFeatureDisparity.MILLISECOND_TIMESTAMPS,
             BackendFeatureDisparity.SPAN_LINKS,
             BackendFeatureDisparity.UNSET_STATUS,
         }

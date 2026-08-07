@@ -158,6 +158,8 @@ with `DD_SITE`. The backend locates a correlated span by service name and
 durable execution ARN, follows cursor pagination, and accumulates newly indexed
 spans across polling attempts. Conformance spans carry the execution ARN used
 by this query, so the backend does not need a second full-trace search.
+Datadog search results expose millisecond timestamps, so temporal assertions
+allow at most 1 ms of backend-specific rounding at span boundaries.
 
 The shared Java, Python, and JavaScript suite workflow uses the generic
 `https://otlp.datadoghq.com` OTLP base endpoint and runs Datadog beside X-Ray

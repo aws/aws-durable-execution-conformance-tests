@@ -3,7 +3,7 @@ Input:
   scenario: wait-for-callback
 AsyncInvoke: true
 CallbackActions:
-  - CallbackName: "${/^otel-callback(?: create callback id|-callback)$/}"
+  - CallbackName: "${/^otel-callback(?: create callback id|-callback)?$/}"
     Operation: success
     Payload: callback-complete
     Delay: 1
@@ -20,19 +20,19 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${CALLBACK1}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: "${/^otel-callback(?: create callback id|-callback)$/}"
+    Name: "${/^otel-callback(?: create callback id|-callback)?$/}"
   - EventId: 4
     EventType: StepStarted
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: "${/^otel-callback(?: submitter|-submitter)$/}"
+    Name: "${/^otel-callback(?: submitter|-submitter)?$/}"
   - EventId: 5
     EventType: StepSucceeded
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
-    Name: "${/^otel-callback(?: submitter|-submitter)$/}"
+    Name: "${/^otel-callback(?: submitter|-submitter)?$/}"
   - EventId: 8
     EventType: ContextSucceeded
     SubType: WaitForCallback
