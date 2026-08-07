@@ -10,6 +10,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
+from urllib.parse import quote
 
 from aws_durable_execution_conformance_tests_otel.backends._common import (
     HttpClient,
@@ -33,6 +34,9 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     PollingBackend,
 )
 
+DATADOG_RETENTION_FILTER_NAME = "durable-execution-conformance-tests"
+DATADOG_SERVICE_NAME = "durable-execution-conformance"
+
 
 def _flatten_attributes(
     values: Mapping[str, Any],
@@ -55,6 +59,11 @@ def _span_attributes(outer: Mapping[str, Any]) -> dict[str, Any]:
         values = outer.get(key)
         if isinstance(values, Mapping):
             attributes.update(_flatten_attributes(values))
+    first_invocation = attributes.get("durable.invocation.first")
+    if first_invocation == "true":
+        attributes["durable.invocation.first"] = True
+    elif first_invocation == "false":
+        attributes["durable.invocation.first"] = False
     return attributes
 
 
@@ -120,6 +129,72 @@ def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
     return [Trace(trace_id=trace_id, spans=tuple(spans), raw_artifact=payload) for trace_id, spans in grouped.items()]
 
 
+def configure_datadog_retention(
+    endpoint: str,
+    api_key: str,
+    application_key: str,
+    *,
+    service_name: str = DATADOG_SERVICE_NAME,
+    http: HttpClient | None = None,
+) -> str:
+    """Create or update the conformance service's complete-trace retention filter."""
+
+    client = http or JsonHttpClient()
+    headers = {
+        "DD-API-KEY": api_key,
+        "DD-APPLICATION-KEY": application_key,
+    }
+    base_endpoint = endpoint.rstrip("/")
+    filters_endpoint = (
+        base_endpoint
+        if base_endpoint.endswith("/api/v2/apm/config/retention-filters")
+        else f"{base_endpoint}/api/v2/apm/config/retention-filters"
+    )
+    response = client.request_json("GET", filters_endpoint, headers=headers)
+    filters = response.get("data", [])
+    if not isinstance(filters, list):
+        raise BackendError("Datadog retention-filter API returned a non-list data value")
+
+    existing_id: str | None = None
+    for item in filters:
+        if not isinstance(item, Mapping):
+            continue
+        attributes = item.get("attributes")
+        if not isinstance(attributes, Mapping) or attributes.get("name") != DATADOG_RETENTION_FILTER_NAME:
+            continue
+        filter_id = item.get("id")
+        if filter_id is None:
+            raise BackendError("Datadog retention filter is missing its id")
+        existing_id = str(filter_id)
+        break
+
+    body: dict[str, Any] = {
+        "data": {
+            "type": "apm_retention_filter",
+            "attributes": {
+                "enabled": True,
+                "filter": {"query": f"service:{service_name}"},
+                "filter_type": "spans-sampling-processor",
+                "name": DATADOG_RETENTION_FILTER_NAME,
+                "rate": 1.0,
+                "trace_rate": 1.0,
+            },
+        }
+    }
+    if existing_id is None:
+        client.request_json("POST", filters_endpoint, headers=headers, body=body)
+        return "created"
+
+    body["data"]["id"] = existing_id
+    client.request_json(
+        "PUT",
+        f"{filters_endpoint}/{quote(existing_id, safe='')}",
+        headers=headers,
+        body=body,
+    )
+    return "updated"
+
+
 class DatadogBackend(PollingBackend):
     name = "datadog"
     feature_disparities = frozenset({BackendFeatureDisparity.SPAN_LINKS})
@@ -136,6 +211,7 @@ class DatadogBackend(PollingBackend):
         self._endpoint = endpoint.rstrip("/")
         self._headers = {"Authorization": f"Bearer {access_token}"}
         self._http = http or JsonHttpClient()
+        self._span_cache: dict[tuple[str, str], Span] = {}
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
         if query.trace_id:
@@ -149,21 +225,19 @@ class DatadogBackend(PollingBackend):
                 for execution_arn in (query.execution_arns or (query.execution_arn,))
             )
             search = f"service:{query.service_name} ({arn_search})"
-        discovery_payload = self._search(query, search)
+        return matching_trace(self._merge_search_results(self._search(query, search)), query)
 
-        native_trace_ids: list[str] = []
-        for trace in normalize_datadog(discovery_payload):
-            native_trace_id = self._native_trace_id(discovery_payload, trace.trace_id)
-            if native_trace_id and native_trace_id not in native_trace_ids:
-                native_trace_ids.append(native_trace_id)
-        if not native_trace_ids:
-            return None
+    def _merge_search_results(self, payload: Mapping[str, Any]) -> list[Trace]:
+        for trace in normalize_datadog(payload):
+            for span in trace.spans:
+                self._span_cache[(span.trace_id, span.span_id)] = span
 
-        traces: list[Trace] = []
-        for native_trace_id in native_trace_ids:
-            trace_payload = self._search(query, f"trace_id:{native_trace_id}")
-            traces.extend(normalize_datadog(trace_payload))
-        return matching_trace(traces, query)
+        grouped: dict[str, list[Span]] = defaultdict(list)
+        for span in self._span_cache.values():
+            grouped[span.trace_id].append(span)
+        return [
+            Trace(trace_id=trace_id, spans=tuple(spans), raw_artifact=payload) for trace_id, spans in grouped.items()
+        ]
 
     def _search(
         self,
@@ -215,21 +289,6 @@ class DatadogBackend(PollingBackend):
             body["data"]["attributes"]["page"]["cursor"] = cursor
 
         return {"data": data}
-
-    @staticmethod
-    def _native_trace_id(
-        payload: Mapping[str, Any],
-        expected_trace_id: str,
-    ) -> str | None:
-        for item in payload.get("data", []):
-            outer = item.get("attributes", {})
-            if not isinstance(outer, Mapping):
-                continue
-            if _trace_id(outer, _span_attributes(outer)) == expected_trace_id:
-                native_trace_id = outer.get("trace_id", outer.get("traceId"))
-                if native_trace_id is not None:
-                    return str(native_trace_id)
-        return None
 
 
 class DatadogBackendFactory:

@@ -73,7 +73,7 @@ syntax and supported span fields.
 | Exporter | Backend | Credentials |
 |---|---|---|
 | ADOT | X-Ray | AWS credential chain |
-| Community layer | Datadog | `DATADOG_ACCESS_TOKEN`, `DATADOG_API_KEY` |
+| Community layer | Datadog | `DATADOG_ACCESS_TOKEN`, `DATADOG_API_KEY`, `DATADOG_APPLICATION_KEY` |
 | Community layer | Dash0 | `DASH0_AUTH_TOKEN` |
 | Community layer | AWS S3 collector | AWS credential chain |
 
@@ -155,14 +155,19 @@ The `datadog` backend queries `POST /api/v2/spans/events/search`. Set
 `DATADOG_ACCESS_TOKEN` to a read-capable OAuth access token. Pass a non-default
 API base URL through `--otel-backend-endpoint`, or select another Datadog site
 with `DD_SITE`. The backend locates a correlated span by service name and
-durable execution ARN, follows cursor pagination, and then retrieves every
-searchable span in the matching trace.
+durable execution ARN, follows cursor pagination, and accumulates newly indexed
+spans across polling attempts. Conformance spans carry the execution ARN used
+by this query, so the backend does not need a second full-trace search.
 
 The shared Java, Python, and JavaScript suite workflow sends OTLP/HTTP protobuf
 traces to `https://otlp.datadoghq.com/v1/traces` and runs Datadog beside X-Ray
 and Dash0. It reads the API access token from `DATADOG_ACCESS_TOKEN` and the
 intake API key from `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP
-header.
+header. Before running a suite, the workflow uses `DATADOG_API_KEY` and
+`DATADOG_APPLICATION_KEY` to create or update a 100% APM retention filter for
+`service:durable-execution-conformance`. Complete retention is required because
+the suites validate every plugin span and cannot pass against a sampled or
+partially indexed trace.
 
 ## AWS S3 Collector
 

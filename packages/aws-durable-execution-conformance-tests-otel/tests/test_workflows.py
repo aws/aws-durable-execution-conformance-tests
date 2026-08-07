@@ -79,7 +79,7 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert inputs["conformance_test_ref"]["default"] == ""
     assert inputs["conformance_repository"]["default"] == ("aws/aws-durable-execution-conformance-tests")
     assert "otlp_endpoint" not in inputs
-    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY", "DATADOG_APPLICATION_KEY"):
         assert call["secrets"][secret]["required"] is True
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
@@ -175,6 +175,7 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "DASH0_AUTH_TOKEN",
         "DATADOG_ACCESS_TOKEN",
         "DATADOG_API_KEY",
+        "DATADOG_APPLICATION_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
     assert "otlp_endpoint" not in call["inputs"]
@@ -309,10 +310,22 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
     assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com"
     assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"
     assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
+    assert datadog["concurrency"] == {
+        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
+        "cancel-in-progress": False,
+    }
+    assert steps["Configure Datadog trace retention"]["run"] == (
+        "hatch run python scripts/configure-datadog-retention.py"
+    )
+    assert steps["Configure Datadog trace retention"]["env"] == {
+        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
+        "DATADOG_APPLICATION_KEY": "${{ secrets.DATADOG_APPLICATION_KEY }}",
+    }
     assert "--otel-exporter community" in commands
     assert '--otel-endpoint "$DATADOG_OTLP_ENDPOINT"' in commands
     assert "--otel-poll-interval 15" in commands
     assert "--otel-backend datadog" in commands
+    assert "--max-workers 2" in commands
     assert "--no-cleanup" in commands
     assert "DD_API_KEY" not in datadog["env"]
     assert "DD_APPLICATION_KEY" not in datadog["env"]

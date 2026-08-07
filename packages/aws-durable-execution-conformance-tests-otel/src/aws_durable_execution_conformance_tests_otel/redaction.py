@@ -18,6 +18,8 @@ _SECRET_KEY = re.compile(
 SECRET_ENV_NAMES = frozenset(
     {
         "DATADOG_ACCESS_TOKEN",
+        "DATADOG_API_KEY",
+        "DATADOG_APPLICATION_KEY",
         "DD_API_KEY",
         "DD_APPLICATION_KEY",
         "DASH0_AUTH_TOKEN",

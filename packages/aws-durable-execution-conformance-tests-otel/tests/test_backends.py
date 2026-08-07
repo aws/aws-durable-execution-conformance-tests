@@ -30,8 +30,10 @@ from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
     Dash0BackendFactory,
 )
 from aws_durable_execution_conformance_tests_otel.backends.datadog import (
+    DATADOG_RETENTION_FILTER_NAME,
     DatadogBackend,
     DatadogBackendFactory,
+    configure_datadog_retention,
 )
 from aws_durable_execution_conformance_tests_otel.backends.xray import XRayBackend
 from aws_durable_execution_conformance_tests_otel.model import Span, TelemetryQuery, Trace
@@ -317,6 +319,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
             "start_timestamp": "2026-01-01T00:00:00.1Z",
             "end_timestamp": "2026-01-01T00:00:00.9Z",
             "custom": {
+                "durable": {"execution": {"arn": "arn:test"}},
                 "otel": {
                     "status_code": "Error",
                     "trace_id": "11111111111111111111111111111111",
@@ -327,12 +330,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     http = _Http(
         {
             "data": [discovery_span],
-            "meta": {"page": {"after": "discovery-page-2"}},
-        },
-        {"data": []},
-        {
-            "data": [discovery_span],
-            "meta": {"page": {"after": "trace-page-2"}},
+            "meta": {"page": {"after": "page-2"}},
         },
         {"data": [child_span]},
     )
@@ -354,7 +352,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     assert trace.spans[0].service_name == "conformance"
     assert trace.spans[1].parent_span_id == "0000000000000007"
     assert trace.spans[1].status == "ERROR"
-    assert [call[0] for call in http.calls] == ["POST"] * 4
+    assert [call[0] for call in http.calls] == ["POST"] * 2
     assert all(call[1] == "https://api.datadoghq.com/api/v2/spans/events/search" for call in http.calls)
     assert all(headers == {"Authorization": "Bearer access-secret"} for headers in http.headers)
     assert http.calls[0][2] == {
@@ -373,13 +371,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     }
     second_body = http.calls[1][2]
     assert second_body is not None
-    assert second_body["data"]["attributes"]["page"]["cursor"] == "discovery-page-2"
-    third_body = http.calls[2][2]
-    assert third_body is not None
-    assert third_body["data"]["attributes"]["filter"]["query"] == "trace_id:10"
-    fourth_body = http.calls[3][2]
-    assert fourth_body is not None
-    assert fourth_body["data"]["attributes"]["page"]["cursor"] == "trace-page-2"
+    assert second_body["data"]["attributes"]["page"]["cursor"] == "page-2"
 
 
 def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
@@ -409,11 +401,7 @@ def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
 
     source = span("10", "1" * 32, "7", "Workflow", "arn:test")
     target = span("30", "3" * 32, "8", "Invocation", "arn:target")
-    http = _Http(
-        {"data": [source, target]},
-        {"data": [source]},
-        {"data": [target]},
-    )
+    http = _Http({"data": [source, target]})
     backend = DatadogBackend(
         "https://api.datadoghq.com",
         "access-secret",
@@ -434,15 +422,52 @@ def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
     assert first_body["data"]["attributes"]["filter"]["query"] == (
         'service:conformance (@durable.execution.arn:"arn:test" OR @durable.execution.arn:"arn:target")'
     )
-    assert [call[2]["data"]["attributes"]["filter"]["query"] for call in http.calls[1:] if call[2]] == [
-        "trace_id:10",
-        "trace_id:30",
-    ]
+    assert len(http.calls) == 1
     assert trace.trace_id == "1" * 32
     assert {item.attributes["durable.execution.arn"] for item in trace.spans} == {
         "arn:test",
         "arn:target",
     }
+
+
+def test_datadog_accumulates_partial_search_results_across_polling_attempts() -> None:
+    def span(span_id: str, name: str, parent_id: str | None = None) -> Mapping[str, Any]:
+        return {
+            "id": f"event-{span_id}",
+            "type": "spans",
+            "attributes": {
+                "trace_id": "10",
+                "span_id": span_id,
+                "parent_id": parent_id,
+                "service": "conformance",
+                "resource_name": name,
+                "start_timestamp": "2026-01-01T00:00:00Z",
+                "end_timestamp": "2026-01-01T00:00:01Z",
+                "custom": {
+                    "durable": {"execution": {"arn": "arn:test"}},
+                    "otel": {"trace_id": "1" * 32},
+                },
+            },
+        }
+
+    root = span("7", "Workflow")
+    child = span("8", "attempt", "7")
+    http = _Http({"data": [root]}, {"data": [child]})
+    backend = DatadogBackend(
+        "https://api.datadoghq.com",
+        "access-secret",
+        http=http,
+        sleep=lambda _seconds: None,
+    )
+
+    trace = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=2),
+        accept=lambda candidate: len(candidate.spans) == 2,
+    )
+
+    assert [item.name for item in trace.spans] == ["Workflow", "attempt"]
+    assert len(http.calls) == 2
 
 
 def test_datadog_rejects_repeated_pagination_cursor() -> None:
@@ -475,6 +500,73 @@ def test_datadog_factory_uses_access_token(
     assert isinstance(backend, DatadogBackend)
     assert backend._endpoint == "https://api.us3.datadoghq.com"
     assert backend._headers == {"Authorization": "Bearer access-secret"}
+
+
+def test_configure_datadog_retention_creates_missing_filter() -> None:
+    http = _Http({"data": []}, {"data": {"id": "new-filter"}})
+
+    action = configure_datadog_retention(
+        "https://api.datadoghq.com",
+        "api-secret",
+        "application-secret",
+        http=http,
+    )
+
+    assert action == "created"
+    assert [call[:2] for call in http.calls] == [
+        ("GET", "https://api.datadoghq.com/api/v2/apm/config/retention-filters"),
+        ("POST", "https://api.datadoghq.com/api/v2/apm/config/retention-filters"),
+    ]
+    assert http.headers == [
+        {"DD-API-KEY": "api-secret", "DD-APPLICATION-KEY": "application-secret"},
+        {"DD-API-KEY": "api-secret", "DD-APPLICATION-KEY": "application-secret"},
+    ]
+    body = http.calls[1][2]
+    assert body == {
+        "data": {
+            "type": "apm_retention_filter",
+            "attributes": {
+                "enabled": True,
+                "filter": {"query": "service:durable-execution-conformance"},
+                "filter_type": "spans-sampling-processor",
+                "name": DATADOG_RETENTION_FILTER_NAME,
+                "rate": 1.0,
+                "trace_rate": 1.0,
+            },
+        }
+    }
+
+
+def test_configure_datadog_retention_updates_filter_by_name() -> None:
+    http = _Http(
+        {
+            "data": [
+                {
+                    "id": "filter-123",
+                    "type": "apm_retention_filter",
+                    "attributes": {"name": DATADOG_RETENTION_FILTER_NAME},
+                }
+            ]
+        },
+        {"data": {"id": "filter-123"}},
+    )
+
+    action = configure_datadog_retention(
+        "https://api.datadoghq.com/api/v2/apm/config/retention-filters",
+        "api-secret",
+        "application-secret",
+        http=http,
+    )
+
+    assert action == "updated"
+    assert http.calls[1][0:2] == (
+        "PUT",
+        "https://api.datadoghq.com/api/v2/apm/config/retention-filters/filter-123",
+    )
+    body = http.calls[1][2]
+    assert body is not None
+    assert body["data"]["id"] == "filter-123"
+    assert body["data"]["attributes"]["rate"] == 1.0
 
 
 def test_dash0_queries_trace_api() -> None:
