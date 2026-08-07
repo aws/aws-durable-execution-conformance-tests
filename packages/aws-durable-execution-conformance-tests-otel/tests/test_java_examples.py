@@ -107,7 +107,7 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
     assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXPECTED_EXECUTION_MAPPINGS) + 2
-    assert "ExecutionTimeout: 5" in template
+    assert template.count("        ExecutionTimeout: 15") == 2
     assert "Runtime: java21" in template
     assert "Tracing: Active" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
