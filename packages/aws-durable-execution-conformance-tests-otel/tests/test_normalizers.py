@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
+import pytest
+
 from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
     normalize_dash0,
 )
@@ -164,7 +166,14 @@ def test_normalizes_xray_otel_service_name_and_inherits_it_for_subsegments() -> 
     assert spans[2].service_name == "child-service"
 
 
-def test_normalizes_datadog_span_search_payload() -> None:
+@pytest.mark.parametrize(
+    ("raw_first_invocation", "expected_first_invocation"),
+    [("true", True), ("false", False)],
+)
+def test_normalizes_datadog_span_search_payload(
+    raw_first_invocation: str,
+    expected_first_invocation: bool,
+) -> None:
     payload = {
         "data": [
             {
@@ -182,8 +191,12 @@ def test_normalizes_datadog_span_search_payload() -> None:
                         "durable": {
                             "execution": {
                                 "arn": "arn:test",
-                            }
+                            },
+                            "invocation": {
+                                "first": raw_first_invocation,
+                            },
                         },
+                        "unrelated": {"string_boolean": "true"},
                         "otel": {
                             "status_code": "Error",
                             "trace_id": "11111111111111111111111111111111",
@@ -203,6 +216,8 @@ def test_normalizes_datadog_span_search_payload() -> None:
     assert span.kind == "CLIENT"
     assert span.status == "ERROR"
     assert span.attributes["durable.execution.arn"] == "arn:test"
+    assert span.attributes["durable.invocation.first"] is expected_first_invocation
+    assert span.attributes["unrelated.string_boolean"] == "true"
     assert span.end_time - span.start_time == timedelta(seconds=1)
 
 
