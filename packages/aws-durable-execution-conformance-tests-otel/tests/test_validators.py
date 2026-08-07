@@ -172,6 +172,46 @@ def test_asserts_before_after_non_parent_inside_and_parent_containment() -> None
     assert errors == []
 
 
+def test_millisecond_timestamp_disparity_tolerates_backend_rounding() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    rounded_child = replace(
+        child,
+        start_time=root.start_time - timedelta(milliseconds=1),
+        end_time=root.end_time + timedelta(milliseconds=1),
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {"name": "root"},
+            },
+        }
+    }
+
+    assert validate_trace(replace(trace, spans=(root, rounded_child)), assertions, _query()) == [
+        (
+            f"span_assertions[0].expect.parent: child span 'child' ({child.span_id}) starts at "
+            f"{rounded_child.start_time.isoformat()}, before parent span 'root' ({root.span_id}) starts at "
+            f"{root.start_time.isoformat()}"
+        ),
+        (
+            f"span_assertions[0].expect.parent: child span 'child' ({child.span_id}) ends at "
+            f"{rounded_child.end_time.isoformat()}, after parent span 'root' ({root.span_id}) ends at "
+            f"{root.end_time.isoformat()}"
+        ),
+    ]
+    assert (
+        validate_trace(
+            replace(trace, spans=(root, rounded_child)),
+            assertions,
+            _query(),
+            feature_disparities=frozenset({BackendFeatureDisparity.MILLISECOND_TIMESTAMPS}),
+        )
+        == []
+    )
+
+
 def test_inside_can_select_a_linked_span_among_duplicate_matches() -> None:
     trace = _trace()
     root, child = trace.spans

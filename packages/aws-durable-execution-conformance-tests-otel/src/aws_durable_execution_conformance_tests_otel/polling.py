@@ -38,6 +38,7 @@ class TelemetryTimeout(BackendError):
 class BackendFeatureDisparity(StrEnum):
     """Known fidelity gaps in a backend's normalized telemetry."""
 
+    MILLISECOND_TIMESTAMPS = "millisecond-timestamps"
     SPAN_LINKS = "span-links"
     UNSET_STATUS = "unset-status"
 

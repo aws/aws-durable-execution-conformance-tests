@@ -60,6 +60,14 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 _CALLBACK_CREATED_EVENT_TYPE: str = "CallbackStarted"
+_WAIT_FOR_CALLBACK_SUBTYPE: str = "WaitForCallback"
+_WAIT_FOR_CALLBACK_CHILD_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "CallbackStarted",
+        "StepStarted",
+        "StepSucceeded",
+    }
+)
 
 
 # endregion
@@ -551,6 +559,20 @@ def extract_callback_events(
     return new_callbacks
 
 
+def inherit_wait_for_callback_event_names(events: list[dict[str, Any]]) -> None:
+    """Restore child event names omitted by newer execution history responses."""
+    events_by_id = {event.get("Id"): event for event in events if event.get("Id") is not None}
+    for event in events:
+        if event.get("Name") or event.get("EventType") not in _WAIT_FOR_CALLBACK_CHILD_EVENT_TYPES:
+            continue
+        parent = events_by_id.get(event.get("ParentId"))
+        if parent is None or parent.get("SubType") != _WAIT_FOR_CALLBACK_SUBTYPE:
+            continue
+        parent_name = parent.get("Name")
+        if isinstance(parent_name, str) and parent_name:
+            event["Name"] = parent_name
+
+
 def find_matching_action(
     callback_event: dict[str, Any],
     actions: list[CallbackAction],
@@ -666,6 +688,7 @@ class PollingValidator:
                 )
 
             actual_events = history.get("Events", history.get("events", []))
+            inherit_wait_for_callback_event_names(actual_events)
             current_event_count: int = len(actual_events)
             final_status = get_execution_status(history)
 

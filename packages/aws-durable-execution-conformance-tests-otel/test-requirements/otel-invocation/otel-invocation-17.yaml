@@ -3,7 +3,7 @@ Input:
   scenario: wait-for-callback-failure
 AsyncInvoke: true
 CallbackActions:
-  - CallbackName: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+  - CallbackName: "${/^otel-failed-callback(?: create callback id|-callback)?$/}"
     Operation: failure
     Payload:
       ErrorType: RejectedError
@@ -22,19 +22,19 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${FAILED_CALLBACK}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: "${/^otel-failed-callback(?: create callback id|-callback)$/}"
+    Name: "${/^otel-failed-callback(?: create callback id|-callback)?$/}"
   - EventId: 4
     EventType: StepStarted
     SubType: Step
     Id: ${CALLBACK_SUBMITTER}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
+    Name: "${/^otel-failed-callback(?: submitter|-submitter)?$/}"
   - EventId: 5
     EventType: StepSucceeded
     SubType: Step
     Id: ${CALLBACK_SUBMITTER}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
+    Name: "${/^otel-failed-callback(?: submitter|-submitter)?$/}"
   - EventId: 8
     EventType: ContextFailed
     SubType: WaitForCallback

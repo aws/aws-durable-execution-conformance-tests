@@ -205,6 +205,7 @@ def test_json_http_client_marks_rate_limits_as_retryable(
             DatadogBackend,
             frozenset(
                 {
+                    BackendFeatureDisparity.MILLISECOND_TIMESTAMPS,
                     BackendFeatureDisparity.SPAN_LINKS,
                     BackendFeatureDisparity.UNSET_STATUS,
                 }
