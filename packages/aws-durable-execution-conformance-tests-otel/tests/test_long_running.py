@@ -170,6 +170,42 @@ def test_long_running_launch_commands_accept_the_resource_service_name(
     assert args.otel_service_name == "custom-long-running-service"
 
 
+@pytest.mark.parametrize("phase", ["launch", "run"])
+def test_long_running_launch_commands_accept_parameter_overrides(phase: str) -> None:
+    command = [
+        phase,
+        "--template",
+        "template.yaml",
+        "--language",
+        "java",
+        "--name",
+        "test",
+        "--state-file",
+        "state.json",
+        "--lambda-execution-role-arn",
+        "arn:role",
+        "--otel-layer-arn",
+        "arn:layer",
+        "--parameter-overrides",
+        "JavaSdkVersion=2.1.0",
+    ]
+    if phase == "run":
+        command.extend(
+            [
+                "--result-file",
+                "result.json",
+                "--history-dir",
+                "history",
+                "--report-file",
+                "report",
+            ]
+        )
+
+    args = long_running._parser().parse_args(command)
+
+    assert args.parameter_overrides == [("JavaSdkVersion", "2.1.0")]
+
+
 def test_long_running_checks_always_write_trace_artifacts() -> None:
     assert long_running._otel_options("python", "invocation", "us-west-2")["otel_write_trace_artifact"] is True
 
@@ -388,6 +424,8 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
             configured_options.append(options)
             return _Exporter()
 
+    deployed_parameters: list[dict[str, str]] = []
+
     class _Deployer:
         def __init__(self, **_kwargs: Any) -> None:
             pass
@@ -395,7 +433,8 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
         def build(self) -> None:
             pass
 
-        def deploy(self, **_kwargs: Any) -> None:
+        def deploy(self, **kwargs: Any) -> None:
+            deployed_parameters.append(kwargs["parameter_overrides"])
             raise RuntimeError("deployment failed")
 
     deleted: list[tuple[str, str]] = []
@@ -411,6 +450,7 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
         otel_layer_arn="arn:layer",
         otel_service_name="custom-long-running-service",
         lambda_execution_role_arn="arn:role",
+        parameter_overrides=[("CustomParameter", "custom-value")],
         source_revision="a" * 40,
     )
     requirements = {
@@ -427,6 +467,13 @@ def test_launch_retains_stack_after_a_failed_deployment_attempt(
 
     assert deleted == []
     assert configured_options[0].service_name == "custom-long-running-service"
+    assert deployed_parameters == [
+        {
+            "CustomParameter": "custom-value",
+            "LambdaExecutionRoleArn": "arn:role",
+            "OtelView": "invocation",
+        }
+    ]
 
 
 def test_launch_rejects_duplicate_requirement_mappings(
@@ -1025,6 +1072,14 @@ def test_long_running_templates_map_the_complete_suite(language: str) -> None:
     assert globals_config["Environment"]["Variables"]["OTEL_PLUGIN_MODE"] == {
         "Ref": "OtelView",
     }
+    if language == "java":
+        assert template["Parameters"]["JavaSdkVersion"]["Type"] == "String"
+        assert globals_config["Environment"]["Variables"]["OTEL_JAVAAGENT_EXTENSIONS"] == {
+            "Sub": (
+                "/var/task/lib/software.amazon.lambda.durable."
+                "aws-durable-execution-sdk-java-plugin-otel-${JavaSdkVersion}.jar"
+            )
+        }
     assert set(template["Resources"]) == {
         *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
         "OtelLongRunning4InvokeTarget",
@@ -1118,6 +1173,8 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
     assert "  schedule:" not in workflow
     assert "  workflow_dispatch:" not in workflow
     assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
+    if language == "java":
+        assert workflow.count('"JavaSdkVersion=$JAVA_SDK_VERSION"') == 2
     assert "env.PHASE != 'short'" in workflow
     assert "phase=launch" in workflow
     assert "phase=check" in workflow

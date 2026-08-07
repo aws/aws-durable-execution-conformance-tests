@@ -13,8 +13,8 @@ every handler in one shaded JAR. The template maps `otel-invocation-1` through
 durable chained-invoke targets for each view.
 
 The hosted Java workflow checks out the Java SDK repository's latest `main`,
-installs its SDK and OTel plugin artifacts, and overrides the Maven project's
-default released SDK version for both conformance views.
+installs its SDK and OTel plugin artifacts, and uses that project version for
+both the Maven dependencies and the packaged OTel extension path.
 
 ## Scenarios
 
@@ -43,7 +43,8 @@ default released SDK version for both conformance views.
 ## Run Against X-Ray
 
 Install the conformance packages, configure AWS credentials, and use the ADOT
-Java layer documented by the Java SDK:
+Java layer documented by the Java SDK. Set `JAVA_SDK_VERSION` to the same SDK
+version installed in the local Maven repository:
 
 ```bash
 pip install \
@@ -54,7 +55,9 @@ durable-execution-conformance \
   --template packages/aws-durable-execution-conformance-tests-otel/examples/java/template.yaml \
   --language java \
   --suite otel-invocation \
-  --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+  --parameter-overrides \
+    LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+    JavaSdkVersion="$JAVA_SDK_VERSION" \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_JAVA_LAYER_ARN" \
   --otel-service-name durable-execution-conformance \
@@ -65,10 +68,11 @@ Run the execution suite separately with `--suite otel-execution`.
 
 The execution role must allow Durable Execution, logs, and X-Ray writes.
 
-The template starts the ADOT Java agent and loads the Java SDK OTel plugin JAR
-through `OTEL_JAVAAGENT_EXTENSIONS`. The plugin's no-argument constructor uses
-the agent-initialized global tracer provider, and ADOT sends its OTLP/gRPC spans
-through the collector to X-Ray.
+The template starts the ADOT Java agent and loads the Java SDK OTel plugin
+dependency through `OTEL_JAVAAGENT_EXTENSIONS`. Its path is
+`/var/task/lib/software.amazon.lambda.durable.aws-durable-execution-sdk-java-plugin-otel-${JavaSdkVersion}.jar`.
+The plugin's no-argument constructor uses the agent-initialized global tracer
+provider, and ADOT sends its OTLP/gRPC spans through the collector to X-Ray.
 
 ## Run Against the AWS S3 Collector
 
@@ -84,6 +88,7 @@ durable-execution-conformance \
   --suite otel-invocation otel-execution \
   --parameter-overrides \
     LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
+    JavaSdkVersion="$JAVA_SDK_VERSION" \
     OtelCollectorLayerArn="$COLLECTOR_LAYER_ARN" \
     OtelCollectorBucket="$OTEL_S3_BUCKET" \
     OtelCollectorPrefix=traces \
@@ -100,7 +105,8 @@ queries and merges those S3 objects before evaluating the span assertions.
 ## Build Only
 
 Build and install the Java SDK repository's latest `main`, then export that
-project version for both the direct Maven build and SAM's nested Maven build:
+project version for the Maven builds and the `JavaSdkVersion` deployment
+parameter:
 
 ```bash
 git clone --depth 1 --branch main \

@@ -6,6 +6,9 @@ Parameters:
   LambdaExecutionRoleArn:
     Type: String
     Description: Pre-created execution role for the test functions
+  JavaSdkVersion:
+    Type: String
+    Description: Java SDK version used in the packaged OTel plugin dependency filename
   OtelSuite:
     Type: String
     Default: all
@@ -84,8 +87,7 @@ Globals:
     Environment:
       Variables:
         AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
-        JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"
-        OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar
+        OTEL_JAVAAGENT_EXTENSIONS: !Sub "/var/task/lib/software.amazon.lambda.durable.aws-durable-execution-sdk-java-plugin-otel-${JavaSdkVersion}.jar"
         OTEL_SERVICE_NAME: !Ref OtelServiceName
         OTEL_TRACES_EXPORTER: !Ref OtelTracesExporter
         OTEL_EXPORTER_OTLP_ENDPOINT: !If

@@ -53,6 +53,7 @@ EXPECTED_EXECUTION_MAPPINGS = [
 ]
 EXPECTED_MAPPINGS = EXPECTED_INVOCATION_MAPPINGS + EXPECTED_EXECUTION_MAPPINGS
 REQUIRED_OTEL_PARAMETERS = {
+    "JavaSdkVersion",
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
     "OtelCollectorLayerArn",
@@ -112,8 +113,11 @@ def test_java_example_template_accepts_runner_parameters() -> None:
     assert "Tracing: Active" in template
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
     assert "Default: /opt/otel-instrument" in template
-    assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
-    assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
+    assert "JAVA_TOOL_OPTIONS" not in template
+    assert (
+        'OTEL_JAVAAGENT_EXTENSIONS: !Sub "/var/task/lib/software.amazon.lambda.durable.'
+        'aws-durable-execution-sdk-java-plugin-otel-${JavaSdkVersion}.jar"'
+    ) in template
     assert "HasOtelCollectorLayer: !Not" in template
     assert "HasOtelExporterEndpoint: !Not" in template
     assert "HasOtelExporterHeaders: !Not" in template
@@ -156,8 +160,11 @@ def test_java_long_running_template_enables_agent_extension() -> None:
     template = (EXAMPLES_DIR / "template-long-running.yaml").read_text(encoding="utf-8")
 
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
-    assert 'JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"' in template
-    assert "OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar" in template
+    assert "JAVA_TOOL_OPTIONS" not in template
+    assert (
+        'OTEL_JAVAAGENT_EXTENSIONS: !Sub "/var/task/lib/software.amazon.lambda.durable.'
+        'aws-durable-execution-sdk-java-plugin-otel-${JavaSdkVersion}.jar"'
+    ) in template
 
 
 def test_java_examples_use_agent_initialized_otel_plugin() -> None:
@@ -199,9 +206,8 @@ def test_java_examples_use_agent_initialized_otel_plugin() -> None:
     assert '"OTEL_PLUGIN_MODE"' in handler
     assert "pluginClass.getConstructor().newInstance()" in handler
     pom = pom_path.read_text(encoding="utf-8")
-    assert "<id>copy-otel-javaagent-extension</id>" in pom
-    assert "<destFileName>otel-plugin-extension.jar</destFileName>" in pom
-    assert "<outputDirectory>${project.build.outputDirectory}/lib</outputDirectory>" in pom
+    assert "maven-dependency-plugin" not in pom
+    assert "otel-plugin-extension.jar" not in pom
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_enabled() -> None:
@@ -223,6 +229,7 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "--projects sdk,otel-plugin" in entry_workflow
     assert "-Dexpression=project.version" in entry_workflow
     assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in entry_workflow
+    assert workflow.count('"JavaSdkVersion=$JAVA_SDK_VERSION"') == workflow.count("hatch run validate")
     assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
     assert workflow.count('"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
     assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")

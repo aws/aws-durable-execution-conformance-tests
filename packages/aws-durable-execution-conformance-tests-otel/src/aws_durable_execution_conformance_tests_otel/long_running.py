@@ -93,6 +93,15 @@ SUPPORTED_VIEWS = {
 }
 
 
+def _parse_parameter_override(value: str) -> tuple[str, str]:
+    """Parse one ``KEY=VALUE`` SAM parameter override."""
+
+    key, separator, parameter_value = value.partition("=")
+    if not separator or not key:
+        raise argparse.ArgumentTypeError("parameter overrides must use KEY=VALUE")
+    return key, parameter_value
+
+
 @dataclass
 class ExecutionState:
     """Persisted metadata for one asynchronously invoked requirement."""
@@ -300,6 +309,7 @@ def launch(args: argparse.Namespace) -> int:
     }
     if len(SUPPORTED_VIEWS[runtime]) > 1:
         parameters["OtelView"] = view
+    parameters.update(dict(args.parameter_overrides))
 
     deployer = Deployer(
         template_path=str(template_path),
@@ -848,6 +858,15 @@ def _parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--lambda-execution-role-arn", required=True)
     launch_parser.add_argument("--otel-layer-arn", required=True)
     launch_parser.add_argument(
+        "--parameter-overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        type=_parse_parameter_override,
+        metavar="KEY=VALUE",
+        help="Additional SAM template parameter overrides.",
+    )
+    launch_parser.add_argument(
         "--otel-service-name",
         default=DEFAULT_OTEL_SERVICE_NAME,
         help="OpenTelemetry resource service name configured on the test functions.",
@@ -903,6 +922,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--lambda-execution-role-arn", required=True)
     run_parser.add_argument("--otel-layer-arn", required=True)
+    run_parser.add_argument(
+        "--parameter-overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        type=_parse_parameter_override,
+        metavar="KEY=VALUE",
+        help="Additional SAM template parameter overrides.",
+    )
     run_parser.add_argument(
         "--otel-service-name",
         default=DEFAULT_OTEL_SERVICE_NAME,

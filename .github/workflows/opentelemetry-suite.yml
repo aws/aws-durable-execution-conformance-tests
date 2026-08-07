@@ -224,6 +224,15 @@ jobs:
           BACKEND: ${{ matrix.backend }}
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
+          parameter_overrides=(
+            "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+            "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"
+            "OtelSuite=$OTEL_SUITE"
+          )
+          if [ "$LANGUAGE" = "java" ]; then
+            : "${JAVA_SDK_VERSION:?Java preparation must set JAVA_SDK_VERSION}"
+            parameter_overrides+=("JavaSdkVersion=$JAVA_SDK_VERSION")
+          fi
           command=(
             hatch run validate
             --template "$TEST_TEMPLATE"
@@ -236,10 +245,7 @@ jobs:
             --report console json junit github
             --report-file "$REPORT_FILE"
             --fail-on failed+uncovered
-            --parameter-overrides
-              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
-              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"
-              "OtelSuite=$OTEL_SUITE"
+            --parameter-overrides "${parameter_overrides[@]}"
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"
           )
           if [ "$BACKEND" = "xray" ]; then
@@ -363,6 +369,15 @@ jobs:
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
+          parameter_overrides=(
+            "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+            "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"
+            "OtelSuite=$OTEL_SUITE"
+          )
+          if [ "$LANGUAGE" = "java" ]; then
+            : "${JAVA_SDK_VERSION:?Java preparation must set JAVA_SDK_VERSION}"
+            parameter_overrides+=("JavaSdkVersion=$JAVA_SDK_VERSION")
+          fi
           hatch run validate \
             --template "$TEST_TEMPLATE" \
             --language "$LANGUAGE" \
@@ -371,10 +386,7 @@ jobs:
             --no-cleanup \
             --suite "$OTEL_SUITE" \
             --report console github \
-            --parameter-overrides \
-              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
-              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
-              "OtelSuite=$OTEL_SUITE" \
+            --parameter-overrides "${parameter_overrides[@]}" \
             --otel-exporter community \
             --otel-endpoint "${{ inputs.otlp_endpoint }}" \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
@@ -551,6 +563,18 @@ jobs:
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
+          parameter_overrides=(
+            "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+            "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN"
+            "OtelCollectorBucket=$OTEL_S3_BUCKET"
+            "OtelCollectorPrefix=$OTEL_S3_PREFIX"
+            "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"
+            "OtelSuite=$OTEL_SUITE"
+          )
+          if [ "$LANGUAGE" = "java" ]; then
+            : "${JAVA_SDK_VERSION:?Java preparation must set JAVA_SDK_VERSION}"
+            parameter_overrides+=("JavaSdkVersion=$JAVA_SDK_VERSION")
+          fi
           hatch run validate \
             --template "$TEST_TEMPLATE" \
             --language "$LANGUAGE" \
@@ -562,13 +586,7 @@ jobs:
             --report console json junit github \
             --report-file "$REPORT_FILE" \
             --fail-on failed+uncovered \
-            --parameter-overrides \
-              "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
-              "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" \
-              "OtelCollectorBucket=$OTEL_S3_BUCKET" \
-              "OtelCollectorPrefix=$OTEL_S3_PREFIX" \
-              "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
-              "OtelSuite=$OTEL_SUITE" \
+            --parameter-overrides "${parameter_overrides[@]}" \
             --otel-exporter community \
             --otel-endpoint "${{ inputs.collector_otlp_endpoint }}" \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \

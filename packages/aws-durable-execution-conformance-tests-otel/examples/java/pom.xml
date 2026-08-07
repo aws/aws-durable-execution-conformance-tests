@@ -53,31 +53,6 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <version>3.11.0</version>
-                <executions>
-                    <execution>
-                        <id>copy-otel-javaagent-extension</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy</goal>
-                        </goals>
-                        <configuration>
-                            <artifactItems>
-                                <artifactItem>
-                                    <groupId>software.amazon.lambda.durable</groupId>
-                                    <artifactId>aws-durable-execution-sdk-java-plugin-otel</artifactId>
-                                    <version>${durable.sdk.version}</version>
-                                    <outputDirectory>${project.build.outputDirectory}/lib</outputDirectory>
-                                    <destFileName>otel-plugin-extension.jar</destFileName>
-                                </artifactItem>
-                            </artifactItems>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.2</version>
                 <configuration>

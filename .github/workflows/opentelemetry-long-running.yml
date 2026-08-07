@@ -358,6 +358,11 @@ jobs:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           rm -f "$STATE_FILE"
+          parameter_overrides=()
+          if [ "$LANGUAGE" = "java" ]; then
+            : "${JAVA_SDK_VERSION:?Java preparation must set JAVA_SDK_VERSION}"
+            parameter_overrides+=(--parameter-overrides "JavaSdkVersion=$JAVA_SDK_VERSION")
+          fi
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
             --template "$TEST_TEMPLATE" \
             --language "$LANGUAGE" \
@@ -369,13 +374,19 @@ jobs:
             --delay-seconds "$DELAY_SECONDS" \
             --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
             --otel-layer-arn "$ADOT_LAYER_ARN" \
-            --otel-service-name "$OTEL_SERVICE_NAME"
+            --otel-service-name "$OTEL_SERVICE_NAME" \
+            "${parameter_overrides[@]}"
 
       - name: Run short long-running conformance executions
         if: env.PHASE == 'short'
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
+          parameter_overrides=()
+          if [ "$LANGUAGE" = "java" ]; then
+            : "${JAVA_SDK_VERSION:?Java preparation must set JAVA_SDK_VERSION}"
+            parameter_overrides+=(--parameter-overrides "JavaSdkVersion=$JAVA_SDK_VERSION")
+          fi
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
             --template "$TEST_TEMPLATE" \
             --language "$LANGUAGE" \
@@ -393,7 +404,8 @@ jobs:
             --report-file "$REPORT_FILE" \
             --otel-backend xray \
             --check-timeout 900 \
-            --check-interval 15
+            --check-interval 15 \
+            "${parameter_overrides[@]}"
 
       - name: Persist active run state
         if: >-
