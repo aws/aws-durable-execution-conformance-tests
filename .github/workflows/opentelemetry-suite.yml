@@ -7,6 +7,10 @@ on:
         description: Stable language key used in resource and artifact names
         required: true
         type: string
+      resource_prefix:
+        description: Short prefix used by Lambda resources
+        required: true
+        type: string
       conformance_repository:
         description: GitHub repository containing the conformance tests
         required: true
@@ -331,7 +335,7 @@ jobs:
       HISTORY_DIR: /tmp/${{ inputs.language }}-otel-datadog-history
       OTEL_EXPORTER_OTLP_HEADERS: dd-api-key=${{ secrets.DATADOG_API_KEY }}
       REPORT_FILE: /tmp/${{ inputs.language }}-otel-datadog-report
-      TEST_NAME: ${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_NAME: ${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
       TEST_STACK_NAME: conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out conformance tests
