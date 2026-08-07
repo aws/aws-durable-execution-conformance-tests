@@ -367,7 +367,8 @@ def test_datadog_retention_setup_is_optional(
     namespace["main"]()
 
     assert capsys.readouterr().out == (
-        "Skipping Datadog retention setup because DATADOG_APPLICATION_KEY is not configured\n"
+        "Skipping automatic Datadog retention setup because DATADOG_APPLICATION_KEY is not configured; "
+        "a 100% retention filter for service:durable-execution-conformance must already exist\n"
     )
 
 

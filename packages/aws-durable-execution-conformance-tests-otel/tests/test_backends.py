@@ -201,7 +201,15 @@ def test_json_http_client_marks_rate_limits_as_retryable(
                 }
             ),
         ),
-        (DatadogBackend, frozenset({BackendFeatureDisparity.SPAN_LINKS})),
+        (
+            DatadogBackend,
+            frozenset(
+                {
+                    BackendFeatureDisparity.SPAN_LINKS,
+                    BackendFeatureDisparity.UNSET_STATUS,
+                }
+            ),
+        ),
         (Dash0Backend, frozenset()),
         (CollectorBackend, frozenset()),
     ],

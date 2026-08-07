@@ -93,6 +93,43 @@ def test_community_configures_each_supported_runtime(runtime: str) -> None:
     assert "OtelSecretEnvironmentNames" in config.parameter_overrides
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("https://collector.example", "https://collector.example/v1/traces"),
+        ("https://collector.example/v1/traces", "https://collector.example/v1/traces"),
+    ],
+)
+def test_community_javascript_sets_signal_specific_trace_endpoint(
+    endpoint: str,
+    expected: str,
+) -> None:
+    options = ExporterOptions(
+        runtime="javascript",
+        region="us-west-2",
+        endpoint=endpoint,
+        service_name="conformance",
+    )
+
+    config = CommunityExporterProfile().configure(options)
+
+    assert config.environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == endpoint
+    assert config.environment["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == expected
+    assert config.environment["OTEL_METRICS_EXPORTER"] == "none"
+    assert config.parameter_overrides["OtelExporterTracesEndpoint"] == expected
+    assert config.parameter_overrides["OtelMetricsExporter"] == "none"
+
+
+@pytest.mark.parametrize("runtime", ["java", "python"])
+def test_community_non_javascript_runtimes_use_the_base_endpoint(runtime: str) -> None:
+    config = CommunityExporterProfile().configure(_options(runtime))
+
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in config.environment
+    assert "OTEL_METRICS_EXPORTER" not in config.environment
+    assert "OtelExporterTracesEndpoint" not in config.parameter_overrides
+    assert "OtelMetricsExporter" not in config.parameter_overrides
+
+
 def test_community_java_uses_the_versioned_public_layer() -> None:
     config = CommunityExporterProfile().configure(_options("java"))
 

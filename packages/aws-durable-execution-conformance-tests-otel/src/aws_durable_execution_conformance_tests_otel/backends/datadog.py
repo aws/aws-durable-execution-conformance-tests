@@ -197,7 +197,12 @@ def configure_datadog_retention(
 
 class DatadogBackend(PollingBackend):
     name = "datadog"
-    feature_disparities = frozenset({BackendFeatureDisparity.SPAN_LINKS})
+    feature_disparities = frozenset(
+        {
+            BackendFeatureDisparity.SPAN_LINKS,
+            BackendFeatureDisparity.UNSET_STATUS,
+        }
+    )
 
     def __init__(
         self,
