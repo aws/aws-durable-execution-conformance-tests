@@ -1,0 +1,106 @@
+name: Prepare OpenTelemetry conformance example
+description: Set up the conformance harness and prepare one language's handlers
+
+inputs:
+  aws-account-id:
+    description: Expected AWS account ID
+    required: true
+  aws-region:
+    description: AWS region
+    required: true
+  aws-role-arn:
+    description: AWS role assumed by the test job
+    required: true
+  checkout-sdk:
+    description: Whether to check out the SDK
+    required: false
+    default: "true"
+  contract-test-command:
+    description: Optional command that validates the language example contract
+    required: false
+    default: ""
+  prepare-command:
+    description: Optional command that prepares the language handlers
+    required: false
+    default: ""
+  prepare-example:
+    description: Whether handler preparation and SAM setup are needed
+    required: false
+    default: "true"
+  role-session-name:
+    description: AWS role session name
+    required: true
+  sdk-ref:
+    description: Full SDK commit SHA
+    required: true
+  sdk-repository:
+    description: GitHub repository containing the SDK
+    required: true
+  setup-command:
+    description: Optional command that installs or selects the language toolchain
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check out SDK
+      if: inputs.prepare-example == 'true' && inputs.checkout-sdk == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.sdk-repository }}
+        ref: ${{ inputs.sdk-ref }}
+        path: .build/durable-sdk
+
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.14"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+      with:
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        role-session-name: ${{ inputs.role-session-name }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Verify AWS test account
+      shell: bash
+      env:
+        TEST_ACCOUNT_ID: ${{ inputs.aws-account-id }}
+      run: |
+        ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        if [ "$ACTUAL_ACCOUNT_ID" != "$TEST_ACCOUNT_ID" ]; then
+          echo "Expected AWS account $TEST_ACCOUNT_ID but assumed into $ACTUAL_ACCOUNT_ID"
+          exit 1
+        fi
+        echo "Using AWS test account $ACTUAL_ACCOUNT_ID"
+
+    - name: Set up SAM CLI
+      if: inputs.prepare-example == 'true'
+      uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+
+    - name: Install Hatch
+      shell: bash
+      run: python -m pip install hatch==1.16.5
+
+    - name: Run language setup and preparation
+      if: inputs.prepare-example == 'true'
+      shell: bash
+      env:
+        CONTRACT_TEST_COMMAND: ${{ inputs.contract-test-command }}
+        PREPARE_COMMAND: ${{ inputs.prepare-command }}
+        SDK_CHECKOUT: ${{ github.workspace }}/.build/durable-sdk
+        SDK_REF: ${{ inputs.sdk-ref }}
+        SETUP_COMMAND: ${{ inputs.setup-command }}
+      run: |
+        set -euo pipefail
+        if [ -n "$SETUP_COMMAND" ]; then
+          eval "$SETUP_COMMAND"
+        fi
+        if [ -n "$CONTRACT_TEST_COMMAND" ]; then
+          eval "$CONTRACT_TEST_COMMAND"
+        fi
+        if [ -n "$PREPARE_COMMAND" ]; then
+          eval "$PREPARE_COMMAND"
+        fi

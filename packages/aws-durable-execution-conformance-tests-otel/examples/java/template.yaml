@@ -299,7 +299,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-invocation-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
 
   Otel16WaitForConditionFailure:
@@ -597,7 +597,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-execution-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
       Environment:
         Variables:

@@ -271,7 +271,7 @@ secrets.
 
 For Lambda-hosted tests, use the package-level
 [`build-lambda-layer.sh`](collector/build-lambda-layer.sh) with the
-pinned upstream collector release. The Python, Java, and TypeScript S3
+pinned upstream collector release. The Python, Java, and JavaScript S3
 collector workflows publish the custom `awss3exporter` layer, grant
 prefix-scoped S3 access, assert the exported spans, and delete all temporary
 resources without changing the corresponding X-Ray workflows. Keep this

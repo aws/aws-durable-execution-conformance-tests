@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Contract tests for the TypeScript OTel conformance examples."""
+"""Contract tests for the JavaScript OTel conformance examples."""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ from aws_durable_execution_conformance_tests.validate import (
     parse_not_implemented,
 )
 
-EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "typescript"
-ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry.yml"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry-suite.yml"
-LONG_RUNNING_WORKFLOW_PATH = (
-    EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "typescript-opentelemetry-long-running.yml"
-)
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "javascript"
+ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "javascript-opentelemetry.yml"
+ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-orchestrator.yml"
+RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -81,11 +81,11 @@ REQUIRED_OTEL_PARAMETERS = {
 }
 
 
-def test_typescript_example_template_maps_every_otel_requirement() -> None:
+def test_javascript_example_template_maps_every_otel_requirement() -> None:
     assert parse_function_descriptions(str(EXAMPLES_DIR / "template.yaml")) == EXPECTED_MAPPINGS
 
 
-def test_typescript_example_declares_no_execution_plugin_gaps() -> None:
+def test_javascript_example_declares_no_execution_plugin_gaps() -> None:
     assert parse_not_implemented(str(EXAMPLES_DIR / "template.yaml")) == {}
 
 
@@ -97,7 +97,7 @@ def test_wait_interrupted_functions_use_short_execution_timeout() -> None:
     assert resources["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"]["ExecutionTimeout"] == 5
 
 
-def test_typescript_template_deploys_only_the_selected_otel_view() -> None:
+def test_javascript_template_deploys_only_the_selected_otel_view() -> None:
     with (EXAMPLES_DIR / "template.yaml").open(encoding="utf-8") as stream:
         template = yaml.load(stream, Loader=_CfnSafeLoader)
 
@@ -113,7 +113,7 @@ def test_typescript_template_deploys_only_the_selected_otel_view() -> None:
         assert resource["Condition"] == expected_condition
 
 
-def test_typescript_example_template_accepts_runner_parameters() -> None:
+def test_javascript_example_template_accepts_runner_parameters() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
 
     for parameter in REQUIRED_OTEL_PARAMETERS:
@@ -146,7 +146,7 @@ def test_typescript_example_template_accepts_runner_parameters() -> None:
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
 
-def test_typescript_template_handlers_have_sources() -> None:
+def test_javascript_template_handlers_have_sources() -> None:
     template = (EXAMPLES_DIR / "template.yaml").read_text(encoding="utf-8")
     source_dir = EXAMPLES_DIR / "handlers"
     expected_modules = {
@@ -191,7 +191,7 @@ def test_typescript_template_handlers_have_sources() -> None:
     }
 
 
-def test_typescript_examples_build_sdk_packages_from_main() -> None:
+def test_javascript_examples_build_sdk_packages_from_main() -> None:
     package = json.loads((EXAMPLES_DIR / "package.json").read_text(encoding="utf-8"))
     bootstrap = (EXAMPLES_DIR / "scripts" / "install-sdk-main.sh").read_text(encoding="utf-8")
     common = (EXAMPLES_DIR / "handlers" / "common.ts").read_text(encoding="utf-8")
@@ -206,42 +206,43 @@ def test_typescript_examples_build_sdk_packages_from_main() -> None:
     assert 'process.env.OTEL_PLUGIN_MODE === "execution"' in common
 
 
-def test_typescript_workflow_uses_current_adot_distro() -> None:
+def test_javascript_workflow_uses_current_adot_distro() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "AWSOpenTelemetryDistroJs" in workflow
-    assert "aws-observability/aws-otel-js-instrumentation/releases/latest" in workflow
-    assert "npm run install-sdk-main" in workflow
-    assert "--language javascript" in workflow
+    assert "adot_release_repository: aws-observability/aws-otel-js-instrumentation" in entry_workflow
+    assert "npm run install-sdk-main" in entry_workflow
+    assert "language: javascript" in entry_workflow
+    assert "runtime_language" not in entry_workflow
+    assert '--language "$LANGUAGE"' in workflow
     assert '--suite "$OTEL_SUITE"' in workflow
-    assert workflow.count("--otel-service-name durable-execution-conformance") == 3
+    assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == 3
 
 
-def test_typescript_workflow_resolves_main_once_and_propagates_the_commit() -> None:
-    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_javascript_workflows_share_revision_resolution_and_propagate_the_commit() -> None:
+    entry_workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert entry_workflow.count("git ls-remote") == 1
-    assert "refs/heads/main" in entry_workflow
-    assert 'echo "ref=$TYPESCRIPT_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
-    assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("typescript_sdk_ref: ${{ needs.resolve-sdk-main.outputs.typescript_sdk_ref }}") == 6
+    preset = entry_workflow["jobs"]["conformance"]["with"]
+    assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-js"
+    assert preset["checkout_sdk"] is True
+    assert "refs/heads/main" in resolver
+    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
+    assert "uses: ./.github/workflows/opentelemetry-resolve.yml" in orchestrator
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert set(entry_workflow["jobs"]) == {"conformance"}
+    assert "needs" not in entry_workflow["jobs"]["conformance"]
     for workflow in (suite_workflow, long_running_workflow):
-        assert "TYPESCRIPT_SDK_REF: ${{ inputs.typescript_sdk_ref }}" in workflow
-        assert "      typescript_sdk_ref:" in workflow
+        assert "SDK_REF: ${{ inputs.sdk_ref }}" in workflow
+        assert "      sdk_ref:" in workflow
         assert "        required: true" in workflow
-    assert suite_workflow.count("repository: aws/aws-durable-execution-sdk-js") == 2
-    assert suite_workflow.count("ref: ${{ env.TYPESCRIPT_SDK_REF }}") == 2
-    assert suite_workflow.count("SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js") == 2
-    assert long_running_workflow.count("repository: aws/aws-durable-execution-sdk-js") == 1
-    assert long_running_workflow.count("ref: ${{ env.TYPESCRIPT_SDK_REF }}") == 1
-    assert (
-        long_running_workflow.count("SDK_SOURCE_DIR: ${{ github.workspace }}/.build/aws-durable-execution-sdk-js") == 1
-    )
 
 
-def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
+def test_javascript_s3_job_builds_and_queries_the_collector() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "  s3_collector:" in workflow
@@ -251,19 +252,20 @@ def test_typescript_s3_job_builds_and_queries_the_collector() -> None:
     assert "--otel-exporter community" in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
-    assert "npm run install-sdk-main" in workflow
-    assert "--language javascript" in workflow
+    assert "npm run install-sdk-main" in entry_workflow
+    assert "collector_compatible_runtime: nodejs22.x" in entry_workflow
+    assert '--language "$LANGUAGE"' in workflow
 
 
-def test_typescript_workflow_uses_lambda_compatible_function_names() -> None:
+def test_javascript_workflow_uses_lambda_compatible_function_names() -> None:
     for backend in ("xray", "s3"):
         for view, suite in (("inv", "otel-invocation"), ("exec", "otel-execution")):
-            stack_name = f"{STACK_NAME_PREFIX}-typescript-{backend}-{view}"
+            stack_name = f"{STACK_NAME_PREFIX}-javascript-{backend}-{view}"
 
             assert len(f"{stack_name}-{suite}-18-target") <= 64
 
 
-def test_typescript_bundle_uses_the_external_collector_layer() -> None:
+def test_javascript_bundle_uses_the_external_collector_layer() -> None:
     rollup = (EXAMPLES_DIR / "rollup.config.mjs").read_text(encoding="utf-8")
 
     assert "collector-config" not in rollup
