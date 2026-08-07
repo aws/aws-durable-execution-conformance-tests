@@ -2,6 +2,7 @@ name: JavaScript OpenTelemetry
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - .github/actions/prepare-otel-example/**
       - .github/workflows/javascript-opentelemetry.yml
