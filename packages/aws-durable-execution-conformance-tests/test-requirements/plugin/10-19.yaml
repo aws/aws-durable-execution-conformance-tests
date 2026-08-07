@@ -84,6 +84,27 @@ ExpectedLogs:
       isFirstInvocation: false
       updatedOperationsCount: /^[1-9]\d*$/
     count: 1
+  # Inherited base fields on the START info (decoupled — one probe per field
+  # so each red identifies exactly one missing surface). Both invocation-start
+  # records (first AND replay) must carry them. `updatedOperationsCount` is
+  # deliberately probed only via the replay-specific nonzero match above:
+  # before the first invocation nothing has been updated, so whether an SDK
+  # surfaces an empty collection there is an unasserted implementation detail.
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      requestId: /.+/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      operationsCount: /^\d+$/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      executionStartTimestamp: /^\d{4}-/
+    count: 2
   # Suspending invocation-end: first flag read from the END info itself, and
   # the non-terminal status token surface exists (token value SDK-divergent —
   # presence only)
