@@ -72,6 +72,7 @@ ExpectedLogs:
       status: SUCCEEDED
       result: '"task-a"'
       attempt: 1
+      startTimestamp: /^\d{4}-/
       endTimestamp: /^\d{4}-/
     count: 1
   # A successful step never reports an error on the end info

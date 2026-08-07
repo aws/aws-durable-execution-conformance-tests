@@ -115,3 +115,21 @@ ExpectedLogs:
       hook: invocation-end
       executionError: /.+/
     count: 0
+  # Inherited base fields on the END info (decoupled — one probe per field so
+  # each red identifies exactly one missing surface). Both invocation-end
+  # records must carry them.
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      requestId: /.+/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      operationsCount: /^\d+$/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      executionStartTimestamp: /^\d{4}-/
+    count: 2

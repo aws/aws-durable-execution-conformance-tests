@@ -71,6 +71,7 @@ ExpectedLogs:
       inFullMap: true
       executionArn: /^arn:/
       updatedOperationsCount: /^[1-9]\d*$/
+      operationsCount: /^[1-9]\d*$/
     count: 1
   # The step never surfaces a FAILED change
   - match:
