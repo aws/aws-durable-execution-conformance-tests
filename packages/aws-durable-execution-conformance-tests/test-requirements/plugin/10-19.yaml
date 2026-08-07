@@ -83,12 +83,15 @@ ExpectedLogs:
       executionInput: ${INPUT_1}
       updatedOperationsCount: /^[1-9]\d*$/
     count: 1
-  # Suspending invocation-end: first flag read from the END info itself
+  # Suspending invocation-end: first flag read from the END info itself, and
+  # the non-terminal status token surface exists (token value SDK-divergent —
+  # presence only)
   - match:
       plugin: CONFPLUGIN
       hook: invocation-end
       isFirstInvocation: true
       terminal: false
+      status: /.+/
     count: 1
   # Terminal invocation-end, probe 1: first flag from the end info
   - match:

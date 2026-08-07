@@ -140,8 +140,14 @@ ExpectedLogs:
         hook: attempt-start
         id: ${ID1}
         attempt: 2
-  # The attempt info carries the operation-level replay indicator (presence
-  # only — decoupled so this red identifies exactly one missing surface)
+  # The attempt infos carry the operation-level replay indicator on BOTH
+  # hooks (presence only — its value on a retry re-invocation is
+  # SDK-divergent; decoupled so each red identifies exactly one surface)
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-start
+      isReplay: /.*/
+    count: 2
   - match:
       plugin: CONFPLUGIN
       hook: attempt-end

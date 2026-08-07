@@ -81,13 +81,16 @@ ExpectedLogs:
       isReplayingChildren: false
     min_count: 2
   # THE field-surface probe: every branch fn-start record carries the
-  # children-replay indicator key. Its TRUE value depends on service-side
-  # checkpoint timing (the flag is read from the checkpointed context
-  # details) and proved nondeterministic across live runs, so the value is
-  # dumped for observability but only key PRESENCE is asserted.
+  # children-replay indicator key — including branch A's REPLAY re-run. The
+  # minimum of 3 (branch A live + branch A replay + branch B live) cannot be
+  # satisfied by the two live records alone, so the replayed re-run must also
+  # bear the key. The indicator's TRUE value depends on service-side
+  # checkpoint timing (read from the checkpointed context details) and proved
+  # nondeterministic across live runs, so values are dumped for observability
+  # but only key presence is asserted.
   - match:
       plugin: CONFPLUGIN
       hook: fn-start
       subType: /(?i)branch/
       isReplayingChildren: /.*/
-    min_count: 2
+    min_count: 3
