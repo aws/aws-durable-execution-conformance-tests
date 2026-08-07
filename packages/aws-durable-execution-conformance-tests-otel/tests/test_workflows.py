@@ -306,7 +306,7 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
 
     assert datadog["if"] == backend["if"]
     assert datadog["env"]["DATADOG_ACCESS_TOKEN"] == "${{ secrets.DATADOG_ACCESS_TOKEN }}"
-    assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com/v1/traces"
+    assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com"
     assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"
     assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
     assert "--otel-exporter community" in commands

@@ -324,7 +324,7 @@ jobs:
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
     env:
       DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
-      DATADOG_OTLP_ENDPOINT: https://otlp.datadoghq.com/v1/traces
+      DATADOG_OTLP_ENDPOINT: https://otlp.datadoghq.com
       HISTORY_DIR: /tmp/${{ inputs.language }}-otel-datadog-history
       OTEL_EXPORTER_OTLP_HEADERS: dd-api-key=${{ secrets.DATADOG_API_KEY }}
       REPORT_FILE: /tmp/${{ inputs.language }}-otel-datadog-report
