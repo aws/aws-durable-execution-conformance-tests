@@ -16,7 +16,7 @@ Parameters:
     Description: OpenTelemetry view whose functions should be deployed
   OtelLayerArn:
     Type: String
-    Description: AWSOpenTelemetryDistroJava Lambda layer attached with its Java agent disabled
+    Description: AWSOpenTelemetryDistroJava Lambda layer
   OtelCollectorLayerArn:
     Type: String
     Default: ""
@@ -32,11 +32,11 @@ Parameters:
   OtelExecWrapper:
     Type: String
     Default: /opt/otel-instrument
-    Description: Exporter profile wrapper accepted for compatibility and intentionally unused
+    Description: OpenTelemetry Java agent execution wrapper
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelTracesExporter:
     Type: String
     Default: otlp
@@ -57,6 +57,8 @@ Parameters:
 
 Conditions:
   HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+  HasOtelExporterEndpoint: !Not [!Equals [!Ref OtelExporterEndpoint, ""]]
+  HasOtelExporterHeaders: !Not [!Equals [!Ref OtelExporterHeaders, ""]]
   DeployInvocationView: !Or
     - !Equals [!Ref OtelSuite, all]
     - !Equals [!Ref OtelSuite, otel-invocation]
@@ -81,11 +83,21 @@ Globals:
       RetentionPeriodInDays: 1
     Environment:
       Variables:
+        AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper
+        JAVA_TOOL_OPTIONS: "-Dotel.javaagent.extensions=/var/task/lib/otel-plugin-extension.jar"
+        OTEL_JAVAAGENT_EXTENSIONS: /var/task/lib/otel-plugin-extension.jar
         OTEL_SERVICE_NAME: !Ref OtelServiceName
         OTEL_TRACES_EXPORTER: !Ref OtelTracesExporter
-        OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
-        OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
-        OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+        OTEL_EXPORTER_OTLP_ENDPOINT: !If
+          - HasOtelExporterEndpoint
+          - !Ref OtelExporterEndpoint
+          - !Ref "AWS::NoValue"
+        OTEL_EXPORTER_OTLP_HEADERS: !If
+          - HasOtelExporterHeaders
+          - !Ref OtelExporterHeaders
+          - !Ref "AWS::NoValue"
+        OTEL_EXPORTER_OTLP_PROTOCOL: !If [HasOtelExporterEndpoint, http/protobuf, grpc]
+        OTEL_PLUGIN_MODE: invocation
         OTEL_PROPAGATORS: xray
         OTEL_S3_BUCKET: !Ref OtelCollectorBucket
         OTEL_S3_PREFIX: !Ref OtelCollectorPrefix
@@ -287,7 +299,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-invocation-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
 
   Otel16WaitForConditionFailure:
@@ -585,7 +597,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-execution-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
       Environment:
         Variables:

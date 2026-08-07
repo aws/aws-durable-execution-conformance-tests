@@ -10,8 +10,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from aws_durable_execution_conformance_tests.validate import (
+    _CfnSafeLoader,
     discover_test_files,
     load_yaml_file,
 )
@@ -35,11 +37,27 @@ def _requirements(suite_name: str) -> dict[str, str]:
     return discover_test_files(suites[suite_name].root, suite="all")
 
 
-@pytest.mark.parametrize("language", ["java", "python", "typescript"])
+@pytest.mark.parametrize("language", ["java", "javascript", "python"])
 def test_example_templates_do_not_use_top_level_testing_metadata(language: str) -> None:
     template = (EXAMPLES_DIR / language / "template.yaml").read_text(encoding="utf-8")
 
     assert all(not line.startswith("TestingMetadata:") for line in template.splitlines())
+
+
+@pytest.mark.parametrize("language", ["java", "javascript", "python"])
+@pytest.mark.parametrize("template_name", ["template.yaml", "template-long-running.yaml"])
+def test_example_templates_use_a_distinct_resource_service_name(
+    language: str,
+    template_name: str,
+) -> None:
+    with (EXAMPLES_DIR / language / template_name).open(encoding="utf-8") as stream:
+        template = yaml.load(stream, Loader=_CfnSafeLoader)
+
+    assert template["Parameters"]["OtelServiceName"] == {
+        "Type": "String",
+        "Default": "durable-execution-conformance",
+        "Description": "OpenTelemetry resource service name",
+    }
 
 
 def test_extension_exposes_packaged_otel_view_requirements() -> None:
@@ -55,6 +73,30 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
     assert set(_requirements("otel-long-running")) == {
         f"otel-long-running-{case_number}" for case_number in range(1, 5)
     }
+
+
+@pytest.mark.parametrize(
+    "suite_name",
+    ["otel-invocation", "otel-execution", "otel-long-running"],
+)
+def test_requirement_service_names_use_configured_placeholder(
+    suite_name: str,
+) -> None:
+    service_name_assertions = 0
+    for requirement_path in _requirements(suite_name).values():
+        requirement = load_yaml_file(requirement_path)
+        for assertion_key in ("TelemetryAssertions", "ExecutionTelemetryAssertions"):
+            assertions = requirement.get(assertion_key)
+            if not assertions:
+                continue
+            for assertion in assertions["span_assertions"]:
+                expected = assertion["expect"]
+                if "service_name" not in expected:
+                    continue
+                service_name_assertions += 1
+                assert expected["service_name"] == "${SERVICE_NAME}"
+
+    assert service_name_assertions > 0
 
 
 def test_long_running_catalog_uses_configurable_delays() -> None:
@@ -157,7 +199,7 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
                 "expect": {
                     "parent_span_id": None,
                     "status": "OK",
-                    "service_name": "invocation",
+                    "service_name": "${SERVICE_NAME}",
                     "links": [],
                     "kind": "INTERNAL",
                     "attributes": {
@@ -193,7 +235,7 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
         ("ExecutionTelemetryAssertions", 1),
     ],
 )
-def test_long_callback_assertions_accept_typescript_generic_span_names(
+def test_long_callback_assertions_accept_javascript_generic_span_names(
     assertion_key: str,
     callback_count: int,
 ) -> None:
@@ -204,6 +246,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
         "CALLBACK_CONTEXT": "callback-context",
         "CALLBACK1": "callback-1",
         "SUBMITTER_STEP": "submitter-step",
+        "SERVICE_NAME": "durable-execution-conformance",
     }
     for name, value in bindings.items():
         placeholders.bind(name, value)
@@ -220,7 +263,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
         end_time=now,
         kind="INTERNAL",
         status="OK",
-        service_name="invocation",
+        service_name="durable-execution-conformance",
         attributes={
             "durable.execution.arn": bindings["EXECUTION_ARN"],
             "durable.operation.id": bindings["CALLBACK_CONTEXT"],
@@ -235,7 +278,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
         end_time=now,
         kind="INTERNAL",
         status="OK",
-        service_name="invocation",
+        service_name="durable-execution-conformance",
         attributes={
             "durable.execution.arn": bindings["EXECUTION_ARN"],
         },
@@ -250,7 +293,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
             end_time=now,
             kind="INTERNAL",
             status="OK",
-            service_name="invocation",
+            service_name="durable-execution-conformance",
             attributes={
                 "durable.execution.arn": bindings["EXECUTION_ARN"],
                 "durable.operation.id": bindings["CALLBACK1"],
@@ -270,7 +313,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
         end_time=now,
         kind="INTERNAL",
         status="OK",
-        service_name="invocation",
+        service_name="durable-execution-conformance",
         attributes={
             "durable.execution.arn": bindings["EXECUTION_ARN"],
             "durable.operation.id": bindings["SUBMITTER_STEP"],
@@ -290,7 +333,7 @@ def test_long_callback_assertions_accept_typescript_generic_span_names(
         end_time=now,
         kind="INTERNAL",
         status="OK",
-        service_name="invocation",
+        service_name="durable-execution-conformance",
         attributes={
             "durable.execution.arn": bindings["EXECUTION_ARN"],
             "durable.operation.id": bindings["SUBMITTER_STEP"],
@@ -391,7 +434,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     "expect": {
                         "parent_span_id": None,
                         "status": expected_workflow_status,
-                        "service_name": "invocation",
+                        "service_name": "${SERVICE_NAME}",
                         "links": [],
                         "kind": "INTERNAL",
                         "attributes": {
@@ -410,7 +453,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 "OK",
                 "UNSET",
             }
-            assert expected["service_name"] == "invocation"
+            assert expected["service_name"] == "${SERVICE_NAME}"
             if "links" not in expected:
                 assert case_number == 15
                 assert selected_name == "otel-interrupted-wait"
@@ -490,7 +533,10 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
 
         assert "${/^(?:OK|UNSET)$/}" not in telemetry_json
         assert '"*"' not in telemetry_json
-        assert telemetry_placeholders <= history_placeholders | {"EXECUTION_ARN"}
+        assert telemetry_placeholders <= history_placeholders | {
+            "EXECUTION_ARN",
+            "SERVICE_NAME",
+        }
 
 
 def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -> None:
@@ -619,6 +665,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
         assert "${/^(?:OK|UNSET)$/}" not in telemetry_json
         assert telemetry_placeholders <= history_placeholders | {
             "EXECUTION_ARN",
+            "SERVICE_NAME",
             "TARGET_EXECUTION_ARN",
         }
 

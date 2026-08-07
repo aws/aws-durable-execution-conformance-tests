@@ -1,0 +1,451 @@
+name: OpenTelemetry Long Running
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: Stable language key used in resource and artifact names
+        required: true
+        type: string
+      resource_prefix:
+        description: Short prefix used by long-running Lambda resources
+        required: true
+        type: string
+      conformance_repository:
+        description: GitHub repository containing the conformance tests
+        required: true
+        type: string
+      sdk_repository:
+        description: GitHub repository containing the language SDK
+        required: true
+        type: string
+      sdk_ref:
+        description: Full SDK commit SHA
+        required: true
+        type: string
+      conformance_test_sha:
+        description: Conformance test commit SHA to run
+        required: true
+        type: string
+      checkout_sdk:
+        description: Check out the SDK before preparing handlers
+        required: false
+        default: true
+        type: boolean
+      setup_command:
+        description: Shell command that installs or selects the language toolchain
+        required: false
+        default: ""
+        type: string
+      prepare_command:
+        description: Shell command that prepares the language handlers
+        required: false
+        default: ""
+        type: string
+      contract_test_command:
+        description: Optional shell command that validates the language example contract
+        required: false
+        default: ""
+        type: string
+      adot_release_repository:
+        description: GitHub repository whose latest release lists regional ADOT layers
+        required: false
+        default: ""
+        type: string
+      adot_layer_arn:
+        description: Optional fixed ADOT layer ARN
+        required: false
+        default: ""
+        type: string
+      phase:
+        description: Workflow phase
+        required: false
+        default: short
+        type: string
+      view:
+        description: OTel view to verify
+        required: true
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "60"
+        type: string
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
+    outputs:
+      check_status:
+        description: Terminal or pending status from a deferred check
+        value: ${{ jobs.run.outputs.check_status }}
+      rollover_ready:
+        description: Whether every deferred execution reached a terminal state
+        value: ${{ jobs.run.outputs.rollover_ready }}
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.language }}-otel-long-running-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
+  PHASE: ${{ inputs.phase }}
+  DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
+  CONFORMANCE_TEST_SHA: ${{ inputs.conformance_test_sha }}
+  EXAMPLES_DIR: packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}
+  LANGUAGE: ${{ inputs.language }}
+  STATE_FILE: /tmp/${{ inputs.language }}-otel-long-running-state.json
+  RESULT_FILE: /tmp/${{ inputs.language }}-otel-long-running-result.json
+  HISTORY_DIR: /tmp/${{ inputs.language }}-otel-long-running-history
+  OTEL_SERVICE_NAME: durable-execution-conformance
+  PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
+  PYTHONUNBUFFERED: "1"
+  REPORT_FILE: /tmp/${{ inputs.language }}-otel-long-running-report
+  SDK_REF: ${{ inputs.sdk_ref }}
+  TEST_TEMPLATE: packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}/template-long-running.yaml
+
+jobs:
+  run:
+    outputs:
+      check_status: ${{ steps.check.outputs.status }}
+      rollover_ready: ${{ steps.check.outputs.rollover_ready }}
+    name: >-
+      ${{ format(
+        '{0} - {1}',
+        inputs.view == 'invocation' && 'Invocation' || 'Execution',
+        inputs.phase == 'short' && 'Short'
+          || (inputs.phase == 'auto' && 'Daily'
+            || (inputs.phase == 'launch' && 'Launch' || 'Check'))
+      ) }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CURRENT_CHECKER: ${{ github.workspace }}/.build/workflow-support
+      OTEL_VIEW: ${{ inputs.view }}
+      STATE_ARTIFACT: ${{ inputs.language }}-otel-long-running-${{ inputs.view }}-${{ inputs.aws_region || 'us-west-2' }}-state
+      TEST_NAME: ${{ inputs.resource_prefix }}-olr-${{ inputs.view == 'invocation' && 'i' || 'e' }}${{ inputs.phase == 'short' && '-short' || '' }}
+    steps:
+      - name: Find active run state
+        if: env.PHASE != 'short'
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact_id=$(
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100" \
+              --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty'
+          )
+          phase="$PHASE"
+          if [ "$phase" = "auto" ]; then
+            if [ -n "$artifact_id" ]; then
+              phase=check
+            else
+              phase=launch
+            fi
+          fi
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          if [ "$phase" = "launch" ]; then
+            if [ -n "$artifact_id" ]; then
+              echo "An active $LANGUAGE $OTEL_VIEW long-running OTel run already exists (artifact $artifact_id)."
+              exit 1
+            fi
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$artifact_id" ]; then
+            echo "No active $LANGUAGE $OTEL_VIEW long-running OTel run."
+            exit 1
+          fi
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+            > "$RUNNER_TEMP/otel-long-running-state.zip"
+          unzip -q "$RUNNER_TEMP/otel-long-running-state.zip" -d "$RUNNER_TEMP/state"
+          mv "$RUNNER_TEMP/state/$LANGUAGE-otel-long-running-state.json" "$STATE_FILE"
+          source_revision=$(jq -r '.source_revision // empty' "$STATE_FILE")
+          if [ -z "$source_revision" ]; then
+            echo "Active $LANGUAGE $OTEL_VIEW state does not record its launch revision."
+            exit 1
+          fi
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
+          echo "active=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out conformance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}
+
+      - name: Check out workflow support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .build/workflow-support
+
+      - name: Prepare conformance example
+        if: env.PHASE == 'short' || steps.state.outputs.active == 'true'
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          prepare-example: ${{ env.PHASE == 'short' || steps.state.outputs.phase == 'launch' }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-long
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Check long-running conformance executions
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
+        id: check
+        run: |
+          set +e
+          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running check \
+            --state-file "$STATE_FILE" \
+            --result-file "$RESULT_FILE" \
+            --history-dir "$HISTORY_DIR" \
+            --report-file "$REPORT_FILE" \
+            --otel-backend xray \
+            --no-cleanup
+          exit_code=$?
+          set -e
+          if [ ! -f "$RESULT_FILE" ]; then
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            echo "state_changed=false" >> "$GITHUB_OUTPUT"
+            echo "rollover_ready=false" >> "$GITHUB_OUTPUT"
+            echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status=$(jq -r .status "$RESULT_FILE")
+          rollover_ready=false
+          if jq -e 'has("rollover_ready")' "$RESULT_FILE" > /dev/null; then
+            rollover_ready=$(jq -r .rollover_ready "$RESULT_FILE")
+          else
+            if [ "$status" = "passed" ] || [ "$status" = "failed" ]; then
+              history_files=()
+              histories_complete=true
+              while IFS= read -r description_id; do
+                history_file="$HISTORY_DIR/$description_id.json"
+                if [ ! -f "$history_file" ]; then
+                  histories_complete=false
+                  break
+                fi
+                history_files+=("$history_file")
+              done < <(jq -r '.executions[].description_id' "$STATE_FILE")
+              if [ "$histories_complete" = "true" ] && [ "${#history_files[@]}" -gt 0 ]; then
+                rollover_ready=$(
+                  jq -s -r '
+                    def is_terminal:
+                      (.ExecutionStatus // "") as $status
+                      | ((["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] | index($status)) != null)
+                        or any((.Events // .events // [])[]?;
+                          .EventType as $event_type
+                          | (["ExecutionSucceeded", "ExecutionFailed", "ExecutionTimedOut",
+                              "ExecutionCancelled"] | index($event_type)) != null);
+                    all(.[]; is_terminal)
+                  ' "${history_files[@]}"
+                )
+              fi
+            fi
+            if [ "$rollover_ready" != "true" ] && \
+              { [ "$status" = "pending" ] || [ "$status" = "failed" ]; }; then
+              echo "Migrating incomplete legacy result with the current callback-aware checker"
+              rm -f "$RESULT_FILE"
+              set +e
+              (
+                cd "$CURRENT_CHECKER"
+                hatch run python -m aws_durable_execution_conformance_tests_otel.long_running check \
+                  --state-file "$STATE_FILE" \
+                  --result-file "$RESULT_FILE" \
+                  --history-dir "$HISTORY_DIR" \
+                  --report-file "$REPORT_FILE" \
+                  --otel-backend xray \
+                  --no-cleanup
+              )
+              exit_code=$?
+              set -e
+              if [ ! -f "$RESULT_FILE" ]; then
+                echo "status=error" >> "$GITHUB_OUTPUT"
+                echo "state_changed=false" >> "$GITHUB_OUTPUT"
+                echo "rollover_ready=false" >> "$GITHUB_OUTPUT"
+                echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              status=$(jq -r .status "$RESULT_FILE")
+              rollover_ready=$(jq -r '.rollover_ready // false' "$RESULT_FILE")
+            fi
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "state_changed=$(jq -r .state_changed "$RESULT_FILE")" >> "$GITHUB_OUTPUT"
+          echo "rollover_ready=$rollover_ready" >> "$GITHUB_OUTPUT"
+          echo "check_exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Check out next conformance tests
+        if: steps.check.outputs.rollover_ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.conformance_repository }}
+          ref: ${{ inputs.conformance_test_sha }}
+          clean: false
+
+      - name: Prepare next conformance example
+        if: steps.check.outputs.rollover_ready == 'true'
+        uses: ./.build/workflow-support/.github/actions/prepare-otel-example
+        with:
+          aws-account-id: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          checkout-sdk: ${{ inputs.checkout_sdk }}
+          contract-test-command: ${{ inputs.contract_test_command }}
+          prepare-command: ${{ inputs.prepare_command }}
+          setup-command: ${{ inputs.setup_command }}
+          role-session-name: durableConformance-${{ inputs.language }}-long-next
+          sdk-ref: ${{ inputs.sdk_ref }}
+          sdk-repository: ${{ inputs.sdk_repository }}
+
+      - name: Resolve ADOT layer
+        if: >-
+          env.PHASE == 'short' ||
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        env:
+          CONFIGURED_ADOT_LAYER_ARN: ${{ inputs.adot_layer_arn }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
+        run: |
+          ADOT_LAYER_ARN="$CONFIGURED_ADOT_LAYER_ARN"
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            ADOT_LAYER_ARN=$(
+              gh api "repos/$RELEASE_REPOSITORY/releases/latest" \
+                --jq .body |
+                awk -F '|' -v region="$AWS_REGION" '
+                  $2 ~ "^[[:space:]]*" region "[[:space:]]*$" {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                    print $3
+                    exit
+                  }
+                '
+            )
+          fi
+          if [ -z "$ADOT_LAYER_ARN" ]; then
+            echo "Could not resolve an ADOT layer for $LANGUAGE in $AWS_REGION"
+            exit 1
+          fi
+          aws lambda get-layer-version-by-arn \
+            --arn "$ADOT_LAYER_ARN" \
+            --region "$AWS_REGION" \
+            --query LayerVersionArn \
+            --output text > /dev/null
+          echo "Using ADOT layer $ADOT_LAYER_ARN"
+          echo "ADOT_LAYER_ARN=$ADOT_LAYER_ARN" >> "$GITHUB_ENV"
+
+      - name: Launch long-running conformance executions
+        if: >-
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        id: launch
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          rm -f "$STATE_FILE"
+          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running launch \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --view "$OTEL_VIEW" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --state-file "$STATE_FILE" \
+            --source-revision "$CONFORMANCE_TEST_SHA" \
+            --delay-seconds "$DELAY_SECONDS" \
+            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME"
+
+      - name: Run short long-running conformance executions
+        if: env.PHASE == 'short'
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \
+            --template "$TEST_TEMPLATE" \
+            --language "$LANGUAGE" \
+            --view "$OTEL_VIEW" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --state-file "$STATE_FILE" \
+            --source-revision "$CONFORMANCE_TEST_SHA" \
+            --delay-seconds "$DELAY_SECONDS" \
+            --lambda-execution-role-arn "$LAMBDA_EXECUTION_ROLE_ARN" \
+            --otel-layer-arn "$ADOT_LAYER_ARN" \
+            --otel-service-name "$OTEL_SERVICE_NAME" \
+            --result-file "$RESULT_FILE" \
+            --history-dir "$HISTORY_DIR" \
+            --report-file "$REPORT_FILE" \
+            --otel-backend xray \
+            --check-timeout 900 \
+            --check-interval 15
+
+      - name: Persist active run state
+        if: >-
+          steps.state.outputs.phase == 'launch' ||
+          steps.check.outputs.rollover_ready == 'true'
+        id: persist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.STATE_ARTIFACT }}
+          path: ${{ env.STATE_FILE }}
+          retention-days: 5
+
+      - name: Persist updated callback state
+        if: steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.STATE_ARTIFACT }}
+          path: ${{ env.STATE_FILE }}
+          retention-days: 5
+
+      - name: Upload reports and histories
+        if: >-
+          always() && (env.PHASE == 'short' ||
+          (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.language }}-otel-long-running-${{ inputs.view }}-results-${{ github.run_id }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
+
+      - name: Retire previous state artifact
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.state.outputs.artifact_id }}
+          STATE_CHANGED: ${{ steps.check.outputs.state_changed }}
+          ROLLOVER_READY: ${{ steps.check.outputs.rollover_ready }}
+        run: |
+          if [ "$STATE_CHANGED" = "true" ] || [ "$ROLLOVER_READY" = "true" ]; then
+            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
+          fi
+
+      - name: Enforce terminal result
+        if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true' && always()
+        env:
+          STATUS: ${{ steps.check.outputs.status }}
+          CHECK_EXIT_CODE: ${{ steps.check.outputs.check_exit_code }}
+        run: |
+          if [ "$CHECK_EXIT_CODE" != "0" ] || \
+            [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
+            exit 1
+          fi

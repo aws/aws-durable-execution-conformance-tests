@@ -36,7 +36,7 @@ Parameters:
   OtelServiceName:
     Type: String
     Default: durable-execution-conformance
-    Description: OpenTelemetry service name used to find the exported trace
+    Description: OpenTelemetry resource service name
   OtelTracesExporter:
     Type: String
     Default: otlp
@@ -87,6 +87,7 @@ Globals:
         OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+        OTEL_PLUGIN_MODE: invocation
         OTEL_PROPAGATORS: xray
         OTEL_S3_BUCKET: !Ref OtelCollectorBucket
         OTEL_S3_PREFIX: !Ref OtelCollectorPrefix
@@ -321,7 +322,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-invocation-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
 
   Otel16WaitForConditionFailure:
@@ -661,7 +662,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-otel-execution-15"
       Role: !Ref LambdaExecutionRoleArn
       DurableConfig:
-        ExecutionTimeout: 5
+        ExecutionTimeout: 15
         RetentionPeriodInDays: 1
       Environment:
         Variables:

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: TypeScript SDK examples for long-running durable execution OTel conformance
+Description: JavaScript SDK examples for long-running durable execution OTel conformance
 
 Parameters:
   LambdaExecutionRoleArn:
@@ -15,8 +15,8 @@ Parameters:
     Description: Lambda execution wrapper supplied by the exporter profile
   OtelServiceName:
     Type: String
-    Default: invocation
-    Description: OpenTelemetry service name used to find the exported trace
+    Default: durable-execution-conformance
+    Description: OpenTelemetry resource service name
   OtelView:
     Type: String
     Default: invocation

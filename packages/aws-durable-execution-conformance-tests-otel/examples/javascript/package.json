@@ -1,5 +1,5 @@
 {
-  "name": "@aws/durable-execution-conformance-tests-otel-typescript-examples",
+  "name": "@aws/durable-execution-conformance-tests-otel-javascript-examples",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",

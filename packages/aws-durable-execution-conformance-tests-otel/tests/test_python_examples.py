@@ -18,8 +18,10 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "python"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry.yml"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-suite.yml"
-LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "python-opentelemetry-long-running.yml"
+ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-orchestrator.yml"
+RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 EXPECTED_MAPPINGS = [
     ("Otel1Success", "otel-invocation-1"),
@@ -103,10 +105,11 @@ def test_python_template_deploys_only_the_selected_otel_view() -> None:
     for logical_id, resource in template["Resources"].items():
         expected_condition = "DeployExecutionView" if logical_id.startswith("OtelExecution") else "DeployInvocationView"
         assert resource["Condition"] == expected_condition
-    assert template["Resources"]["OtelExecution15WaitInterrupted"]["Properties"]["DurableConfig"] == {
-        "ExecutionTimeout": 5,
-        "RetentionPeriodInDays": 1,
-    }
+    for logical_id in ("Otel15WaitInterrupted", "OtelExecution15WaitInterrupted"):
+        assert template["Resources"][logical_id]["Properties"]["DurableConfig"] == {
+            "ExecutionTimeout": 15,
+            "RetentionPeriodInDays": 1,
+        }
 
 
 def test_python_example_template_accepts_runner_parameters() -> None:
@@ -129,12 +132,13 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${Otel18InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution11InvokeTarget.Arn}:$LATEST"' in template
     assert 'OTEL_INVOKE_TARGET_FUNCTION_NAME: !Sub "${OtelExecution18InvokeTarget.Arn}:$LATEST"' in template
-    assert "ExecutionTimeout: 5" in template
+    assert template.count("        ExecutionTimeout: 15") == 2
     assert "HasOtelCollectorLayer: !Not" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template
     assert "OTEL_S3_PREFIX: !Ref OtelCollectorPrefix" in template
     assert "/opt/collector-config/config-s3.yaml" in template
+    assert template.count("        OTEL_PLUGIN_MODE: invocation") == 1
     assert template.count("          OTEL_PLUGIN_MODE: execution") == len(EXECUTION_CASES) + 2
 
     makefile = (EXAMPLES_DIR / "src" / "Makefile").read_text(encoding="utf-8")
@@ -207,12 +211,15 @@ def test_python_examples_install_both_sdk_packages_from_one_resolved_main_commit
     common = (EXAMPLES_DIR / "src" / "common.py").read_text(encoding="utf-8")
     assert "ExecutionOtelPlugin" in common
     assert "InvocationOtelPlugin" in common
+    assert "OtelPluginConfig()" in common
     assert 'os.environ.get("OTEL_PLUGIN_MODE") == "execution"' in common
 
 
 def test_python_workflow_resolves_and_propagates_test_commits() -> None:
     entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
+    orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
@@ -224,16 +231,20 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
             "required": False,
             "type": "string",
         }
-    assert "github.repository == job.workflow_repository && job.workflow_sha" in entry_workflow
-    assert "|| 'main'" in entry_workflow
-    assert "REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in entry_workflow
-    assert entry_workflow.count("git ls-remote") == 2
-    assert "refs/heads/main" in entry_workflow
-    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in entry_workflow
-    assert 'echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
-    assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}") == 4
-    assert entry_workflow.count("python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}") == 4
+    preset = entry_workflow_config["jobs"]["conformance"]["with"]
+    assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-python"
+    assert preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
+    assert preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
+    assert "github.repository == inputs.conformance_repository && github.sha" in resolver
+    assert "|| 'main'" in resolver
+    assert resolver.count("git ls-remote") == 2
+    assert "refs/heads/main" in resolver
+    assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in resolver
+    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
+    assert "uses: ./.github/workflows/opentelemetry-resolve.yml" in orchestrator
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert set(entry_workflow_config["jobs"]) == {"conformance"}
+    assert "needs" not in entry_workflow_config["jobs"]["conformance"]
     for secret in (
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
@@ -251,30 +262,38 @@ def test_python_workflow_resolves_and_propagates_test_commits() -> None:
         assert retired_secret not in suite_workflow
         assert retired_secret not in long_running_workflow
     for workflow in (suite_workflow, long_running_workflow):
-        assert "PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}" in workflow
+        assert "PYTHON_SDK_REF: ${{ inputs.sdk_ref }}" in workflow
         assert 'PYTHONUNBUFFERED: "1"' in workflow
         assert "      conformance_test_sha:" in workflow
-        assert "      python_sdk_ref:" in workflow
+        assert "      sdk_ref:" in workflow
         assert "        required: true" in workflow
 
 
-def test_python_workflow_validates_reusable_inputs() -> None:
-    workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
-    resolve_steps = workflow["jobs"]["resolve-sdk-main"]["steps"]
+def test_python_workflow_uses_the_resource_service_name() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    phase_validation = next(step for step in resolve_steps if step.get("name") == "Validate phase")
+    assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == 3
+
+
+def test_python_workflow_validates_reusable_inputs() -> None:
+    workflow = yaml.safe_load(RESOLVER_PATH.read_text(encoding="utf-8"))
+    resolve_steps = workflow["jobs"]["resolve"]["steps"]
+
+    phase_validation = next(step for step in resolve_steps if step.get("name") == "Validate workflow inputs")
     assert 'case "$REQUESTED_PHASE" in' in phase_validation["run"]
     assert "short|launch|check)" in phase_validation["run"]
+    assert '"conformance_repository:$CONFORMANCE_REPOSITORY"' in phase_validation["run"]
+    assert '"sdk_repository:$SDK_REPOSITORY"' in phase_validation["run"]
 
-    sdk_resolution = next(step for step in resolve_steps if step.get("name") == "Resolve Python SDK commit")
-    assert '[[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]' in sdk_resolution["run"]
-    assert "python_sdk_ref must be a full 40-character commit SHA" in sdk_resolution["run"]
+    sdk_resolution = next(step for step in resolve_steps if step.get("name") == "Resolve SDK commit")
+    assert '[[ ! "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]' in sdk_resolution["run"]
+    assert "sdk_ref must resolve to a full 40-character commit SHA" in sdk_resolution["run"]
 
     conformance_resolution = next(
         step for step in resolve_steps if step.get("name") == "Resolve conformance test commit"
     )
     assert 'CONFORMANCE_TEST_REF="refs/heads/$CONFORMANCE_TEST_REF"' in conformance_resolution["run"]
-    assert "aws/aws-durable-execution-conformance-tests.git" in conformance_resolution["run"]
+    assert '"https://github.com/$CONFORMANCE_REPOSITORY.git"' in conformance_resolution["run"]
     assert 'echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"' in conformance_resolution["run"]
 
 
@@ -286,26 +305,29 @@ def test_python_workflows_check_out_the_resolved_conformance_revision() -> None:
         step
         for job in suite_workflow["jobs"].values()
         for step in job["steps"]
-        if step.get("name") == "Check out repository"
+        if step.get("name") == "Check out conformance tests"
     ]
-    assert len(suite_checkouts) == 4
+    assert len(suite_checkouts) == 3
     for checkout in suite_checkouts:
-        assert checkout["with"]["repository"] == "${{ job.workflow_repository }}"
+        assert checkout["with"]["repository"] == "${{ inputs.conformance_repository }}"
         assert checkout["with"]["ref"] == "${{ inputs.conformance_test_sha }}"
 
     long_running_checkout = next(
-        step for step in long_running_workflow["jobs"]["run"]["steps"] if step.get("name") == "Check out repository"
+        step
+        for step in long_running_workflow["jobs"]["run"]["steps"]
+        if step.get("name") == "Check out conformance tests"
     )
-    assert long_running_checkout["with"]["repository"] == "${{ job.workflow_repository }}"
+    assert long_running_checkout["with"]["repository"] == "${{ inputs.conformance_repository }}"
     assert long_running_checkout["with"]["ref"] == (
         "${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}"
     )
-    assert '--source-revision "$CONFORMANCE_REF"' in "\n".join(
+    assert '--source-revision "$CONFORMANCE_TEST_SHA"' in "\n".join(
         step.get("run", "") for step in long_running_workflow["jobs"]["run"]["steps"]
     )
 
 
 def test_python_s3_job_builds_and_queries_the_collector() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "  collector:" not in workflow
@@ -316,10 +338,12 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert COLLECTOR_BUILD_SCRIPT in workflow
-    assert "--compatible-runtimes python3.13" in workflow
-    assert "--language python" in workflow
+    assert "collector_compatible_runtime: python3.13" in entry_workflow
+    assert "collector_otlp_endpoint: http://localhost:4318" in entry_workflow
+    assert '--compatible-runtimes "${{ inputs.collector_compatible_runtime }}"' in workflow
+    assert '--language "$LANGUAGE"' in workflow
     assert "--otel-exporter community" in workflow
-    assert "--otel-endpoint http://localhost:4318" in workflow
+    assert '--otel-endpoint "${{ inputs.collector_otlp_endpoint }}"' in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow

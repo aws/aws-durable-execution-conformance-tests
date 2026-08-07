@@ -79,6 +79,7 @@ durable-execution-conformance \
   --parameter-overrides LambdaExecutionRoleArn=arn:aws:iam::123456789012:role/example \
   --otel-exporter adot \
   --otel-layer-arn "$ADOT_LAYER_ARN" \
+  --otel-service-name durable-execution-conformance \
   --otel-backend xray
 ```
 

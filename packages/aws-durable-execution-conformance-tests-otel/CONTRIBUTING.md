@@ -91,7 +91,7 @@ TelemetryAssertions:
         durable.operation.type: step
     expect:
       status: OK
-      service_name: conformance
+      service_name: ${SERVICE_NAME}
       parent:
         name: durable execution
         attributes:
@@ -108,6 +108,10 @@ backend response, for example by selecting spans with
 each `expect.attributes` mapping. Attributes from ADOT, Lambda resource
 detection, and telemetry backends remain outside that prefix and do not make
 the requirement provider-specific.
+
+The OTel validator binds `${SERVICE_NAME}` to the configured
+`--otel-service-name`. Use this placeholder for `expect.service_name` so a
+requirement remains independent of the deployed resource name.
 
 Both `select` and `expect` can use any canonical span property: `trace_id`,
 `span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,
@@ -267,7 +271,7 @@ secrets.
 
 For Lambda-hosted tests, use the package-level
 [`build-lambda-layer.sh`](collector/build-lambda-layer.sh) with the
-pinned upstream collector release. The Python, Java, and TypeScript S3
+pinned upstream collector release. The Python, Java, and JavaScript S3
 collector workflows publish the custom `awss3exporter` layer, grant
 prefix-scoped S3 access, assert the exported spans, and delete all temporary
 resources without changing the corresponding X-Ray workflows. Keep this
