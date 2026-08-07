@@ -17,6 +17,7 @@ class ExporterOptions:
     region: str
     endpoint: str | None
     service_name: str
+    backend: str | None = None
     layer_arn: str | None = None
 
 
@@ -34,14 +35,6 @@ _RUNTIME_ALIASES = {
     "nodejs": "javascript",
     "py": "python",
 }
-
-
-def _otlp_signal_endpoint(endpoint: str, signal: str) -> str:
-    base_endpoint = endpoint.rstrip("/")
-    signal_path = f"/v1/{signal}"
-    if base_endpoint.endswith(signal_path):
-        return base_endpoint
-    return f"{base_endpoint}{signal_path}"
 
 
 def normalize_runtime(runtime: str) -> str:
@@ -131,8 +124,7 @@ class CommunityExporterProfile:
             "OTEL_EXPORTER_OTLP_ENDPOINT": options.endpoint,
             "OTEL_TRACES_EXPORTER": "otlp",
         }
-        if runtime == "javascript":
-            environment["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = _otlp_signal_endpoint(options.endpoint, "traces")
+        if runtime == "javascript" and options.backend == "datadog":
             environment["OTEL_METRICS_EXPORTER"] = "none"
         secret_names = ("OTEL_EXPORTER_OTLP_HEADERS",)
         return ExporterConfiguration(
@@ -158,8 +150,6 @@ def _parameters(
     }
     if endpoint := environment.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         parameters["OtelExporterEndpoint"] = endpoint
-    if traces_endpoint := environment.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
-        parameters["OtelExporterTracesEndpoint"] = traces_endpoint
     if metrics_exporter := environment.get("OTEL_METRICS_EXPORTER"):
         parameters["OtelMetricsExporter"] = metrics_exporter
     if secret_names:

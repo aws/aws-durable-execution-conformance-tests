@@ -25,8 +25,8 @@ type Workflow<TResult> = (
 
 const plugin =
   process.env.OTEL_PLUGIN_MODE === "execution"
-    ? new ExecutionOtelPlugin({})
-    : new InvocationOtelPlugin({});
+    ? new ExecutionOtelPlugin({ useDefaultTracerProvider: true })
+    : new InvocationOtelPlugin({ useDefaultTracerProvider: true });
 
 export function createScenarioHandler<TResult>(
   expectedScenario: string,

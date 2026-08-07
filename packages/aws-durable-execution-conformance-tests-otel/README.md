@@ -161,9 +161,9 @@ by this query, so the backend does not need a second full-trace search.
 
 The shared Java, Python, and JavaScript suite workflow uses the generic
 `https://otlp.datadoghq.com` OTLP base endpoint and runs Datadog beside X-Ray
-and Dash0. The JavaScript community exporter also receives the signal-specific
-`https://otlp.datadoghq.com/v1/traces` endpoint because its Lambda layer does
-not append that path to the base endpoint. The workflow reads the API access
+and Dash0. The JavaScript examples reuse the Lambda layer's global tracer
+provider so endpoint and authentication settings are applied once instead of
+creating a second unauthenticated exporter. The workflow reads the API access
 token from `DATADOG_ACCESS_TOKEN` and the intake API key from
 `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
 
