@@ -13,8 +13,11 @@ from aws_durable_execution_conformance_tests_otel.backends.datadog import (
 def main() -> None:
     api_key = os.environ.get("DATADOG_API_KEY")
     application_key = os.environ.get("DATADOG_APPLICATION_KEY")
-    if not api_key or not application_key:
-        raise SystemExit("DATADOG_API_KEY and DATADOG_APPLICATION_KEY are required")
+    if not api_key:
+        raise SystemExit("DATADOG_API_KEY is required")
+    if not application_key:
+        print("Skipping Datadog retention setup because DATADOG_APPLICATION_KEY is not configured")
+        return
 
     site = os.environ.get("DD_SITE", "datadoghq.com")
     action = configure_datadog_retention(
