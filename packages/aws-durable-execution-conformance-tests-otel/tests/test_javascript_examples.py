@@ -76,6 +76,8 @@ REQUIRED_OTEL_PARAMETERS = {
     "OtelServiceName",
     "OtelTracesExporter",
     "OtelExporterEndpoint",
+    "OtelExporterTracesEndpoint",
+    "OtelMetricsExporter",
     "OtelExporterHeaders",
     "OtelSecretEnvironmentNames",
 }
@@ -138,6 +140,10 @@ def test_javascript_example_template_accepts_runner_parameters() -> None:
     assert "AWS_LAMBDA_EXEC_WRAPPER: !Ref OtelExecWrapper" in template
     assert "Default: /opt/otel-instrument" in template
     assert "HasOtelCollectorLayer: !Not" in template
+    assert "HasOtelExporterTracesEndpoint: !Not" in template
+    assert "HasOtelMetricsExporter: !Not" in template
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: !If" in template
+    assert "OTEL_METRICS_EXPORTER: !If" in template
     assert '!Ref "AWS::NoValue"' in template
     assert "/opt/collector-config/config-s3.yaml" in template
     assert "OTEL_S3_BUCKET: !Ref OtelCollectorBucket" in template

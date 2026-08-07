@@ -107,6 +107,10 @@ Credentials are read only from the environment:
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
 
+When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
+already have a 100% APM retention filter for
+`service:durable-execution-conformance`.
+
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
 for the template parameter contract and the prototype OpenTelemetry Collector

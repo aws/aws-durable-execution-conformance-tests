@@ -6,6 +6,7 @@ import os
 
 from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     DATADOG_RETENTION_FILTER_NAME,
+    DATADOG_SERVICE_NAME,
     configure_datadog_retention,
 )
 
@@ -16,7 +17,10 @@ def main() -> None:
     if not api_key:
         raise SystemExit("DATADOG_API_KEY is required")
     if not application_key:
-        print("Skipping Datadog retention setup because DATADOG_APPLICATION_KEY is not configured")
+        print(
+            "Skipping automatic Datadog retention setup because DATADOG_APPLICATION_KEY is not configured; "
+            f"a 100% retention filter for service:{DATADOG_SERVICE_NAME} must already exist"
+        )
         return
 
     site = os.environ.get("DD_SITE", "datadoghq.com")

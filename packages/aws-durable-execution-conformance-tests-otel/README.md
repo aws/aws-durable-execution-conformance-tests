@@ -159,17 +159,20 @@ durable execution ARN, follows cursor pagination, and accumulates newly indexed
 spans across polling attempts. Conformance spans carry the execution ARN used
 by this query, so the backend does not need a second full-trace search.
 
-The shared Java, Python, and JavaScript suite workflow sends OTLP/HTTP protobuf
-traces to `https://otlp.datadoghq.com/v1/traces` and runs Datadog beside X-Ray
-and Dash0. It reads the API access token from `DATADOG_ACCESS_TOKEN` and the
-intake API key from `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP
-header. Before running a suite, the workflow uses `DATADOG_API_KEY` and
-the optional `DATADOG_APPLICATION_KEY` to create or update a 100% APM retention
-filter for `service:durable-execution-conformance`. Without the application key,
-the workflow skips filter configuration and uses the account's existing
-retention settings. Complete retention is recommended because the suites
-validate every plugin span and may not pass against a sampled or partially
-indexed trace.
+The shared Java, Python, and JavaScript suite workflow uses the generic
+`https://otlp.datadoghq.com` OTLP base endpoint and runs Datadog beside X-Ray
+and Dash0. The JavaScript community exporter also receives the signal-specific
+`https://otlp.datadoghq.com/v1/traces` endpoint because its Lambda layer does
+not append that path to the base endpoint. The workflow reads the API access
+token from `DATADOG_ACCESS_TOKEN` and the intake API key from
+`DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
+
+Before running a suite, the workflow uses `DATADOG_API_KEY` and the optional
+`DATADOG_APPLICATION_KEY` to create or update a 100% APM retention filter for
+`service:durable-execution-conformance`. Without the application key, that
+filter must already exist in the Datadog account. Complete retention is
+required because the suites validate every plugin span and cannot pass against
+a sampled or partially indexed trace.
 
 ## AWS S3 Collector
 
