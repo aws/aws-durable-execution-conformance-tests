@@ -17,7 +17,9 @@ handler: |
   Canonical schema (per delta item):
   `{"plugin": "CONFPLUGIN", "hook": "operation-change", "executionArn": "<arn>", "updatedOperationsCount": <int>, "operationsCount": <int>, "inFullMap": <bool>, "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
   Replay indicators on items are asserted by PRESENCE only (their value
-  semantics inside change maps are SDK-divergent). Every record also
+  semantics inside change maps are SDK-divergent). GA scope note: the item
+  `result` is an EXPERIMENTAL payload surface — dumped when the SDK exposes
+  it, but no assertion requires or forbids it. Every record also
   carries a `durableExecutionArn` field (ARN captured at invocation-start,
   unasserted) so the runner's CloudWatch filter can scope logs to the
   execution.
@@ -65,7 +67,6 @@ ExpectedLogs:
       name: greet
       type: STEP
       status: SUCCEEDED
-      result: '"task-a"'
       endTimestamp: /^\d{4}-/
       attempt: 1
       inFullMap: true

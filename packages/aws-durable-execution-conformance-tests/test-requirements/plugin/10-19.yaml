@@ -15,21 +15,24 @@ handler: |
   Canonical schemas:
   `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "isFirstInvocation": <bool>, "requestId": "<id>", "executionInput": <input value>, "operationsCount": <int>, "updatedOperationsCount": <int>, "executionStartTimestamp": "<ISO-8601>"}`
   `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "isFirstInvocation": <bool>, "requestId": "<id>", "executionInput": <input value>, "operationsCount": <int>, "executionStartTimestamp": "<ISO-8601>", "status": "<token>", "terminal": <bool>, "executionResult": <result value>, "executionError": "<message>"}`.
+  GA scope note: `executionInput` and `executionResult` are EXPERIMENTAL
+  payload surfaces — handlers dump them when the SDK exposes them, but no
+  assertion requires or forbids them.
   Every record also carries a `durableExecutionArn` field (ARN captured at
   invocation-start, unasserted) so the runner's CloudWatch filter can scope
   logs to the execution.
 invocations: |
   - Invocation 1: the wait starts and the execution suspends. The
-    invocation-start record carries isFirstInvocation=true, the execution
-    input value, a requestId, an operations count, and the execution start
-    timestamp. The invocation-end record carries isFirstInvocation=true (from
-    the end info itself) and a NON-terminal status (terminal=false).
+    invocation-start record carries isFirstInvocation=true, a requestId, an
+    operations count, and the execution start timestamp. The invocation-end
+    record carries isFirstInvocation=true (from the end info itself) and a
+    NON-terminal status (terminal=false).
   - Replay 1 (~2s): the wait completed externally between invocations, so the
     replay invocation-start record carries a non-zero updatedOperationsCount
-    and still carries the execution input value (isFirstInvocation=false).
-    The handler returns "done-<input>"; the terminal invocation-end record
-    carries isFirstInvocation=false, terminal=true with status SUCCEEDED, the
-    execution input, and the final execution result BY VALUE.
+    (isFirstInvocation=false). The handler returns "done-<input>"; the
+    terminal invocation-end record carries isFirstInvocation=false,
+    terminal=true with status SUCCEEDED. Execution input/result values are
+    experimental and appear only in the dumps.
   An SDK whose info type omits any probed field fails the corresponding
   assertion — that red result is the parity signal this requirement exists to
   produce (the reference field set is the union across SDKs, anchored on the
@@ -70,17 +73,15 @@ ExpectedLogs:
       hook: invocation-start
       isFirstInvocation: true
       requestId: /.+/
-      executionInput: ${INPUT_1}
       operationsCount: /^\d+$/
       executionStartTimestamp: /^\d{4}-/
     count: 1
   # Replay invocation-start: externally-completed wait appears in the info's
-  # updated-operations collection, and the input is still exposed
+  # updated-operations collection
   - match:
       plugin: CONFPLUGIN
       hook: invocation-start
       isFirstInvocation: false
-      executionInput: ${INPUT_1}
       updatedOperationsCount: /^[1-9]\d*$/
     count: 1
   # Suspending invocation-end: first flag read from the END info itself, and
@@ -100,17 +101,6 @@ ExpectedLogs:
       isFirstInvocation: false
       terminal: true
       status: SUCCEEDED
-    count: 1
-  # Terminal invocation-end, probe 2 (decoupled from the first flag so each
-  # red identifies exactly one missing field): the end info exposes the
-  # execution input and the final result BY VALUE
-  - match:
-      plugin: CONFPLUGIN
-      hook: invocation-end
-      terminal: true
-      status: SUCCEEDED
-      executionInput: ${INPUT_1}
-      executionResult: done-${INPUT_1}
     count: 1
   # The execution never surfaces an invocation-end error
   - match:

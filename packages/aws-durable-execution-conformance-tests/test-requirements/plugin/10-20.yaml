@@ -14,7 +14,9 @@ handler: |
   `{"plugin": "CONFPLUGIN", "hook": "operation-start|operation-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
   status/startTimestamp/attempt at a LIVE first start are dumped when the SDK
   populates them but NOT asserted: pre-checkpoint population is legitimately
-  SDK-divergent. Every record also carries a `durableExecutionArn` field (ARN
+  SDK-divergent. GA scope note: the operation `result` is an EXPERIMENTAL
+  payload surface — dumped when the SDK exposes it, but no assertion requires
+  or forbids it. Every record also carries a `durableExecutionArn` field (ARN
   captured at invocation-start, unasserted) so the runner's CloudWatch filter
   can scope logs to the execution.
 invocations: |
@@ -70,7 +72,6 @@ ExpectedLogs:
       type: STEP
       isReplay: false
       status: SUCCEEDED
-      result: '"task-a"'
       attempt: 1
       startTimestamp: /^\d{4}-/
       endTimestamp: /^\d{4}-/
