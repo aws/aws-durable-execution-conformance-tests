@@ -113,7 +113,9 @@ jobs:
         inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution',
         matrix.backend == 'xray' && 'ADOT/X-Ray' || 'Community/Dash0'
       ) }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       fail-fast: false
       matrix:
@@ -315,7 +317,9 @@ jobs:
         '{0} - Community/Datadog',
         inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution'
       ) }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
     env:
@@ -466,7 +470,9 @@ jobs:
         '{0} - Community/S3',
         inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution'
       ) }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
