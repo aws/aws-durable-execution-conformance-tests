@@ -1,7 +1,8 @@
-# TypeScript OpenTelemetry Conformance Examples
+# JavaScript OpenTelemetry Conformance Examples
 
-This SAM project implements all OpenTelemetry conformance scenarios with the
-AWS Durable Execution SDK for JavaScript and its OpenTelemetry plugin:
+This TypeScript-authored SAM project implements all OpenTelemetry conformance
+scenarios with the AWS Durable Execution SDK for JavaScript and its
+OpenTelemetry plugin:
 
 - [`@aws/durable-execution-sdk-js`](https://www.npmjs.com/package/@aws/durable-execution-sdk-js)
 - [`@aws/durable-execution-sdk-js-otel`](https://www.npmjs.com/package/@aws/durable-execution-sdk-js-otel)
@@ -72,7 +73,7 @@ is:
 
 ```bash
 durable-execution-conformance \
-  --template packages/aws-durable-execution-conformance-tests-otel/examples/typescript/template.yaml \
+  --template packages/aws-durable-execution-conformance-tests-otel/examples/javascript/template.yaml \
   --language javascript \
   --suite otel-invocation otel-execution \
   --parameter-overrides \
@@ -98,7 +99,7 @@ credentials for S3.
 Node.js 22 or newer is required:
 
 ```bash
-cd packages/aws-durable-execution-conformance-tests-otel/examples/typescript
+cd packages/aws-durable-execution-conformance-tests-otel/examples/javascript
 npm ci
 npm run install-sdk-main
 npm run typecheck

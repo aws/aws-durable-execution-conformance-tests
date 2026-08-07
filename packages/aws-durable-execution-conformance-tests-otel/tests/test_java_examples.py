@@ -18,8 +18,10 @@ from aws_durable_execution_conformance_tests.validate import (
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "java"
 ENTRY_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry.yml"
-WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry-suite.yml"
-LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "java-opentelemetry-long-running.yml"
+ORCHESTRATOR_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-orchestrator.yml"
+RESOLVER_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-resolve.yml"
+WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-suite.yml"
+LONG_RUNNING_WORKFLOW_PATH = EXAMPLES_DIR.parents[3] / ".github" / "workflows" / "opentelemetry-long-running.yml"
 COLLECTOR_BUILD_SCRIPT = "packages/aws-durable-execution-conformance-tests-otel/collector/build-lambda-layer.sh"
 SOURCE_DIR = (
     EXAMPLES_DIR / "src" / "main" / "java" / "software" / "amazon" / "lambda" / "durable" / "conformance" / "otel"
@@ -203,23 +205,24 @@ def test_java_examples_use_agent_initialized_otel_plugin() -> None:
 
 
 def test_java_workflow_uses_current_adot_distro_with_agent_enabled() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "AWSOpenTelemetryDistroJava" in workflow
-    assert "aws-observability/aws-otel-java-instrumentation/releases/latest" in workflow
+    assert "adot_release_repository: aws-observability/aws-otel-java-instrumentation" in entry_workflow
+    assert 'gh api "repos/$RELEASE_REPOSITORY/releases/latest"' in workflow
     assert "github.base_ref == 'main'" in workflow
     assert "--otel-allow-missing-span-identity-attributes" not in workflow
     assert "with its Java agent disabled" not in workflow
 
 
 def test_java_workflow_builds_handlers_with_sdk_main() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "repository: aws/aws-durable-execution-sdk-java" in workflow
-    assert workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 2
-    assert "--projects sdk,otel-plugin" in workflow
-    assert "-Dexpression=project.version" in workflow
-    assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in workflow
+    assert "sdk_repository: aws/aws-durable-execution-sdk-java" in entry_workflow
+    assert "--projects sdk,otel-plugin" in entry_workflow
+    assert "-Dexpression=project.version" in entry_workflow
+    assert '-Ddurable.sdk.version="$JAVA_SDK_VERSION"' in entry_workflow
     assert workflow.count('"OtelSuite=$OTEL_SUITE"') == workflow.count("hatch run validate")
     assert workflow.count('"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
     assert workflow.count('--otel-service-name "$OTEL_RESOURCE_SERVICE_NAME"') == workflow.count("hatch run validate")
@@ -228,35 +231,41 @@ def test_java_workflow_builds_handlers_with_sdk_main() -> None:
     assert "${OTEL_SUITE}-${case_number}-target" in workflow
 
 
-def test_java_workflow_resolves_main_once_and_propagates_the_commit() -> None:
-    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_java_workflows_share_revision_resolution_and_propagate_the_commit() -> None:
+    entry_workflow = yaml.safe_load(ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    orchestrator = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
     suite_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     long_running_workflow = LONG_RUNNING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert entry_workflow.count("git ls-remote") == 1
-    assert "refs/heads/main" in entry_workflow
-    assert 'echo "ref=$JAVA_SDK_REF" >> "$GITHUB_OUTPUT"' in entry_workflow
-    assert entry_workflow.count("needs: resolve-sdk-main") == 4
-    assert entry_workflow.count("java_sdk_ref: ${{ needs.resolve-sdk-main.outputs.java_sdk_ref }}") == 6
+    preset = entry_workflow["jobs"]["conformance"]["with"]
+    assert preset["sdk_repository"] == "aws/aws-durable-execution-sdk-java"
+    assert "refs/heads/main" in resolver
+    assert 'echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"' in resolver
+    assert "uses: ./.github/workflows/opentelemetry-resolve.yml" in orchestrator
+    assert orchestrator.count("sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}") == 4
+    assert set(entry_workflow["jobs"]) == {"conformance"}
+    assert "needs" not in entry_workflow["jobs"]["conformance"]
     for workflow in (suite_workflow, long_running_workflow):
-        assert "JAVA_SDK_REF: ${{ inputs.java_sdk_ref }}" in workflow
-        assert "      java_sdk_ref:" in workflow
+        assert "SDK_REF: ${{ inputs.sdk_ref }}" in workflow
+        assert "      sdk_ref:" in workflow
         assert "        required: true" in workflow
-    assert suite_workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 2
-    assert long_running_workflow.count("ref: ${{ env.JAVA_SDK_REF }}") == 1
 
 
 def test_java_s3_job_builds_and_queries_the_collector() -> None:
+    entry_workflow = ENTRY_WORKFLOW_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "  s3_collector:" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow
     assert COLLECTOR_BUILD_SCRIPT in workflow
-    assert "--compatible-runtimes java21" in workflow
-    assert "--language java" in workflow
+    assert "collector_compatible_runtime: java21" in entry_workflow
+    assert "collector_otlp_endpoint: http://localhost:4318" in entry_workflow
+    assert '--compatible-runtimes "${{ inputs.collector_compatible_runtime }}"' in workflow
+    assert '--language "$LANGUAGE"' in workflow
     assert "--otel-exporter community" in workflow
-    assert "--otel-endpoint http://localhost:4318" in workflow
+    assert '--otel-endpoint "${{ inputs.collector_otlp_endpoint }}"' in workflow
     assert "--otel-backend collector" in workflow
     assert '--otel-backend-endpoint "$OTEL_S3_URI"' in workflow
     assert "OtelCollectorLayerArn=$COLLECTOR_LAYER_ARN" in workflow

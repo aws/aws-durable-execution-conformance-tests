@@ -1,0 +1,256 @@
+name: OpenTelemetry Orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: Stable language key used in resource and artifact names
+        required: true
+        type: string
+      resource_prefix:
+        description: Short prefix used by long-running Lambda resources
+        required: true
+        type: string
+      sdk_repository:
+        description: GitHub repository containing the language SDK
+        required: true
+        type: string
+      sdk_ref:
+        description: Full SDK commit SHA; defaults to the SDK main branch
+        required: false
+        default: ""
+        type: string
+      conformance_repository:
+        description: GitHub repository containing the conformance tests
+        required: false
+        default: aws/aws-durable-execution-conformance-tests
+        type: string
+      conformance_test_ref:
+        description: Optional conformance test commit SHA or branch name
+        required: false
+        default: ""
+        type: string
+      checkout_sdk:
+        description: Check out the SDK before running the preparation command
+        required: false
+        default: true
+        type: boolean
+      setup_command:
+        description: Shell command that installs or selects the language toolchain
+        required: false
+        default: ""
+        type: string
+      prepare_command:
+        description: Shell command that prepares the language handlers
+        required: false
+        default: ""
+        type: string
+      contract_test_command:
+        description: Optional shell command that validates the language example contract
+        required: false
+        default: ""
+        type: string
+      adot_release_repository:
+        description: GitHub repository whose latest release lists regional ADOT layers
+        required: false
+        default: ""
+        type: string
+      adot_layer_arn:
+        description: Optional fixed ADOT layer ARN, bypassing release discovery
+        required: false
+        default: ""
+        type: string
+      collector_compatible_runtime:
+        description: Lambda runtime recorded on the test collector layer
+        required: true
+        type: string
+      collector_otlp_endpoint:
+        description: Local collector OTLP endpoint used by the runtime
+        required: true
+        type: string
+      legacy_stack_prefix:
+        description: Optional legacy stack prefix cleaned up only after rollback
+        required: false
+        default: ""
+        type: string
+      suite_timeout_minutes:
+        description: Timeout for X-Ray, Dash0, and Datadog suite jobs
+        required: false
+        default: 40
+        type: number
+      phase:
+        description: Run short tests, launch a long run, or check the active long run
+        required: false
+        default: short
+        type: string
+      delay_seconds:
+        description: Durable delay in seconds
+        required: false
+        default: "82800"
+        type: string
+      aws_region:
+        description: AWS region
+        required: false
+        default: us-west-2
+        type: string
+      otlp_endpoint:
+        description: OTLP ingest endpoint for an optional Datadog job
+        required: false
+        default: ""
+        type: string
+    secrets:
+      CONFORMANCE_TEST_ROLE_ARN:
+        description: AWS role assumed by the test jobs
+        required: true
+      CONFORMANCE_TEST_ACCOUNT_ID:
+        description: Expected AWS account ID
+        required: true
+      CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN:
+        description: Execution role assigned to test Lambda functions
+        required: true
+      DASH0_AUTH_TOKEN:
+        description: Dash0 API and OTLP authentication token
+        required: true
+      DD_API_KEY:
+        description: Datadog API key
+        required: false
+      DD_APPLICATION_KEY:
+        description: Datadog application key
+        required: false
+      DATADOG_OTLP_HEADERS:
+        description: Datadog OTLP request headers
+        required: false
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+jobs:
+  resolve:
+    name: Resolve test commits
+    uses: ./.github/workflows/opentelemetry-resolve.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ inputs.sdk_ref }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      conformance_test_ref: ${{ inputs.conformance_test_ref }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: ${{ inputs.phase }}
+
+  invocation:
+    name: Invocation view
+    needs: resolve
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
+    uses: ./.github/workflows/opentelemetry-suite.yml
+    with:
+      language: ${{ inputs.language }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      collector_compatible_runtime: ${{ inputs.collector_compatible_runtime }}
+      collector_otlp_endpoint: ${{ inputs.collector_otlp_endpoint }}
+      legacy_stack_prefix: ${{ inputs.legacy_stack_prefix }}
+      suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
+      suite: otel-invocation
+      case_count: 19
+      aws_region: ${{ inputs.aws_region }}
+      otlp_endpoint: ${{ inputs.otlp_endpoint }}
+    secrets: inherit
+
+  execution:
+    name: Execution view
+    needs: resolve
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
+    uses: ./.github/workflows/opentelemetry-suite.yml
+    with:
+      language: ${{ inputs.language }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      collector_compatible_runtime: ${{ inputs.collector_compatible_runtime }}
+      collector_otlp_endpoint: ${{ inputs.collector_otlp_endpoint }}
+      legacy_stack_prefix: ${{ inputs.legacy_stack_prefix }}
+      suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
+      suite: otel-execution
+      case_count: 19
+      aws_region: ${{ inputs.aws_region }}
+      otlp_endpoint: ${{ inputs.otlp_endpoint }}
+    secrets: inherit
+
+  long-running-invocation:
+    name: Long running invocation view
+    needs: resolve
+    uses: ./.github/workflows/opentelemetry-long-running.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: invocation
+      delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
+          && '60' || inputs.delay_seconds }}
+      aws_region: ${{ inputs.aws_region }}
+    secrets: inherit
+
+  long-running-execution:
+    name: Long running execution view
+    needs: resolve
+    uses: ./.github/workflows/opentelemetry-long-running.yml
+    with:
+      language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
+      conformance_repository: ${{ inputs.conformance_repository }}
+      sdk_repository: ${{ inputs.sdk_repository }}
+      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
+      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
+      checkout_sdk: ${{ inputs.checkout_sdk }}
+      setup_command: ${{ inputs.setup_command }}
+      prepare_command: ${{ inputs.prepare_command }}
+      contract_test_command: ${{ inputs.contract_test_command }}
+      adot_release_repository: ${{ inputs.adot_release_repository }}
+      adot_layer_arn: ${{ inputs.adot_layer_arn }}
+      phase: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
+          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
+      view: execution
+      delay_seconds: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
+          || inputs.phase == 'short')
+          && '60' || inputs.delay_seconds }}
+      aws_region: ${{ inputs.aws_region }}
+    secrets: inherit

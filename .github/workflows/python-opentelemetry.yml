@@ -4,9 +4,12 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - .github/actions/prepare-otel-example/**
       - .github/workflows/python-opentelemetry.yml
-      - .github/workflows/python-opentelemetry-suite.yml
-      - .github/workflows/python-opentelemetry-long-running.yml
+      - .github/workflows/opentelemetry-orchestrator.yml
+      - .github/workflows/opentelemetry-resolve.yml
+      - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
@@ -17,9 +20,12 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/prepare-otel-example/**
       - .github/workflows/python-opentelemetry.yml
-      - .github/workflows/python-opentelemetry-suite.yml
-      - .github/workflows/python-opentelemetry-long-running.yml
+      - .github/workflows/opentelemetry-orchestrator.yml
+      - .github/workflows/opentelemetry-resolve.yml
+      - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running.yml
       - packages/aws-durable-execution-conformance-tests/src/**
       - packages/aws-durable-execution-conformance-tests-otel/src/**
       - packages/aws-durable-execution-conformance-tests-otel/test-requirements/otel-invocation/**
@@ -110,181 +116,32 @@ on:
         description: Optional conformance test commit SHA or branch name
         required: false
         type: string
+
 permissions:
   actions: write
   contents: read
   id-token: write
 
 jobs:
-  resolve-sdk-main:
-    name: Resolve test commits
-    runs-on: ubuntu-latest
-    outputs:
-      conformance_test_sha: ${{ steps.resolve-conformance.outputs.sha }}
-      python_sdk_ref: ${{ steps.resolve.outputs.ref }}
-    steps:
-      - name: Validate phase
-        env:
-          REQUESTED_PHASE: ${{ inputs.phase || 'short' }}
-        run: |
-          case "$REQUESTED_PHASE" in
-            short|launch|check) ;;
-            *)
-              echo "phase must be one of: short, launch, check"
-              exit 1
-              ;;
-          esac
-
-      - name: Resolve conformance test commit
-        id: resolve-conformance
-        env:
-          REQUESTED_CONFORMANCE_TEST_REF: >-
-            ${{ inputs.conformance_test_ref
-              || (github.repository == job.workflow_repository && job.workflow_sha)
-              || 'main' }}
-        run: |
-          CONFORMANCE_TEST_REF="$REQUESTED_CONFORMANCE_TEST_REF"
-          if [[ "$CONFORMANCE_TEST_REF" =~ ^[0-9a-f]{40}$ ]]; then
-            CONFORMANCE_TEST_SHA="$CONFORMANCE_TEST_REF"
-          else
-            if [[ "$CONFORMANCE_TEST_REF" != refs/* ]]; then
-              CONFORMANCE_TEST_REF="refs/heads/$CONFORMANCE_TEST_REF"
-            fi
-            CONFORMANCE_TEST_SHA=$(
-              git ls-remote \
-                https://github.com/aws/aws-durable-execution-conformance-tests.git \
-                "$CONFORMANCE_TEST_REF" |
-                awk -v ref="$CONFORMANCE_TEST_REF" '$2 == ref {print $1; exit}'
-            )
-          fi
-          if [[ ! "$CONFORMANCE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Could not resolve conformance test ref $REQUESTED_CONFORMANCE_TEST_REF"
-            exit 1
-          fi
-          echo "Using conformance test commit $CONFORMANCE_TEST_SHA"
-          echo "sha=$CONFORMANCE_TEST_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Python SDK commit
-        id: resolve
-        env:
-          REQUESTED_PYTHON_SDK_REF: ${{ inputs.python_sdk_ref }}
-        run: |
-          PYTHON_SDK_REF="$REQUESTED_PYTHON_SDK_REF"
-          if [ -z "$PYTHON_SDK_REF" ]; then
-            PYTHON_SDK_REF=$(
-              git ls-remote \
-                https://github.com/aws/aws-durable-execution-sdk-python.git \
-                refs/heads/main |
-                awk '{print $1}'
-            )
-          fi
-          if [ -z "$PYTHON_SDK_REF" ]; then
-            echo "Could not resolve an aws-durable-execution-sdk-python commit"
-            exit 1
-          fi
-          if [[ ! "$PYTHON_SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "python_sdk_ref must be a full 40-character commit SHA"
-            exit 1
-          fi
-          echo "Using Python SDK commit $PYTHON_SDK_REF"
-          echo "ref=$PYTHON_SDK_REF" >> "$GITHUB_OUTPUT"
-
-  invocation:
-    name: Invocation view
-    needs: resolve-sdk-main
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
-    uses: ./.github/workflows/python-opentelemetry-suite.yml
+  conformance:
+    name: Conformance
+    uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
-      suite: otel-invocation
-      case_count: 19
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
-    secrets: inherit
-
-  execution:
-    name: Execution view
-    needs: resolve-sdk-main
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event_name != 'workflow_dispatch' || inputs.phase == 'short')
-    uses: ./.github/workflows/python-opentelemetry-suite.yml
-    with:
-      suite: otel-execution
-      case_count: 19
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
-    secrets: inherit
-
-  long-running-invocation:
-    name: Long running invocation view
-    needs: resolve-sdk-main
-    uses: ./.github/workflows/python-opentelemetry-long-running.yml
-    with:
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: invocation
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || inputs.phase == 'short')
-          && '60' || (inputs.delay_seconds || '82800') }}
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
-    secrets: inherit
-
-  long-running-execution:
-    name: Long running execution view
-    needs: resolve-sdk-main
-    uses: ./.github/workflows/python-opentelemetry-long-running.yml
-    with:
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: execution
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || inputs.phase == 'short')
-          && '60' || (inputs.delay_seconds || '82800') }}
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
-    secrets: inherit
-
-  next-long-running-invocation:
-    name: Launch next long running invocation view
-    needs: [resolve-sdk-main, long-running-invocation]
-    if: >-
-      always() &&
-      needs.long-running-invocation.outputs.rollover_ready == 'true'
-    uses: ./.github/workflows/python-opentelemetry-long-running.yml
-    with:
-      phase: launch
-      view: invocation
+      language: python
+      resource_prefix: p
+      sdk_repository: aws/aws-durable-execution-sdk-python
+      sdk_ref: ${{ inputs.python_sdk_ref || '' }}
+      conformance_test_ref: ${{ inputs.conformance_test_ref || '' }}
+      checkout_sdk: false
+      contract_test_command: >-
+        hatch run test:all
+        packages/aws-durable-execution-conformance-tests-otel/tests/test_python_examples.py
+      adot_release_repository: aws-observability/aws-otel-python-instrumentation
+      collector_compatible_runtime: python3.13
+      collector_otlp_endpoint: http://localhost:4318
+      suite_timeout_minutes: 30
+      phase: ${{ inputs.phase || 'short' }}
       delay_seconds: ${{ inputs.delay_seconds || '82800' }}
       aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
-    secrets: inherit
-
-  next-long-running-execution:
-    name: Launch next long running execution view
-    needs: [resolve-sdk-main, long-running-execution]
-    if: >-
-      always() &&
-      needs.long-running-execution.outputs.rollover_ready == 'true'
-    uses: ./.github/workflows/python-opentelemetry-long-running.yml
-    with:
-      phase: launch
-      view: execution
-      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
-      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
-      conformance_test_sha: ${{ needs.resolve-sdk-main.outputs.conformance_test_sha }}
-      python_sdk_ref: ${{ needs.resolve-sdk-main.outputs.python_sdk_ref }}
+      otlp_endpoint: ${{ inputs.otlp_endpoint || '' }}
     secrets: inherit
