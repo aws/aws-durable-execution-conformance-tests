@@ -16,8 +16,8 @@ handler: |
   full operations map.
   Canonical schema (per delta item):
   `{"plugin": "CONFPLUGIN", "hook": "operation-change", "executionArn": "<arn>", "updatedOperationsCount": <int>, "operationsCount": <int>, "inFullMap": <bool>, "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
-  Replay indicators on items are dumped when exposed but not asserted (their
-  value semantics inside change maps are SDK-divergent). Every record also
+  Replay indicators on items are asserted by PRESENCE only (their value
+  semantics inside change maps are SDK-divergent). Every record also
   carries a `durableExecutionArn` field (ARN captured at invocation-start,
   unasserted) so the runner's CloudWatch filter can scope logs to the
   execution.
@@ -72,6 +72,8 @@ ExpectedLogs:
       executionArn: /^arn:/
       updatedOperationsCount: /^[1-9]\d*$/
       operationsCount: /^[1-9]\d*$/
+      startTimestamp: /^\d{4}-/
+      isReplay: /.*/
     count: 1
   # The step never surfaces a FAILED change
   - match:

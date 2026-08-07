@@ -13,9 +13,13 @@ handler: |
   string; `outcome` presents the info's own success indicator as the shared
   SUCCEEDED/FAILED token.
   Canonical schema (both hooks; attempt-end adds outcome/error):
-  `{"plugin": "CONFPLUGIN", "hook": "attempt-start|attempt-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "attempt": <int>, "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "isReplay": <bool>, "isReplayingChildren": <bool>, "outcome": "<SUCCEEDED|FAILED>", "error": "<message>"}`.
-  Replay indicators are dumped when exposed but not asserted (covered by
-  dedicated replay requirements). Every record also carries a
+  `{"plugin": "CONFPLUGIN", "hook": "attempt-start|attempt-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "attempt": <int>, "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "isReplay": <bool>, "outcome": "<SUCCEEDED|FAILED>", "error": "<message>"}`.
+  `isReplay` (whether THIS operation was observed via checkpointed state) is
+  asserted by PRESENCE only — its value on a retry re-invocation is
+  legitimately SDK-divergent. A context-children replay indicator
+  (`isReplayingChildren`) exists in some SDKs but pertains to context-type
+  user functions, not step attempts; it is out of scope here and belongs to a
+  context-typed shape requirement. SDKs exposing it may dump it unasserted. Every record also carries a
   `durableExecutionArn` field (ARN captured at invocation-start, unasserted)
   so the runner's CloudWatch filter can scope logs to the execution.
 invocations: |
@@ -96,6 +100,8 @@ ExpectedLogs:
       attempt: 1
       outcome: FAILED
       error: /.+/
+      startTimestamp: /^\d{4}-/
+      endTimestamp: /^\d{4}-/
     count: 1
     after:
       - plugin: CONFPLUGIN
@@ -126,12 +132,21 @@ ExpectedLogs:
       type: STEP
       attempt: 2
       outcome: SUCCEEDED
+      startTimestamp: /^\d{4}-/
+      endTimestamp: /^\d{4}-/
     count: 1
     after:
       - plugin: CONFPLUGIN
         hook: attempt-start
         id: ${ID1}
         attempt: 2
+  # The attempt info carries the operation-level replay indicator (presence
+  # only — decoupled so this red identifies exactly one missing surface)
+  - match:
+      plugin: CONFPLUGIN
+      hook: attempt-end
+      isReplay: /.*/
+    count: 2
   # Exhaustive bounds: no third attempt, no successful attempt carries an error
   - match:
       plugin: CONFPLUGIN
