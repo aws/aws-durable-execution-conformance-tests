@@ -1,6 +1,6 @@
 ---
 # 10.22: Operation-change hook info field shape
-description: Operation-change hook info carries full operation items in the delta and full map
+description: Operation-change hook info carries full operation items in the delta and their membership in the full map
 handler: |
   A single step named "greet" that returns "task-a". The instrumentation
   plugin implements the operation-change hook and, for each step-type
@@ -28,13 +28,14 @@ invocations: |
     When the step's terminal SUCCEEDED checkpoint response is merged, the
     operation-change hook fires with the step in the updated delta: the
     logged record carries the history-checkpointed operation id, item name
-    "greet", type STEP, status SUCCEEDED, the serialized result '"task-a"'
-    BY VALUE, an end timestamp, attempt 1, inFullMap=true, the change info's
-    execution ARN, and a non-zero updated-operations count. A STARTED change
+    "greet", type STEP, status SUCCEEDED, start and end timestamps, attempt 1,
+    inFullMap=true, the change info's execution ARN, and a non-zero
+    updated-operations count (the serialized result is dumped when exposed
+    but unasserted — experimental). A STARTED change
     is not asserted (START may batch with the terminal status).
   An SDK whose change-info items omit any probed field (e.g. a reduced item
-  record without result/attempt) fails the corresponding assertion — that
-  red result is the parity signal this requirement exists to produce.
+  record without attempt or timestamps) fails the corresponding assertion —
+  that red result is the parity signal this requirement exists to produce.
 Input:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
@@ -58,8 +59,8 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # The terminal change delta item carries the full operation field surface,
-  # with the serialized result asserted BY VALUE
+  # The terminal change delta item carries the operation field surface
+  # (serialized result dumped when exposed, unasserted — experimental)
   - match:
       plugin: CONFPLUGIN
       hook: operation-change

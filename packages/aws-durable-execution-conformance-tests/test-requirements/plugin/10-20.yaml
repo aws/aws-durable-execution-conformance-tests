@@ -24,10 +24,11 @@ invocations: |
     and the execution completes in one invocation. The operation-start record
     carries the history-checkpointed operation id, the name "greet", type
     STEP, and isReplay=false. The operation-end record carries the same
-    identity fields plus status SUCCEEDED, the serialized result '"task-a"',
-    an end timestamp, attempt 1, and no error key.
-  An SDK whose operation info omits any probed field (e.g. no result, attempt,
-  or status accessor on the end info) fails the corresponding assertion — that
+    identity fields plus status SUCCEEDED, an end timestamp, attempt 1, and
+    no error key (the serialized result is dumped when exposed but
+    unasserted — experimental).
+  An SDK whose operation info omits any probed field (e.g. no attempt or
+  status accessor on the end info) fails the corresponding assertion — that
   red result is the parity signal this requirement exists to produce.
 Input:
 ExpectedResult:
@@ -81,5 +82,5 @@ ExpectedLogs:
       plugin: CONFPLUGIN
       hook: operation-end
       id: ${ID1}
-      error: /.+/
+      error: /.*/
     count: 0

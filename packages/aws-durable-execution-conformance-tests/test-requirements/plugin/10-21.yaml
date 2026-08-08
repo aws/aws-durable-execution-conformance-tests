@@ -163,5 +163,5 @@ ExpectedLogs:
       plugin: CONFPLUGIN
       hook: attempt-end
       outcome: SUCCEEDED
-      error: /.+/
+      error: /.*/
     count: 0
