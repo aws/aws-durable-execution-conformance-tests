@@ -1,0 +1,146 @@
+---
+# 10.19: Invocation hook info field shape
+description: Invocation-start and invocation-end hook info carries the full invocation field set
+handler: |
+  A single 2-second wait, then return "done-" concatenated with the execution
+  input. The instrumentation plugin logs ONE single-line JSON record per
+  invocation hook event: a CANONICAL DUMP of that hook's OWN info parameter.
+  Every field the SDK's info type exposes is mapped one-to-one to the
+  canonical camelCase name; unset or unexposed fields are OMITTED (a missing
+  key fails its assertion — the parity signal); map-typed fields are emitted
+  as `<name>Count` integers; timestamps as ISO-8601 strings; errors as their
+  message string. One derived scalar is added: `terminal` := status in
+  (SUCCEEDED, FAILED). No cross-hook reconstruction — `isFirstInvocation` on
+  the end record MUST come from the invocation-end info itself.
+  Canonical schemas:
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "isFirstInvocation": <bool>, "requestId": "<id>", "operationsCount": <int>, "updatedOperationsCount": <int>, "executionStartTimestamp": "<ISO-8601>"}`
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "isFirstInvocation": <bool>, "requestId": "<id>", "operationsCount": <int>, "executionStartTimestamp": "<ISO-8601>", "status": "<token>", "terminal": <bool>, "executionError": "<message>"}`.
+  Every record also carries a `durableExecutionArn` field (ARN captured at
+  invocation-start, unasserted) so the runner's CloudWatch filter can scope
+  logs to the execution.
+invocations: |
+  - Invocation 1: the wait starts and the execution suspends. The
+    invocation-start record carries isFirstInvocation=true, a requestId, an
+    operations count, and the execution start timestamp. The invocation-end
+    record carries isFirstInvocation=true (from the end info itself) and a
+    NON-terminal status (terminal=false).
+  - Replay 1 (~2s): the wait completed externally between invocations, so the
+    replay invocation-start record carries a non-zero updatedOperationsCount
+    (isFirstInvocation=false). The handler returns "done-<input>"; the
+    terminal invocation-end record carries isFirstInvocation=false,
+    terminal=true with status SUCCEEDED.
+  An SDK whose info type omits any probed field fails the corresponding
+  assertion — that red result is the parity signal this requirement exists to
+  produce (the reference field set is the union across SDKs, anchored on the
+  richest current surface).
+Variables:
+  INPUT_1: ${GEN_STR:8}
+Input: ${INPUT_1}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: done-${INPUT_1}
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+ExpectedLogs:
+  # First invocation-start: bundled identity/flag field set
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      isFirstInvocation: true
+      requestId: /.+/
+      operationsCount: /^\d+$/
+      executionStartTimestamp: /^\d{4}-/
+    count: 1
+  # Replay invocation-start: externally-completed wait appears in the info's
+  # updated-operations collection
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      isFirstInvocation: false
+      updatedOperationsCount: /^[1-9]\d*$/
+    count: 1
+  # Inherited base fields on the START info (decoupled — one probe per field
+  # so each red identifies exactly one missing surface). Both invocation-start
+  # records (first AND replay) must carry them. `updatedOperationsCount` is
+  # deliberately probed only via the replay-specific nonzero match above:
+  # before the first invocation nothing has been updated, so whether an SDK
+  # surfaces an empty collection there is an unasserted implementation detail.
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      requestId: /.+/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      operationsCount: /^\d+$/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-start
+      executionStartTimestamp: /^\d{4}-/
+    count: 2
+  # Suspending invocation-end: first flag read from the END info itself, and
+  # the non-terminal status token surface exists (token value SDK-divergent —
+  # presence only)
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      isFirstInvocation: true
+      terminal: false
+      status: /.+/
+    count: 1
+  # Terminal invocation-end, probe 1: first flag from the end info
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      isFirstInvocation: false
+      terminal: true
+      status: SUCCEEDED
+    count: 1
+  # The execution never surfaces an invocation-end error (any present value,
+  # even empty, is a violation)
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      executionError: /.*/
+    count: 0
+  # Inherited base fields on the END info (decoupled — one probe per field so
+  # each red identifies exactly one missing surface). Both invocation-end
+  # records must carry them.
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      requestId: /.+/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      operationsCount: /^\d+$/
+    count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: invocation-end
+      executionStartTimestamp: /^\d{4}-/
+    count: 2
