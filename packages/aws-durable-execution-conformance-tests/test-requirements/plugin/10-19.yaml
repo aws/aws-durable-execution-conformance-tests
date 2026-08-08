@@ -13,11 +13,8 @@ handler: |
   (SUCCEEDED, FAILED). No cross-hook reconstruction — `isFirstInvocation` on
   the end record MUST come from the invocation-end info itself.
   Canonical schemas:
-  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "isFirstInvocation": <bool>, "requestId": "<id>", "executionInput": <input value>, "operationsCount": <int>, "updatedOperationsCount": <int>, "executionStartTimestamp": "<ISO-8601>"}`
-  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "isFirstInvocation": <bool>, "requestId": "<id>", "executionInput": <input value>, "operationsCount": <int>, "executionStartTimestamp": "<ISO-8601>", "status": "<token>", "terminal": <bool>, "executionResult": <result value>, "executionError": "<message>"}`.
-  GA scope note: `executionInput` and `executionResult` are EXPERIMENTAL
-  payload surfaces — handlers dump them when the SDK exposes them, but no
-  assertion requires or forbids them.
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-start", "isFirstInvocation": <bool>, "requestId": "<id>", "operationsCount": <int>, "updatedOperationsCount": <int>, "executionStartTimestamp": "<ISO-8601>"}`
+  `{"plugin": "CONFPLUGIN", "hook": "invocation-end", "isFirstInvocation": <bool>, "requestId": "<id>", "operationsCount": <int>, "executionStartTimestamp": "<ISO-8601>", "status": "<token>", "terminal": <bool>, "executionError": "<message>"}`.
   Every record also carries a `durableExecutionArn` field (ARN captured at
   invocation-start, unasserted) so the runner's CloudWatch filter can scope
   logs to the execution.
@@ -31,8 +28,7 @@ invocations: |
     replay invocation-start record carries a non-zero updatedOperationsCount
     (isFirstInvocation=false). The handler returns "done-<input>"; the
     terminal invocation-end record carries isFirstInvocation=false,
-    terminal=true with status SUCCEEDED. Execution input/result values are
-    experimental and appear only in the dumps.
+    terminal=true with status SUCCEEDED.
   An SDK whose info type omits any probed field fails the corresponding
   assertion — that red result is the parity signal this requirement exists to
   produce (the reference field set is the union across SDKs, anchored on the
@@ -67,8 +63,7 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     InvocationCompletedDetails: {}
 ExpectedLogs:
-  # First invocation-start: bundled identity/flag field set (execution input
-  # is dumped when exposed but unasserted — experimental)
+  # First invocation-start: bundled identity/flag field set
   - match:
       plugin: CONFPLUGIN
       hook: invocation-start

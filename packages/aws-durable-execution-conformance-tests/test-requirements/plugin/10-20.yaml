@@ -8,15 +8,13 @@ handler: |
   parameter. Every field the SDK's info type exposes is mapped one-to-one to
   the canonical camelCase name; unset or unexposed fields are OMITTED (a
   missing key fails its assertion — the parity signal); type/status tokens
-  upper-cased; timestamps as ISO-8601 strings; the serialized result as the
-  raw serialized string; errors as their message string.
+  upper-cased; timestamps as ISO-8601 strings; errors as their message
+  string.
   Canonical schema (both hooks):
-  `{"plugin": "CONFPLUGIN", "hook": "operation-start|operation-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start|operation-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
   status/startTimestamp/attempt at a LIVE first start are dumped when the SDK
   populates them but NOT asserted: pre-checkpoint population is legitimately
-  SDK-divergent. GA scope note: the operation `result` is an EXPERIMENTAL
-  payload surface — dumped when the SDK exposes it, but no assertion requires
-  or forbids it. Every record also carries a `durableExecutionArn` field (ARN
+  SDK-divergent. Every record also carries a `durableExecutionArn` field (ARN
   captured at invocation-start, unasserted) so the runner's CloudWatch filter
   can scope logs to the execution.
 invocations: |
@@ -25,8 +23,7 @@ invocations: |
     carries the history-checkpointed operation id, the name "greet", type
     STEP, and isReplay=false. The operation-end record carries the same
     identity fields plus status SUCCEEDED, an end timestamp, attempt 1, and
-    no error key (the serialized result is dumped when exposed but
-    unasserted — experimental).
+    no error key.
   An SDK whose operation info omits any probed field (e.g. no attempt or
   status accessor on the end info) fails the corresponding assertion — that
   red result is the parity signal this requirement exists to produce.

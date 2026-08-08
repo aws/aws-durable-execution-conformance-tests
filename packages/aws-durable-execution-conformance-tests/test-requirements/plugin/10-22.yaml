@@ -15,11 +15,9 @@ handler: |
   one derived scalar `inFullMap` := the same id also appears in the info's
   full operations map.
   Canonical schema (per delta item):
-  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "executionArn": "<arn>", "updatedOperationsCount": <int>, "operationsCount": <int>, "inFullMap": <bool>, "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "result": "<serialized>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
+  `{"plugin": "CONFPLUGIN", "hook": "operation-change", "executionArn": "<arn>", "updatedOperationsCount": <int>, "operationsCount": <int>, "inFullMap": <bool>, "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
   Replay indicators on items are asserted by PRESENCE only (their value
-  semantics inside change maps are SDK-divergent). GA scope note: the item
-  `result` is an EXPERIMENTAL payload surface — dumped when the SDK exposes
-  it, but no assertion requires or forbids it. Every record also
+  semantics inside change maps are SDK-divergent). Every record also
   carries a `durableExecutionArn` field (ARN captured at invocation-start,
   unasserted) so the runner's CloudWatch filter can scope logs to the
   execution.
@@ -30,8 +28,7 @@ invocations: |
     logged record carries the history-checkpointed operation id, item name
     "greet", type STEP, status SUCCEEDED, start and end timestamps, attempt 1,
     inFullMap=true, the change info's execution ARN, and a non-zero
-    updated-operations count (the serialized result is dumped when exposed
-    but unasserted — experimental). A STARTED change
+    updated-operations count. A STARTED change
     is not asserted (START may batch with the terminal status).
   An SDK whose change-info items omit any probed field (e.g. a reduced item
   record without attempt or timestamps) fails the corresponding assertion —
@@ -60,7 +57,6 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # The terminal change delta item carries the operation field surface
-  # (serialized result dumped when exposed, unasserted — experimental)
   - match:
       plugin: CONFPLUGIN
       hook: operation-change
