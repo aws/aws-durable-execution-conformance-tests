@@ -204,8 +204,9 @@ def test_javascript_examples_build_sdk_packages_from_main() -> None:
     assert "git clone --depth 1 --branch main" in bootstrap
     assert "--workspace packages/aws-durable-execution-sdk-js" in bootstrap
     assert "--workspace packages/aws-durable-execution-sdk-js-otel" in bootstrap
-    assert "InvocationOtelPlugin({ useDefaultTracerProvider: true })" in common
-    assert "ExecutionOtelPlugin({ useDefaultTracerProvider: true })" in common
+    assert "providerSource: ProviderSource.GLOBAL" in common
+    assert "InvocationOtelPlugin({ providerSource: ProviderSource.GLOBAL })" in common
+    assert "ExecutionOtelPlugin({ providerSource: ProviderSource.GLOBAL })" in common
     assert 'process.env.OTEL_PLUGIN_MODE === "execution"' in common
 
 
