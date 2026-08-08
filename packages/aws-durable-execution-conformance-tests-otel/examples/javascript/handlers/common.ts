@@ -11,6 +11,7 @@ import {
 import {
   ExecutionOtelPlugin,
   InvocationOtelPlugin,
+  ProviderSource,
 } from "@aws/durable-execution-sdk-js-otel";
 
 export interface ScenarioEvent {
@@ -25,8 +26,8 @@ type Workflow<TResult> = (
 
 const plugin =
   process.env.OTEL_PLUGIN_MODE === "execution"
-    ? new ExecutionOtelPlugin({ useDefaultTracerProvider: true })
-    : new InvocationOtelPlugin({ useDefaultTracerProvider: true });
+    ? new ExecutionOtelPlugin({ providerSource: ProviderSource.GLOBAL })
+    : new InvocationOtelPlugin({ providerSource: ProviderSource.GLOBAL });
 
 export function createScenarioHandler<TResult>(
   expectedScenario: string,
