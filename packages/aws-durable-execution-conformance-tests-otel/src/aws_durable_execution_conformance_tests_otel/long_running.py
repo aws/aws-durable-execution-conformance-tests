@@ -291,6 +291,7 @@ def launch(args: argparse.Namespace) -> int:
             region=args.region,
             endpoint=None,
             service_name=args.otel_service_name,
+            backend="xray",
             layer_arn=args.otel_layer_arn,
         )
     )

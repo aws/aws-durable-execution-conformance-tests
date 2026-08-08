@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
+
+import pytest
 
 from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
     normalize_dash0,
@@ -163,11 +166,19 @@ def test_normalizes_xray_otel_service_name_and_inherits_it_for_subsegments() -> 
     assert spans[2].service_name == "child-service"
 
 
-def test_normalizes_datadog_decimal_identifiers() -> None:
+@pytest.mark.parametrize(
+    ("raw_first_invocation", "expected_first_invocation"),
+    [("true", True), ("false", False)],
+)
+def test_normalizes_datadog_span_search_payload(
+    raw_first_invocation: str,
+    expected_first_invocation: bool,
+) -> None:
     payload = {
         "data": [
             {
-                "id": "7",
+                "id": "event-id",
+                "type": "spans",
                 "attributes": {
                     "trace_id": "10",
                     "span_id": "7",
@@ -175,10 +186,22 @@ def test_normalizes_datadog_decimal_identifiers() -> None:
                     "service": "conformance",
                     "resource_name": "step",
                     "start_timestamp": "2026-01-01T00:00:00Z",
-                    "duration": 100,
-                    "attributes": {
-                        "durable.execution.arn": "arn:test",
-                        "span.kind": "CLIENT",
+                    "end_timestamp": "2026-01-01T00:00:01Z",
+                    "custom": {
+                        "durable": {
+                            "execution": {
+                                "arn": "arn:test",
+                            },
+                            "invocation": {
+                                "first": raw_first_invocation,
+                            },
+                        },
+                        "unrelated": {"string_boolean": "true"},
+                        "otel": {
+                            "status_code": "Error",
+                            "trace_id": "11111111111111111111111111111111",
+                        },
+                        "span": {"kind": "client"},
                     },
                 },
             }
@@ -186,10 +209,16 @@ def test_normalizes_datadog_decimal_identifiers() -> None:
     }
 
     span = normalize_datadog(payload)[0].spans[0]
-    assert span.trace_id.endswith("a")
+    assert span.trace_id == "1" * 32
     assert span.span_id.endswith("7")
+    assert span.parent_span_id is None
     assert span.service_name == "conformance"
     assert span.kind == "CLIENT"
+    assert span.status == "ERROR"
+    assert span.attributes["durable.execution.arn"] == "arn:test"
+    assert span.attributes["durable.invocation.first"] is expected_first_invocation
+    assert span.attributes["unrelated.string_boolean"] == "true"
+    assert span.end_time - span.start_time == timedelta(seconds=1)
 
 
 def test_normalizes_dash0_otlp_shape() -> None:

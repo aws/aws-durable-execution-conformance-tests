@@ -11,8 +11,10 @@ import pytest
 
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendError,
     PollingBackend,
     PollingPolicy,
+    RetryableBackendError,
     TelemetryTimeout,
 )
 
@@ -20,8 +22,9 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 class _Backend(PollingBackend):
     name = "fake"
 
-    def __init__(self, responses: list[Trace | None]) -> None:
-        super().__init__(monotonic=lambda: 0.0, sleep=lambda _seconds: None)
+    def __init__(self, responses: list[Trace | BackendError | None]) -> None:
+        self.sleeps: list[float] = []
+        super().__init__(monotonic=lambda: 0.0, sleep=self.sleeps.append)
         self.responses = responses
         self.attempts = 0
 
@@ -29,6 +32,8 @@ class _Backend(PollingBackend):
         del query
         response = self.responses[self.attempts]
         self.attempts += 1
+        if isinstance(response, BackendError):
+            raise response
         return response
 
 
@@ -88,6 +93,83 @@ def test_polling_timeout_has_provider_neutral_context() -> None:
             PollingPolicy(timeout_seconds=10, interval_seconds=0, max_attempts=3),
         )
     assert backend.attempts == 3
+
+
+def test_polling_uses_retryable_error_delay() -> None:
+    expected = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend(
+        [
+            RetryableBackendError("rate limited", retry_after_seconds=7),
+            expected,
+        ]
+    )
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=2, max_attempts=2),
+    )
+
+    assert actual is expected
+    assert backend.sleeps == [7]
+
+
+def test_polling_uses_policy_delay_when_retryable_error_has_no_delay() -> None:
+    expected = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend([RetryableBackendError("rate limited"), expected])
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=2, max_attempts=2),
+    )
+
+    assert actual is expected
+    assert backend.sleeps == [2]
+
+
+def test_polling_does_not_retry_before_policy_interval() -> None:
+    expected = Trace(trace_id="1" * 32, spans=())
+    backend = _Backend(
+        [
+            RetryableBackendError("rate limited", retry_after_seconds=1),
+            expected,
+        ]
+    )
+
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=20, interval_seconds=15, max_attempts=2),
+    )
+
+    assert actual is expected
+    assert backend.sleeps == [15]
+
+
+def test_polling_does_not_retry_non_retryable_errors() -> None:
+    backend = _Backend([BackendError("authentication failed")])
+
+    with pytest.raises(BackendError, match="authentication failed"):
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=2, max_attempts=2),
+        )
+
+    assert backend.attempts == 1
+    assert backend.sleeps == []
+
+
+def test_polling_preserves_exhausted_retryable_error() -> None:
+    rate_limit = RetryableBackendError("HTTP 429 Too Many Requests")
+    backend = _Backend([rate_limit, rate_limit])
+
+    with pytest.raises(RetryableBackendError) as raised:
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=2, max_attempts=2),
+        )
+
+    assert raised.value is rate_limit
+    assert backend.attempts == 2
+    assert backend.sleeps == [2]
 
 
 @pytest.mark.parametrize(

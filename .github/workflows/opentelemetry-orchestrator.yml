@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       resource_prefix:
-        description: Short prefix used by long-running Lambda resources
+        description: Short prefix used by Lambda resources
         required: true
         type: string
       sdk_repository:
@@ -93,11 +93,6 @@ on:
         required: false
         default: us-west-2
         type: string
-      otlp_endpoint:
-        description: OTLP ingest endpoint for an optional Datadog job
-        required: false
-        default: ""
-        type: string
     secrets:
       CONFORMANCE_TEST_ROLE_ARN:
         description: AWS role assumed by the test jobs
@@ -111,14 +106,14 @@ on:
       DASH0_AUTH_TOKEN:
         description: Dash0 API and OTLP authentication token
         required: true
-      DD_API_KEY:
-        description: Datadog API key
-        required: false
-      DD_APPLICATION_KEY:
-        description: Datadog application key
-        required: false
-      DATADOG_OTLP_HEADERS:
-        description: Datadog OTLP request headers
+      DATADOG_ACCESS_TOKEN:
+        description: Datadog API access token used to query spans
+        required: true
+      DATADOG_API_KEY:
+        description: Datadog API key used for OTLP trace intake and retention configuration
+        required: true
+      DATADOG_APPLICATION_KEY:
+        description: Optional Datadog application key used to configure trace retention
         required: false
 
 permissions:
@@ -150,6 +145,7 @@ jobs:
     uses: ./.github/workflows/opentelemetry-suite.yml
     with:
       language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
@@ -167,7 +163,6 @@ jobs:
       suite: otel-invocation
       case_count: 19
       aws_region: ${{ inputs.aws_region }}
-      otlp_endpoint: ${{ inputs.otlp_endpoint }}
     secrets: inherit
 
   execution:
@@ -179,6 +174,7 @@ jobs:
     uses: ./.github/workflows/opentelemetry-suite.yml
     with:
       language: ${{ inputs.language }}
+      resource_prefix: ${{ inputs.resource_prefix }}
       conformance_repository: ${{ inputs.conformance_repository }}
       sdk_repository: ${{ inputs.sdk_repository }}
       sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
@@ -196,7 +192,6 @@ jobs:
       suite: otel-execution
       case_count: 19
       aws_region: ${{ inputs.aws_region }}
-      otlp_endpoint: ${{ inputs.otlp_endpoint }}
     secrets: inherit
 
   long-running-invocation:

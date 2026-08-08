@@ -9,12 +9,13 @@ pure-function tests for ``validate`` belong here too.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.callback import CallbackAction
 from aws_durable_execution_conformance_tests.validate import (
     discover_suites,
     find_matching_action,
+    inherit_wait_for_callback_event_names,
     parse_not_implemented,
 )
 
@@ -32,7 +33,7 @@ def _make_requirement(dir_path: Path, name: str) -> None:
 
 def test_callback_action_name_accepts_regex_matcher() -> None:
     action = CallbackAction(
-        callback_name="${/^otel-callback(?: create callback id|-callback)$/}",
+        callback_name="${/^otel-callback(?: create callback id|-callback)?$/}",
         operation="success",
     )
 
@@ -41,6 +42,34 @@ def test_callback_action_name_accepts_regex_matcher() -> None:
         [action],
         set(),
     ) == (action, 0)
+
+
+def test_wait_for_callback_children_inherit_omitted_names() -> None:
+    events: list[dict[str, Any]] = [
+        {
+            "EventType": "ContextStarted",
+            "SubType": "WaitForCallback",
+            "Id": "context",
+            "Name": "otel-callback",
+        },
+        {
+            "EventType": "CallbackStarted",
+            "ParentId": "context",
+            "CallbackStartedDetails": {"CallbackId": "callback-id"},
+        },
+        {
+            "EventType": "StepStarted",
+            "ParentId": "context",
+        },
+        {
+            "EventType": "StepSucceeded",
+            "ParentId": "context",
+        },
+    ]
+
+    inherit_wait_for_callback_event_names(events)
+
+    assert [event.get("Name") for event in events[1:]] == ["otel-callback"] * 3
 
 
 def test_discovers_folders_with_yaml(tmp_path: Path) -> None:

@@ -18,6 +18,19 @@ class BackendError(RuntimeError):
     """Provider-neutral telemetry backend failure."""
 
 
+class RetryableBackendError(BackendError):
+    """Transient backend failure that may include a server-requested delay."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class TelemetryTimeout(BackendError):
     """Raised when no matching trace arrives before the polling limit."""
 
@@ -25,6 +38,7 @@ class TelemetryTimeout(BackendError):
 class BackendFeatureDisparity(StrEnum):
     """Known fidelity gaps in a backend's normalized telemetry."""
 
+    MILLISECOND_TIMESTAMPS = "millisecond-timestamps"
     SPAN_LINKS = "span-links"
     UNSET_STATUS = "unset-status"
 
@@ -69,20 +83,33 @@ class PollingBackend(ABC):
         started = self._monotonic()
         attempts = 0
         latest_trace: Trace | None = None
+        latest_retryable_error: RetryableBackendError | None = None
         while attempts < policy.max_attempts:
             attempts += 1
-            trace = self._lookup(query)
-            if trace is not None:
-                latest_trace = trace
-                if accept is None or accept(trace):
-                    return trace
+            delay_seconds = policy.interval_seconds
+            try:
+                trace = self._lookup(query)
+            except RetryableBackendError as exc:
+                latest_retryable_error = exc
+                if exc.retry_after_seconds is not None:
+                    delay_seconds = max(delay_seconds, exc.retry_after_seconds)
+            else:
+                latest_retryable_error = None
+                if trace is not None:
+                    latest_trace = trace
+                    if accept is None or accept(trace):
+                        return trace
+            if attempts >= policy.max_attempts:
+                break
             elapsed = self._monotonic() - started
             if elapsed >= policy.timeout_seconds:
                 break
-            self._sleep(min(policy.interval_seconds, policy.timeout_seconds - elapsed))
+            self._sleep(min(delay_seconds, policy.timeout_seconds - elapsed))
 
         if latest_trace is not None:
             return latest_trace
+        if latest_retryable_error is not None:
+            raise latest_retryable_error
 
         raise TelemetryTimeout(
             f"No correlated trace was found in backend {self.name!r} after "

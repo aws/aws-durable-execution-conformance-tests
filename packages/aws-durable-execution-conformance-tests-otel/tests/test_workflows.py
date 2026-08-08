@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contract tests for the reusable OpenTelemetry workflows."""
 
+import runpy
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -17,6 +19,7 @@ RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
 SUITE_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-suite.yml"
 LONG_RUNNING_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-long-running.yml"
 PREPARE_ACTION = ROOT / ".github" / "actions" / "prepare-otel-example" / "action.yml"
+DATADOG_RETENTION_SCRIPT = ROOT / "scripts" / "configure-datadog-retention.py"
 ALL_OTEL_WORKFLOWS = {
     *LANGUAGE_WORKFLOWS.values(),
     ORCHESTRATOR,
@@ -78,6 +81,10 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert inputs["sdk_ref"]["default"] == ""
     assert inputs["conformance_test_ref"]["default"] == ""
     assert inputs["conformance_repository"]["default"] == ("aws/aws-durable-execution-conformance-tests")
+    assert "otlp_endpoint" not in inputs
+    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+        assert call["secrets"][secret]["required"] is True
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
     assert "setup-java" not in text
@@ -148,6 +155,7 @@ def test_language_workflows_are_thin_presets() -> None:
         assert preset["with"]["delay_seconds"] == "${{ inputs.delay_seconds || '82800' }}"
         assert f"name: {DISPLAY_NAMES[language]} OpenTelemetry" in text
         assert "  pull_request:" in text
+        assert "  pull_request:\n    branches: [main]" in text
         assert "  push:" in text
         assert "  schedule:" in text
         assert "  workflow_dispatch:" in text
@@ -169,8 +177,13 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "CONFORMANCE_TEST_ACCOUNT_ID",
         "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
         "DASH0_AUTH_TOKEN",
+        "DATADOG_ACCESS_TOKEN",
+        "DATADOG_API_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
+    assert "otlp_endpoint" not in call["inputs"]
+    assert "otlp_endpoint" not in preset
 
 
 def test_orchestrator_owns_suite_and_long_running_views() -> None:
@@ -188,6 +201,8 @@ def test_orchestrator_owns_suite_and_long_running_views() -> None:
     assert jobs["execution"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
     assert jobs["invocation"]["with"]["suite"] == "otel-invocation"
     assert jobs["execution"]["with"]["suite"] == "otel-execution"
+    for view in ("invocation", "execution"):
+        assert jobs[view]["with"]["resource_prefix"] == "${{ inputs.resource_prefix }}"
     for view in ("invocation", "execution"):
         initial = jobs[f"long-running-{view}"]
         assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
@@ -220,15 +235,16 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
         "${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}"
     )
     assert call["inputs"]["language"]["required"] is True
+    assert call["inputs"]["resource_prefix"]["required"] is True
     assert call["inputs"]["conformance_repository"]["required"] is True
     assert call["inputs"]["setup_command"]["default"] == ""
+    assert "otlp_endpoint" not in call["inputs"]
     assert "examples/${{ inputs.language }}/template.yaml" in text
     assert "runtime_language" not in call["inputs"]
     assert '--language "$LANGUAGE"' in text
     assert '"OtelSuite=$OTEL_SUITE"' in text
     assert '"OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME"' in text
     assert "--report console json junit github" in text
-    assert "--report console github" in text
 
 
 def test_workers_load_support_from_their_own_workflow_revision() -> None:
@@ -276,12 +292,84 @@ def test_dash0_and_s3_resources_remain_stable() -> None:
     assert backend["env"]["DASH0_OTLP_ENDPOINT"] == "https://ingress.us-west-2.aws.dash0.com"
     assert backend["env"]["DASH0_AUTH_TOKEN"] == "${{ secrets.DASH0_AUTH_TOKEN }}"
     assert backend["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == ("Authorization=Bearer%20${{ secrets.DASH0_AUTH_TOKEN }}")
+    assert backend["if"] == s3["if"]
+    assert backend["if"] == (
+        "github.event_name != 'pull_request' || "
+        "(github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)"
+    )
     assert s3["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-s3-")
     assert 'OTEL_S3_BUCKET="dex-otel-${LANGUAGE}-${OTEL_VIEW_SUFFIX}-${TEST_ACCOUNT_ID}-${AWS_REGION}"' in text
     assert "aws s3api head-bucket" in text
     assert 'aws s3 rm "s3://$OTEL_S3_BUCKET/$OTEL_S3_PREFIX" --recursive' in text
     assert "aws s3api delete-bucket" not in text
     assert "aws lambda delete-layer-version" not in text
+
+
+def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
+    workflow = _load(SUITE_WORKFLOW)
+    datadog = workflow["jobs"]["datadog"]
+    backend = workflow["jobs"]["backend"]
+    steps = {step["name"]: step for step in datadog["steps"]}
+    commands = "\n".join(step.get("run", "") for step in datadog["steps"])
+
+    assert datadog["if"] == backend["if"]
+    assert datadog["env"]["DATADOG_ACCESS_TOKEN"] == "${{ secrets.DATADOG_ACCESS_TOKEN }}"
+    assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com"
+    assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"
+    assert datadog["env"]["TEST_NAME"] == (
+        "${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
+    )
+    assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
+    assert datadog["concurrency"] == {
+        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
+        "cancel-in-progress": False,
+    }
+    assert steps["Configure Datadog trace retention"]["run"] == (
+        "hatch run python scripts/configure-datadog-retention.py"
+    )
+    assert steps["Configure Datadog trace retention"]["env"] == {
+        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
+        "DATADOG_APPLICATION_KEY": "${{ secrets.DATADOG_APPLICATION_KEY }}",
+    }
+    assert "--otel-exporter community" in commands
+    assert '--otel-endpoint "$DATADOG_OTLP_ENDPOINT"' in commands
+    assert "--otel-poll-interval 15" in commands
+    assert "--otel-backend datadog" in commands
+    assert "--max-workers 2" in commands
+    assert "--no-cleanup" in commands
+    assert "DD_API_KEY" not in datadog["env"]
+    assert "DD_APPLICATION_KEY" not in datadog["env"]
+    assert "DATADOG_OTLP_HEADERS" not in datadog["env"]
+    assert steps["Delete rolled-back test stacks"]["env"]["LEGACY_STACK_PREFIX"] == (
+        "${{ inputs.legacy_stack_prefix }}"
+    )
+    assert steps["Upload reports and histories"]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_javascript_datadog_target_name_fits_lambda_limit() -> None:
+    javascript = _load(LANGUAGE_WORKFLOWS["javascript"])
+    resource_prefix = javascript["jobs"]["conformance"]["with"]["resource_prefix"]
+    test_name = f"{resource_prefix}-datadog-exec"
+    target_name = f"conformance-tests-{test_name}-otel-execution-11-target"
+
+    assert target_name == "conformance-tests-js-datadog-exec-otel-execution-11-target"
+    assert len(target_name) <= 64
+
+
+def test_datadog_retention_setup_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("DATADOG_API_KEY", "api-secret")
+    monkeypatch.delenv("DATADOG_APPLICATION_KEY", raising=False)
+    namespace = runpy.run_path(str(DATADOG_RETENTION_SCRIPT), run_name="datadog_retention_script")
+
+    namespace["main"]()
+
+    assert capsys.readouterr().out == (
+        "Skipping automatic Datadog retention setup because DATADOG_APPLICATION_KEY is not configured; "
+        "a 100% retention filter for service:durable-execution-conformance must already exist\n"
+    )
 
 
 def test_long_running_worker_is_reusable_and_language_neutral() -> None:

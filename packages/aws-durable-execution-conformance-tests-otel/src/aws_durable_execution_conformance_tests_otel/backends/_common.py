@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -16,8 +17,50 @@ from aws_durable_execution_conformance_tests_otel.model import (
     Trace,
     normalize_id,
 )
-from aws_durable_execution_conformance_tests_otel.polling import BackendError
-from aws_durable_execution_conformance_tests_otel.redaction import redact
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendError,
+    RetryableBackendError,
+)
+from aws_durable_execution_conformance_tests_otel.redaction import environment_secrets, redact
+
+_HTTP_ERROR_BODY_LIMIT = 2048
+
+
+def _http_error_body(
+    error: urllib.error.HTTPError,
+    *,
+    secrets: tuple[str, ...],
+) -> str | None:
+    raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
+    if not raw:
+        return None
+    truncated = len(raw) > _HTTP_ERROR_BODY_LIMIT
+    text = raw[:_HTTP_ERROR_BODY_LIMIT].decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        safe = str(redact(text, secrets=secrets))
+    else:
+        safe = json.dumps(redact(parsed, secrets=secrets), separators=(",", ":"))
+    return f"{safe}{' [truncated]' if truncated else ''}"
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
+    if error.headers is None:
+        return None
+    for header in ("Retry-After", "X-RateLimit-Reset"):
+        value = error.headers.get(header)
+        if value is None:
+            continue
+        try:
+            seconds = float(value)
+        except ValueError:
+            continue
+        if seconds >= 0 and math.isfinite(seconds):
+            return seconds
+    return None
 
 
 class HttpClient(Protocol):
@@ -54,11 +97,26 @@ class JsonHttpClient:
                 **dict(headers or {}),
             },
         )
+        secrets = (*environment_secrets(), *(headers or {}).values())
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 payload = json.loads(response.read() or b"{}")
-        except (json.JSONDecodeError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-            safe_url = redact(url)
+        except urllib.error.HTTPError as exc:
+            safe_url = redact(url, secrets=secrets)
+            safe_reason = redact(str(exc.reason), secrets=secrets)
+            response_body = _http_error_body(exc, secrets=secrets)
+            detail = f"HTTP {exc.code} {safe_reason}".rstrip()
+            if response_body is not None:
+                detail = f"{detail}; response body={response_body!r}"
+            message = f"Telemetry backend request to {safe_url!r} failed: {detail}"
+            if exc.code == 429:
+                raise RetryableBackendError(
+                    message,
+                    retry_after_seconds=_retry_after_seconds(exc),
+                ) from exc
+            raise BackendError(message) from exc
+        except (json.JSONDecodeError, urllib.error.URLError, TimeoutError) as exc:
+            safe_url = redact(url, secrets=secrets)
             raise BackendError(f"Telemetry backend request to {safe_url!r} failed: {type(exc).__name__}") from exc
         if not isinstance(payload, Mapping):
             raise BackendError("Telemetry backend returned a non-object JSON response")
