@@ -81,6 +81,28 @@ def _trace_id(outer: Mapping[str, Any], attributes: Mapping[str, Any]) -> str | 
     return _decimal_id(outer.get("trace_id", outer.get("traceId")), 32)
 
 
+def _native_trace_ids(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    trace_ids: list[str] = []
+    for item in payload.get("data", []):
+        if not isinstance(item, Mapping):
+            continue
+        outer = item.get("attributes")
+        if not isinstance(outer, Mapping):
+            continue
+        trace_id = outer.get("trace_id", outer.get("traceId"))
+        if trace_id is None:
+            continue
+        value = str(trace_id)
+        if value not in trace_ids:
+            trace_ids.append(value)
+    return tuple(trace_ids)
+
+
+def _quoted_search_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def normalize_datadog(payload: Mapping[str, Any]) -> list[Trace]:
     """Normalize Datadog v2 span-search events."""
 
@@ -231,7 +253,15 @@ class DatadogBackend(PollingBackend):
                 for execution_arn in (query.execution_arns or (query.execution_arn,))
             )
             search = f"service:{query.service_name} ({arn_search})"
-        return matching_trace(self._merge_search_results(self._search(query, search)), query)
+        discovery = self._search(query, search)
+        traces = self._merge_search_results(discovery)
+        # Span search returns only matching events, so expand each discovered trace
+        # to include untagged Lambda parent spans retained with it.
+        native_trace_ids = _native_trace_ids(discovery)
+        if native_trace_ids:
+            trace_search = " OR ".join(f"trace_id:{_quoted_search_value(trace_id)}" for trace_id in native_trace_ids)
+            traces = self._merge_search_results(self._search(query, trace_search))
+        return matching_trace(traces, query)
 
     def _merge_search_results(self, payload: Mapping[str, Any]) -> list[Trace]:
         for trace in normalize_datadog(payload):

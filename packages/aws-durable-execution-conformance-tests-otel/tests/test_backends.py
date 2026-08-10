@@ -295,13 +295,32 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
 
 
 def test_datadog_queries_span_search_and_correlates_execution() -> None:
+    lambda_span = {
+        "id": "event-0",
+        "type": "spans",
+        "attributes": {
+            "trace_id": "10",
+            "span_id": "6",
+            "parent_id": "0",
+            "service": "aws.lambda",
+            "resource_name": "invoke",
+            "start_timestamp": "2026-01-01T00:00:00Z",
+            "end_timestamp": "2026-01-01T00:00:01Z",
+            "custom": {
+                "otel": {
+                    "trace_id": "11111111111111111111111111111111",
+                },
+                "span": {"kind": "server"},
+            },
+        },
+    }
     discovery_span = {
         "id": "event-1",
         "type": "spans",
         "attributes": {
             "trace_id": "10",
             "span_id": "7",
-            "parent_id": "0",
+            "parent_id": "6",
             "service": "conformance",
             "resource_name": "step",
             "start_timestamp": "2026-01-01T00:00:00Z",
@@ -342,6 +361,7 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
             "meta": {"page": {"after": "page-2"}},
         },
         {"data": [child_span]},
+        {"data": [lambda_span, discovery_span, child_span]},
     )
     backend = DatadogBackend(
         "https://api.datadoghq.com",
@@ -357,11 +377,13 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     )
 
     assert trace.trace_id == "1" * 32
-    assert len(trace.spans) == 2
+    assert len(trace.spans) == 3
     assert trace.spans[0].service_name == "conformance"
+    assert trace.spans[0].parent_span_id == "0000000000000006"
     assert trace.spans[1].parent_span_id == "0000000000000007"
     assert trace.spans[1].status == "ERROR"
-    assert [call[0] for call in http.calls] == ["POST"] * 2
+    assert trace.spans[2].service_name == "aws.lambda"
+    assert [call[0] for call in http.calls] == ["POST"] * 3
     assert all(call[1] == "https://api.datadoghq.com/api/v2/spans/events/search" for call in http.calls)
     assert all(headers == {"Authorization": "Bearer access-secret"} for headers in http.headers)
     assert http.calls[0][2] == {
@@ -381,6 +403,9 @@ def test_datadog_queries_span_search_and_correlates_execution() -> None:
     second_body = http.calls[1][2]
     assert second_body is not None
     assert second_body["data"]["attributes"]["page"]["cursor"] == "page-2"
+    third_body = http.calls[2][2]
+    assert third_body is not None
+    assert third_body["data"]["attributes"]["filter"]["query"] == 'trace_id:"10"'
 
 
 def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
@@ -410,7 +435,10 @@ def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
 
     source = span("10", "1" * 32, "7", "Workflow", "arn:test")
     target = span("30", "3" * 32, "8", "Invocation", "arn:target")
-    http = _Http({"data": [source, target]})
+    http = _Http(
+        {"data": [source, target]},
+        {"data": [source, target]},
+    )
     backend = DatadogBackend(
         "https://api.datadoghq.com",
         "access-secret",
@@ -431,12 +459,15 @@ def test_datadog_discovers_and_correlates_all_execution_arns() -> None:
     assert first_body["data"]["attributes"]["filter"]["query"] == (
         'service:conformance (@durable.execution.arn:"arn:test" OR @durable.execution.arn:"arn:target")'
     )
-    assert len(http.calls) == 1
+    assert len(http.calls) == 2
     assert trace.trace_id == "1" * 32
     assert {item.attributes["durable.execution.arn"] for item in trace.spans} == {
         "arn:test",
         "arn:target",
     }
+    second_body = http.calls[1][2]
+    assert second_body is not None
+    assert second_body["data"]["attributes"]["filter"]["query"] == ('trace_id:"10" OR trace_id:"30"')
 
 
 def test_datadog_accumulates_partial_search_results_across_polling_attempts() -> None:
@@ -461,7 +492,12 @@ def test_datadog_accumulates_partial_search_results_across_polling_attempts() ->
 
     root = span("7", "Workflow")
     child = span("8", "attempt", "7")
-    http = _Http({"data": [root]}, {"data": [child]})
+    http = _Http(
+        {"data": [root]},
+        {"data": [root]},
+        {"data": [child]},
+        {"data": [child]},
+    )
     backend = DatadogBackend(
         "https://api.datadoghq.com",
         "access-secret",
@@ -476,7 +512,7 @@ def test_datadog_accumulates_partial_search_results_across_polling_attempts() ->
     )
 
     assert [item.name for item in trace.spans] == ["Workflow", "attempt"]
-    assert len(http.calls) == 2
+    assert len(http.calls) == 4
 
 
 def test_datadog_rejects_repeated_pagination_cursor() -> None:
