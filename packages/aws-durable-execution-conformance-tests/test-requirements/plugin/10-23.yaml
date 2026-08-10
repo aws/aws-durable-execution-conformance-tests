@@ -2,9 +2,10 @@
 # 10.23: Context-typed hook info field shape
 description: Context operations expose subType tokens and user-function hooks expose the children-replay indicator
 handler: |
-  A parallel operation named "ctx" with max-concurrency 1 and two branches:
-  branch A runs a step named "inner" returning "x", then a 2-second wait, and
-  returns "a-done"; branch B returns "b-done" directly. The instrumentation
+  A parallel operation named "ctx" with max-concurrency 1 and two NAMED
+  branches: branch "branch-a" runs a step named "inner" returning "x", then a
+  2-second wait, and returns "a-done"; branch "branch-b" returns "b-done"
+  directly. The instrumentation
   plugin (filtering to CONTEXT-type operations) logs ONE single-line JSON
   record per hook event: a CANONICAL camelCase DUMP of that hook's OWN info
   parameter — unset or unexposed fields OMITTED (a missing key fails its
@@ -24,17 +25,19 @@ handler: |
 invocations: |
   - Invocation 1: the parallel context "ctx" starts (operation-start for the
     parent with a Parallel subType token, isReplay=false). With
-    max-concurrency 1, branch A's function runs LIVE
+    max-concurrency 1, branch-a's function runs LIVE
     (fn-start isReplayingChildren=false): the "inner" step executes, the
     2-second wait starts, and the execution suspends mid-branch.
-  - Replay 1 (~2s): branch A's function RE-RUNS so its checkpointed children
-    (the step and the wait) replay. The wait has completed, branch A returns
-    "a-done"; branch B's function then runs LIVE and returns "b-done"; the
+  - Replay 1 (~2s): branch-a's function RE-RUNS so its checkpointed children
+    (the step and the wait) replay. The wait has completed, branch-a returns
+    "a-done"; branch-b's function then runs LIVE and returns "b-done"; the
     execution succeeds returning ["a-done", "b-done"]. Whether the re-run's
     record reports isReplayingChildren=true depends on service-side
     checkpoint timing (observed nondeterministic live), so the indicator is
-    asserted by KEY PRESENCE on every branch fn-start record and its value
-    is left to the dumps.
+    asserted by KEY PRESENCE, correlated per branch by name: branch-a must
+    produce at least 2 key-bearing fn-start records (live + replay) and
+    branch-b at least 1, so neither branch's records can stand in for the
+    other's and branch-a's replayed re-run must itself bear the key.
   Because branch event ids are deterministic only for the parent under
   suspension-driven replays, only the parent ContextStarted event is asserted
   in the history; the behavior under test is asserted through the log
@@ -62,35 +65,57 @@ ExpectedLogs:
       subType: /(?i)^parallel$/
       isReplay: false
     count: 1
-  # Both branch contexts start live with a branch subType token
+  # Each named branch context starts live exactly once with a branch subType
+  # token (name-bound: one probe per branch)
   - match:
       plugin: CONFPLUGIN
       hook: operation-start
+      name: branch-a
       type: /(?i)context/
       subType: /(?i)branch/
       isReplay: false
-    count: 2
-  # Both branch functions run live at least once each (branch A in invocation
-  # 1, branch B in the replay invocation) with children-replay=false. At-least:
+    count: 1
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      name: branch-b
+      type: /(?i)context/
+      subType: /(?i)branch/
+      isReplay: false
+    count: 1
+  # Each branch function runs live at least once (branch-a in invocation 1,
+  # branch-b in the replay invocation) with children-replay=false. At-least:
   # some SDKs also re-run a COMPLETED childless branch function during replay,
   # legitimately reporting false again.
   - match:
       plugin: CONFPLUGIN
       hook: fn-start
-      subType: /(?i)branch/
+      name: branch-a
       isReplayingChildren: false
-    min_count: 2
-  # THE field-surface probe: every branch fn-start record carries the
-  # children-replay indicator key — including branch A's REPLAY re-run. The
-  # minimum of 3 (branch A live + branch A replay + branch B live) cannot be
-  # satisfied by the two live records alone, so the replayed re-run must also
-  # bear the key. The indicator's TRUE value depends on service-side
-  # checkpoint timing (read from the checkpointed context details) and proved
-  # nondeterministic across live runs, so values are dumped for observability
-  # but only key presence is asserted.
+    min_count: 1
   - match:
       plugin: CONFPLUGIN
       hook: fn-start
-      subType: /(?i)branch/
+      name: branch-b
+      isReplayingChildren: false
+    min_count: 1
+  # THE field-surface probe, correlated per branch by name: branch-a fires
+  # fn-start at least twice (live + its replayed re-run) and every one must
+  # bear the children-replay indicator key — branch-b's records cannot stand
+  # in for branch-a's, so the replayed re-run itself must carry the key.
+  # The indicator's TRUE value depends on service-side checkpoint timing
+  # (read from the checkpointed context details) and proved nondeterministic
+  # across live runs, so values are dumped for observability but only key
+  # presence is asserted.
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-start
+      name: branch-a
       isReplayingChildren: /.*/
-    min_count: 3
+    min_count: 2
+  - match:
+      plugin: CONFPLUGIN
+      hook: fn-start
+      name: branch-b
+      isReplayingChildren: /.*/
+    min_count: 1
