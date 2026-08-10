@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contract tests for the reusable OpenTelemetry workflows."""
 
+import os
 import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,6 +38,29 @@ def _load(path: Path) -> dict:
 
 def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
+
+
+def _run_resolver_validation(resource_prefix: str) -> subprocess.CompletedProcess[str]:
+    workflow = _load(RESOLVER_WORKFLOW)
+    validation = next(
+        step for step in workflow["jobs"]["resolve"]["steps"] if step["name"] == "Validate workflow inputs"
+    )
+    return subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", validation["run"]],
+        env={
+            **os.environ,
+            "ADOT_LAYER_ARN": "",
+            "ADOT_RELEASE_REPOSITORY": "aws-observability/aws-otel-python-instrumentation",
+            "CONFORMANCE_REPOSITORY": "aws/aws-durable-execution-conformance-tests",
+            "LANGUAGE": "python",
+            "REQUESTED_PHASE": "short",
+            "RESOURCE_PREFIX": resource_prefix,
+            "SDK_REPOSITORY": "aws/aws-durable-execution-sdk-python",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_one_shared_worker_owns_each_otel_lifecycle() -> None:
@@ -161,6 +186,24 @@ def test_language_workflows_are_thin_presets() -> None:
         assert "  workflow_dispatch:" in text
         assert COLLECTOR_PATH_FILTER in text
         assert "hatch run validate" not in text
+
+
+@pytest.mark.parametrize(
+    ("resource_prefix", "expected_return_code"),
+    [
+        ("abc123-x", 0),
+        ("abc123-xy", 1),
+    ],
+)
+def test_resource_prefix_validation_matches_lambda_name_limit(
+    resource_prefix: str,
+    expected_return_code: int,
+) -> None:
+    result = _run_resolver_validation(resource_prefix)
+
+    assert result.returncode == expected_return_code
+    if expected_return_code:
+        assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
 
 
 def test_python_preset_preserves_its_external_caller_contract() -> None:
@@ -319,7 +362,10 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
     assert datadog["env"]["TEST_NAME"] == (
         "${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
     )
-    assert datadog["env"]["TEST_STACK_NAME"].startswith("conformance-tests-${{ inputs.language }}-datadog-")
+    assert datadog["env"]["TEST_STACK_NAME"] == f"conformance-tests-{datadog['env']['TEST_NAME']}"
+    assert datadog["env"]["LEGACY_DATADOG_STACK_NAME"] == (
+        "conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
+    )
     assert datadog["concurrency"] == {
         "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
         "cancel-in-progress": False,
@@ -343,17 +389,17 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
     assert steps["Delete rolled-back test stacks"]["env"]["LEGACY_STACK_PREFIX"] == (
         "${{ inputs.legacy_stack_prefix }}"
     )
+    assert 'stack_names+=("$LEGACY_DATADOG_STACK_NAME")' in steps["Delete rolled-back test stacks"]["run"]
     assert steps["Upload reports and histories"]["with"]["if-no-files-found"] == "ignore"
 
 
-def test_javascript_datadog_target_name_fits_lambda_limit() -> None:
-    javascript = _load(LANGUAGE_WORKFLOWS["javascript"])
-    resource_prefix = javascript["jobs"]["conformance"]["with"]["resource_prefix"]
+def test_maximum_resource_prefix_fits_datadog_target_lambda_limit() -> None:
+    resource_prefix = "abc123-x"
     test_name = f"{resource_prefix}-datadog-exec"
     target_name = f"conformance-tests-{test_name}-otel-execution-11-target"
 
-    assert target_name == "conformance-tests-js-datadog-exec-otel-execution-11-target"
-    assert len(target_name) <= 64
+    assert len(resource_prefix) == 8
+    assert len(target_name) == 64
 
 
 def test_datadog_retention_setup_is_optional(

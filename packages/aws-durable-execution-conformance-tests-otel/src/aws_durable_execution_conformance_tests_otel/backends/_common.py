@@ -41,7 +41,7 @@ def _http_error_body(
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        safe = str(redact(text, secrets=secrets))
+        safe = "[non-JSON response body omitted]"
     else:
         safe = json.dumps(redact(parsed, secrets=secrets), separators=(",", ":"))
     return f"{safe}{' [truncated]' if truncated else ''}"

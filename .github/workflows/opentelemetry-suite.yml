@@ -333,10 +333,11 @@ jobs:
       DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
       DATADOG_OTLP_ENDPOINT: https://otlp.datadoghq.com
       HISTORY_DIR: /tmp/${{ inputs.language }}-otel-datadog-history
+      LEGACY_DATADOG_STACK_NAME: conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
       OTEL_EXPORTER_OTLP_HEADERS: dd-api-key=${{ secrets.DATADOG_API_KEY }}
       REPORT_FILE: /tmp/${{ inputs.language }}-otel-datadog-report
       TEST_NAME: ${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
-      TEST_STACK_NAME: conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_STACK_NAME: conformance-tests-${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out conformance tests
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -376,6 +377,9 @@ jobs:
           LEGACY_STACK_PREFIX: ${{ inputs.legacy_stack_prefix }}
         run: |
           stack_names=("$TEST_STACK_NAME")
+          if [ "$LEGACY_DATADOG_STACK_NAME" != "$TEST_STACK_NAME" ]; then
+            stack_names+=("$LEGACY_DATADOG_STACK_NAME")
+          fi
           if [ -n "$LEGACY_STACK_PREFIX" ]; then
             stack_names+=("$LEGACY_STACK_PREFIX-datadog")
           fi

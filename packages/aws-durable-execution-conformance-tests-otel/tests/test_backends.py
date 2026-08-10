@@ -148,6 +148,40 @@ def test_json_http_client_bounds_http_error_body(
     assert len(message) < 2200
 
 
+def test_json_http_client_omits_truncated_json_with_secret_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_request(
+        _request: urllib.request.Request,
+        *,
+        timeout: int,
+    ) -> None:
+        del timeout
+        body = json.dumps(
+            {
+                "token": "response-secret",
+                "padding": "x" * 4096,
+            }
+        ).encode()
+        raise urllib.error.HTTPError(
+            "https://example.com/search",
+            500,
+            "Internal Server Error",
+            Message(),
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_request)
+
+    with pytest.raises(BackendError) as raised:
+        JsonHttpClient().request_json("GET", "https://example.com/search")
+
+    message = str(raised.value)
+    assert "response body='[non-JSON response body omitted] [truncated]'" in message
+    assert "response-secret" not in message
+    assert '"token"' not in message
+
+
 @pytest.mark.parametrize(
     ("response_headers", "expected_delay"),
     [
