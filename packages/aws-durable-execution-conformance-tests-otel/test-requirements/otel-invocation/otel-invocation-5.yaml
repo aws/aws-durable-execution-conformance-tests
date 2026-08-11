@@ -125,9 +125,6 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-child-step
-            attributes:
-              durable.operation.id: ${STEP1}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}

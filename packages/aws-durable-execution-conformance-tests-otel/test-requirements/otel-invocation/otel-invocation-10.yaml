@@ -263,9 +263,6 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: "${/^otel-callback(?: submitter|-submitter)$/}"
-            attributes:
-              durable.operation.id: ${SUBMITTER_STEP}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}

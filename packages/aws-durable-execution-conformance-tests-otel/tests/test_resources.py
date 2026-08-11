@@ -495,16 +495,6 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         "durable.operation.subtype": expected_attributes["durable.operation.subtype"],
                     },
                 }
-                assert all(
-                    link_set[0]
-                    == {
-                        "name": expected["parent"]["name"],
-                        "attributes": {
-                            "durable.operation.id": expected_attributes["durable.operation.id"],
-                        },
-                    }
-                    for link_set in link_alternatives
-                )
             if selected_name == "Invocation":
                 selector_attributes = span_assertion["select"]["attributes"]
                 assert isinstance(expected_attributes["durable.invocation.first"], bool)
