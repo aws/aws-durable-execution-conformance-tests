@@ -17,6 +17,7 @@ class ExporterOptions:
     region: str
     endpoint: str | None
     service_name: str
+    backend: str | None = None
     layer_arn: str | None = None
 
 
@@ -123,6 +124,8 @@ class CommunityExporterProfile:
             "OTEL_EXPORTER_OTLP_ENDPOINT": options.endpoint,
             "OTEL_TRACES_EXPORTER": "otlp",
         }
+        if runtime == "javascript" and options.backend == "datadog":
+            environment["OTEL_METRICS_EXPORTER"] = "none"
         secret_names = ("OTEL_EXPORTER_OTLP_HEADERS",)
         return ExporterConfiguration(
             layer_arns=(layer,),
@@ -147,6 +150,8 @@ def _parameters(
     }
     if endpoint := environment.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         parameters["OtelExporterEndpoint"] = endpoint
+    if metrics_exporter := environment.get("OTEL_METRICS_EXPORTER"):
+        parameters["OtelMetricsExporter"] = metrics_exporter
     if secret_names:
         parameters["OtelSecretEnvironmentNames"] = ",".join(secret_names)
     return parameters

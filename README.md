@@ -99,11 +99,17 @@ hatch run validate \
 
 Credentials are read only from the environment:
 
-- Datadog: `DD_API_KEY`, `DD_APPLICATION_KEY`
+- Datadog search API: `DATADOG_ACCESS_TOKEN`
+- Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
+- Optional automated Datadog retention setup: `DATADOG_APPLICATION_KEY`
 - Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
+
+When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
+already have a 100% APM retention filter for
+`service:durable-execution-conformance`.
 
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)

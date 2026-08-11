@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 from aws_durable_execution_conformance_tests.history import get_regex_pattern
@@ -26,6 +27,15 @@ _EXECUTION_ATTRIBUTE_KEYS = (
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
 _TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
+_MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
+
+
+def _timestamp_tolerance(
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> timedelta:
+    if BackendFeatureDisparity.MILLISECOND_TIMESTAMPS in feature_disparities:
+        return _MILLISECOND_TIMESTAMP_TOLERANCE
+    return timedelta(0)
 
 
 def _attribute_values(
@@ -256,15 +266,16 @@ def _parent_expectation_errors(
     if allow_outside:
         return []
 
+    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     candidate_errors = []
     for parent in matching_parents:
         errors: list[str] = []
-        if span.start_time < parent.start_time:
+        if parent.start_time - span.start_time > timestamp_tolerance:
             errors.append(
                 f"{path}: child span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
                 f"before parent span {parent.name!r} ({parent.span_id}) starts at {parent.start_time.isoformat()}"
             )
-        if span.end_time > parent.end_time:
+        if span.end_time - parent.end_time > timestamp_tolerance:
             errors.append(
                 f"{path}: child span {span.name!r} ({span.span_id}) ends at {span.end_time.isoformat()}, "
                 f"after parent span {parent.name!r} ({parent.span_id}) ends at {parent.end_time.isoformat()}"
@@ -418,26 +429,27 @@ def _temporal_relation_errors(
         return [f"{path} matched {len(matches)} spans; it must select exactly one"]
 
     related_span = matches[0]
+    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     selected_description = f"{selected_span.name!r} ({selected_span.span_id})"
     related_description = f"{related_span.name!r} ({related_span.span_id})"
-    if relation == "before" and selected_span.end_time > related_span.start_time:
+    if relation == "before" and selected_span.end_time - related_span.start_time > timestamp_tolerance:
         return [
             f"{path}: span {selected_description} ends at {selected_span.end_time.isoformat()}, "
             f"after span {related_description} starts at {related_span.start_time.isoformat()}"
         ]
-    if relation == "after" and selected_span.start_time < related_span.end_time:
+    if relation == "after" and related_span.end_time - selected_span.start_time > timestamp_tolerance:
         return [
             f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
             f"before span {related_description} ends at {related_span.end_time.isoformat()}"
         ]
     if relation == "inside":
         errors = []
-        if selected_span.start_time < related_span.start_time:
+        if related_span.start_time - selected_span.start_time > timestamp_tolerance:
             errors.append(
                 f"{path}: span {selected_description} starts at {selected_span.start_time.isoformat()}, "
                 f"before containing span {related_description} starts at {related_span.start_time.isoformat()}"
             )
-        if selected_span.end_time > related_span.end_time:
+        if selected_span.end_time - related_span.end_time > timestamp_tolerance:
             errors.append(
                 f"{path}: span {selected_description} ends at {selected_span.end_time.isoformat()}, "
                 f"after containing span {related_description} ends at {related_span.end_time.isoformat()}"
@@ -623,8 +635,9 @@ def validate_trace(
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")
 
+    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     for span in trace.spans:
-        if span.start_time > span.end_time:
+        if span.start_time - span.end_time > timestamp_tolerance:
             errors.append(
                 f"Span {span.name!r} ({span.span_id}) starts at {span.start_time.isoformat()}, "
                 f"after it ends at {span.end_time.isoformat()}"

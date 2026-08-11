@@ -45,6 +45,10 @@ Parameters:
     Type: String
     Default: ""
     Description: Non-secret OTLP endpoint used by community exporters
+  OtelMetricsExporter:
+    Type: String
+    Default: ""
+    Description: Optional OpenTelemetry metrics exporter override
   OtelExporterHeaders:
     Type: String
     Default: ""
@@ -57,6 +61,7 @@ Parameters:
 
 Conditions:
   HasOtelCollectorLayer: !Not [!Equals [!Ref OtelCollectorLayerArn, ""]]
+  HasOtelMetricsExporter: !Not [!Equals [!Ref OtelMetricsExporter, ""]]
   DeployInvocationView: !Or
     - !Equals [!Ref OtelSuite, all]
     - !Equals [!Ref OtelSuite, otel-invocation]
@@ -87,6 +92,10 @@ Globals:
         OTEL_EXPORTER_OTLP_ENDPOINT: !Ref OtelExporterEndpoint
         OTEL_EXPORTER_OTLP_HEADERS: !Ref OtelExporterHeaders
         OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+        OTEL_METRICS_EXPORTER: !If
+          - HasOtelMetricsExporter
+          - !Ref OtelMetricsExporter
+          - !Ref "AWS::NoValue"
         OTEL_NODE_ENABLED_INSTRUMENTATIONS: aws-lambda
         OTEL_PLUGIN_MODE: invocation
         OTEL_PROPAGATORS: xray

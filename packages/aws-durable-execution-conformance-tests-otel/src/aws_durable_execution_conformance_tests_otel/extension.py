@@ -275,6 +275,7 @@ class OtelExtension:
             region=args.region,
             endpoint=args.otel_endpoint,
             service_name=args.otel_service_name,
+            backend=args.otel_backend,
             layer_arn=args.otel_layer_arn,
         )
 

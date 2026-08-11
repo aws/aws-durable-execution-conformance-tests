@@ -334,6 +334,7 @@ def test_python_s3_job_builds_and_queries_the_collector() -> None:
     assert "Community layer + test collector" not in workflow
     assert "collector_query_endpoint" not in workflow
     assert "  s3_collector:" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "github.base_ref == 'main'" in workflow
     assert "open-telemetry/opentelemetry-lambda" in workflow
     assert "layer-collector/0.22.0" in workflow

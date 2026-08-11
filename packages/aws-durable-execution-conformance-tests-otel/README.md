@@ -73,7 +73,7 @@ syntax and supported span fields.
 | Exporter | Backend | Credentials |
 |---|---|---|
 | ADOT | X-Ray | AWS credential chain |
-| Community layer | Datadog | `DD_API_KEY`, `DD_APPLICATION_KEY` |
+| Community layer | Datadog | `DATADOG_ACCESS_TOKEN`, `DATADOG_API_KEY` |
 | Community layer | Dash0 | `DASH0_AUTH_TOKEN` |
 | Community layer | AWS S3 collector | AWS credential chain |
 
@@ -148,6 +148,33 @@ sampling disabled.
 The hosted Java, Python, and JavaScript suite workflows run Dash0 beside X-Ray
 using the `us-west-2` Dash0 API and ingress endpoints. They use
 `DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
+
+## Datadog
+
+The `datadog` backend queries `POST /api/v2/spans/events/search`. Set
+`DATADOG_ACCESS_TOKEN` to a read-capable OAuth access token. Pass a non-default
+API base URL through `--otel-backend-endpoint`, or select another Datadog site
+with `DD_SITE`. The backend locates a correlated span by service name and
+durable execution ARN, follows cursor pagination, and accumulates newly indexed
+spans across polling attempts. Conformance spans carry the execution ARN used
+by this query, so the backend does not need a second full-trace search.
+Datadog search results expose millisecond timestamps, so temporal assertions
+allow at most 1 ms of backend-specific rounding at span boundaries.
+
+The shared Java, Python, and JavaScript suite workflow uses the generic
+`https://otlp.datadoghq.com` OTLP base endpoint and runs Datadog beside X-Ray
+and Dash0. The JavaScript examples reuse the Lambda layer's global tracer
+provider so endpoint and authentication settings are applied once instead of
+creating a second unauthenticated exporter. The workflow reads the API access
+token from `DATADOG_ACCESS_TOKEN` and the intake API key from
+`DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
+
+Before running a suite, the workflow uses `DATADOG_API_KEY` and the optional
+`DATADOG_APPLICATION_KEY` to create or update a 100% APM retention filter for
+`service:durable-execution-conformance`. Without the application key, that
+filter must already exist in the Datadog account. Complete retention is
+required because the suites validate every plugin span and cannot pass against
+a sampled or partially indexed trace.
 
 ## AWS S3 Collector
 

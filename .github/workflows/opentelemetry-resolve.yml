@@ -85,8 +85,8 @@ jobs:
             echo "language must contain 1-20 lowercase resource-safe characters"
             exit 1
           fi
-          if [[ ! "$RESOURCE_PREFIX" =~ ^[a-z][a-z0-9-]{0,11}$ ]]; then
-            echo "resource_prefix must contain 1-12 lowercase resource-safe characters"
+          if [[ ! "$RESOURCE_PREFIX" =~ ^[a-z][a-z0-9-]{0,7}$ ]]; then
+            echo "resource_prefix must contain 1-8 lowercase resource-safe characters"
             exit 1
           fi
           for required_repository in \

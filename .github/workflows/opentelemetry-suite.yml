@@ -7,6 +7,10 @@ on:
         description: Stable language key used in resource and artifact names
         required: true
         type: string
+      resource_prefix:
+        description: Short prefix used by Lambda resources
+        required: true
+        type: string
       conformance_repository:
         description: GitHub repository containing the conformance tests
         required: true
@@ -84,12 +88,6 @@ on:
         required: false
         default: us-west-2
         type: string
-      otlp_endpoint:
-        description: OTLP ingest endpoint for an optional Datadog job
-        required: false
-        default: ""
-        type: string
-
 permissions:
   contents: read
   id-token: write
@@ -323,14 +321,23 @@ jobs:
         '{0} - Community/Datadog',
         inputs.suite == 'otel-invocation' && 'Invocation' || 'Execution'
       ) }}
-    if: github.event_name == 'workflow_dispatch' && inputs.otlp_endpoint != ''
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
+    concurrency:
+      group: ${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
     env:
-      DD_API_KEY: ${{ secrets.DD_API_KEY }}
-      DD_APPLICATION_KEY: ${{ secrets.DD_APPLICATION_KEY }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.DATADOG_OTLP_HEADERS }}
-      TEST_NAME: ${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
+      DATADOG_OTLP_ENDPOINT: https://otlp.datadoghq.com
+      HISTORY_DIR: /tmp/${{ inputs.language }}-otel-datadog-history
+      LEGACY_DATADOG_STACK_NAME: conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      OTEL_EXPORTER_OTLP_HEADERS: dd-api-key=${{ secrets.DATADOG_API_KEY }}
+      REPORT_FILE: /tmp/${{ inputs.language }}-otel-datadog-report
+      TEST_NAME: ${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
+      TEST_STACK_NAME: conformance-tests-${{ inputs.resource_prefix }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
     steps:
       - name: Check out conformance tests
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -359,6 +366,36 @@ jobs:
           sdk-ref: ${{ inputs.sdk_ref }}
           sdk-repository: ${{ inputs.sdk_repository }}
 
+      - name: Configure Datadog trace retention
+        env:
+          DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
+          DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
+        run: hatch run python scripts/configure-datadog-retention.py
+
+      - name: Delete rolled-back test stacks
+        env:
+          LEGACY_STACK_PREFIX: ${{ inputs.legacy_stack_prefix }}
+        run: |
+          stack_names=("$TEST_STACK_NAME")
+          if [ "$LEGACY_DATADOG_STACK_NAME" != "$TEST_STACK_NAME" ]; then
+            stack_names+=("$LEGACY_DATADOG_STACK_NAME")
+          fi
+          if [ -n "$LEGACY_STACK_PREFIX" ]; then
+            stack_names+=("$LEGACY_STACK_PREFIX-datadog")
+          fi
+          for stack_name in "${stack_names[@]}"; do
+            stack_status=$(
+              aws cloudformation describe-stacks \
+                --stack-name "$stack_name" \
+                --query "Stacks[0].StackStatus" \
+                --output text 2>/dev/null || true
+            )
+            if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+              aws cloudformation delete-stack --stack-name "$stack_name"
+              aws cloudformation wait stack-delete-complete --stack-name "$stack_name"
+            fi
+          done
+
       - name: Run Datadog conformance tests
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
@@ -370,15 +407,80 @@ jobs:
             --name "$TEST_NAME" \
             --no-cleanup \
             --suite "$OTEL_SUITE" \
-            --report console github \
+            --history-dir "$HISTORY_DIR" \
+            --report console json junit github \
+            --report-file "$REPORT_FILE" \
+            --fail-on failed+uncovered \
+            --max-workers 2 \
             --parameter-overrides \
               "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN" \
               "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
-            --otel-endpoint "${{ inputs.otlp_endpoint }}" \
+            --otel-endpoint "$DATADOG_OTLP_ENDPOINT" \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
+            --otel-poll-interval 15 \
             --otel-backend datadog
+
+      - name: Show CloudFormation diagnostics
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$TEST_STACK_NAME" \
+            --query "StackEvents[?ResourceStatus == 'CREATE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]" \
+            --output table || true
+
+      - name: Show Lambda logs
+        if: failure()
+        run: |
+          for case_number in $(seq 1 "$OTEL_CASE_COUNT"); do
+            log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}"
+            echo "::group::$log_group"
+            aws logs tail "$log_group" --since 20m --format short || true
+            echo "::endgroup::"
+          done
+          if [ "$OTEL_SUITE" = "otel-invocation" ] || [ "$OTEL_SUITE" = "otel-execution" ]; then
+            for case_number in 11 18; do
+              log_group="/aws/lambda/conformance-tests-${TEST_NAME}-${OTEL_SUITE}-${case_number}-target"
+              echo "::group::$log_group"
+              aws logs tail "$log_group" --since 20m --format short || true
+              echo "::endgroup::"
+            done
+          fi
+
+      - name: Show execution history diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*.json; do
+            if [[ "$artifact" == *-otel.json ]]; then
+              continue
+            fi
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Show normalized Datadog trace diagnostics
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for artifact in "$HISTORY_DIR"/*-otel.json; do
+            echo "::group::$artifact"
+            cat "$artifact"
+            echo "::endgroup::"
+          done
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
 
   s3_collector:
     name: >-
