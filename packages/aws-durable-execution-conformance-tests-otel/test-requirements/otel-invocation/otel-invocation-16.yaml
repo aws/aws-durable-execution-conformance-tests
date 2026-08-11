@@ -89,6 +89,9 @@ TelemetryAssertions:
         status: ERROR
         service_name: ${SERVICE_NAME}
         links:
+          - name: otel-failed-condition
+            attributes:
+              durable.operation.id: ${FAILED_CONDITION}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}

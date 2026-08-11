@@ -260,6 +260,9 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
+          - name: "${/^otel-failed-callback(?: submitter|-submitter)$/}"
+            attributes:
+              durable.operation.id: ${CALLBACK_SUBMITTER}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}
