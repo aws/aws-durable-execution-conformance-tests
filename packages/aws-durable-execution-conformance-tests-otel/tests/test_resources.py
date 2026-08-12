@@ -383,6 +383,10 @@ def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_num
 
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
+    callback_submitter_span_names = {
+        10: "${/^(?:otel-callback(?: submitter|-submitter)|STEP)$/}",
+        17: "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}",
+    }
 
     for case_number in range(1, 20):
         requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
@@ -486,8 +490,12 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             assert "span.kind" not in expected["attributes"]
             expected_attributes = expected["attributes"]
             if "durable.attempt.outcome" in expected_attributes:
+                expected_parent_name = callback_submitter_span_names.get(
+                    case_number,
+                    expected_attributes["durable.operation.name"],
+                )
                 assert expected["parent"] == {
-                    "name": expected_attributes["durable.operation.name"],
+                    "name": expected_parent_name,
                     "kind": "INTERNAL",
                     "attributes": {
                         "durable.operation.id": expected_attributes["durable.operation.id"],
@@ -558,12 +566,12 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             "otel-condition attempt 2",
         },
         10: {
-            "${/^otel-callback(?: create callback id|-callback)$/}",
+            "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}",
             "otel-callback",
         },
         11: {"otel-invoke"},
         17: {
-            "${/^otel-failed-callback(?: create callback id|-callback)$/}",
+            "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}",
             "otel-failed-callback",
         },
         18: {"otel-failed-invoke"},
@@ -671,10 +679,75 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
 
 
 @pytest.mark.parametrize(
-    ("case_number", "submitter_name", "operation_id"),
+    (
+        "case_number",
+        "callback_span_name",
+        "callback_operation_name",
+        "callback_operation_id",
+    ),
     [
-        (10, "${/^otel-callback(?: submitter|-submitter)$/}", "${SUBMITTER_STEP}"),
-        (17, "${/^otel-failed-callback(?: submitter|-submitter)$/}", "${CALLBACK_SUBMITTER}"),
+        (
+            10,
+            "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}",
+            "${/^otel-callback(?: create callback id|-callback)$/}",
+            "${CALLBACK1}",
+        ),
+        (
+            17,
+            "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}",
+            "${/^otel-failed-callback(?: create callback id|-callback)$/}",
+            "${FAILED_CALLBACK}",
+        ),
+    ],
+)
+@pytest.mark.parametrize("suite_name", ["otel-invocation", "otel-execution"])
+def test_callback_assertions_accept_generic_span_name(
+    suite_name: str,
+    case_number: int,
+    callback_span_name: str,
+    callback_operation_name: str,
+    callback_operation_id: str,
+) -> None:
+    requirement = load_yaml_file(_requirements(suite_name)[f"{suite_name}-{case_number}"])
+    callback_assertions = [
+        assertion
+        for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+        if assertion["expect"]["attributes"].get("durable.operation.type") == "CALLBACK"
+        and assertion["expect"]["attributes"]["durable.operation.id"] == callback_operation_id
+    ]
+
+    expected_count = 2 if suite_name == "otel-invocation" else 1
+    assert len(callback_assertions) == expected_count
+    assert all(assertion["select"]["name"] == callback_span_name for assertion in callback_assertions)
+    assert all(
+        assertion["expect"]["attributes"]["durable.operation.name"] == callback_operation_name
+        for assertion in callback_assertions
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "case_number",
+        "submitter_name",
+        "attempt_name",
+        "operation_name",
+        "operation_id",
+    ),
+    [
+        (
+            10,
+            "${/^(?:otel-callback(?: submitter|-submitter)|STEP)$/}",
+            "${/^(?:otel-callback(?: submitter|-submitter)|STEP) attempt 1$/}",
+            "${/^otel-callback(?: submitter|-submitter)$/}",
+            "${SUBMITTER_STEP}",
+        ),
+        (
+            17,
+            "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}",
+            "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP) attempt 1$/}",
+            "${/^otel-failed-callback(?: submitter|-submitter)$/}",
+            "${CALLBACK_SUBMITTER}",
+        ),
     ],
 )
 @pytest.mark.parametrize("suite_name", ["otel-invocation", "otel-execution"])
@@ -682,6 +755,8 @@ def test_callback_submitter_assertions_emit_once_without_retry(
     suite_name: str,
     case_number: int,
     submitter_name: str,
+    attempt_name: str,
+    operation_name: str,
     operation_id: str,
 ) -> None:
     requirement = load_yaml_file(_requirements(suite_name)[f"{suite_name}-{case_number}"])
@@ -696,6 +771,19 @@ def test_callback_submitter_assertions_emit_once_without_retry(
     submitter_assertion = submitter_assertions[0]
     assert submitter_assertion["select"]["status"] == "OK"
     assert submitter_assertion["expect"]["status"] == "OK"
+    assert submitter_assertion["expect"]["attributes"]["durable.operation.name"] == operation_name
+
+    attempt_assertions = [
+        assertion
+        for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+        if assertion["expect"]["attributes"].get("durable.attempt.outcome") == "SUCCEEDED"
+        and assertion["expect"]["attributes"]["durable.operation.id"] == operation_id
+    ]
+    assert len(attempt_assertions) == 1
+    attempt_assertion = attempt_assertions[0]
+    assert attempt_assertion["select"]["name"] == attempt_name
+    assert attempt_assertion["expect"]["attributes"]["durable.operation.name"] == operation_name
+    assert attempt_assertion["expect"]["parent"]["name"] == submitter_name
 
     if suite_name == "otel-invocation":
         assert submitter_assertion["expect"]["links"] == [
