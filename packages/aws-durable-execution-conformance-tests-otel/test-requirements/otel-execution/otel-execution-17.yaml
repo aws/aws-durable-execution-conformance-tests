@@ -131,7 +131,7 @@ TelemetryAssertions:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.execution.status: FAILED
     - select:
-        name: '${/^otel-failed-callback(?: create callback id|-callback)$/}'
+        name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.id: ${FAILED_CALLBACK}
       expect:
@@ -156,7 +156,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
-        name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
+        name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}'
         status: OK
         attributes:
           durable.operation.id: ${CALLBACK_SUBMITTER}
@@ -182,7 +182,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
     - select:
-        name: '${/^otel-failed-callback(?: submitter|-submitter) attempt 1$/}'
+        name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP) attempt 1$/}'
         attributes:
           durable.operation.id: ${CALLBACK_SUBMITTER}
           durable.attempt.outcome: SUCCEEDED
@@ -207,7 +207,7 @@ TelemetryAssertions:
           durable.attempt.outcome: SUCCEEDED
         parent:
           $allow_outside: true
-          name: '${/^otel-failed-callback(?: submitter|-submitter)$/}'
+          name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}'
           kind: INTERNAL
           attributes:
             durable.operation.id: ${CALLBACK_SUBMITTER}
