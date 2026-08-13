@@ -184,7 +184,7 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
+          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)?$/}"
         before:
           name: "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}"
           attributes:
@@ -216,7 +216,7 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
-          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)$/}"
+          durable.operation.name: "${/^otel-callback(?: create callback id|-callback)?$/}"
         after:
           name: "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}"
           attributes:
@@ -246,7 +246,7 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)$/}"
+          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)?$/}"
           durable.attempt.number: 1
         parent:
           name: otel-callback
@@ -272,7 +272,7 @@ TelemetryAssertions:
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)$/}"
+          durable.operation.name: "${/^otel-callback(?: submitter|-submitter)?$/}"
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:

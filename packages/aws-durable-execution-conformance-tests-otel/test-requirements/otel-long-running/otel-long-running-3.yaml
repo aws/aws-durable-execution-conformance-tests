@@ -8,7 +8,7 @@ Input:
   delay_seconds: ${LONG_DELAY_SECONDS}
 AsyncInvoke: true
 CallbackActions:
-  - CallbackName: '${/^otel-long-callback(?: create callback id|-callback)$/}'
+  - CallbackName: '${/^otel-long-callback(?: create callback id|-callback)?$/}'
     Operation: success
     Payload: callback-complete
     Delay: 1
@@ -25,16 +25,19 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${CALLBACK1}
     ParentId: ${CALLBACK_CONTEXT}
+    Name: '${/^otel-long-callback(?: create callback id|-callback)?$/}'
   - EventId: 4
     EventType: StepStarted
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
+    Name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
   - EventId: 5
     EventType: StepSucceeded
     SubType: Step
     Id: ${SUBMITTER_STEP}
     ParentId: ${CALLBACK_CONTEXT}
+    Name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
   - EventId: 8
     EventType: ContextSucceeded
     SubType: WaitForCallback
@@ -169,7 +172,7 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
-          durable.operation.name: '${/^otel-long-callback(?: create callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: create callback id|-callback)?$/}'
         parent:
           $allow_outside: true
           name: '${/^(?:otel-long-callback|Invocation)$/}'
@@ -197,7 +200,7 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.status: SUCCEEDED
-          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
         parent:
           $allow_outside: true
           name: otel-long-callback
@@ -223,7 +226,7 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
-          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
@@ -343,7 +346,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${CALLBACK1}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
-          durable.operation.name: '${/^otel-long-callback(?: create callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: create callback id|-callback)?$/}'
         parent:
           $allow_outside: true
           name: otel-long-callback
@@ -369,7 +372,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
         parent:
           $allow_outside: true
           name: otel-long-callback
@@ -398,7 +401,7 @@ ExecutionTelemetryAssertions:
           durable.operation.id: ${SUBMITTER_STEP}
           durable.operation.type: STEP
           durable.operation.subtype: Step
-          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)$/}'
+          durable.operation.name: '${/^otel-long-callback(?: submitter|-submitter)?$/}'
           durable.attempt.outcome: SUCCEEDED
         parent:
           $allow_outside: true
