@@ -23,6 +23,7 @@ TelemetryAssertions:
   minimum_spans: 7
   minimum_invocations: 3
   require_execution_correlation: true
+  require_unique_root_per_trace: true
   allowed_execution_arns:
     - ${EXECUTION_ARN}
     - ${TARGET_EXECUTION_ARN}
@@ -164,9 +165,6 @@ TelemetryAssertions:
         status: ERROR
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-failed-invoke
-            attributes:
-              durable.operation.id: ${FAILED_INVOKE}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}

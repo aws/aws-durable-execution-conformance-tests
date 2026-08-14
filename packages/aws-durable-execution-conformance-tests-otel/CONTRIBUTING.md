@@ -69,6 +69,7 @@ The currently supported telemetry assertions are:
 | `minimum_spans` | Minimum number of normalized spans; defaults to `1`. |
 | `minimum_invocations` | Minimum canonical durable invocation span occurrences; identical spans are counted separately. Defaults to `1`. |
 | `require_execution_correlation` | Require the durable execution ARN on the trace; defaults to `true`. |
+| `require_unique_root_per_trace` | Reject any trace ID containing more than one distinct parentless span. Duplicate exports with the same span ID count once. |
 | `require_all_spans` | Require every normalized span to match at least one span assertion. |
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
 | `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |
@@ -164,6 +165,13 @@ history.
 Keep `ExpectedExecutionHistory` and `ExpectedResult` focused on the execution
 behavior needed to produce the telemetry. Keep `TelemetryAssertions` portable
 across the complete exporter/backend support matrix.
+
+Set `require_unique_root_per_trace: true` for trace-view requirements. A
+backend may return a correlated subset without the upstream root, so the
+assertion permits zero observed roots for a trace ID. It rejects two or more
+distinct parentless spans because that creates a disconnected trace forest and
+makes backend-derived entry point, duration, critical path, and sampling
+behavior ambiguous.
 
 The catalog uses separate requirements when two public plugins intentionally
 produce different trace views. Invocation-view cases assert per-invocation

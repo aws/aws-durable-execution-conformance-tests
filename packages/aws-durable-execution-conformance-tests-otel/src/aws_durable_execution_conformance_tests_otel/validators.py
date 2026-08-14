@@ -54,6 +54,25 @@ def _invocation_count(trace: Trace) -> int:
     )
 
 
+def _unique_root_errors(trace: Trace) -> list[str]:
+    roots_by_trace: dict[str, dict[str, Span]] = {}
+    for span in trace.spans:
+        if span.parent_span_id is None:
+            roots_by_trace.setdefault(span.trace_id, {}).setdefault(span.span_id, span)
+
+    errors: list[str] = []
+    for trace_id, roots_by_id in sorted(roots_by_trace.items()):
+        if len(roots_by_id) <= 1:
+            continue
+        roots = sorted(
+            roots_by_id.values(),
+            key=lambda span: (span.start_time, span.span_id),
+        )
+        root_list = ", ".join(f"{span.name!r} ({span.span_id})" for span in roots)
+        errors.append(f"Trace {trace_id} contains {len(roots)} distinct root spans: {root_list}")
+    return errors
+
+
 def _is_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
@@ -634,6 +653,12 @@ def validate_trace(
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")
+
+    require_unique_root = assertions.get("require_unique_root_per_trace", False)
+    if not isinstance(require_unique_root, bool):
+        errors.append("require_unique_root_per_trace must be a boolean")
+    elif require_unique_root:
+        errors.extend(_unique_root_errors(trace))
 
     timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     for span in trace.spans:

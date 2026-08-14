@@ -28,6 +28,7 @@ TelemetryAssertions:
   minimum_spans: 10
   minimum_invocations: 4
   require_execution_correlation: true
+  require_unique_root_per_trace: true
   allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
   require_all_spans: true
   span_assertion_scope:
@@ -168,16 +169,9 @@ TelemetryAssertions:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
         links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
-            - - name: otel-long-invoke
-                attributes:
-                  durable.operation.id: ${INVOKE1}
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -201,16 +195,9 @@ TelemetryAssertions:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
         links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
-            - - name: otel-long-invoke-target-wait
-                attributes:
-                  durable.operation.id: '*'
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${TARGET_EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
@@ -227,6 +214,7 @@ TelemetryAssertions:
 ExecutionTelemetryAssertions:
   minimum_spans: 8
   require_execution_correlation: true
+  require_unique_root_per_trace: true
   minimum_invocations: 4
   allowed_execution_arns:
     - ${EXECUTION_ARN}
