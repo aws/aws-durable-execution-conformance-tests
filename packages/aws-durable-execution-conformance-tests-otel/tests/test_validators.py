@@ -105,6 +105,76 @@ def test_counts_case_insensitive_invocations_without_status_attributes() -> None
     )
 
 
+def test_requires_at_most_one_distinct_root_per_trace() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    ambient_root = replace(
+        root,
+        trace_id="9" * 32,
+        span_id="4" * 16,
+        name="ambient",
+    )
+    invocation = replace(
+        child,
+        trace_id=ambient_root.trace_id,
+        span_id="5" * 16,
+        parent_span_id=ambient_root.span_id,
+        name="Invocation",
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(root, child, ambient_root, invocation)),
+            {"require_unique_root_per_trace": True},
+            _query(),
+        )
+        == []
+    )
+    assert (
+        validate_trace(
+            replace(
+                trace,
+                spans=(
+                    replace(
+                        root,
+                        parent_span_id="f" * 16,
+                    ),
+                ),
+            ),
+            {"require_unique_root_per_trace": True},
+            _query(),
+        )
+        == []
+    )
+
+
+def test_reports_multiple_distinct_roots_and_ignores_duplicate_exports() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    second_root = replace(
+        root,
+        span_id="4" * 16,
+        name="second-root",
+    )
+
+    assert (
+        validate_trace(
+            replace(trace, spans=(root, root, child)),
+            {"require_unique_root_per_trace": True},
+            _query(),
+        )
+        == []
+    )
+    assert validate_trace(
+        replace(trace, spans=(root, child, second_root)),
+        {"require_unique_root_per_trace": True},
+        _query(),
+    ) == [
+        f"Trace {root.trace_id} contains 2 distinct root spans: "
+        f"'root' ({root.span_id}), 'second-root' ({second_root.span_id})"
+    ]
+
+
 def test_rejects_spans_that_end_before_they_start() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -1423,6 +1493,7 @@ def test_reports_invalid_span_assertion_schema() -> None:
         {
             "allowed_execution_arns": 1,
             "exact_attribute_prefixes": 1,
+            "require_unique_root_per_trace": "yes",
             "span_assertion_scope": ["plugin"],
             "span_assertions": {
                 "select": {"name": "root"},
@@ -1433,6 +1504,7 @@ def test_reports_invalid_span_assertion_schema() -> None:
         _query(),
     )
     assert count_errors == [
+        "require_unique_root_per_trace must be a boolean",
         "allowed_execution_arns must be a string or sequence of strings",
         "exact_attribute_prefixes must be a string or sequence of strings",
         "span_assertion_scope must be a mapping or sequence of mappings",

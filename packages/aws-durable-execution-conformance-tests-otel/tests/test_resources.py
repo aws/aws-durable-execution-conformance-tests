@@ -99,6 +99,26 @@ def test_requirement_service_names_use_configured_placeholder(
     assert service_name_assertions > 0
 
 
+@pytest.mark.parametrize(
+    "suite_name",
+    ["otel-invocation", "otel-execution", "otel-long-running"],
+)
+def test_requirement_catalog_rejects_multiple_roots_per_trace(
+    suite_name: str,
+) -> None:
+    assertion_blocks = 0
+    for requirement_path in _requirements(suite_name).values():
+        requirement = load_yaml_file(requirement_path)
+        for assertion_key in ("TelemetryAssertions", "ExecutionTelemetryAssertions"):
+            assertions = requirement.get(assertion_key)
+            if not assertions:
+                continue
+            assertion_blocks += 1
+            assert assertions["require_unique_root_per_trace"] is True
+
+    assert assertion_blocks > 0
+
+
 def test_long_running_catalog_uses_configurable_delays() -> None:
     requirements = _requirements("otel-long-running")
     second_invocation_descendants = {
@@ -213,19 +233,15 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             if assertion["select"]["name"] in {"Invocation", "Workflow"}:
                 assert assertion["expect"]["links"] == []
                 continue
-            links = assertion["expect"]["links"]
-            link_alternatives = links["$any_of"] if isinstance(links, dict) else [links]
             execution_arn = assertion["expect"]["attributes"]["durable.execution.arn"]
-            assert all(
-                link_set[-1]
-                == {
+            assert assertion["expect"]["links"] == [
+                {
                     "name": "Workflow",
                     "attributes": {
                         "durable.execution.arn": execution_arn,
                     },
                 }
-                for link_set in link_alternatives
-            )
+            ]
 
 
 @pytest.mark.parametrize(
@@ -484,7 +500,18 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                             assert linked_span["attributes"]["durable.operation.id"]
             if selected_name not in {"Invocation", "Workflow"} and case_number != 15:
                 assert link_alternatives
-                assert all(link_set[-1]["name"] == "Workflow" for link_set in link_alternatives)
+                assert all(
+                    link_set
+                    == [
+                        {
+                            "name": "Workflow",
+                            "attributes": {
+                                "durable.execution.arn": "${EXECUTION_ARN}",
+                            },
+                        }
+                    ]
+                    for link_set in link_alternatives
+                )
             assert expected["kind"] == "INTERNAL"
             assert "span.name" not in expected["attributes"]
             assert "span.kind" not in expected["attributes"]
@@ -601,6 +628,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             ]
 
         assert assertions["require_execution_correlation"] is True
+        assert assertions["require_unique_root_per_trace"] is True
         assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
         assert assertions["minimum_spans"] >= len(span_assertions)

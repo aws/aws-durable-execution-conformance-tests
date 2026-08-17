@@ -851,7 +851,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
         batch_get_calls = 0
 
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == 'service("conformance")'
+            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
             return {"TraceSummaries": [{"Id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
@@ -876,6 +876,84 @@ def test_xray_queries_summaries_then_batch_get() -> None:
 
     assert client.batch_get_calls == 2
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
+
+
+def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
+    ambient_trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
+    workflow_trace_id = "1-aaaaaaaa-cccccccccccccccccccccccc"
+
+    def document(
+        trace_id: str,
+        span_id: str,
+        name: str,
+        *,
+        parent_span_id: str | None = None,
+    ) -> dict[str, Any]:
+        segment: dict[str, Any] = {
+            "trace_id": trace_id,
+            "id": span_id,
+            "name": name,
+            "start_time": 1,
+            "end_time": 2,
+            "metadata": {"durable.execution.arn": "arn:test"},
+        }
+        if parent_span_id is not None:
+            segment["parent_id"] = parent_span_id
+        return {"Document": json.dumps(segment)}
+
+    class _XRay:
+        def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
+            return {
+                "TraceSummaries": [
+                    {"Id": ambient_trace_id},
+                    {"Id": workflow_trace_id},
+                ]
+            }
+
+        def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["TraceIds"] == [ambient_trace_id, workflow_trace_id]
+            return {
+                "Traces": [
+                    {
+                        "Segments": [
+                            document(
+                                ambient_trace_id,
+                                "1" * 16,
+                                "conformance",
+                            ),
+                            document(
+                                ambient_trace_id,
+                                "2" * 16,
+                                "Invocation",
+                                parent_span_id="1" * 16,
+                            ),
+                        ]
+                    },
+                    {
+                        "Segments": [
+                            document(
+                                workflow_trace_id,
+                                "3" * 16,
+                                "Workflow",
+                            )
+                        ]
+                    },
+                ]
+            }
+
+    backend = XRayBackend(_XRay(), sleep=lambda _seconds: None)
+    trace = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+    )
+
+    assert trace.trace_id == "a" * 8 + "c" * 24
+    assert [(span.name, span.trace_id) for span in trace.spans] == [
+        ("Workflow", "a" * 8 + "c" * 24),
+        ("conformance", "a" * 8 + "b" * 24),
+        ("Invocation", "a" * 8 + "b" * 24),
+    ]
 
 
 def test_xray_paginates_summaries_and_trace_batches() -> None:
