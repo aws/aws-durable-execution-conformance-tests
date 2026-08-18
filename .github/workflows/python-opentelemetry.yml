@@ -79,6 +79,9 @@ on:
       DATADOG_API_KEY:
         description: Datadog API key used for OTLP trace intake
         required: true
+      DATADOG_APPLICATION_KEY:
+        description: Deprecated Datadog application key accepted for caller compatibility
+        required: false
   workflow_dispatch:
     inputs:
       phase:

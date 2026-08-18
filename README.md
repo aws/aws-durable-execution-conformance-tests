@@ -178,7 +178,9 @@ checkout. Set it to `false` when the language example resolves the SDK through
 `sdk_repository` and `sdk_ref`, as Python does. Supply either
 `adot_release_repository` for layer discovery or a fixed `adot_layer_arn`.
 The Datadog account must already have the required 100% retention filter; the
-reusable workflow does not modify retention settings.
+reusable workflow does not modify retention settings. It continues to accept
+the optional `DATADOG_APPLICATION_KEY` secret for compatibility with existing
+callers, but does not use it.
 
 See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)

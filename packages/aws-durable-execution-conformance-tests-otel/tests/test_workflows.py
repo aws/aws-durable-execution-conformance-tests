@@ -109,7 +109,7 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert "otlp_endpoint" not in inputs
     for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
         assert call["secrets"][secret]["required"] is True
-    assert "DATADOG_APPLICATION_KEY" not in call["secrets"]
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
     assert "setup-java" not in text
@@ -224,7 +224,7 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "DATADOG_API_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
-    assert "DATADOG_APPLICATION_KEY" not in call["secrets"]
+    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
     assert "otlp_endpoint" not in call["inputs"]
     assert "otlp_endpoint" not in preset
 
