@@ -122,6 +122,69 @@ and
 [Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
 map the current OTel requirements to deployable SDK handlers.
 
+### Reuse the GitHub Actions workflow
+
+SDK repositories can call the hosted
+[`opentelemetry-orchestrator.yml`](.github/workflows/opentelemetry-orchestrator.yml)
+workflow instead of copying its suite and long-running jobs. Pin the workflow
+to a full commit SHA so all callers use a reviewed revision. The
+[Python SDK workflow](https://github.com/aws/aws-durable-execution-sdk-python/blob/main/.github/workflows/opentelemetry-conformance-tests.yml)
+is a complete caller reference; its reusable job is equivalent to:
+
+```yaml
+permissions: {}
+
+jobs:
+  opentelemetry:
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+    uses: aws/aws-durable-execution-conformance-tests/.github/workflows/opentelemetry-orchestrator.yml@397d523d01bdf97ff8461ab749ddaa445bbf67ca
+    with:
+      language: python
+      resource_prefix: p
+      sdk_repository: aws/aws-durable-execution-sdk-python
+      sdk_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      conformance_test_ref: ${{ inputs.conformance_test_ref || 'main' }}
+      checkout_sdk: false
+      contract_test_command: >-
+        hatch run test:all
+        packages/aws-durable-execution-conformance-tests-otel/tests/test_python_examples.py
+      adot_release_repository: aws-observability/aws-otel-python-instrumentation
+      collector_compatible_runtime: python3.13
+      collector_otlp_endpoint: http://localhost:4318
+      suite_timeout_minutes: 30
+      phase: ${{ inputs.phase || 'short' }}
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets:
+      CONFORMANCE_TEST_ROLE_ARN: ${{ secrets.TEST_ROLE_ARN }}
+      CONFORMANCE_TEST_ACCOUNT_ID: ${{ secrets.TEST_ACCOUNT_ID }}
+      CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+      DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
+      DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
+      DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
+      DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
+```
+
+Use `phase: short` for pull requests and pushes. For day-scale tests, expose
+`launch` and `check` as `workflow_dispatch` choices and pass the same
+`delay_seconds`, region, and conformance revision to both runs. The workflow
+stores launch state as an artifact in the caller repository, so the checking
+run needs `actions: write`.
+
+Set `checkout_sdk: true` when `setup_command` or `prepare_command` needs an SDK
+checkout. Set it to `false` when the language example resolves the SDK through
+`sdk_repository` and `sdk_ref`, as Python does. Supply either
+`adot_release_repository` for layer discovery or a fixed `adot_layer_arn`.
+`DATADOG_APPLICATION_KEY` is optional only when the Datadog account already has
+the required 100% retention filter.
+
+See the
+[OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
+for language setup and preparation hooks.
+
 ## Extension API
 
 Core extensions register the
