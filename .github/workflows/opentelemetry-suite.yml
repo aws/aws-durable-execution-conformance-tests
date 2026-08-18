@@ -325,7 +325,7 @@ jobs:
       github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
-      group: ${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}
+      group: ${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ inputs.aws_region }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}

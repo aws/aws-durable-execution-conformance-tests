@@ -367,7 +367,7 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
         "conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
     )
     assert datadog["concurrency"] == {
-        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
+        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ inputs.aws_region }}",
         "cancel-in-progress": False,
     }
     assert steps["Configure Datadog trace retention"]["run"] == (
