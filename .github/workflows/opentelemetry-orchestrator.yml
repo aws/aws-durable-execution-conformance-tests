@@ -78,6 +78,14 @@ on:
         required: false
         default: 40
         type: number
+      examples_dir:
+        description: >-
+          Directory containing the language's OTel handlers + template(s). Defaults to this
+          repo's bundled examples/<language>; set it (e.g. to a path inside the checked-out
+          SDK) to source handlers from the SDK repo instead.
+        required: false
+        default: ""
+        type: string
       phase:
         description: Run short tests, launch a long run, or check the active long run
         required: false
@@ -160,6 +168,7 @@ jobs:
       collector_otlp_endpoint: ${{ inputs.collector_otlp_endpoint }}
       legacy_stack_prefix: ${{ inputs.legacy_stack_prefix }}
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
+      examples_dir: ${{ inputs.examples_dir }}
       suite: otel-invocation
       case_count: 19
       aws_region: ${{ inputs.aws_region }}
@@ -189,6 +198,7 @@ jobs:
       collector_otlp_endpoint: ${{ inputs.collector_otlp_endpoint }}
       legacy_stack_prefix: ${{ inputs.legacy_stack_prefix }}
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
+      examples_dir: ${{ inputs.examples_dir }}
       suite: otel-execution
       case_count: 19
       aws_region: ${{ inputs.aws_region }}
@@ -219,6 +229,7 @@ jobs:
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
           && '60' || inputs.delay_seconds }}
+      examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
     secrets: inherit
 
@@ -247,5 +258,6 @@ jobs:
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
           || inputs.phase == 'short')
           && '60' || inputs.delay_seconds }}
+      examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
     secrets: inherit

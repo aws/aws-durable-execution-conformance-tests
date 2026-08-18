@@ -282,7 +282,11 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     assert call["inputs"]["conformance_repository"]["required"] is True
     assert call["inputs"]["setup_command"]["default"] == ""
     assert "otlp_endpoint" not in call["inputs"]
-    assert "examples/${{ inputs.language }}/template.yaml" in text
+    assert "examples_dir" in call["inputs"]
+    assert (
+        "format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', "
+        "inputs.language) }}/template.yaml" in text
+    )
     assert "runtime_language" not in call["inputs"]
     assert '--language "$LANGUAGE"' in text
     assert '"OtelSuite=$OTEL_SUITE"' in text
@@ -435,10 +439,14 @@ def test_long_running_worker_is_reusable_and_language_neutral() -> None:
     assert "runtime_language" not in call["inputs"]
     assert workflow["concurrency"]["group"].startswith("${{ inputs.language }}-otel-long-running-")
     assert workflow["env"]["EXAMPLES_DIR"] == (
-        "packages/aws-durable-execution-conformance-tests-otel/examples/${{ inputs.language }}"
+        "${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel"
+        "/examples/{0}', inputs.language) }}"
     )
     assert workflow["env"]["STATE_FILE"] == "/tmp/${{ inputs.language }}-otel-long-running-state.json"
-    assert workflow["env"]["TEST_TEMPLATE"].endswith("examples/${{ inputs.language }}/template-long-running.yaml")
+    assert workflow["env"]["TEST_TEMPLATE"] == (
+        "${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel"
+        "/examples/{0}', inputs.language) }}/template-long-running.yaml"
+    )
     assert '--language "$LANGUAGE"' in text
     assert "aws cloudformation delete-stack" not in text
     assert "setup-java" not in text
