@@ -169,12 +169,13 @@ creating a second unauthenticated exporter. The workflow reads the API access
 token from `DATADOG_ACCESS_TOKEN` and the intake API key from
 `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
 
-Before running a suite, the workflow uses `DATADOG_API_KEY` and the optional
-`DATADOG_APPLICATION_KEY` to create or update a 100% APM retention filter for
-`service:durable-execution-conformance`. Without the application key, that
-filter must already exist in the Datadog account. Complete retention is
-required because the suites validate every plugin span and cannot pass against
-a sampled or partially indexed trace.
+Configure the Datadog account once with a 100% APM retention filter for
+`service:durable-execution-conformance` before running a suite. The shared
+workflows do not modify retention settings. The
+`scripts/configure-datadog-retention.py` helper can create or update the filter
+when run manually with `DATADOG_API_KEY` and `DATADOG_APPLICATION_KEY`.
+Complete retention is required because the suites validate every plugin span
+and cannot pass against a sampled or partially indexed trace.
 
 ## AWS S3 Collector
 

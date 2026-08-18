@@ -374,12 +374,6 @@ jobs:
           sdk-ref: ${{ inputs.sdk_ref }}
           sdk-repository: ${{ inputs.sdk_repository }}
 
-      - name: Configure Datadog trace retention
-        env:
-          DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
-          DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
-        run: hatch run python scripts/configure-datadog-retention.py
-
       - name: Delete rolled-back test stacks
         env:
           LEGACY_STACK_PREFIX: ${{ inputs.legacy_stack_prefix }}

@@ -109,7 +109,7 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert "otlp_endpoint" not in inputs
     for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
         assert call["secrets"][secret]["required"] is True
-    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
+    assert "DATADOG_APPLICATION_KEY" not in call["secrets"]
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
     assert "setup-java" not in text
@@ -224,7 +224,7 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "DATADOG_API_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
-    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
+    assert "DATADOG_APPLICATION_KEY" not in call["secrets"]
     assert "otlp_endpoint" not in call["inputs"]
     assert "otlp_endpoint" not in preset
 
@@ -374,13 +374,8 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
         "group": "${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ inputs.aws_region }}",
         "cancel-in-progress": False,
     }
-    assert steps["Configure Datadog trace retention"]["run"] == (
-        "hatch run python scripts/configure-datadog-retention.py"
-    )
-    assert steps["Configure Datadog trace retention"]["env"] == {
-        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
-        "DATADOG_APPLICATION_KEY": "${{ secrets.DATADOG_APPLICATION_KEY }}",
-    }
+    assert "Configure Datadog trace retention" not in steps
+    assert "configure-datadog-retention.py" not in commands
     assert "--otel-exporter community" in commands
     assert '--otel-endpoint "$DATADOG_OTLP_ENDPOINT"' in commands
     assert "--otel-poll-interval 15" in commands

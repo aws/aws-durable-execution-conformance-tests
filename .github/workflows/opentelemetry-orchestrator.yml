@@ -118,11 +118,8 @@ on:
         description: Datadog API access token used to query spans
         required: true
       DATADOG_API_KEY:
-        description: Datadog API key used for OTLP trace intake and retention configuration
+        description: Datadog API key used for OTLP trace intake
         required: true
-      DATADOG_APPLICATION_KEY:
-        description: Optional Datadog application key used to configure trace retention
-        required: false
 
 permissions:
   actions: write

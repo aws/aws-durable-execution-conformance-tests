@@ -101,15 +101,15 @@ Credentials are read only from the environment:
 
 - Datadog search API: `DATADOG_ACCESS_TOKEN`
 - Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
-- Optional automated Datadog retention setup: `DATADOG_APPLICATION_KEY`
+- One-time Datadog retention helper: `DATADOG_APPLICATION_KEY`
 - Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
 
-When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
-already have a 100% APM retention filter for
-`service:durable-execution-conformance`.
+Before running the hosted workflows, configure the Datadog account once with a
+100% APM retention filter for `service:durable-execution-conformance`. The
+workflows do not modify retention settings.
 
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
@@ -165,7 +165,6 @@ jobs:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
       DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
-      DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
 ```
 
 Use `phase: short` for pull requests and pushes. For day-scale tests, expose
@@ -178,8 +177,8 @@ Set `checkout_sdk: true` when `setup_command` or `prepare_command` needs an SDK
 checkout. Set it to `false` when the language example resolves the SDK through
 `sdk_repository` and `sdk_ref`, as Python does. Supply either
 `adot_release_repository` for layer discovery or a fixed `adot_layer_arn`.
-`DATADOG_APPLICATION_KEY` is optional only when the Datadog account already has
-the required 100% retention filter.
+The Datadog account must already have the required 100% retention filter; the
+reusable workflow does not modify retention settings.
 
 See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
