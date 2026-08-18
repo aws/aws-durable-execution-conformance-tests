@@ -13,8 +13,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
-LANGUAGES = ("java", "javascript", "python")
-DISPLAY_NAMES = {"java": "Java", "javascript": "JavaScript", "python": "Python"}
+LANGUAGES = ("javascript", "python")
+DISPLAY_NAMES = {"javascript": "JavaScript", "python": "Python"}
 LANGUAGE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry.yml" for language in LANGUAGES}
 ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-orchestrator.yml"
 RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
@@ -139,13 +139,6 @@ def test_prepare_action_runs_arbitrary_language_hooks() -> None:
 
 def test_language_workflows_are_thin_presets() -> None:
     expected = {
-        "java": {
-            "resource_prefix": "j",
-            "sdk_repository": "aws/aws-durable-execution-sdk-java",
-            "adot_release_repository": "aws-observability/aws-otel-java-instrumentation",
-            "collector_compatible_runtime": "java21",
-            "collector_otlp_endpoint": "http://localhost:4318",
-        },
         "python": {
             "resource_prefix": "p",
             "sdk_repository": "aws/aws-durable-execution-sdk-python",
