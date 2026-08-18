@@ -76,6 +76,37 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
 
 
 @pytest.mark.parametrize(
+    ("suite_name", "requirement_id", "assertion_key"),
+    [
+        ("otel-invocation", "otel-invocation-2", "TelemetryAssertions"),
+        ("otel-invocation", "otel-invocation-10", "TelemetryAssertions"),
+        ("otel-invocation", "otel-invocation-17", "TelemetryAssertions"),
+        ("otel-execution", "otel-execution-10", "TelemetryAssertions"),
+        ("otel-execution", "otel-execution-17", "TelemetryAssertions"),
+        ("otel-long-running", "otel-long-running-1", "TelemetryAssertions"),
+        ("otel-long-running", "otel-long-running-3", "TelemetryAssertions"),
+        ("otel-long-running", "otel-long-running-3", "ExecutionTelemetryAssertions"),
+    ],
+)
+def test_suspend_and_callback_minimum_span_counts_match_assertions(
+    suite_name: str,
+    requirement_id: str,
+    assertion_key: str,
+) -> None:
+    requirement = load_yaml_file(_requirements(suite_name)[requirement_id])
+    assertions = requirement[assertion_key]
+
+    asserted_span_count = 0
+    for span_assertion in assertions["span_assertions"]:
+        count = span_assertion.get("count", 1)
+        if isinstance(count, dict):
+            count = min(count["$any_of"])
+        asserted_span_count += count
+
+    assert assertions["minimum_spans"] == asserted_span_count
+
+
+@pytest.mark.parametrize(
     "suite_name",
     ["otel-invocation", "otel-execution", "otel-long-running"],
 )

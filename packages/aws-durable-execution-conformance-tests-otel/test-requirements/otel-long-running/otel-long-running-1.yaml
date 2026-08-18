@@ -28,7 +28,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: SUCCEEDED
 TelemetryAssertions:
-  minimum_spans: 8
+  minimum_spans: 7
   minimum_invocations: 2
   require_execution_correlation: true
   require_unique_root_per_trace: true
