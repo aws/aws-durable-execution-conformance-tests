@@ -155,6 +155,8 @@ sampling disabled.
 The hosted Java, Python, and JavaScript suite workflows run Dash0 beside X-Ray
 using the `us-west-2` Dash0 API and ingress endpoints. They use
 `DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
+When the token is not configured, the workflows skip Dash0 while continuing to
+run the other telemetry backends.
 
 ## Datadog
 
@@ -175,6 +177,8 @@ provider so endpoint and authentication settings are applied once instead of
 creating a second unauthenticated exporter. The workflow reads the API access
 token from `DATADOG_ACCESS_TOKEN` and the intake API key from
 `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
+When either credential is not configured, the workflows skip Datadog while
+continuing to run the other telemetry backends.
 
 Before running a suite, the workflow uses `DATADOG_API_KEY` and the optional
 `DATADOG_APPLICATION_KEY` to create or update a 100% APM retention filter for

@@ -107,8 +107,8 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert inputs["conformance_test_ref"]["default"] == ""
     assert inputs["conformance_repository"]["default"] == ("aws/aws-durable-execution-conformance-tests")
     assert "otlp_endpoint" not in inputs
-    for secret in ("DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
-        assert call["secrets"][secret]["required"] is True
+    for secret in ("DASH0_AUTH_TOKEN", "DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+        assert call["secrets"][secret]["required"] is False
     assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
 
     text = ORCHESTRATOR.read_text(encoding="utf-8")
@@ -120,6 +120,29 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
     assert "toolchain must be one of" not in text
     assert "job.workflow_repository" not in text
     assert "job.workflow_sha" not in text
+
+
+def test_resolver_detects_optional_backend_credentials() -> None:
+    workflow = _load(RESOLVER_WORKFLOW)
+    call = _triggers(workflow)["workflow_call"]
+    resolve = workflow["jobs"]["resolve"]
+    steps = {step["name"]: step for step in resolve["steps"]}
+    detection = steps["Detect configured telemetry backends"]
+
+    for secret in ("DASH0_AUTH_TOKEN", "DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+        assert call["secrets"][secret]["required"] is False
+    for backend in ("dash0", "datadog"):
+        assert call["outputs"][f"{backend}_enabled"]["value"] == (f"${{{{ jobs.resolve.outputs.{backend}_enabled }}}}")
+        assert resolve["outputs"][f"{backend}_enabled"] == (
+            f"${{{{ steps.detect-backends.outputs.{backend}_enabled }}}}"
+        )
+    assert detection["env"] == {
+        "DASH0_AUTH_TOKEN": "${{ secrets.DASH0_AUTH_TOKEN }}",
+        "DATADOG_ACCESS_TOKEN": "${{ secrets.DATADOG_ACCESS_TOKEN }}",
+        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
+    }
+    assert 'echo "dash0_enabled=true" >> "$GITHUB_OUTPUT"' in detection["run"]
+    assert '[ -n "$DATADOG_ACCESS_TOKEN" ] && [ -n "$DATADOG_API_KEY" ]' in detection["run"]
 
 
 def test_prepare_action_runs_arbitrary_language_hooks() -> None:
@@ -212,11 +235,10 @@ def test_python_preset_preserves_its_external_caller_contract() -> None:
         "CONFORMANCE_TEST_ROLE_ARN",
         "CONFORMANCE_TEST_ACCOUNT_ID",
         "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
-        "DASH0_AUTH_TOKEN",
-        "DATADOG_ACCESS_TOKEN",
-        "DATADOG_API_KEY",
     ):
         assert call["secrets"][secret]["required"] is True
+    for secret in ("DASH0_AUTH_TOKEN", "DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
+        assert call["secrets"][secret]["required"] is False
     assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
     assert "otlp_endpoint" not in call["inputs"]
     assert "otlp_endpoint" not in preset
@@ -233,12 +255,19 @@ def test_orchestrator_owns_suite_and_long_running_views() -> None:
         "long-running-execution",
     }
     assert jobs["resolve"]["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
+    assert jobs["resolve"]["secrets"] == {
+        "DASH0_AUTH_TOKEN": "${{ secrets.DASH0_AUTH_TOKEN }}",
+        "DATADOG_ACCESS_TOKEN": "${{ secrets.DATADOG_ACCESS_TOKEN }}",
+        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
+    }
     assert jobs["invocation"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
     assert jobs["execution"]["uses"] == "./.github/workflows/opentelemetry-suite.yml"
     assert jobs["invocation"]["with"]["suite"] == "otel-invocation"
     assert jobs["execution"]["with"]["suite"] == "otel-execution"
     for view in ("invocation", "execution"):
         assert jobs[view]["with"]["resource_prefix"] == "${{ inputs.resource_prefix }}"
+        assert jobs[view]["with"]["dash0_enabled"] == ("${{ needs.resolve.outputs.dash0_enabled == 'true' }}")
+        assert jobs[view]["with"]["datadog_enabled"] == ("${{ needs.resolve.outputs.datadog_enabled == 'true' }}")
     for view in ("invocation", "execution"):
         initial = jobs[f"long-running-{view}"]
         assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
@@ -258,7 +287,9 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     backend = workflow["jobs"]["backend"]
 
     assert set(_triggers(workflow)) == {"workflow_call"}
-    assert backend["strategy"]["matrix"]["backend"] == ["xray", "dash0"]
+    assert backend["strategy"]["matrix"]["backend"] == (
+        '${{ fromJSON(inputs.dash0_enabled && \'["xray", "dash0"]\' || \'["xray"]\') }}'
+    )
     for job in ("backend", "datadog", "s3_collector"):
         name = workflow["jobs"][job]["name"]
         assert "inputs.suite == 'otel-invocation'" in name
@@ -274,6 +305,8 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     assert call["inputs"]["resource_prefix"]["required"] is True
     assert call["inputs"]["conformance_repository"]["required"] is True
     assert call["inputs"]["setup_command"]["default"] == ""
+    assert call["inputs"]["dash0_enabled"]["default"] is False
+    assert call["inputs"]["datadog_enabled"]["default"] is False
     assert "otlp_endpoint" not in call["inputs"]
     assert "examples_dir" in call["inputs"]
     assert (
@@ -322,7 +355,7 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
     assert long_running_steps["Prepare next conformance example"]["uses"] == expected_action
 
 
-def test_dash0_and_s3_resources_remain_stable() -> None:
+def test_optional_dash0_and_s3_resources_remain_stable() -> None:
     workflow = _load(SUITE_WORKFLOW)
     backend = workflow["jobs"]["backend"]
     s3 = workflow["jobs"]["s3_collector"]
@@ -348,11 +381,14 @@ def test_dash0_and_s3_resources_remain_stable() -> None:
 def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
     workflow = _load(SUITE_WORKFLOW)
     datadog = workflow["jobs"]["datadog"]
-    backend = workflow["jobs"]["backend"]
     steps = {step["name"]: step for step in datadog["steps"]}
     commands = "\n".join(step.get("run", "") for step in datadog["steps"])
 
-    assert datadog["if"] == backend["if"]
+    assert datadog["if"] == (
+        "inputs.datadog_enabled && "
+        "(github.event_name != 'pull_request' || "
+        "(github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository))"
+    )
     assert datadog["env"]["DATADOG_ACCESS_TOKEN"] == "${{ secrets.DATADOG_ACCESS_TOKEN }}"
     assert datadog["env"]["DATADOG_OTLP_ENDPOINT"] == "https://otlp.datadoghq.com"
     assert datadog["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == "dd-api-key=${{ secrets.DATADOG_API_KEY }}"

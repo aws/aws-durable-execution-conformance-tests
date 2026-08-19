@@ -49,9 +49,25 @@ on:
       conformance_test_sha:
         description: Full conformance test commit SHA
         value: ${{ jobs.resolve.outputs.conformance_test_sha }}
+      dash0_enabled:
+        description: Whether Dash0 credentials are configured
+        value: ${{ jobs.resolve.outputs.dash0_enabled }}
+      datadog_enabled:
+        description: Whether required Datadog credentials are configured
+        value: ${{ jobs.resolve.outputs.datadog_enabled }}
       sdk_ref:
         description: Full SDK commit SHA
         value: ${{ jobs.resolve.outputs.sdk_ref }}
+    secrets:
+      DASH0_AUTH_TOKEN:
+        description: Optional Dash0 API and OTLP authentication token
+        required: false
+      DATADOG_ACCESS_TOKEN:
+        description: Optional Datadog API access token used to query spans
+        required: false
+      DATADOG_API_KEY:
+        description: Optional Datadog API key used for OTLP trace intake
+        required: false
 
 permissions:
   contents: read
@@ -62,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       conformance_test_sha: ${{ steps.resolve-conformance.outputs.sha }}
+      dash0_enabled: ${{ steps.detect-backends.outputs.dash0_enabled }}
+      datadog_enabled: ${{ steps.detect-backends.outputs.datadog_enabled }}
       sdk_ref: ${{ steps.resolve-sdk.outputs.ref }}
     steps:
       - name: Validate workflow inputs
@@ -111,6 +129,24 @@ jobs:
           if [ -z "$ADOT_LAYER_ARN" ] && [ -z "$ADOT_RELEASE_REPOSITORY" ]; then
             echo "adot_release_repository or adot_layer_arn is required"
             exit 1
+          fi
+
+      - name: Detect configured telemetry backends
+        id: detect-backends
+        env:
+          DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
+          DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
+          DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
+        run: |
+          if [ -n "$DASH0_AUTH_TOKEN" ]; then
+            echo "dash0_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dash0_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$DATADOG_ACCESS_TOKEN" ] && [ -n "$DATADOG_API_KEY" ]; then
+            echo "datadog_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "datadog_enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Resolve conformance test commit

@@ -99,13 +99,17 @@ hatch run validate \
 
 Credentials are read only from the environment:
 
-- Datadog search API: `DATADOG_ACCESS_TOKEN`
-- Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
+- Optional Datadog search API: `DATADOG_ACCESS_TOKEN`
+- Optional Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
 - Optional automated Datadog retention setup: `DATADOG_APPLICATION_KEY`
-- Dash0: `DASH0_AUTH_TOKEN`
+- Optional Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
+
+Hosted workflows skip Dash0 when `DASH0_AUTH_TOKEN` is not configured and
+skip Datadog when either `DATADOG_ACCESS_TOKEN` or `DATADOG_API_KEY` is not
+configured. X-Ray and S3 collector tests continue to run.
 
 When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
 already have a 100% APM retention filter for
