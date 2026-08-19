@@ -6,6 +6,13 @@ the `otel-invocation`, `otel-execution`, and `otel-long-running` suites to the
 existing runner through a Python entry point; it does not install a second
 conformance CLI.
 
+The SDK handlers and SAM templates that exercise these suites live in each SDK
+repository, not here. This package provides the language-neutral requirements,
+the shared reusable workflow, the OpenTelemetry Collector build, and the
+telemetry validators. The Java SDK already owns its handlers, in
+`conformance-tests-otel/` in `aws/aws-durable-execution-sdk-java`; the Python
+and JavaScript examples still ship here and are migrating to their SDKs.
+
 ## Install
 
 ```bash
@@ -224,16 +231,6 @@ requirement with the Python SDK and its OTel plugins. Its runtime requirements
 install both packages from the Python SDK repository's latest `main`. The
 folder is structured to move into the Python SDK's OTel package when this suite
 stabilizes.
-
-## Java Examples
-
-The self-contained [Java SAM project](examples/java/README.md) implements the
-invocation-view requirements with the Java SDK and its OTel plugin. Hosted
-workflows build both artifacts from the Java SDK repository's latest `main`.
-The project builds one shaded JAR containing all handlers and attaches the
-`AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
-remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
-gRPC endpoint from the deployment environment.
 
 ## JavaScript Examples
 

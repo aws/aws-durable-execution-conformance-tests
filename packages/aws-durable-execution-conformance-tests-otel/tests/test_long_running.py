@@ -1002,7 +1002,7 @@ def test_short_run_retains_stack_after_poll_timeout(
     assert deleted == []
 
 
-@pytest.mark.parametrize("language", ["java", "javascript", "python"])
+@pytest.mark.parametrize("language", ["javascript", "python"])
 def test_long_running_templates_map_the_complete_suite(language: str) -> None:
     template_path = EXAMPLES_DIR / language / "template-long-running.yaml"
 
@@ -1051,19 +1051,6 @@ def test_python_long_running_handler_names_match_requirement_numbers() -> None:
 def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     python_source = EXAMPLES_DIR / "python" / "src"
     javascript_source = EXAMPLES_DIR / "javascript" / "handlers"
-    java_source = (
-        EXAMPLES_DIR
-        / "java"
-        / "src"
-        / "main"
-        / "java"
-        / "software"
-        / "amazon"
-        / "lambda"
-        / "durable"
-        / "conformance"
-        / "otel"
-    )
 
     assert "long_delay_seconds(event)" in (python_source / "otel_long_running_1_wait.py").read_text(encoding="utf-8")
     python_retry_source = (python_source / "otel_long_running_2_retry.py").read_text(encoding="utf-8")
@@ -1076,11 +1063,9 @@ def test_long_running_handlers_use_runtime_delay_inputs() -> None:
     assert "longDelaySeconds(event)" in (javascript_source / "otel_23_long_chained_invoke.ts").read_text(
         encoding="utf-8"
     )
-    assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning2Retry.java").read_text(encoding="utf-8")
-    assert "longDelaySeconds(event)" in (java_source / "OtelLongRunning4InvokeTarget.java").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("language", ["java", "javascript", "python"])
+@pytest.mark.parametrize("language", ["javascript", "python"])
 def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
     entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
     entry_workflow_config = yaml.safe_load(entry_workflow)
