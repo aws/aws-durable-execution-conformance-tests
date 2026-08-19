@@ -1,0 +1,71 @@
+description: OpenTelemetry emits a virtual child-context span without checkpointing the context
+Input:
+  scenario: virtual-context
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: InvocationCompleted
+  - EventId: 3
+    EventType: ExecutionSucceeded
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: virtual-complete
+TelemetryAssertions:
+  minimum_spans: 3
+  require_execution_correlation: true
+  require_unique_root_per_trace: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent_span_id: null
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: SUCCEEDED
+    - select:
+        name: otel-virtual-context
+        attributes:
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.type: CONTEXT
+          durable.operation.subtype: RunInChildContext
+          durable.operation.name: otel-virtual-context
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}

@@ -8,7 +8,7 @@ OpenTelemetry plugin:
 - [`@aws/durable-execution-sdk-js-otel`](https://www.npmjs.com/package/@aws/durable-execution-sdk-js-otel)
 
 The project runs on Node.js 22 and bundles one CommonJS entry point per
-scenario. The template covers 19 invocation-view and 19 execution-view
+scenario. The template covers 20 invocation-view and 20 execution-view
 requirements; chained-invoke cases 11 and 18 also deploy durable targets for
 both views. Execution-view functions reuse the scenario modules and select
 `ExecutionOtelPlugin` through deployment configuration.
@@ -40,6 +40,7 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-invocation-17` | `otel_17_wait_for_callback_failure.handler` | External callback failure. |
 | `otel-invocation-18` | `otel_18_chained_invoke_failure.handler` | Failed chained invoke. |
 | `otel-invocation-19` | `otel_19_execution_failure.handler` | Direct handler failure. |
+| `otel-invocation-20` | `otel_20_virtual_context.handler` | Virtual child context without context checkpoints. |
 | `otel-execution-1` | `otel_1_success.handler` | Execution-view workflow, step, and attempt hierarchy. |
 | `otel-execution-2` | `otel_2_wait_resume.handler` | Execution-view hierarchy across a resumed invocation. |
 | `otel-execution-3` | `otel_3_retry.handler` | Execution-view hierarchy across retry attempts. |
@@ -59,12 +60,13 @@ from the repository's `main` branch before the examples are compiled.
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Source and target failed workflow roots. |
 | `otel-execution-19` | `otel_19_execution_failure.handler` | Failed invocation without a completed workflow. |
+| `otel-execution-20` | `otel_20_virtual_context.handler` | Virtual child context parented to the workflow root. |
 
 ## Run Against the S3 Collector
 
 The hosted workflow builds a custom OpenTelemetry Lambda collector extension
 with `awss3exporter`, publishes it in the test account, and creates a
-run-scoped S3 bucket. It then evaluates all 38 requirements with the community
+run-scoped S3 bucket. It then evaluates all 40 requirements with the community
 JavaScript instrumentation layer and queries the exported OTLP objects through
 the conformance package's `collector` backend.
 
