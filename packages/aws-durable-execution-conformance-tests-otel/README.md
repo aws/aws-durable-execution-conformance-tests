@@ -9,9 +9,9 @@ conformance CLI.
 The SDK handlers and SAM templates that exercise these suites live in each SDK
 repository, not here. This package provides the language-neutral requirements,
 the shared reusable workflow, the OpenTelemetry Collector build, and the
-telemetry validators. The Java SDK already owns its handlers, in
-`conformance-tests-otel/` in `aws/aws-durable-execution-sdk-java`; the Python
-and JavaScript examples still ship here and are migrating to their SDKs.
+telemetry validators. Every SDK repository owns its own handlers and passes
+their location to the shared workflow through the required `examples_dir`
+input.
 
 ## Install
 
@@ -31,11 +31,11 @@ Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
 The long-running suite applies both invocation and execution views to waits,
 retry delays, callbacks, and chained invokes that can remain suspended for up
-to one day. Python and JavaScript run both views; Java runs the invocation view
-because its SDK does not provide `ExecutionOtelPlugin`. Dedicated daily X-Ray
-workflows run at midnight PDT (07:00 UTC), launch a suite when no run is active,
-and validate active executions on later runs. They can also be dispatched
-manually to launch or check a run.
+to one day. Java, JavaScript, and Python all run both views. Each SDK
+repository schedules its own runs: the orchestrator launches a suite when no
+run is active and validates active executions on later runs, and callers can
+also dispatch it manually to launch or check a run. This repository no longer
+hosts per-language preset workflows.
 
 ## Run
 
@@ -96,9 +96,9 @@ long-running views:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
 
-Language presets invoke it with repository and runtime metadata plus three
-optional shell hooks. The orchestrator resolves test revisions once before
-launching any workers:
+SDK repositories invoke it with repository and runtime metadata, the
+`examples_dir` path to their handlers, plus three optional shell hooks. The
+orchestrator resolves test revisions once before launching any workers:
 
 - `setup_command` installs or selects any SDK toolchain.
 - `contract_test_command` validates the example and template contract.
@@ -107,7 +107,7 @@ launching any workers:
 The hooks run in one Bash process after the optional SDK checkout, so setup
 exports remain available to the contract and preparation commands. They receive
 `SDK_CHECKOUT`, `SDK_REF`, and the shared workflow environment, including
-`EXAMPLES_DIR`. A preset can therefore keep setup logic with its SDK:
+`EXAMPLES_DIR`. A caller can therefore keep setup logic with its SDK:
 
 ```yaml
 setup_command: bash "$SDK_CHECKOUT/.github/scripts/setup-conformance-toolchain.sh"
@@ -115,7 +115,7 @@ setup_command: bash "$SDK_CHECKOUT/.github/scripts/setup-conformance-toolchain.s
 
 The shared workflows do not enumerate SDK toolchains. A future Go, Rust, or
 other runtime can supply its own setup and build commands without changing the
-orchestrators, workers, or setup action. For example, a Rust preset can select
+orchestrators, workers, or setup action. For example, a Rust caller can select
 its toolchain with `rustup`:
 
 ```yaml
@@ -127,6 +127,7 @@ jobs:
       resource_prefix: rs
       sdk_repository: example/aws-durable-execution-sdk-rust
       sdk_ref: ${{ github.sha }}
+      examples_dir: .build/durable-sdk/conformance-tests-otel
       setup_command: |
         rustup toolchain install stable --profile minimal
         rustup default stable
@@ -152,8 +153,8 @@ dataset. The backend first locates a correlated span by service name and
 durable execution ARN, then retrieves every span in that trace with adaptive
 sampling disabled.
 
-The hosted Java, Python, and JavaScript suite workflows run Dash0 beside X-Ray
-using the `us-west-2` Dash0 API and ingress endpoints. They use
+The shared suite workflow runs Dash0 beside X-Ray for every calling language
+using the `us-west-2` Dash0 API and ingress endpoints. It uses
 `DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
 When the token is not configured, the workflows skip Dash0 while continuing to
 run the other telemetry backends.
@@ -218,30 +219,64 @@ The stock OpenTelemetry Lambda collector layer does not include
 `awss3exporter`. The shared
 [`build-lambda-layer.sh`](collector/build-lambda-layer.sh) adds that
 upstream component to a pinned `opentelemetry-lambda` checkout and builds a
-custom extension layer containing `config-s3.yaml`. Separate Python, Java, and
-JavaScript hosted workflows publish temporary language-compatible layer
-versions, send each function's OTLP traffic to the local extension, query the
-resulting S3 objects through the `collector` backend, and remove every
+custom extension layer containing `config-s3.yaml`. Each calling language's
+conformance run publishes temporary language-compatible layer
+versions, sends each function's OTLP traffic to the local extension, queries the
+resulting S3 objects through the `collector` backend, and removes every
 temporary stack, bucket, and layer version afterward.
 
-## Python Examples
+## SDK Handlers
 
-The package includes a self-contained
-[Python SAM project](examples/python/README.md) that implements every OTel
-requirement with the Python SDK and its OTel plugins. Its runtime requirements
-install both packages from the Python SDK repository's latest `main`. The
-folder is structured to move into the Python SDK's OTel package when this suite
-stabilizes.
+This package bundles no example handlers. Each SDK repository owns the handlers
+and SAM templates that satisfy these requirements, and points the shared
+orchestrator at them with the required `examples_dir` input:
 
-## JavaScript Examples
+| SDK | Handlers |
+| --- | --- |
+| Java | `conformance-tests-otel/` in `aws/aws-durable-execution-sdk-java` |
+| JavaScript | `aws/aws-durable-execution-sdk-js` |
+| Python | `aws/aws-durable-execution-sdk-python` |
 
-The self-contained
-[JavaScript SAM project](examples/javascript/README.md), authored in
-TypeScript, implements all OTel requirements on Node.js 22. It builds the
-JavaScript SDK and OTel plugin from
-their `main` branch, bundles the handlers, and exercises both
-`InvocationOtelPlugin` and `ExecutionOtelPlugin` with the tracer provider
-registered by the Lambda instrumentation layer.
+A conforming project supplies one function per requirement, maps each to its
+requirement ID through `TestingMetadata.TestDescription`, declares the
+`OtelServiceName` parameter, and provides `template.yaml` plus
+`template-long-running.yaml`.
+
+### Adding a requirement
+
+Requirements and handlers live in different repositories, so a new case lands in
+two steps, requirement first:
+
+1. In this repository, add `test-requirements/<suite>/<suite>-<n>.yaml` with the
+   expected spans and attributes, and bump `case_count` for that suite in
+   `opentelemetry-orchestrator.yml` so failure diagnostics dump the new
+   function's log group.
+2. In each SDK repository, add the handler and register it in `template.yaml`
+   (and `template-long-running.yaml` for long-running cases) with a
+   `TestingMetadata.TestDescription` naming the requirement ID.
+
+Ordering is forgiving. A published requirement with no handler reports
+`UNCOVERED`, and a handler whose requirement ID is not yet published is filtered
+out before invocation, because the runner keeps only the template functions whose
+description IDs appear in the selected suite. So step 1 can merge while SDKs catch
+up, and neither half breaks the other.
+
+If the requirement turns out to be wrong once an SDK writes the handler against
+it, correct the requirement here first, then land the handler; the
+`Requirement correctness dispute` issue template captures the evidence. The
+`OpenTelemetry Conformance Tests` workflow runs the Python SDK's handlers against the
+requirements on every PR here, so a change that breaks an existing case fails on
+that PR rather than in the next SDK to bump.
+
+`UNCOVERED` is non-blocking under the default `--fail-on failed` and blocking
+under `failed+uncovered`. To adopt a requirement without shipping a handler,
+declare it under a function's `TestingMetadata.NotImplemented` with a reason;
+that reports `NOT_IMPLEMENTED`, which never blocks.
+
+An SDK caller pins the orchestrator workflow by SHA (`uses: ...@<sha>`) and
+selects the requirement revision with `conformance_test_ref`. A caller that pins
+`conformance_test_ref` to a SHA sees requirement changes only when it bumps; one
+that tracks `main` sees them on its next run.
 
 ## Third-Party Plugins
 

@@ -7,13 +7,10 @@ import json
 import re
 from copy import deepcopy
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
-import yaml
 
 from aws_durable_execution_conformance_tests.validate import (
-    _CfnSafeLoader,
     discover_test_files,
     load_yaml_file,
 )
@@ -29,35 +26,10 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 )
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
-EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-
 
 def _requirements(suite_name: str) -> dict[str, str]:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
     return discover_test_files(suites[suite_name].root, suite="all")
-
-
-@pytest.mark.parametrize("language", ["javascript", "python"])
-def test_example_templates_do_not_use_top_level_testing_metadata(language: str) -> None:
-    template = (EXAMPLES_DIR / language / "template.yaml").read_text(encoding="utf-8")
-
-    assert all(not line.startswith("TestingMetadata:") for line in template.splitlines())
-
-
-@pytest.mark.parametrize("language", ["javascript", "python"])
-@pytest.mark.parametrize("template_name", ["template.yaml", "template-long-running.yaml"])
-def test_example_templates_use_a_distinct_resource_service_name(
-    language: str,
-    template_name: str,
-) -> None:
-    with (EXAMPLES_DIR / language / template_name).open(encoding="utf-8") as stream:
-        template = yaml.load(stream, Loader=_CfnSafeLoader)
-
-    assert template["Parameters"]["OtelServiceName"] == {
-        "Type": "String",
-        "Default": "durable-execution-conformance",
-        "Description": "OpenTelemetry resource service name",
-    }
 
 
 def test_extension_exposes_packaged_otel_view_requirements() -> None:

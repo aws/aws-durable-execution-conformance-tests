@@ -16,10 +16,6 @@ from typing import Any
 import pytest
 import yaml
 
-from aws_durable_execution_conformance_tests.validate import (
-    _CfnSafeLoader,
-    parse_function_descriptions,
-)
 from aws_durable_execution_conformance_tests_otel import long_running
 from aws_durable_execution_conformance_tests_otel.long_running import (
     CALLBACK_CASE,
@@ -1002,90 +998,12 @@ def test_short_run_retains_stack_after_poll_timeout(
     assert deleted == []
 
 
-@pytest.mark.parametrize("language", ["javascript", "python"])
-def test_long_running_templates_map_the_complete_suite(language: str) -> None:
-    template_path = EXAMPLES_DIR / language / "template-long-running.yaml"
-
-    assert parse_function_descriptions(str(template_path)) == EXPECTED_MAPPINGS
-    with template_path.open(encoding="utf-8") as stream:
-        template = yaml.load(stream, Loader=_CfnSafeLoader)
-
-    globals_config = template["Globals"]["Function"]
-    assert globals_config["DurableConfig"] == {
-        "ExecutionTimeout": 180000,
-        "RetentionPeriodInDays": 3,
-    }
-    assert globals_config["Tracing"] == "Active"
-    assert template["Parameters"]["OtelView"] == {
-        "Type": "String",
-        "Default": "invocation",
-        "AllowedValues": ["invocation", "execution"],
-        "Description": "OpenTelemetry plugin view used by the long-running functions",
-    }
-    assert globals_config["Environment"]["Variables"]["OTEL_PLUGIN_MODE"] == {
-        "Ref": "OtelView",
-    }
-    assert set(template["Resources"]) == {
-        *(logical_id for logical_id, _description_id in EXPECTED_MAPPINGS),
-        "OtelLongRunning4InvokeTarget",
-    }
-    assert template["Resources"]["OtelLongRunning4ChainedInvoke"]["Properties"]["Environment"]["Variables"][
-        "OTEL_INVOKE_TARGET_FUNCTION_NAME"
-    ] == {"Sub": "${OtelLongRunning4InvokeTarget.Arn}:$LATEST"}
-
-
-def test_python_long_running_handler_names_match_requirement_numbers() -> None:
-    template_path = EXAMPLES_DIR / "python" / "template-long-running.yaml"
-    with template_path.open(encoding="utf-8") as stream:
-        resources = yaml.load(stream, Loader=_CfnSafeLoader)["Resources"]
-
-    assert {logical_id: resource["Properties"]["Handler"] for logical_id, resource in resources.items()} == {
-        "OtelLongRunning1Wait": "otel_long_running_1_wait.handler",
-        "OtelLongRunning2Retry": "otel_long_running_2_retry.handler",
-        "OtelLongRunning3Callback": "otel_long_running_3_callback.handler",
-        "OtelLongRunning4ChainedInvoke": "otel_long_running_4_chained_invoke.handler",
-        "OtelLongRunning4InvokeTarget": "otel_long_running_4_chained_invoke.target_handler",
-    }
-
-
-def test_long_running_handlers_use_runtime_delay_inputs() -> None:
-    python_source = EXAMPLES_DIR / "python" / "src"
-    javascript_source = EXAMPLES_DIR / "javascript" / "handlers"
-
-    assert "long_delay_seconds(event)" in (python_source / "otel_long_running_1_wait.py").read_text(encoding="utf-8")
-    python_retry_source = (python_source / "otel_long_running_2_retry.py").read_text(encoding="utf-8")
-    assert "long_delay_seconds(event)" in python_retry_source
-    assert "jitter_strategy=JitterStrategy.NONE" in python_retry_source
-    assert "long_delay_seconds(event)" in (python_source / "otel_long_running_4_chained_invoke.py").read_text(
-        encoding="utf-8"
-    )
-    assert "longDelaySeconds(event)" in (javascript_source / "otel_21_long_retry.ts").read_text(encoding="utf-8")
-    assert "longDelaySeconds(event)" in (javascript_source / "otel_23_long_chained_invoke.ts").read_text(
-        encoding="utf-8"
-    )
-
-
-@pytest.mark.parametrize("language", ["javascript", "python"])
-def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> None:
-    entry_workflow = (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").read_text(encoding="utf-8")
-    entry_workflow_config = yaml.safe_load(entry_workflow)
+def test_orchestrator_runs_short_and_deferred_xray_runs() -> None:
     orchestrator = (WORKFLOWS_DIR / "opentelemetry-orchestrator.yml").read_text(encoding="utf-8")
     orchestrator_config = yaml.safe_load(orchestrator)
     workflow = (WORKFLOWS_DIR / "opentelemetry-long-running.yml").read_text(encoding="utf-8")
     workflow_config = yaml.safe_load(workflow)
 
-    assert "  pull_request:" in entry_workflow
-    assert "  push:" in entry_workflow
-    assert entry_workflow.count("    branches: [main]") == 2
-    assert "  schedule:" in entry_workflow
-    assert "  workflow_dispatch:" in entry_workflow
-    assert 'cron: "0 7 * * *"' in entry_workflow
-    assert 'default: "82800"' in entry_workflow
-    preset = entry_workflow_config["jobs"]["conformance"]
-    assert preset["uses"] == "./.github/workflows/opentelemetry-orchestrator.yml"
-    assert preset["with"]["language"] == language
-
-    assert set(entry_workflow_config["jobs"]) == {"conformance"}
     assert orchestrator_config["jobs"]["resolve"]["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
     assert "github.event_name == 'pull_request' || github.event_name == 'push'" in orchestrator
     assert "github.event_name == 'schedule' && 'auto'" in orchestrator
@@ -1095,6 +1013,9 @@ def test_language_workflows_run_short_and_deferred_xray_runs(language: str) -> N
         delay_expression = orchestrator_config["jobs"][f"long-running-{view}"]["with"]["delay_seconds"]
         assert "inputs.phase == 'short'" in delay_expression
         assert "&& '60'" in delay_expression
+        # Schedule must be excluded from the short-run shortcut, or the nightly
+        # collapses to a 60s delay and never suspends for hours.
+        assert "github.event_name != 'schedule' && inputs.phase == 'short'" in delay_expression
 
     assert "  workflow_call:" in workflow
     assert 'default: "60"' in workflow

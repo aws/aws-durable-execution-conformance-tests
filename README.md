@@ -120,9 +120,9 @@ Secret values are redacted from diagnostics and artifacts. See the
 for the template parameter contract and the prototype OpenTelemetry Collector
 Contrib `awss3exporter` configuration.
 
-The self-contained
-[Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
-map the current OTel requirements to deployable SDK handlers.
+Each SDK repository owns the handlers that map these OTel requirements to
+deployable functions and passes their location to the shared workflow through
+the required `examples_dir` input.
 
 ### Reuse the GitHub Actions workflow
 
@@ -149,10 +149,10 @@ jobs:
       sdk_repository: aws/aws-durable-execution-sdk-python
       sdk_ref: ${{ github.event.pull_request.head.sha || github.sha }}
       conformance_test_ref: ${{ inputs.conformance_test_ref || 'main' }}
-      checkout_sdk: false
-      contract_test_command: >-
-        hatch run test:all
-        packages/aws-durable-execution-conformance-tests-otel/tests/test_python_examples.py
+      checkout_sdk: true
+      # Handlers live in the SDK repo; path is relative to the conformance
+      # workspace, where the SDK is checked out.
+      examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel
       adot_release_repository: aws-observability/aws-otel-python-instrumentation
       collector_compatible_runtime: python3.13
       collector_otlp_endpoint: http://localhost:4318

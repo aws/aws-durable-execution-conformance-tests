@@ -73,11 +73,10 @@ on:
         type: string
       examples_dir:
         description: >-
-          Directory containing the language's OTel handlers + template(s). Defaults to this
-          repo's bundled examples/<language>; set it (e.g. to a path inside the checked-out
-          SDK) to source handlers from the SDK repo instead.
-        required: false
-        default: ""
+          Directory containing the language's OTel handlers + template(s), typically a path
+          inside the checked-out SDK. Each SDK repository owns its own handlers, so this repo
+          bundles none and every caller must supply this path.
+        required: true
         type: string
       aws_region:
         description: AWS region
@@ -106,7 +105,7 @@ env:
   PHASE: ${{ inputs.phase }}
   DELAY_SECONDS: ${{ inputs.delay_seconds || '82800' }}
   CONFORMANCE_TEST_SHA: ${{ inputs.conformance_test_sha }}
-  EXAMPLES_DIR: ${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', inputs.language) }}
+  EXAMPLES_DIR: ${{ inputs.examples_dir }}
   LANGUAGE: ${{ inputs.language }}
   STATE_FILE: /tmp/${{ inputs.language }}-otel-long-running-state.json
   RESULT_FILE: /tmp/${{ inputs.language }}-otel-long-running-result.json
@@ -116,7 +115,7 @@ env:
   PYTHONUNBUFFERED: "1"
   REPORT_FILE: /tmp/${{ inputs.language }}-otel-long-running-report
   SDK_REF: ${{ inputs.sdk_ref }}
-  TEST_TEMPLATE: ${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', inputs.language) }}/template-long-running.yaml
+  TEST_TEMPLATE: ${{ inputs.examples_dir }}/template-long-running.yaml
 
 jobs:
   run:

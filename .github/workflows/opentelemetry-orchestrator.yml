@@ -80,11 +80,10 @@ on:
         type: number
       examples_dir:
         description: >-
-          Directory containing the language's OTel handlers + template(s). Defaults to this
-          repo's bundled examples/<language>; set it (e.g. to a path inside the checked-out
-          SDK) to source handlers from the SDK repo instead.
-        required: false
-        default: ""
+          Directory containing the language's OTel handlers + template(s), typically a path
+          inside the checked-out SDK. Each SDK repository owns its own handlers, so this repo
+          bundles none and every caller must supply this path.
+        required: true
         type: string
       phase:
         description: Run short tests, launch a long run, or check the active long run
@@ -174,7 +173,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-invocation
-      case_count: 19
+      case_count: 20
       aws_region: ${{ inputs.aws_region }}
       dash0_enabled: ${{ needs.resolve.outputs.dash0_enabled == 'true' }}
       datadog_enabled: ${{ needs.resolve.outputs.datadog_enabled == 'true' }}
@@ -206,7 +205,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-execution
-      case_count: 19
+      case_count: 20
       aws_region: ${{ inputs.aws_region }}
       dash0_enabled: ${{ needs.resolve.outputs.dash0_enabled == 'true' }}
       datadog_enabled: ${{ needs.resolve.outputs.datadog_enabled == 'true' }}
@@ -235,7 +234,7 @@ jobs:
       view: invocation
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || inputs.phase == 'short')
+          || (github.event_name != 'schedule' && inputs.phase == 'short'))
           && '60' || inputs.delay_seconds }}
       examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
@@ -264,7 +263,7 @@ jobs:
       view: execution
       delay_seconds: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || inputs.phase == 'short')
+          || (github.event_name != 'schedule' && inputs.phase == 'short'))
           && '60' || inputs.delay_seconds }}
       examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
