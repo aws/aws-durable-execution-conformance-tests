@@ -10,7 +10,7 @@ The project is intentionally self-contained so this directory can move into the
 Python SDK's OpenTelemetry package once the suite is complete.
 
 The runner discovers each requirement mapping from
-`TestingMetadata.TestDescription`. The 19 invocation and 19 execution
+`TestingMetadata.TestDescription`. The 20 invocation and 20 execution
 requirements reuse the same scenario handlers and select their plugin through
 deployment configuration.
 
@@ -37,6 +37,7 @@ deployment configuration.
 | `otel-invocation-17` | `otel_17_wait_for_callback_failure.handler` | Verifies external callback-failure telemetry. |
 | `otel-invocation-18` | `otel_18_chained_invoke_failure.handler` | Verifies failed chained-invoke telemetry. |
 | `otel-invocation-19` | `otel_19_execution_failure.handler` | Verifies telemetry for a direct handler failure. |
+| `otel-invocation-20` | `otel_20_virtual_context.handler` | Verifies a virtual child-context span without context checkpoints. |
 | `otel-execution-1` | `otel_1_success.handler` | Verifies the execution-view workflow, step, and attempt hierarchy. |
 | `otel-execution-2` | `otel_2_wait_resume.handler` | Verifies the execution view across a resumed invocation. |
 | `otel-execution-3` | `otel_3_retry.handler` | Verifies the execution view across retry attempts. |
@@ -56,6 +57,7 @@ deployment configuration.
 | `otel-execution-17` | `otel_17_wait_for_callback_failure.handler` | Verifies failed callback telemetry under one workflow. |
 | `otel-execution-18` | `otel_18_chained_invoke_failure.handler` | Verifies source and target failed workflow roots. |
 | `otel-execution-19` | `otel_19_execution_failure.handler` | Verifies a failed invocation without a completed workflow. |
+| `otel-execution-20` | `otel_20_virtual_context.handler` | Verifies a virtual child-context span under the workflow root. |
 
 Runtime dependencies in [`src/requirements.txt`](src/requirements.txt) install
 both packages from the commit in `PYTHON_SDK_REF`. The hosted workflow resolves

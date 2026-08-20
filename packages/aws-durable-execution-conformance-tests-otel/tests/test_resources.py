@@ -68,8 +68,8 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
         "otel-invocation",
         "otel-long-running",
     }
-    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 20)}
-    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 20)}
+    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 21)}
+    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 21)}
     assert set(_requirements("otel-long-running")) == {
         f"otel-long-running-{case_number}" for case_number in range(1, 5)
     }
@@ -413,7 +413,7 @@ def test_long_callback_assertions_accept_javascript_generic_span_names(
     )
 
 
-@pytest.mark.parametrize("case_number", range(1, 20))
+@pytest.mark.parametrize("case_number", range(1, 21))
 def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_number: int) -> None:
     invocation = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
     execution = load_yaml_file(_requirements("otel-execution")[f"otel-execution-{case_number}"])
@@ -428,6 +428,42 @@ def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_num
     assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
 
 
+def test_virtual_context_case_emits_telemetry_without_context_history() -> None:
+    for suite_name, parent_name in (
+        ("otel-invocation", "Invocation"),
+        ("otel-execution", "Workflow"),
+    ):
+        requirement = load_yaml_file(_requirements(suite_name)[f"{suite_name}-20"])
+
+        assert requirement["ExpectedExecutionHistory"] == [
+            {"EventId": 1, "EventType": "ExecutionStarted"},
+            {"EventId": 2, "EventType": "InvocationCompleted"},
+            {"EventId": 3, "EventType": "ExecutionSucceeded"},
+        ]
+        assert requirement["ExpectedResult"] == {
+            "ExecutionStatus": "SUCCEEDED",
+            "Result": "virtual-complete",
+        }
+
+        virtual_span = next(
+            assertion
+            for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+            if assertion["select"]["name"] == "otel-virtual-context"
+        )
+        assert virtual_span["select"]["attributes"] == {
+            "durable.operation.type": "CONTEXT",
+            "durable.operation.subtype": "RunInChildContext",
+        }
+        assert virtual_span["expect"]["status"] == "OK"
+        assert virtual_span["expect"]["attributes"] == {
+            "durable.execution.arn": "${EXECUTION_ARN}",
+            "durable.operation.type": "CONTEXT",
+            "durable.operation.subtype": "RunInChildContext",
+            "durable.operation.name": "otel-virtual-context",
+        }
+        assert virtual_span["expect"]["parent"]["name"] == parent_name
+
+
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
     callback_submitter_span_names = {
@@ -435,7 +471,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         17: "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}",
     }
 
-    for case_number in range(1, 20):
+    for case_number in range(1, 21):
         requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
 
@@ -456,7 +492,10 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         if isinstance(actual_scopes, dict):
             actual_scopes = [actual_scopes]
         assert actual_scopes == expected_scopes
-        assert assertions["exact_attribute_prefixes"] == ["durable."]
+        if case_number == 20:
+            assert "exact_attribute_prefixes" not in assertions
+        else:
+            assert assertions["exact_attribute_prefixes"] == ["durable."]
         span_assertions = assertions["span_assertions"]
         assert span_assertions
         workflows = [assertion for assertion in span_assertions if assertion["select"]["name"] == "Workflow"]
@@ -506,8 +545,11 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             }
             assert expected["service_name"] == "${SERVICE_NAME}"
             if "links" not in expected:
-                assert case_number == 15
-                assert selected_name == "otel-interrupted-wait"
+                assert case_number in {15, 20}
+                assert selected_name in {
+                    "otel-interrupted-wait",
+                    "otel-virtual-context",
+                }
                 link_alternatives = []
             else:
                 links = expected["links"]
@@ -529,7 +571,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                             }
                         else:
                             assert linked_span["attributes"]["durable.operation.id"]
-            if selected_name not in {"Invocation", "Workflow"} and case_number != 15:
+            if selected_name not in {"Invocation", "Workflow"} and case_number not in {15, 20}:
                 assert link_alternatives
                 assert all(
                     link_set
@@ -635,7 +677,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
         18: {"otel-failed-invoke"},
     }
 
-    for case_number in range(1, 20):
+    for case_number in range(1, 21):
         requirement = load_yaml_file(execution_requirements[f"otel-execution-{case_number}"])
         invocation_requirement = load_yaml_file(
             invocation_requirements[f"otel-invocation-{case_number}"],
@@ -914,7 +956,7 @@ def test_otel_catalog_asserts_every_deterministic_span_order(
 ) -> None:
     requirements = _requirements(suite_name)
 
-    for case_number in range(1, 20):
+    for case_number in range(1, 21):
         requirement = load_yaml_file(requirements[f"{suite_name}-{case_number}"])
         assert all(
             not {"before", "after"} & set(span_assertion["select"])
