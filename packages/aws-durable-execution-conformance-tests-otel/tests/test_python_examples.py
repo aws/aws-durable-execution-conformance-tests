@@ -43,6 +43,7 @@ EXPECTED_MAPPINGS = [
     ("Otel17WaitForCallbackFailure", "otel-invocation-17"),
     ("Otel18ChainedInvokeFailure", "otel-invocation-18"),
     ("Otel19ExecutionFailure", "otel-invocation-19"),
+    ("Otel20VirtualContext", "otel-invocation-20"),
     ("OtelExecution1Success", "otel-execution-1"),
     ("OtelExecution2WaitResume", "otel-execution-2"),
     ("OtelExecution3Retry", "otel-execution-3"),
@@ -62,8 +63,9 @@ EXPECTED_MAPPINGS = [
     ("OtelExecution17WaitForCallbackFailure", "otel-execution-17"),
     ("OtelExecution18ChainedInvokeFailure", "otel-execution-18"),
     ("OtelExecution19ExecutionFailure", "otel-execution-19"),
+    ("OtelExecution20VirtualContext", "otel-execution-20"),
 ]
-EXECUTION_CASES = tuple(range(1, 20))
+EXECUTION_CASES = tuple(range(1, 21))
 REQUIRED_OTEL_PARAMETERS = {
     "LambdaExecutionRoleArn",
     "OtelCollectorBucket",
@@ -120,7 +122,7 @@ def test_python_example_template_accepts_runner_parameters() -> None:
     assert "    NoEcho: true" in template
     assert template.count("      Role: !Ref LambdaExecutionRoleArn") == len(EXPECTED_MAPPINGS) + 4
     assert template.count("BuildMethod: makefile") == len(EXPECTED_MAPPINGS) + 4
-    for case_number in range(1, 20):
+    for case_number in range(1, 21):
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-invocation-{case_number}"' in template
     for case_number in EXECUTION_CASES:
         assert f'FunctionName: !Sub "${{AWS::StackName}}-otel-execution-{case_number}"' in template
@@ -175,6 +177,7 @@ def test_python_example_handlers_are_valid_python() -> None:
         "otel_17_wait_for_callback_failure",
         "otel_18_chained_invoke_failure",
         "otel_19_execution_failure",
+        "otel_20_virtual_context",
         "otel_long_running_1_wait",
         "otel_long_running_2_retry",
         "otel_long_running_3_callback",
