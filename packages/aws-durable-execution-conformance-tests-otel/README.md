@@ -6,6 +6,13 @@ the `otel-invocation`, `otel-execution`, and `otel-long-running` suites to the
 existing runner through a Python entry point; it does not install a second
 conformance CLI.
 
+The SDK handlers and SAM templates that exercise these suites live in each SDK
+repository, not here. This package provides the language-neutral requirements,
+the shared reusable workflow, the OpenTelemetry Collector build, and the
+telemetry validators. The Java SDK already owns its handlers, in
+`conformance-tests-otel/` in `aws/aws-durable-execution-sdk-java`; the Python
+and JavaScript examples still ship here and are migrating to their SDKs.
+
 ## Install
 
 ```bash
@@ -148,6 +155,8 @@ sampling disabled.
 The hosted Java, Python, and JavaScript suite workflows run Dash0 beside X-Ray
 using the `us-west-2` Dash0 API and ingress endpoints. They use
 `DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
+When the token is not configured, the workflows skip Dash0 while continuing to
+run the other telemetry backends.
 
 ## Datadog
 
@@ -168,6 +177,8 @@ provider so endpoint and authentication settings are applied once instead of
 creating a second unauthenticated exporter. The workflow reads the API access
 token from `DATADOG_ACCESS_TOKEN` and the intake API key from
 `DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
+When either credential is not configured, the workflows skip Datadog while
+continuing to run the other telemetry backends.
 
 Configure the Datadog account once with a 100% APM retention filter for
 `service:durable-execution-conformance` before running a suite. The shared
@@ -221,16 +232,6 @@ requirement with the Python SDK and its OTel plugins. Its runtime requirements
 install both packages from the Python SDK repository's latest `main`. The
 folder is structured to move into the Python SDK's OTel package when this suite
 stabilizes.
-
-## Java Examples
-
-The self-contained [Java SAM project](examples/java/README.md) implements the
-invocation-view requirements with the Java SDK and its OTel plugin. Hosted
-workflows build both artifacts from the Java SDK repository's latest `main`.
-The project builds one shaded JAR containing all handlers and attaches the
-`AWSOpenTelemetryDistroJava` layer with its Java agent disabled. The plugin
-remains the sole tracer provider and selects Lambda's X-Ray daemon or an OTLP
-gRPC endpoint from the deployment environment.
 
 ## JavaScript Examples
 

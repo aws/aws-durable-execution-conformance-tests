@@ -37,14 +37,14 @@ def _requirements(suite_name: str) -> dict[str, str]:
     return discover_test_files(suites[suite_name].root, suite="all")
 
 
-@pytest.mark.parametrize("language", ["java", "javascript", "python"])
+@pytest.mark.parametrize("language", ["javascript", "python"])
 def test_example_templates_do_not_use_top_level_testing_metadata(language: str) -> None:
     template = (EXAMPLES_DIR / language / "template.yaml").read_text(encoding="utf-8")
 
     assert all(not line.startswith("TestingMetadata:") for line in template.splitlines())
 
 
-@pytest.mark.parametrize("language", ["java", "javascript", "python"])
+@pytest.mark.parametrize("language", ["javascript", "python"])
 @pytest.mark.parametrize("template_name", ["template.yaml", "template-long-running.yaml"])
 def test_example_templates_use_a_distinct_resource_service_name(
     language: str,

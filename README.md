@@ -99,17 +99,21 @@ hatch run validate \
 
 Credentials are read only from the environment:
 
-- Datadog search API: `DATADOG_ACCESS_TOKEN`
-- Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
-- One-time Datadog retention helper: `DATADOG_APPLICATION_KEY`
-- Dash0: `DASH0_AUTH_TOKEN`
+- Optional Datadog search API: `DATADOG_ACCESS_TOKEN`
+- Optional Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
+- Optional automated Datadog retention setup: `DATADOG_APPLICATION_KEY`
+- Optional Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
 
-Before running the hosted workflows, configure the Datadog account once with a
-100% APM retention filter for `service:durable-execution-conformance`. The
-workflows do not modify retention settings.
+Hosted workflows skip Dash0 when `DASH0_AUTH_TOKEN` is not configured and
+skip Datadog when either `DATADOG_ACCESS_TOKEN` or `DATADOG_API_KEY` is not
+configured. X-Ray and S3 collector tests continue to run.
+
+When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
+already have a 100% APM retention filter for
+`service:durable-execution-conformance`.
 
 Secret values are redacted from diagnostics and artifacts. See the
 [OTel package README](packages/aws-durable-execution-conformance-tests-otel/README.md)
@@ -117,8 +121,6 @@ for the template parameter contract and the prototype OpenTelemetry Collector
 Contrib `awss3exporter` configuration.
 
 The self-contained
-[Java examples](packages/aws-durable-execution-conformance-tests-otel/examples/java/README.md)
-and
 [Python examples](packages/aws-durable-execution-conformance-tests-otel/examples/python/README.md)
 map the current OTel requirements to deployable SDK handlers.
 
