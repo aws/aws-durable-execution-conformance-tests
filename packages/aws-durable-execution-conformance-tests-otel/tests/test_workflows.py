@@ -400,16 +400,11 @@ def test_datadog_runs_beside_dash0_with_separate_credentials() -> None:
         "conformance-tests-${{ inputs.language }}-datadog-${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}"
     )
     assert datadog["concurrency"] == {
-        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}",
+        "group": "${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ inputs.aws_region }}",
         "cancel-in-progress": False,
     }
-    assert steps["Configure Datadog trace retention"]["run"] == (
-        "hatch run python scripts/configure-datadog-retention.py"
-    )
-    assert steps["Configure Datadog trace retention"]["env"] == {
-        "DATADOG_API_KEY": "${{ secrets.DATADOG_API_KEY }}",
-        "DATADOG_APPLICATION_KEY": "${{ secrets.DATADOG_APPLICATION_KEY }}",
-    }
+    assert "Configure Datadog trace retention" not in steps
+    assert "configure-datadog-retention.py" not in commands
     assert "--otel-exporter community" in commands
     assert '--otel-endpoint "$DATADOG_OTLP_ENDPOINT"' in commands
     assert "--otel-poll-interval 15" in commands

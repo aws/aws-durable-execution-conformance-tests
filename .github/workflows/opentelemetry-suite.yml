@@ -344,7 +344,7 @@ jobs:
       (github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository))
     concurrency:
-      group: ${{ inputs.language }}-otel-datadog-${{ inputs.aws_region }}
+      group: ${{ inputs.language }}-otel-datadog-${{ inputs.suite }}-${{ inputs.aws_region }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
@@ -384,12 +384,6 @@ jobs:
           role-session-name: durableConformance-${{ inputs.language }}-datadog
           sdk-ref: ${{ inputs.sdk_ref }}
           sdk-repository: ${{ inputs.sdk_repository }}
-
-      - name: Configure Datadog trace retention
-        env:
-          DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
-          DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
-        run: hatch run python scripts/configure-datadog-retention.py
 
       - name: Delete rolled-back test stacks
         env:

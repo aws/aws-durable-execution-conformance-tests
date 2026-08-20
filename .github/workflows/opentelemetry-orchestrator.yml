@@ -121,7 +121,7 @@ on:
         description: Optional Datadog API key used for OTLP trace intake and retention configuration
         required: false
       DATADOG_APPLICATION_KEY:
-        description: Optional Datadog application key used to configure trace retention
+        description: Deprecated Datadog application key accepted for caller compatibility
         required: false
 
 permissions:

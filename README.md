@@ -167,7 +167,6 @@ jobs:
       DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
       DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
       DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
-      DATADOG_APPLICATION_KEY: ${{ secrets.DATADOG_APPLICATION_KEY }}
 ```
 
 Use `phase: short` for pull requests and pushes. For day-scale tests, expose
@@ -180,8 +179,10 @@ Set `checkout_sdk: true` when `setup_command` or `prepare_command` needs an SDK
 checkout. Set it to `false` when the language example resolves the SDK through
 `sdk_repository` and `sdk_ref`, as Python does. Supply either
 `adot_release_repository` for layer discovery or a fixed `adot_layer_arn`.
-`DATADOG_APPLICATION_KEY` is optional only when the Datadog account already has
-the required 100% retention filter.
+The Datadog account must already have the required 100% retention filter; the
+reusable workflow does not modify retention settings. It continues to accept
+the optional `DATADOG_APPLICATION_KEY` secret for compatibility with existing
+callers, but does not use it.
 
 See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
