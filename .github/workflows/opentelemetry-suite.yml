@@ -95,11 +95,10 @@ on:
         type: number
       examples_dir:
         description: >-
-          Directory containing the language's OTel handlers + template(s). Defaults to this
-          repo's bundled examples/<language>; set it (e.g. to a path inside the checked-out
-          SDK) to source handlers from the SDK repo instead.
-        required: false
-        default: ""
+          Directory containing the language's OTel handlers + template(s), typically a path
+          inside the checked-out SDK. Each SDK repository owns its own handlers, so this repo
+          bundles none and every caller must supply this path.
+        required: true
         type: string
       aws_region:
         description: AWS region
@@ -116,7 +115,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
-  EXAMPLES_DIR: ${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', inputs.language) }}
+  EXAMPLES_DIR: ${{ inputs.examples_dir }}
   LANGUAGE: ${{ inputs.language }}
   OTEL_CASE_COUNT: ${{ inputs.case_count }}
   OTEL_RESOURCE_SERVICE_NAME: durable-execution-conformance
@@ -125,7 +124,7 @@ env:
   PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
   PYTHONUNBUFFERED: "1"
   SDK_REF: ${{ inputs.sdk_ref }}
-  TEST_TEMPLATE: ${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', inputs.language) }}/template.yaml
+  TEST_TEMPLATE: ${{ inputs.examples_dir }}/template.yaml
 
 jobs:
   backend:

@@ -13,9 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
-LANGUAGES = ("javascript", "python")
-DISPLAY_NAMES = {"javascript": "JavaScript", "python": "Python"}
-LANGUAGE_WORKFLOWS = {language: WORKFLOWS_DIR / f"{language}-opentelemetry.yml" for language in LANGUAGES}
+LANGUAGES = ("java", "javascript", "python")
 ORCHESTRATOR = WORKFLOWS_DIR / "opentelemetry-orchestrator.yml"
 RESOLVER_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-resolve.yml"
 SUITE_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-suite.yml"
@@ -23,13 +21,11 @@ LONG_RUNNING_WORKFLOW = WORKFLOWS_DIR / "opentelemetry-long-running.yml"
 PREPARE_ACTION = ROOT / ".github" / "actions" / "prepare-otel-example" / "action.yml"
 DATADOG_RETENTION_SCRIPT = ROOT / "scripts" / "configure-datadog-retention.py"
 ALL_OTEL_WORKFLOWS = {
-    *LANGUAGE_WORKFLOWS.values(),
     ORCHESTRATOR,
     RESOLVER_WORKFLOW,
     SUITE_WORKFLOW,
     LONG_RUNNING_WORKFLOW,
 }
-COLLECTOR_PATH_FILTER = "packages/aws-durable-execution-conformance-tests-otel/collector/**"
 
 
 def _load(path: Path) -> dict:
@@ -73,6 +69,7 @@ def test_one_shared_worker_owns_each_otel_lifecycle() -> None:
     assert not (WORKFLOWS_DIR / "opentelemetry-long-running-orchestrator.yml").exists()
 
     for language in LANGUAGES:
+        assert not (WORKFLOWS_DIR / f"{language}-opentelemetry.yml").exists()
         assert not (WORKFLOWS_DIR / f"{language}-opentelemetry-suite.yml").exists()
         assert not (WORKFLOWS_DIR / f"{language}-opentelemetry-long-running.yml").exists()
 
@@ -98,8 +95,11 @@ def test_shared_entry_point_accepts_language_owned_setup() -> None:
         "collector_compatible_runtime",
         "collector_otlp_endpoint",
         "delay_seconds",
+        "examples_dir",
     ):
         assert name in inputs
+    assert inputs["examples_dir"]["required"] is True
+    assert "default" not in inputs["examples_dir"]
     assert "runtime_language" not in inputs
     assert inputs["setup_command"]["default"] == ""
     assert inputs["prepare_command"]["default"] == ""
@@ -160,50 +160,6 @@ def test_prepare_action_runs_arbitrary_language_hooks() -> None:
     assert "actions/setup-node" not in PREPARE_ACTION.read_text(encoding="utf-8")
 
 
-def test_language_workflows_are_thin_presets() -> None:
-    expected = {
-        "python": {
-            "resource_prefix": "p",
-            "sdk_repository": "aws/aws-durable-execution-sdk-python",
-            "adot_release_repository": "aws-observability/aws-otel-python-instrumentation",
-            "collector_compatible_runtime": "python3.13",
-            "collector_otlp_endpoint": "http://localhost:4318",
-        },
-        "javascript": {
-            "resource_prefix": "js",
-            "sdk_repository": "aws/aws-durable-execution-sdk-js",
-            "adot_release_repository": "aws-observability/aws-otel-js-instrumentation",
-            "collector_compatible_runtime": "nodejs22.x",
-            "collector_otlp_endpoint": "http://localhost:4318",
-        },
-    }
-
-    for language, path in LANGUAGE_WORKFLOWS.items():
-        text = path.read_text(encoding="utf-8")
-        workflow = _load(path)
-        preset = workflow["jobs"]["conformance"]
-
-        assert set(workflow["jobs"]) == {"conformance"}
-        assert preset["uses"] == "./.github/workflows/opentelemetry-orchestrator.yml"
-        assert "needs" not in preset
-        assert preset["with"]["language"] == language
-        assert preset["with"]["sdk_repository"] == expected[language]["sdk_repository"]
-        for name in ("resource_prefix", "adot_release_repository"):
-            value = expected[language][name]
-            assert preset["with"][name] == value
-        for name in ("collector_compatible_runtime", "collector_otlp_endpoint"):
-            assert preset["with"][name] == expected[language][name]
-        assert preset["with"]["delay_seconds"] == "${{ inputs.delay_seconds || '82800' }}"
-        assert f"name: {DISPLAY_NAMES[language]} OpenTelemetry" in text
-        assert "  pull_request:" in text
-        assert "  pull_request:\n    branches: [main]" in text
-        assert "  push:" in text
-        assert "  schedule:" in text
-        assert "  workflow_dispatch:" in text
-        assert COLLECTOR_PATH_FILTER in text
-        assert "hatch run validate" not in text
-
-
 @pytest.mark.parametrize(
     ("resource_prefix", "expected_return_code"),
     [
@@ -220,28 +176,6 @@ def test_resource_prefix_validation_matches_lambda_name_limit(
     assert result.returncode == expected_return_code
     if expected_return_code:
         assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
-
-
-def test_python_preset_preserves_its_external_caller_contract() -> None:
-    workflow = _load(LANGUAGE_WORKFLOWS["python"])
-    call = _triggers(workflow)["workflow_call"]
-    preset = workflow["jobs"]["conformance"]["with"]
-
-    assert call["inputs"]["python_sdk_ref"]["required"] is True
-    assert "conformance_test_ref" in call["inputs"]
-    assert preset["sdk_ref"] == "${{ inputs.python_sdk_ref || '' }}"
-    assert preset["conformance_test_ref"] == "${{ inputs.conformance_test_ref || '' }}"
-    for secret in (
-        "CONFORMANCE_TEST_ROLE_ARN",
-        "CONFORMANCE_TEST_ACCOUNT_ID",
-        "CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN",
-    ):
-        assert call["secrets"][secret]["required"] is True
-    for secret in ("DASH0_AUTH_TOKEN", "DATADOG_ACCESS_TOKEN", "DATADOG_API_KEY"):
-        assert call["secrets"][secret]["required"] is False
-    assert call["secrets"]["DATADOG_APPLICATION_KEY"]["required"] is False
-    assert "otlp_endpoint" not in call["inputs"]
-    assert "otlp_endpoint" not in preset
 
 
 def test_orchestrator_owns_suite_and_long_running_views() -> None:
@@ -308,11 +242,10 @@ def test_suite_worker_is_parameterized_by_language_and_backend() -> None:
     assert call["inputs"]["dash0_enabled"]["default"] is False
     assert call["inputs"]["datadog_enabled"]["default"] is False
     assert "otlp_endpoint" not in call["inputs"]
-    assert "examples_dir" in call["inputs"]
-    assert (
-        "format('packages/aws-durable-execution-conformance-tests-otel/examples/{0}', "
-        "inputs.language) }}/template.yaml" in text
-    )
+    assert call["inputs"]["examples_dir"]["required"] is True
+    assert "default" not in call["inputs"]["examples_dir"]
+    assert "${{ inputs.examples_dir }}/template.yaml" in text
+    assert "aws-durable-execution-conformance-tests-otel/examples" not in text
     assert "runtime_language" not in call["inputs"]
     assert '--language "$LANGUAGE"' in text
     assert '"OtelSuite=$OTEL_SUITE"' in text
@@ -462,15 +395,12 @@ def test_long_running_worker_is_reusable_and_language_neutral() -> None:
         assert name in call["inputs"]
     assert "runtime_language" not in call["inputs"]
     assert workflow["concurrency"]["group"].startswith("${{ inputs.language }}-otel-long-running-")
-    assert workflow["env"]["EXAMPLES_DIR"] == (
-        "${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel"
-        "/examples/{0}', inputs.language) }}"
-    )
+    assert call["inputs"]["examples_dir"]["required"] is True
+    assert "default" not in call["inputs"]["examples_dir"]
+    assert workflow["env"]["EXAMPLES_DIR"] == "${{ inputs.examples_dir }}"
     assert workflow["env"]["STATE_FILE"] == "/tmp/${{ inputs.language }}-otel-long-running-state.json"
-    assert workflow["env"]["TEST_TEMPLATE"] == (
-        "${{ inputs.examples_dir || format('packages/aws-durable-execution-conformance-tests-otel"
-        "/examples/{0}', inputs.language) }}/template-long-running.yaml"
-    )
+    assert workflow["env"]["TEST_TEMPLATE"] == "${{ inputs.examples_dir }}/template-long-running.yaml"
+    assert "aws-durable-execution-conformance-tests-otel/examples" not in text
     assert '--language "$LANGUAGE"' in text
     assert "aws cloudformation delete-stack" not in text
     assert "setup-java" not in text

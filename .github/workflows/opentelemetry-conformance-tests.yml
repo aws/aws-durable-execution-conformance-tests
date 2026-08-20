@@ -1,0 +1,96 @@
+name: OpenTelemetry Conformance Tests
+
+# Runs a reference SDK's real handlers against the requirements on the PR that
+# changes them, so a requirement/runner/workflow regression fails here instead of
+# in the next SDK to pull. No handlers live in this repo anymore.
+#
+# - Orchestrator is called by relative path so the PR's own workflow copy runs.
+# - conformance_test_ref is omitted, so resolve uses github.sha (this PR's
+#   requirements).
+# - sdk_ref tracks SDK main (not pinned) so newly added handlers are picked up
+#   automatically; a pin would report every new requirement as UNCOVERED until
+#   bumped. Cost: a broken SDK main can red these PRs -- re-run once it is fixed.
+#   Manual dispatch can pin a commit to reproduce a failure.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/**
+      - packages/aws-durable-execution-conformance-tests-otel/src/**
+      - packages/aws-durable-execution-conformance-tests/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/collector/**
+      - .github/actions/prepare-otel-example/**
+      - .github/workflows/opentelemetry-orchestrator.yml
+      - .github/workflows/opentelemetry-resolve.yml
+      - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running.yml
+      - .github/workflows/opentelemetry-conformance-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - packages/aws-durable-execution-conformance-tests-otel/test-requirements/**
+      - packages/aws-durable-execution-conformance-tests-otel/src/**
+      - packages/aws-durable-execution-conformance-tests/src/**
+      - packages/aws-durable-execution-conformance-tests-otel/collector/**
+      - .github/actions/prepare-otel-example/**
+      - .github/workflows/opentelemetry-orchestrator.yml
+      - .github/workflows/opentelemetry-resolve.yml
+      - .github/workflows/opentelemetry-suite.yml
+      - .github/workflows/opentelemetry-long-running.yml
+      - .github/workflows/opentelemetry-conformance-tests.yml
+  workflow_dispatch:
+    inputs:
+      sdk_ref:
+        description: SDK commit or branch to test against (default is the SDK main branch)
+        required: false
+        type: string
+      phase:
+        description: Run short tests, launch a long run, or check the active long run
+        required: true
+        default: short
+        type: choice
+        options:
+          - short
+          - launch
+          - check
+      delay_seconds:
+        description: Durable delay in seconds (1-86400, launch only)
+        required: true
+        default: "82800"
+        type: string
+      aws_region:
+        description: AWS region
+        required: true
+        default: us-west-2
+        type: string
+
+permissions: {}
+
+jobs:
+  opentelemetry:
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/opentelemetry-orchestrator.yml
+    with:
+      # Distinct language/prefix from the Python SDK's own run (python / p) to
+      # avoid sharing stacks, buckets, or concurrency groups. normalize_runtime
+      # maps "py" to the python runtime.
+      language: py
+      resource_prefix: py-self
+      sdk_repository: aws/aws-durable-execution-sdk-python
+      # Empty => SDK main (see header). Overridable on manual dispatch.
+      sdk_ref: ${{ inputs.sdk_ref || '' }}
+      checkout_sdk: true
+      # Relative to the conformance workspace, where the SDK is checked out.
+      examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel
+      adot_release_repository: aws-observability/aws-otel-python-instrumentation
+      collector_compatible_runtime: python3.13
+      collector_otlp_endpoint: http://localhost:4318
+      suite_timeout_minutes: 30
+      phase: ${{ inputs.phase || 'short' }}
+      delay_seconds: ${{ inputs.delay_seconds || '82800' }}
+      aws_region: ${{ inputs.aws_region || 'us-west-2' }}
+    secrets: inherit
