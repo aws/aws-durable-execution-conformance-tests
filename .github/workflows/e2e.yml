@@ -45,7 +45,7 @@ jobs:
           python-version: "3.14"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@bcd4089080cf41e4db9dad11fce2a9397e670bbd # v5.0.0
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
