@@ -1,0 +1,73 @@
+---
+# insight-6: step retry — op attempt reflects the retry
+description: A step configured with a real retry strategy that fails once then succeeds surfaces attempt 2 on its operation record
+handler: |
+  Handler `insight_step_retry` installs workflowInsight({}) with default config and
+  the sink exporter from env. It runs `context.step("retried-step", ...)` with a real
+  SDK `retryStrategy` that retries once: the step throws on attempt 1 (keyed off
+  `stepContext.attempt`) and returns on attempt 2. The retry is driven entirely by
+  the SDK's own retry strategy — no manual re-invocation or hand-rolled delay.
+invocations: |
+  - Single invocation: attempt 1 of `retried-step` throws; the SDK's retry strategy
+    reschedules it; attempt 2 succeeds; the execution reaches terminal SUCCEEDED and
+    the plugin emits one record. The operation's `attempt` is 2.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID1}
+    Name: retried-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: retried-step}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 2
+          absent: [parentId, result, error, truncated]
