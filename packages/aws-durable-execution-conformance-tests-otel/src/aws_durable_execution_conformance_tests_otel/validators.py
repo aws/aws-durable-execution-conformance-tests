@@ -73,6 +73,26 @@ def _unique_root_errors(trace: Trace) -> list[str]:
     return errors
 
 
+def _execution_trace_errors(trace: Trace) -> list[str]:
+    trace_ids_by_execution: dict[str, set[str]] = {}
+    for span in trace.spans:
+        for key in _EXECUTION_ATTRIBUTE_KEYS:
+            if key not in span.attributes:
+                continue
+            execution_arn = str(span.attributes[key]).lower()
+            trace_ids_by_execution.setdefault(execution_arn, set()).add(span.trace_id)
+
+    errors: list[str] = []
+    for execution_arn, trace_ids in sorted(trace_ids_by_execution.items()):
+        if len(trace_ids) <= 1:
+            continue
+        errors.append(
+            f"Durable execution {execution_arn!r} appears in {len(trace_ids)} trace IDs: "
+            + ", ".join(sorted(trace_ids))
+        )
+    return errors
+
+
 def _is_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
@@ -255,7 +275,12 @@ def _parent_expectation_errors(
     allow_outside = expected.get("$allow_outside", False)
     if "$allow_outside" in expected and allow_outside is not True:
         return [f"{path}.$allow_outside must be true"]
-    expected_properties = {key: value for key, value in expected.items() if key != "$allow_outside"}
+    allow_unresolved = expected.get("$allow_unresolved", False)
+    if "$allow_unresolved" in expected and allow_unresolved is not True:
+        return [f"{path}.$allow_unresolved must be true"]
+    expected_properties = {
+        key: value for key, value in expected.items() if key not in {"$allow_outside", "$allow_unresolved"}
+    }
 
     parent_span_id = span.parent_span_id
     if parent_span_id is None:
@@ -263,6 +288,8 @@ def _parent_expectation_errors(
 
     parents = [parent for parent in spans_by_id.get(parent_span_id, []) if parent[0].trace_id == span.trace_id]
     if not parents:
+        if allow_unresolved:
+            return []
         return [f"{path}: parent span is not present in the trace"]
 
     expectation_errors = [
@@ -640,6 +667,34 @@ def _span_assertion_errors(
     return errors
 
 
+def _parented_span_errors(
+    trace: Trace,
+    raw_selectors: Any,
+    *,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    if raw_selectors is None:
+        return []
+    if isinstance(raw_selectors, Mapping):
+        selectors = [raw_selectors]
+    elif _is_sequence(raw_selectors):
+        selectors = list(raw_selectors)
+    else:
+        return ["require_parented_spans must be a mapping or sequence of mappings"]
+
+    serialized_spans = [span_to_dict(span) for span in trace.spans]
+    errors: list[str] = []
+    for index, selector in enumerate(selectors):
+        path = f"require_parented_spans[{index}]"
+        if not isinstance(selector, Mapping):
+            errors.append(f"{path} must be a mapping")
+            continue
+        for span, serialized_span in zip(trace.spans, serialized_spans, strict=True):
+            if _matches_span(selector, serialized_span, feature_disparities) and span.parent_span_id is None:
+                errors.append(f"{path}: span {span.name!r} ({span.span_id}) has no parent")
+    return errors
+
+
 def validate_trace(
     trace: Trace,
     assertions: Mapping[str, Any],
@@ -659,6 +714,20 @@ def validate_trace(
         errors.append("require_unique_root_per_trace must be a boolean")
     elif require_unique_root:
         errors.extend(_unique_root_errors(trace))
+
+    require_single_trace = assertions.get("require_single_trace_per_execution", False)
+    if not isinstance(require_single_trace, bool):
+        errors.append("require_single_trace_per_execution must be a boolean")
+    elif require_single_trace:
+        errors.extend(_execution_trace_errors(trace))
+
+    errors.extend(
+        _parented_span_errors(
+            trace,
+            assertions.get("require_parented_spans"),
+            feature_disparities=feature_disparities,
+        )
+    )
 
     timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     for span in trace.spans:

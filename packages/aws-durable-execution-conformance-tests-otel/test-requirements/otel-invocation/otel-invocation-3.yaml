@@ -31,6 +31,10 @@ TelemetryAssertions:
   minimum_spans: 7
   minimum_invocations: 2
   require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
   require_unique_root_per_trace: true
   require_all_spans: true
   span_assertion_scope:
@@ -45,7 +49,10 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: OK
         service_name: ${SERVICE_NAME}
         links: []
@@ -162,6 +169,9 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
+          - name: otel-retry
+            attributes:
+              durable.operation.id: ${RETRY_STEP}
           - name: Workflow
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}

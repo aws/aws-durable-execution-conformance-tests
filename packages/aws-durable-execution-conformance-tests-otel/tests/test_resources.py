@@ -26,6 +26,12 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 )
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+_WORKFLOW_PARENT = {
+    "$allow_unresolved": True,
+    "$allow_outside": True,
+    "name": "Durable Execution Attempt #1",
+}
+
 
 def _requirements(suite_name: str) -> dict[str, str]:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
@@ -106,7 +112,7 @@ def test_requirement_service_names_use_configured_placeholder(
     "suite_name",
     ["otel-invocation", "otel-execution", "otel-long-running"],
 )
-def test_requirement_catalog_rejects_multiple_roots_per_trace(
+def test_requirement_catalog_enforces_shared_trace_topology(
     suite_name: str,
 ) -> None:
     assertion_blocks = 0
@@ -118,6 +124,11 @@ def test_requirement_catalog_rejects_multiple_roots_per_trace(
                 continue
             assertion_blocks += 1
             assert assertions["require_unique_root_per_trace"] is True
+            assert assertions["require_single_trace_per_execution"] is True
+            assert assertions["require_parented_spans"] == [
+                {"name": "Workflow"},
+                {"name": "Invocation"},
+            ]
 
     assert assertion_blocks > 0
 
@@ -220,7 +231,7 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
                     },
                 },
                 "expect": {
-                    "parent_span_id": None,
+                    "parent": _WORKFLOW_PARENT,
                     "status": "OK",
                     "service_name": "${SERVICE_NAME}",
                     "links": [],
@@ -236,15 +247,31 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
             if assertion["select"]["name"] in {"Invocation", "Workflow"}:
                 assert assertion["expect"]["links"] == []
                 continue
+            selected_name = assertion["select"]["name"]
             execution_arn = assertion["expect"]["attributes"]["durable.execution.arn"]
-            assert assertion["expect"]["links"] == [
-                {
-                    "name": "Workflow",
-                    "attributes": {
-                        "durable.execution.arn": execution_arn,
-                    },
-                }
-            ]
+            workflow_link = {
+                "name": "Workflow",
+                "attributes": {
+                    "durable.execution.arn": execution_arn,
+                },
+            }
+            links = assertion["expect"]["links"]
+            link_alternatives = links["$any_of"] if isinstance(links, dict) else [links]
+            assert all(link_set[-1] == workflow_link for link_set in link_alternatives)
+            if assertion.get("count") == 2:
+                operation_id = assertion["expect"]["attributes"]["durable.operation.id"]
+                assert link_alternatives == [
+                    [workflow_link],
+                    [
+                        {
+                            "name": selected_name,
+                            "attributes": {
+                                "durable.operation.id": operation_id,
+                            },
+                        },
+                        workflow_link,
+                    ],
+                ]
 
 
 @pytest.mark.parametrize(
@@ -448,6 +475,11 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         assertions = requirement["TelemetryAssertions"]
 
         assert assertions["require_execution_correlation"] is True
+        assert assertions["require_single_trace_per_execution"] is True
+        assert assertions["require_parented_spans"] == [
+            {"name": "Workflow"},
+            {"name": "Invocation"},
+        ]
         assert assertions["require_all_spans"] is True
         expected_scopes = [
             {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}},
@@ -494,7 +526,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         },
                     },
                     "expect": {
-                        "parent_span_id": None,
+                        "parent": _WORKFLOW_PARENT,
                         "status": expected_workflow_status,
                         "service_name": "${SERVICE_NAME}",
                         "links": [],
@@ -543,24 +575,27 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                             }
                         else:
                             assert linked_span["attributes"]["durable.operation.id"]
+            expected_attributes = expected["attributes"]
             if selected_name not in {"Invocation", "Workflow"} and case_number not in {15, 20}:
                 assert link_alternatives
-                assert all(
-                    link_set
-                    == [
-                        {
-                            "name": "Workflow",
-                            "attributes": {
-                                "durable.execution.arn": "${EXECUTION_ARN}",
-                            },
-                        }
-                    ]
-                    for link_set in link_alternatives
-                )
+                workflow_link = {
+                    "name": "Workflow",
+                    "attributes": {
+                        "durable.execution.arn": "${EXECUTION_ARN}",
+                    },
+                }
+                if any(len(link_set) == 2 for link_set in link_alternatives):
+                    assert len(link_alternatives) == 1
+                    initial_operation_link, actual_workflow_link = link_alternatives[0]
+                    assert initial_operation_link["attributes"] == {
+                        "durable.operation.id": expected_attributes["durable.operation.id"],
+                    }
+                    assert actual_workflow_link == workflow_link
+                else:
+                    assert all(link_set == [workflow_link] for link_set in link_alternatives)
             assert expected["kind"] == "INTERNAL"
             assert "span.name" not in expected["attributes"]
             assert "span.kind" not in expected["attributes"]
-            expected_attributes = expected["attributes"]
             if "durable.attempt.outcome" in expected_attributes:
                 expected_parent_name = callback_submitter_span_names.get(
                     case_number,
@@ -601,7 +636,9 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 )
                 if case_number == 19:
                     assert expected_attributes["durable.invocation.status"] == "FAILED"
-            if parent := expected.get("parent"):
+            if selected_name == "Workflow":
+                assert expected["parent"] == _WORKFLOW_PARENT
+            elif parent := expected.get("parent"):
                 assert parent["kind"] == "INTERNAL"
                 assert "span.name" not in parent["attributes"]
                 assert "span.kind" not in parent["attributes"]
@@ -674,6 +711,11 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
 
         assert assertions["require_execution_correlation"] is True
         assert assertions["require_unique_root_per_trace"] is True
+        assert assertions["require_single_trace_per_execution"] is True
+        assert assertions["require_parented_spans"] == [
+            {"name": "Workflow"},
+            {"name": "Invocation"},
+        ]
         assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
         assert assertions["minimum_spans"] >= len(span_assertions)
@@ -692,7 +734,8 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
                     "durable.execution.arn": execution_arn,
                 },
             }
-            assert workflow["expect"]["parent_span_id"] is None
+            assert "parent_span_id" not in workflow["expect"]
+            assert workflow["expect"]["parent"] == _WORKFLOW_PARENT
             assert workflow["expect"]["status"] == expected_span_status
             assert workflow["expect"]["attributes"] == {
                 "durable.execution.arn": execution_arn,

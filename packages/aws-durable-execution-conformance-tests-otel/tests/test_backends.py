@@ -256,7 +256,7 @@ def test_backends_declare_feature_disparities(
     assert backend_type.feature_disparities == expected
 
 
-def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
+def test_matching_trace_collects_execution_correlated_traces_by_arn() -> None:
     now = datetime.now(UTC)
 
     def span(
@@ -275,25 +275,20 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
         )
 
     source_trace_id = "1" * 32
-    source_invocation_trace_id = "2" * 32
-    target_invocation_trace_id = "3" * 32
-    workflow_trace = Trace(
+    target_trace_id = "3" * 32
+    source_trace = Trace(
         trace_id=source_trace_id,
         spans=(
             span(source_trace_id, "1" * 16, "Workflow", "arn:test"),
-            span(source_trace_id, "2" * 16, "Workflow", "arn:target"),
+            span(source_trace_id, "2" * 16, "Invocation", "arn:test"),
         ),
     )
-    source_invocation_trace = Trace(
-        trace_id=source_invocation_trace_id,
+    target_trace = Trace(
+        trace_id=target_trace_id,
         spans=(
-            span(source_invocation_trace_id, "3" * 16, "handler", None),
-            span(source_invocation_trace_id, "4" * 16, "Invocation", "arn:test"),
+            span(target_trace_id, "3" * 16, "Workflow", "arn:target"),
+            span(target_trace_id, "4" * 16, "Invocation", "arn:target"),
         ),
-    )
-    target_invocation_trace = Trace(
-        trace_id=target_invocation_trace_id,
-        spans=(span(target_invocation_trace_id, "5" * 16, "Invocation", "arn:target"),),
     )
     unrelated_trace = Trace(
         trace_id="4" * 32,
@@ -302,10 +297,9 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
 
     result = matching_trace(
         [
-            source_invocation_trace,
+            source_trace,
             unrelated_trace,
-            workflow_trace,
-            target_invocation_trace,
+            target_trace,
         ],
         replace(
             _query(),
@@ -317,14 +311,13 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
     assert result.trace_id == source_trace_id
     assert [(item.name, item.attributes["durable.execution.arn"]) for item in result.spans] == [
         ("Workflow", "arn:test"),
-        ("Workflow", "arn:target"),
         ("Invocation", "arn:test"),
+        ("Workflow", "arn:target"),
         ("Invocation", "arn:target"),
     ]
     assert {item.trace_id for item in result.spans} == {
         source_trace_id,
-        source_invocation_trace_id,
-        target_invocation_trace_id,
+        target_trace_id,
     }
 
 
@@ -851,7 +844,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
         batch_get_calls = 0
 
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
+            assert kwargs["FilterExpression"] == 'service("conformance")'
             return {"TraceSummaries": [{"Id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
@@ -878,9 +871,8 @@ def test_xray_queries_summaries_then_batch_get() -> None:
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
 
 
-def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
-    ambient_trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
-    workflow_trace_id = "1-aaaaaaaa-cccccccccccccccccccccccc"
+def test_xray_returns_backend_workflow_and_invocation_spans_from_one_trace() -> None:
+    trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
 
     def document(
         trace_id: str,
@@ -903,40 +895,38 @@ def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
 
     class _XRay:
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
-            return {
-                "TraceSummaries": [
-                    {"Id": ambient_trace_id},
-                    {"Id": workflow_trace_id},
-                ]
-            }
+            assert kwargs["FilterExpression"] == 'service("conformance")'
+            return {"TraceSummaries": [{"Id": trace_id}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["TraceIds"] == [ambient_trace_id, workflow_trace_id]
+            assert kwargs["TraceIds"] == [trace_id]
             return {
                 "Traces": [
                     {
                         "Segments": [
                             document(
-                                ambient_trace_id,
+                                trace_id,
                                 "1" * 16,
-                                "conformance",
+                                "Durable Execution Attempt #1",
                             ),
                             document(
-                                ambient_trace_id,
+                                trace_id,
                                 "2" * 16,
-                                "Invocation",
+                                "Workflow",
                                 parent_span_id="1" * 16,
                             ),
-                        ]
-                    },
-                    {
-                        "Segments": [
                             document(
-                                workflow_trace_id,
+                                trace_id,
                                 "3" * 16,
-                                "Workflow",
-                            )
+                                "conformance",
+                                parent_span_id="1" * 16,
+                            ),
+                            document(
+                                trace_id,
+                                "4" * 16,
+                                "Invocation",
+                                parent_span_id="3" * 16,
+                            ),
                         ]
                     },
                 ]
@@ -948,11 +938,13 @@ def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
         PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
     )
 
-    assert trace.trace_id == "a" * 8 + "c" * 24
-    assert [(span.name, span.trace_id) for span in trace.spans] == [
-        ("Workflow", "a" * 8 + "c" * 24),
-        ("conformance", "a" * 8 + "b" * 24),
-        ("Invocation", "a" * 8 + "b" * 24),
+    normalized_trace_id = "a" * 8 + "b" * 24
+    assert trace.trace_id == normalized_trace_id
+    assert [(span.name, span.trace_id, span.parent_span_id) for span in trace.spans] == [
+        ("Durable Execution Attempt #1", normalized_trace_id, None),
+        ("Workflow", normalized_trace_id, "1" * 16),
+        ("conformance", normalized_trace_id, "1" * 16),
+        ("Invocation", normalized_trace_id, "3" * 16),
     ]
 
 

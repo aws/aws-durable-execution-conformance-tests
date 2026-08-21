@@ -175,6 +175,67 @@ def test_reports_multiple_distinct_roots_and_ignores_duplicate_exports() -> None
     ]
 
 
+def test_requires_one_trace_per_execution_but_allows_distinct_chained_executions() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    split_child = replace(
+        child,
+        trace_id="9" * 32,
+    )
+
+    assert validate_trace(
+        replace(trace, spans=(root, split_child)),
+        {"require_single_trace_per_execution": True},
+        _query(),
+    ) == [f"Durable execution 'arn:test' appears in 2 trace IDs: {root.trace_id}, {split_child.trace_id}"]
+
+    target_child = replace(
+        split_child,
+        attributes={
+            **split_child.attributes,
+            "durable.execution.arn": "arn:target",
+        },
+    )
+    assert (
+        validate_trace(
+            replace(trace, spans=(root, target_child)),
+            {
+                "require_single_trace_per_execution": True,
+                "allowed_execution_arns": ["arn:test", "arn:target"],
+            },
+            _query(),
+        )
+        == []
+    )
+
+
+def test_requires_selected_spans_to_have_parent_ids_without_resolving_the_parent() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    workflow = replace(
+        root,
+        name="Workflow",
+        parent_span_id="f" * 16,
+    )
+    invocation = replace(
+        child,
+        name="Invocation",
+        parent_span_id=workflow.span_id,
+    )
+    assertions = {
+        "require_parented_spans": [
+            {"name": "Workflow"},
+            {"name": "Invocation"},
+        ]
+    }
+
+    assert validate_trace(replace(trace, spans=(workflow, invocation)), assertions, _query()) == []
+    parentless_workflow = replace(workflow, parent_span_id=None)
+    assert validate_trace(replace(trace, spans=(parentless_workflow, invocation)), assertions, _query()) == [
+        f"require_parented_spans[0]: span 'Workflow' ({workflow.span_id}) has no parent"
+    ]
+
+
 def test_rejects_spans_that_end_before_they_start() -> None:
     trace = _trace()
     root, child = trace.spans
@@ -1248,8 +1309,30 @@ def test_parent_assertion_can_allow_replay_backdated_child() -> None:
     assert validate_trace(replace(trace, spans=(root, backdated_child)), assertions, _query()) == []
 
 
-def test_parent_assertion_rejects_invalid_allow_outside_directive() -> None:
-    errors = validate_trace(
+def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    external_child = replace(child, parent_span_id="9" * 16)
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$allow_unresolved": True,
+                    "name": "Durable Execution Attempt #1",
+                }
+            },
+        }
+    }
+
+    assert validate_trace(replace(trace, spans=(root, external_child)), assertions, _query()) == []
+    assert validate_trace(trace, assertions, _query()) == [
+        "span_assertions[0].expect.parent.name: expected 'Durable Execution Attempt #1'"
+    ]
+
+
+def test_parent_assertion_rejects_invalid_directives() -> None:
+    outside_errors = validate_trace(
         _trace(),
         {
             "span_assertions": {
@@ -1264,8 +1347,28 @@ def test_parent_assertion_rejects_invalid_allow_outside_directive() -> None:
         },
         _query(),
     )
+    unresolved_errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "parent": {
+                        "$allow_unresolved": False,
+                        "name": "root",
+                    }
+                },
+            }
+        },
+        _query(),
+    )
 
-    assert errors == ["span_assertions[0].expect.parent.$allow_outside must be true"]
+    assert outside_errors == [
+        "span_assertions[0].expect.parent.$allow_outside must be true",
+    ]
+    assert unresolved_errors == [
+        "span_assertions[0].expect.parent.$allow_unresolved must be true",
+    ]
 
 
 def test_reports_missing_ambiguous_and_mismatched_span_assertions() -> None:
@@ -1493,6 +1596,8 @@ def test_reports_invalid_span_assertion_schema() -> None:
         {
             "allowed_execution_arns": 1,
             "exact_attribute_prefixes": 1,
+            "require_parented_spans": ["Workflow"],
+            "require_single_trace_per_execution": "yes",
             "require_unique_root_per_trace": "yes",
             "span_assertion_scope": ["plugin"],
             "span_assertions": {
@@ -1505,6 +1610,8 @@ def test_reports_invalid_span_assertion_schema() -> None:
     )
     assert count_errors == [
         "require_unique_root_per_trace must be a boolean",
+        "require_single_trace_per_execution must be a boolean",
+        "require_parented_spans[0] must be a mapping",
         "allowed_execution_arns must be a string or sequence of strings",
         "exact_attribute_prefixes must be a string or sequence of strings",
         "span_assertion_scope must be a mapping or sequence of mappings",

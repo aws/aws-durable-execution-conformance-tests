@@ -124,7 +124,7 @@ class JsonHttpClient:
 
 
 def matching_trace(traces: list[Trace], query: TelemetryQuery) -> Trace | None:
-    """Build a correlated view from the workflow and ambient Lambda traces."""
+    """Build a correlated view from traces carrying the requested executions."""
 
     def execution_arns(trace: Trace) -> set[str]:
         return {
