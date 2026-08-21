@@ -234,6 +234,12 @@ def test_requires_selected_spans_to_have_parent_ids_without_resolving_the_parent
     assert validate_trace(replace(trace, spans=(parentless_workflow, invocation)), assertions, _query()) == [
         f"require_parented_spans[0]: span 'Workflow' ({workflow.span_id}) has no parent"
     ]
+    for invalid_parent_id in ("0" * 16, "g" * 16):
+        invalid_workflow = replace(workflow, parent_span_id=invalid_parent_id)
+        assert validate_trace(replace(trace, spans=(invalid_workflow, invocation)), assertions, _query()) == [
+            f"require_parented_spans[0]: span 'Workflow' ({workflow.span_id}) "
+            f"has invalid parent span ID {invalid_parent_id!r}"
+        ]
 
 
 def test_rejects_spans_that_end_before_they_start() -> None:
@@ -546,6 +552,50 @@ def test_link_occurrence_identifies_the_chronological_invocation() -> None:
         },
         _query(),
     ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
+
+
+def test_repeated_span_assertions_apply_expectations_by_chronological_occurrence() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    replay = replace(
+        child,
+        span_id="4" * 16,
+        start_time=child.start_time + timedelta(seconds=2),
+        end_time=child.end_time + timedelta(seconds=2),
+        links=(
+            SpanLink(trace_id=child.trace_id, span_id=child.span_id),
+            SpanLink(trace_id=root.trace_id, span_id=root.span_id),
+        ),
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "count": 2,
+            "expect": {"status": "OK"},
+            "expect_by_occurrence": [
+                {"links": [{"name": "root"}]},
+                {
+                    "links": [
+                        {"span_id": child.span_id},
+                        {"name": "root"},
+                    ]
+                },
+            ],
+        }
+    }
+
+    unordered_trace = replace(trace, spans=(replay, root, child))
+    assert validate_trace(unordered_trace, assertions, _query()) == []
+
+    replay_without_initial_link = replace(
+        replay,
+        links=(SpanLink(trace_id=root.trace_id, span_id=root.span_id),),
+    )
+    assert validate_trace(
+        replace(trace, spans=(replay_without_initial_link, root, child)),
+        assertions,
+        _query(),
+    ) == ["span_assertions[0].expect_by_occurrence[1].links: expected 2 item(s), found 1"]
 
 
 def test_span_link_disparity_skips_linked_temporal_relations() -> None:
@@ -1329,6 +1379,15 @@ def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
     assert validate_trace(trace, assertions, _query()) == [
         "span_assertions[0].expect.parent.name: expected 'Durable Execution Attempt #1'"
     ]
+    invalid_external_child = replace(child, parent_span_id="0" * 16)
+    assert validate_trace(
+        replace(trace, spans=(root, invalid_external_child)),
+        assertions,
+        _query(),
+    ) == [
+        "span_assertions[0].expect.parent: selected span has invalid parent span ID "
+        f"{invalid_external_child.parent_span_id!r}"
+    ]
 
 
 def test_parent_assertion_rejects_invalid_directives() -> None:
@@ -1617,6 +1676,19 @@ def test_reports_invalid_span_assertion_schema() -> None:
         "span_assertion_scope must be a mapping or sequence of mappings",
         "span_assertions[0].count must be a positive integer or $any_of positive integers",
     ]
+
+    occurrence_errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {},
+                "expect_by_occurrence": ["not-a-mapping"],
+            }
+        },
+        _query(),
+    )
+    assert occurrence_errors == ["span_assertions[0].expect_by_occurrence must be a sequence of mappings"]
 
 
 def test_redacts_secret_keys_and_values() -> None:

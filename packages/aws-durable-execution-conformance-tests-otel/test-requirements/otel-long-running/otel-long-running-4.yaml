@@ -178,17 +178,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
-            - - name: otel-long-invoke
-                attributes:
-                  durable.operation.id: ${INVOKE1}
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -202,6 +191,18 @@ TelemetryAssertions:
             $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+        - links:
+            - name: otel-long-invoke
+              attributes:
+                durable.operation.id: ${INVOKE1}
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-long-invoke-target-wait
         attributes:
@@ -211,17 +212,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
-            - - name: otel-long-invoke-target-wait
-                attributes:
-                  durable.operation.id: '*'
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${TARGET_EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
@@ -235,6 +225,18 @@ TelemetryAssertions:
             $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${TARGET_EXECUTION_ARN}
+        - links:
+            - name: otel-long-invoke-target-wait
+              attributes:
+                durable.operation.id: '*'
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${TARGET_EXECUTION_ARN}
 ExecutionTelemetryAssertions:
   minimum_spans: 8
   require_execution_correlation: true

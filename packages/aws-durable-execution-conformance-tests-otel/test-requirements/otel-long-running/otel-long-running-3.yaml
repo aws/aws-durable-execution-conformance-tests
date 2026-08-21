@@ -127,17 +127,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
-            - - name: otel-long-callback
-                attributes:
-                  durable.operation.id: ${CALLBACK_CONTEXT}
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -152,6 +141,18 @@ TelemetryAssertions:
             $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+        - links:
+            - name: otel-long-callback
+              attributes:
+                durable.operation.id: ${CALLBACK_CONTEXT}
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: '${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -161,17 +162,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          $any_of:
-            - - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
-            - - name: '${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}'
-                attributes:
-                  durable.operation.id: ${CALLBACK1}
-              - name: Workflow
-                attributes:
-                  durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -184,6 +174,18 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+        - links:
+            - name: '${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}'
+              attributes:
+                durable.operation.id: ${CALLBACK1}
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: '${/^(?:otel-long-callback(?: submitter|-submitter)|STEP)$/}'
         status: OK

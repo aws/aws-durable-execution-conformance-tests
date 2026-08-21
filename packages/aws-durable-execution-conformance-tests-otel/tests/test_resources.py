@@ -255,23 +255,27 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
                     "durable.execution.arn": execution_arn,
                 },
             }
-            links = assertion["expect"]["links"]
-            link_alternatives = links["$any_of"] if isinstance(links, dict) else [links]
-            assert all(link_set[-1] == workflow_link for link_set in link_alternatives)
             if assertion.get("count") == 2:
                 operation_id = assertion["expect"]["attributes"]["durable.operation.id"]
-                assert link_alternatives == [
-                    [workflow_link],
-                    [
-                        {
-                            "name": selected_name,
-                            "attributes": {
-                                "durable.operation.id": operation_id,
+                assert "links" not in assertion["expect"]
+                assert assertion["expect_by_occurrence"] == [
+                    {
+                        "links": [workflow_link],
+                    },
+                    {
+                        "links": [
+                            {
+                                "name": selected_name,
+                                "attributes": {
+                                    "durable.operation.id": operation_id,
+                                },
                             },
-                        },
-                        workflow_link,
-                    ],
+                            workflow_link,
+                        ],
+                    },
                 ]
+            else:
+                assert assertion["expect"]["links"] == [workflow_link]
 
 
 @pytest.mark.parametrize(

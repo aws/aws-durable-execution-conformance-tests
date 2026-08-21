@@ -45,6 +45,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     RetryableBackendError,
 )
 
+_XRAY_DISCOVERY_FILTER = 'service("conformance") OR service("Workflow") OR service("Durable Execution Attempt #1")'
+
 
 class _Http:
     def __init__(self, *responses: Mapping[str, Any]) -> None:
@@ -844,7 +846,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
         batch_get_calls = 0
 
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == 'service("conformance")'
+            assert kwargs["FilterExpression"] == _XRAY_DISCOVERY_FILTER
             return {"TraceSummaries": [{"Id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
@@ -895,7 +897,7 @@ def test_xray_returns_backend_workflow_and_invocation_spans_from_one_trace() -> 
 
     class _XRay:
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == 'service("conformance")'
+            assert kwargs["FilterExpression"] == _XRAY_DISCOVERY_FILTER
             return {"TraceSummaries": [{"Id": trace_id}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
@@ -918,14 +920,8 @@ def test_xray_returns_backend_workflow_and_invocation_spans_from_one_trace() -> 
                             document(
                                 trace_id,
                                 "3" * 16,
-                                "conformance",
-                                parent_span_id="1" * 16,
-                            ),
-                            document(
-                                trace_id,
-                                "4" * 16,
                                 "Invocation",
-                                parent_span_id="3" * 16,
+                                parent_span_id="1" * 16,
                             ),
                         ]
                     },
@@ -943,8 +939,7 @@ def test_xray_returns_backend_workflow_and_invocation_spans_from_one_trace() -> 
     assert [(span.name, span.trace_id, span.parent_span_id) for span in trace.spans] == [
         ("Durable Execution Attempt #1", normalized_trace_id, None),
         ("Workflow", normalized_trace_id, "1" * 16),
-        ("conformance", normalized_trace_id, "1" * 16),
-        ("Invocation", normalized_trace_id, "3" * 16),
+        ("Invocation", normalized_trace_id, "1" * 16),
     ]
 
 

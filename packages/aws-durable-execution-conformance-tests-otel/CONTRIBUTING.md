@@ -83,7 +83,9 @@ number for repeated spans such as invocation or continuation spans. The
 assertions are evaluated in order, and a span selected by one assertion is not
 available to later selectors. The corresponding `expect` mapping is applied to
 every match and is otherwise a partial assertion, so unlisted properties and
-metadata are ignored:
+metadata are ignored. Add `expect_by_occurrence` with one mapping per
+chronologically ordered match when repeated spans must have distinct shapes.
+Each occurrence mapping overrides the common `expect` keys for that match:
 
 ```yaml
 TelemetryAssertions:
@@ -101,6 +103,22 @@ TelemetryAssertions:
           durable.operation.type: execution
       attributes:
         durable.operation.outcome: success
+```
+
+```yaml
+TelemetryAssertions:
+  span_assertions:
+    select:
+      name: durable wait
+    count: 2
+    expect:
+      status: OK
+    expect_by_occurrence:
+      - links:
+          - name: Workflow
+      - links:
+          - name: durable wait
+          - name: Workflow
 ```
 
 Use `require_all_spans: true` when a case defines the complete emitted span
