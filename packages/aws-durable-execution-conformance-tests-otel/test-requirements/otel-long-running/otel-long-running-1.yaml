@@ -134,7 +134,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${EXECUTION_ARN}
         - links:
-            - name: otel-long-wait
+            - $occurrence: 1
+              name: otel-long-wait
               attributes:
                 durable.operation.id: ${WAIT1}
             - name: Workflow

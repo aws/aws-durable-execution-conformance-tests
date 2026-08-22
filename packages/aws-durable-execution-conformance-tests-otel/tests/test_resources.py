@@ -265,6 +265,7 @@ def test_long_running_catalog_uses_configurable_delays() -> None:
                     {
                         "links": [
                             {
+                                "$occurrence": 1,
                                 "name": selected_name,
                                 "attributes": {
                                     "durable.operation.id": operation_id,

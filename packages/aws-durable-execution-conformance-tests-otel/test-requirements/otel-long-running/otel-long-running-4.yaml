@@ -197,7 +197,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${EXECUTION_ARN}
         - links:
-            - name: otel-long-invoke
+            - $occurrence: 1
+              name: otel-long-invoke
               attributes:
                 durable.operation.id: ${INVOKE1}
             - name: Workflow
@@ -231,7 +232,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${TARGET_EXECUTION_ARN}
         - links:
-            - name: otel-long-invoke-target-wait
+            - $occurrence: 1
+              name: otel-long-invoke-target-wait
               attributes:
                 durable.operation.id: '*'
             - name: Workflow

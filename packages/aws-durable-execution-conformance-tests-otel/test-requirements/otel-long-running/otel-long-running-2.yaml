@@ -134,7 +134,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${EXECUTION_ARN}
         - links:
-            - name: otel-long-retry
+            - $occurrence: 1
+              name: otel-long-retry
               attributes:
                 durable.operation.id: ${RETRY_STEP}
             - name: Workflow

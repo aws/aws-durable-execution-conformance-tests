@@ -147,7 +147,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${EXECUTION_ARN}
         - links:
-            - name: otel-long-callback
+            - $occurrence: 1
+              name: otel-long-callback
               attributes:
                 durable.operation.id: ${CALLBACK_CONTEXT}
             - name: Workflow
@@ -180,7 +181,8 @@ TelemetryAssertions:
               attributes:
                 durable.execution.arn: ${EXECUTION_ARN}
         - links:
-            - name: '${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}'
+            - $occurrence: 1
+              name: '${/^(?:otel-long-callback(?: create callback id|-callback)|CALLBACK)$/}'
               attributes:
                 durable.operation.id: ${CALLBACK1}
             - name: Workflow

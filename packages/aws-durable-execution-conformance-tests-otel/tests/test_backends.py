@@ -266,10 +266,12 @@ def test_matching_trace_collects_execution_correlated_traces_by_arn() -> None:
         span_id: str,
         name: str,
         execution_arn: str | None,
+        parent_span_id: str | None = None,
     ) -> Span:
         return Span(
             trace_id=trace_id,
             span_id=span_id,
+            parent_span_id=parent_span_id,
             name=name,
             start_time=now,
             end_time=now,
@@ -281,20 +283,22 @@ def test_matching_trace_collects_execution_correlated_traces_by_arn() -> None:
     source_trace = Trace(
         trace_id=source_trace_id,
         spans=(
-            span(source_trace_id, "1" * 16, "Workflow", "arn:test"),
-            span(source_trace_id, "2" * 16, "Invocation", "arn:test"),
+            span(source_trace_id, "1" * 16, "Durable Execution Attempt #1", None),
+            span(source_trace_id, "2" * 16, "Workflow", "arn:test", "1" * 16),
+            span(source_trace_id, "3" * 16, "Invocation", "arn:test", "1" * 16),
         ),
     )
     target_trace = Trace(
         trace_id=target_trace_id,
         spans=(
-            span(target_trace_id, "3" * 16, "Workflow", "arn:target"),
-            span(target_trace_id, "4" * 16, "Invocation", "arn:target"),
+            span(target_trace_id, "4" * 16, "Durable Execution Attempt #1", None),
+            span(target_trace_id, "5" * 16, "Workflow", "arn:target", "4" * 16),
+            span(target_trace_id, "6" * 16, "Invocation", "arn:target", "4" * 16),
         ),
     )
     unrelated_trace = Trace(
         trace_id="4" * 32,
-        spans=(span("4" * 32, "6" * 16, "Invocation", "arn:other"),),
+        spans=(span("4" * 32, "7" * 16, "Invocation", "arn:other"),),
     )
 
     result = matching_trace(
@@ -311,9 +315,11 @@ def test_matching_trace_collects_execution_correlated_traces_by_arn() -> None:
 
     assert result is not None
     assert result.trace_id == source_trace_id
-    assert [(item.name, item.attributes["durable.execution.arn"]) for item in result.spans] == [
+    assert [(item.name, item.attributes.get("durable.execution.arn")) for item in result.spans] == [
+        ("Durable Execution Attempt #1", None),
         ("Workflow", "arn:test"),
         ("Invocation", "arn:test"),
+        ("Durable Execution Attempt #1", None),
         ("Workflow", "arn:target"),
         ("Invocation", "arn:target"),
     ]

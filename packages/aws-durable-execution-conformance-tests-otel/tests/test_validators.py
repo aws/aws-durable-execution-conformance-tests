@@ -554,7 +554,7 @@ def test_link_occurrence_identifies_the_chronological_invocation() -> None:
     ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
 
 
-def test_link_occurrence_rejects_a_replayed_operation_self_link() -> None:
+def test_link_occurrence_rejects_a_replayed_operation_self_link_by_occurrence() -> None:
     trace = _trace()
     root, child = trace.spans
     operation_id = "operation-1"
@@ -584,21 +584,26 @@ def test_link_occurrence_rejects_a_replayed_operation_self_link() -> None:
             "span_assertions": {
                 "select": {
                     "name": "operation",
-                    "attributes": {"durable.operation.status": "SUCCEEDED"},
+                    "attributes": {"durable.operation.id": operation_id},
                 },
-                "expect": {
-                    "links": [
-                        {
-                            "$occurrence": 1,
-                            "name": "operation",
-                            "attributes": {"durable.operation.id": operation_id},
-                        }
-                    ]
-                },
+                "count": 2,
+                "expect": {},
+                "expect_by_occurrence": [
+                    {"links": []},
+                    {
+                        "links": [
+                            {
+                                "$occurrence": 1,
+                                "name": "operation",
+                                "attributes": {"durable.operation.id": operation_id},
+                            }
+                        ]
+                    },
+                ],
             }
         },
         _query(),
-    ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
+    ) == ["span_assertions[0].expect_by_occurrence[1].links[0].$occurrence: linked span is occurrence 2, expected 1"]
 
 
 def test_repeated_span_assertions_apply_expectations_by_chronological_occurrence() -> None:
@@ -1437,32 +1442,51 @@ def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
     ]
 
 
-def test_parent_assertion_rejects_wrong_id_when_expected_parent_is_present() -> None:
+def test_parent_assertion_allows_unresolved_parent_with_similar_parent_in_trace() -> None:
     trace = _trace()
     root, child = trace.spans
-    backend_parent = replace(root, name="Durable Execution Attempt #1")
-    misparented_child = replace(child, parent_span_id="9" * 16)
+    backend_parent = replace(
+        root,
+        name="Durable Execution Attempt #1",
+        attributes={},
+    )
+    other_workflow = replace(
+        child,
+        span_id="4" * 16,
+        parent_span_id=backend_parent.span_id,
+        name="other-workflow",
+        attributes={
+            **child.attributes,
+            "durable.execution.arn": "arn:other",
+        },
+    )
+    target_workflow = replace(
+        child,
+        span_id="5" * 16,
+        parent_span_id="9" * 16,
+        name="target-workflow",
+    )
     assertions = {
+        "allowed_execution_arns": ["arn:test", "arn:other"],
         "span_assertions": {
-            "select": {"name": "child"},
+            "select": {"name": "target-workflow"},
             "expect": {
                 "parent": {
                     "$allow_unresolved": True,
                     "name": backend_parent.name,
                 }
             },
-        }
+        },
     }
 
-    assert validate_trace(
-        replace(trace, spans=(backend_parent, misparented_child)),
-        assertions,
-        _query(),
-    ) == [
-        "span_assertions[0].expect.parent: parent span ID "
-        f"{misparented_child.parent_span_id!r} does not match observed expected parent span ID(s): "
-        f"{backend_parent.span_id}"
-    ]
+    assert (
+        validate_trace(
+            replace(trace, spans=(backend_parent, other_workflow, target_workflow)),
+            assertions,
+            _query(),
+        )
+        == []
+    )
 
 
 def test_parent_assertion_rejects_invalid_directives() -> None:

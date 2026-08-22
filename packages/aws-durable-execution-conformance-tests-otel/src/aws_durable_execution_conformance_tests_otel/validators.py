@@ -300,21 +300,6 @@ def _parent_expectation_errors(
     parents = [parent for parent in spans_by_id.get(parent_span_id, []) if parent[0].trace_id == span.trace_id]
     if not parents:
         if allow_unresolved:
-            matching_parent_ids = sorted(
-                {
-                    candidate.span_id
-                    for candidates in spans_by_id.values()
-                    for candidate, serialized_candidate in candidates
-                    if expected_properties
-                    and candidate.trace_id == span.trace_id
-                    and _matches_span(expected_properties, serialized_candidate, feature_disparities)
-                }
-            )
-            if matching_parent_ids:
-                return [
-                    f"{path}: parent span ID {parent_span_id!r} does not match observed expected parent "
-                    f"span ID(s): {', '.join(matching_parent_ids)}"
-                ]
             return []
         return [f"{path}: parent span is not present in the trace"]
 
