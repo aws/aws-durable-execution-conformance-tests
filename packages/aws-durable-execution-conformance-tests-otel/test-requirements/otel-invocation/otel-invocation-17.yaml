@@ -152,7 +152,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-failed-callback
+          - $occurrence: 1
+            name: otel-failed-callback
             attributes:
               durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
           - name: Workflow
@@ -210,7 +211,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: ${SERVICE_NAME}
         links:
-          - name: "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}"
+          - $occurrence: 1
+            name: "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}"
             attributes:
               durable.operation.id: ${FAILED_CALLBACK}
           - name: Workflow

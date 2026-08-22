@@ -169,7 +169,8 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-retry
+          - $occurrence: 1
+            name: otel-retry
             attributes:
               durable.operation.id: ${RETRY_STEP}
           - name: Workflow

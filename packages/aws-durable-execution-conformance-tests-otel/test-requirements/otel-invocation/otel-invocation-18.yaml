@@ -175,7 +175,8 @@ TelemetryAssertions:
         status: ERROR
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-failed-invoke
+          - $occurrence: 1
+            name: otel-failed-invoke
             attributes:
               durable.operation.id: ${FAILED_INVOKE}
           - name: Workflow

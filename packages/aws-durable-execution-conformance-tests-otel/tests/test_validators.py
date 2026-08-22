@@ -554,6 +554,53 @@ def test_link_occurrence_identifies_the_chronological_invocation() -> None:
     ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
 
 
+def test_link_occurrence_rejects_a_replayed_operation_self_link() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    operation_id = "operation-1"
+    initial_operation = replace(
+        root,
+        name="operation",
+        attributes={
+            **root.attributes,
+            "durable.operation.id": operation_id,
+            "durable.operation.status": "STARTED",
+        },
+    )
+    replayed_operation = replace(
+        child,
+        name="operation",
+        attributes={
+            **child.attributes,
+            "durable.operation.id": operation_id,
+            "durable.operation.status": "SUCCEEDED",
+        },
+        links=(SpanLink(trace_id=child.trace_id, span_id=child.span_id),),
+    )
+
+    assert validate_trace(
+        replace(trace, spans=(initial_operation, replayed_operation)),
+        {
+            "span_assertions": {
+                "select": {
+                    "name": "operation",
+                    "attributes": {"durable.operation.status": "SUCCEEDED"},
+                },
+                "expect": {
+                    "links": [
+                        {
+                            "$occurrence": 1,
+                            "name": "operation",
+                            "attributes": {"durable.operation.id": operation_id},
+                        }
+                    ]
+                },
+            }
+        },
+        _query(),
+    ) == ["span_assertions[0].expect.links[0].$occurrence: linked span is occurrence 2, expected 1"]
+
+
 def test_repeated_span_assertions_apply_expectations_by_chronological_occurrence() -> None:
     trace = _trace()
     root, child = trace.spans

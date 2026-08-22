@@ -173,7 +173,8 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-invoke
+          - $occurrence: 1
+            name: otel-invoke
             attributes:
               durable.operation.id: ${INVOKE1}
           - name: Workflow

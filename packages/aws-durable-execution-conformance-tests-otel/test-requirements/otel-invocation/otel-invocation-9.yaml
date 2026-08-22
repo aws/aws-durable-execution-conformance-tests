@@ -139,7 +139,8 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-condition
+          - $occurrence: 1
+            name: otel-condition
             attributes:
               durable.operation.id: ${CONDITION1}
           - name: Workflow

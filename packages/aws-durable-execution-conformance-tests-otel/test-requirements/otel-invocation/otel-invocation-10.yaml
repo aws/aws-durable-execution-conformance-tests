@@ -152,7 +152,8 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: otel-callback
+          - $occurrence: 1
+            name: otel-callback
             attributes:
               durable.operation.id: ${CALLBACK_CONTEXT}
           - name: Workflow
@@ -211,7 +212,8 @@ TelemetryAssertions:
         status: OK
         service_name: ${SERVICE_NAME}
         links:
-          - name: "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}"
+          - $occurrence: 1
+            name: "${/^(?:otel-callback(?: create callback id|-callback)|CALLBACK)$/}"
             attributes:
               durable.operation.id: ${CALLBACK1}
           - name: Workflow
