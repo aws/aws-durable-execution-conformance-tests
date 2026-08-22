@@ -1390,6 +1390,34 @@ def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
     ]
 
 
+def test_parent_assertion_rejects_wrong_id_when_expected_parent_is_present() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    backend_parent = replace(root, name="Durable Execution Attempt #1")
+    misparented_child = replace(child, parent_span_id="9" * 16)
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$allow_unresolved": True,
+                    "name": backend_parent.name,
+                }
+            },
+        }
+    }
+
+    assert validate_trace(
+        replace(trace, spans=(backend_parent, misparented_child)),
+        assertions,
+        _query(),
+    ) == [
+        "span_assertions[0].expect.parent: parent span ID "
+        f"{misparented_child.parent_span_id!r} does not match observed expected parent span ID(s): "
+        f"{backend_parent.span_id}"
+    ]
+
+
 def test_parent_assertion_rejects_invalid_directives() -> None:
     outside_errors = validate_trace(
         _trace(),
