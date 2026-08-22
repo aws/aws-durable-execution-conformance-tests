@@ -80,7 +80,7 @@ class Span:
 
 @dataclass(frozen=True)
 class Trace:
-    """A primary trace plus spans from execution-correlated ambient traces."""
+    """A primary trace plus spans from execution-correlated traces."""
 
     trace_id: str
     spans: tuple[Span, ...]

@@ -29,6 +29,12 @@ The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each
 Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
+Both views require the backend-propagated trace to contain `Workflow`,
+`Invocation`, and operation spans for one durable execution. `Workflow` is
+parented to the remote backend server span named
+`Durable Execution Attempt #1`, while `Invocation` uses a valid same-trace
+ambient span or falls back to that remote parent. A deterministic synthetic
+execution root is used only when no valid remote parent can be constructed.
 The long-running suite applies both invocation and execution views to waits,
 retry delays, callbacks, and chained invokes that can remain suspended for up
 to one day. Java, JavaScript, and Python all run both views. Each SDK

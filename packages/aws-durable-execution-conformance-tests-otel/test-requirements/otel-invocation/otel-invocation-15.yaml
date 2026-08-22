@@ -15,6 +15,10 @@ ExpectedResult:
 TelemetryAssertions:
   minimum_spans: 2
   require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
   require_unique_root_per_trace: true
   require_all_spans: true
   span_assertion_scope:

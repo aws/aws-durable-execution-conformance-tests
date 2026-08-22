@@ -28,6 +28,10 @@ TelemetryAssertions:
   minimum_spans: 10
   minimum_invocations: 4
   require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
   require_unique_root_per_trace: true
   allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
   require_all_spans: true
@@ -43,7 +47,10 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: OK
         service_name: ${SERVICE_NAME}
         links: []
@@ -57,7 +64,10 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: OK
         service_name: ${SERVICE_NAME}
         links: []
@@ -168,10 +178,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          - name: Workflow
-            attributes:
-              durable.execution.arn: ${EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
@@ -185,6 +191,19 @@ TelemetryAssertions:
             $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+        - links:
+            - $occurrence: 1
+              name: otel-long-invoke
+              attributes:
+                durable.operation.id: ${INVOKE1}
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
     - select:
         name: otel-long-invoke-target-wait
         attributes:
@@ -194,10 +213,6 @@ TelemetryAssertions:
         status:
           $any_of: [UNSET, OK]
         service_name: ${SERVICE_NAME}
-        links:
-          - name: Workflow
-            attributes:
-              durable.execution.arn: ${TARGET_EXECUTION_ARN}
         kind: INTERNAL
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
@@ -211,9 +226,26 @@ TelemetryAssertions:
             $any_of: [INTERNAL, SERVER]
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect_by_occurrence:
+        - links:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${TARGET_EXECUTION_ARN}
+        - links:
+            - $occurrence: 1
+              name: otel-long-invoke-target-wait
+              attributes:
+                durable.operation.id: '*'
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${TARGET_EXECUTION_ARN}
 ExecutionTelemetryAssertions:
   minimum_spans: 8
   require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
   require_unique_root_per_trace: true
   minimum_invocations: 4
   allowed_execution_arns:
@@ -226,7 +258,10 @@ ExecutionTelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: OK
         service_name: ${SERVICE_NAME}
         links: []

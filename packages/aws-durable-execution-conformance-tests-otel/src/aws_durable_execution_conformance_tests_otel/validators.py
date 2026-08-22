@@ -30,6 +30,15 @@ _TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
 _MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
 
 
+def _is_valid_span_id(value: str | None) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 16
+        and value != "0" * 16
+        and all(character in "0123456789abcdef" for character in value.lower())
+    )
+
+
 def _timestamp_tolerance(
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> timedelta:
@@ -70,6 +79,26 @@ def _unique_root_errors(trace: Trace) -> list[str]:
         )
         root_list = ", ".join(f"{span.name!r} ({span.span_id})" for span in roots)
         errors.append(f"Trace {trace_id} contains {len(roots)} distinct root spans: {root_list}")
+    return errors
+
+
+def _execution_trace_errors(trace: Trace) -> list[str]:
+    trace_ids_by_execution: dict[str, set[str]] = {}
+    for span in trace.spans:
+        for key in _EXECUTION_ATTRIBUTE_KEYS:
+            if key not in span.attributes:
+                continue
+            execution_arn = str(span.attributes[key]).lower()
+            trace_ids_by_execution.setdefault(execution_arn, set()).add(span.trace_id)
+
+    errors: list[str] = []
+    for execution_arn, trace_ids in sorted(trace_ids_by_execution.items()):
+        if len(trace_ids) <= 1:
+            continue
+        errors.append(
+            f"Durable execution {execution_arn!r} appears in {len(trace_ids)} trace IDs: "
+            + ", ".join(sorted(trace_ids))
+        )
     return errors
 
 
@@ -255,14 +284,23 @@ def _parent_expectation_errors(
     allow_outside = expected.get("$allow_outside", False)
     if "$allow_outside" in expected and allow_outside is not True:
         return [f"{path}.$allow_outside must be true"]
-    expected_properties = {key: value for key, value in expected.items() if key != "$allow_outside"}
+    allow_unresolved = expected.get("$allow_unresolved", False)
+    if "$allow_unresolved" in expected and allow_unresolved is not True:
+        return [f"{path}.$allow_unresolved must be true"]
+    expected_properties = {
+        key: value for key, value in expected.items() if key not in {"$allow_outside", "$allow_unresolved"}
+    }
 
     parent_span_id = span.parent_span_id
     if parent_span_id is None:
         return [f"{path}: selected span has no parent"]
+    if not _is_valid_span_id(parent_span_id):
+        return [f"{path}: selected span has invalid parent span ID {parent_span_id!r}"]
 
     parents = [parent for parent in spans_by_id.get(parent_span_id, []) if parent[0].trace_id == span.trace_id]
     if not parents:
+        if allow_unresolved:
+            return []
         return [f"{path}: parent span is not present in the trace"]
 
     expectation_errors = [
@@ -511,13 +549,14 @@ def _span_assertion_errors(
             errors.append(f"{path} must be a mapping")
             continue
 
-        unknown = sorted(set(assertion) - {"select", "expect", "count"}, key=str)
+        unknown = sorted(set(assertion) - {"select", "expect", "expect_by_occurrence", "count"}, key=str)
         if unknown:
             errors.append(f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}")
             continue
 
         selector = assertion.get("select", {})
         expected = assertion.get("expect")
+        raw_occurrence_expectations = assertion.get("expect_by_occurrence")
         raw_expected_count = assertion.get("count", 1)
         if not isinstance(selector, Mapping):
             errors.append(f"{path}.select must be a mapping")
@@ -525,6 +564,14 @@ def _span_assertion_errors(
         if not isinstance(expected, Mapping):
             errors.append(f"{path}.expect must be a mapping")
             continue
+        occurrence_expectations: list[Mapping[str, Any]] | None = None
+        if raw_occurrence_expectations is not None:
+            if not _is_sequence(raw_occurrence_expectations) or not all(
+                isinstance(occurrence_expected, Mapping) for occurrence_expected in raw_occurrence_expectations
+            ):
+                errors.append(f"{path}.expect_by_occurrence must be a sequence of mappings")
+                continue
+            occurrence_expectations = list(raw_occurrence_expectations)
         if isinstance(raw_expected_count, int) and not isinstance(raw_expected_count, bool) and raw_expected_count > 0:
             expected_counts = (raw_expected_count,)
         elif (
@@ -559,20 +606,41 @@ def _span_assertion_errors(
             allowed_counts = " or ".join(str(count) for count in expected_counts)
             errors.append(f"{path}.select matched {len(matches)} spans; expected {allowed_counts}")
             continue
+        if occurrence_expectations is not None:
+            if len(occurrence_expectations) != len(matches):
+                errors.append(
+                    f"{path}.expect_by_occurrence has {len(occurrence_expectations)} item(s); expected {len(matches)}"
+                )
+                continue
+            matches = sorted(
+                matches,
+                key=lambda match: (
+                    match[1]["start_time"],
+                    match[1]["end_time"],
+                    match[1]["span_id"],
+                ),
+            )
         matched_span_indexes = {span_index for span_index, _span in matches}
         covered_span_indexes.update(matched_span_indexes)
         used_span_indexes.update(matched_span_indexes)
 
-        expected_properties = {
-            key: value
-            for key, value in expected.items()
-            if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
-        }
-        expected_attributes = expected.get("attributes")
         for match_index, (span_index, matched_span) in enumerate(matches):
+            effective_expected = expected
             expectation_path = f"{path}.expect"
-            if len(matches) > 1:
+            if occurrence_expectations is not None:
+                effective_expected = {
+                    **expected,
+                    **occurrence_expectations[match_index],
+                }
+                expectation_path = f"{path}.expect_by_occurrence[{match_index}]"
+            elif len(matches) > 1:
                 expectation_path = f"{expectation_path}[{match_index}]"
+            expected_properties = {
+                key: value
+                for key, value in effective_expected.items()
+                if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
+            }
+            expected_attributes = effective_expected.get("attributes")
             errors.extend(
                 _span_expectation_errors(
                     expected_properties,
@@ -581,20 +649,20 @@ def _span_assertion_errors(
                     feature_disparities=feature_disparities,
                 )
             )
-            if "parent" in expected:
+            if "parent" in effective_expected:
                 errors.extend(
                     _parent_expectation_errors(
-                        expected["parent"],
+                        effective_expected["parent"],
                         trace.spans[span_index],
                         span_models_by_id,
                         path=f"{expectation_path}.parent",
                         feature_disparities=feature_disparities,
                     )
                 )
-            if "links" in expected:
+            if "links" in effective_expected:
                 errors.extend(
                     _link_expectation_errors(
-                        expected["links"],
+                        effective_expected["links"],
                         matched_span,
                         spans,
                         spans_by_id,
@@ -603,11 +671,11 @@ def _span_assertion_errors(
                     )
                 )
             for relation in _TEMPORAL_RELATION_KEYS:
-                if relation in expected:
+                if relation in effective_expected:
                     errors.extend(
                         _temporal_relation_errors(
                             relation,
-                            expected[relation],
+                            effective_expected[relation],
                             trace.spans[span_index],
                             span_index,
                             trace,
@@ -640,6 +708,40 @@ def _span_assertion_errors(
     return errors
 
 
+def _parented_span_errors(
+    trace: Trace,
+    raw_selectors: Any,
+    *,
+    feature_disparities: Collection[BackendFeatureDisparity],
+) -> list[str]:
+    if raw_selectors is None:
+        return []
+    if isinstance(raw_selectors, Mapping):
+        selectors = [raw_selectors]
+    elif _is_sequence(raw_selectors):
+        selectors = list(raw_selectors)
+    else:
+        return ["require_parented_spans must be a mapping or sequence of mappings"]
+
+    serialized_spans = [span_to_dict(span) for span in trace.spans]
+    errors: list[str] = []
+    for index, selector in enumerate(selectors):
+        path = f"require_parented_spans[{index}]"
+        if not isinstance(selector, Mapping):
+            errors.append(f"{path} must be a mapping")
+            continue
+        for span, serialized_span in zip(trace.spans, serialized_spans, strict=True):
+            if not _matches_span(selector, serialized_span, feature_disparities):
+                continue
+            if span.parent_span_id is None:
+                errors.append(f"{path}: span {span.name!r} ({span.span_id}) has no parent")
+            elif not _is_valid_span_id(span.parent_span_id):
+                errors.append(
+                    f"{path}: span {span.name!r} ({span.span_id}) has invalid parent span ID {span.parent_span_id!r}"
+                )
+    return errors
+
+
 def validate_trace(
     trace: Trace,
     assertions: Mapping[str, Any],
@@ -659,6 +761,20 @@ def validate_trace(
         errors.append("require_unique_root_per_trace must be a boolean")
     elif require_unique_root:
         errors.extend(_unique_root_errors(trace))
+
+    require_single_trace = assertions.get("require_single_trace_per_execution", False)
+    if not isinstance(require_single_trace, bool):
+        errors.append("require_single_trace_per_execution must be a boolean")
+    elif require_single_trace:
+        errors.extend(_execution_trace_errors(trace))
+
+    errors.extend(
+        _parented_span_errors(
+            trace,
+            assertions.get("require_parented_spans"),
+            feature_disparities=feature_disparities,
+        )
+    )
 
     timestamp_tolerance = _timestamp_tolerance(feature_disparities)
     for span in trace.spans:

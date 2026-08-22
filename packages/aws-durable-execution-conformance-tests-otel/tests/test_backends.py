@@ -45,6 +45,8 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     RetryableBackendError,
 )
 
+_XRAY_DISCOVERY_FILTER = 'service("conformance") OR service("Workflow") OR service("Durable Execution Attempt #1")'
+
 
 class _Http:
     def __init__(self, *responses: Mapping[str, Any]) -> None:
@@ -256,7 +258,7 @@ def test_backends_declare_feature_disparities(
     assert backend_type.feature_disparities == expected
 
 
-def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
+def test_matching_trace_collects_execution_correlated_traces_by_arn() -> None:
     now = datetime.now(UTC)
 
     def span(
@@ -264,10 +266,12 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
         span_id: str,
         name: str,
         execution_arn: str | None,
+        parent_span_id: str | None = None,
     ) -> Span:
         return Span(
             trace_id=trace_id,
             span_id=span_id,
+            parent_span_id=parent_span_id,
             name=name,
             start_time=now,
             end_time=now,
@@ -275,37 +279,33 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
         )
 
     source_trace_id = "1" * 32
-    source_invocation_trace_id = "2" * 32
-    target_invocation_trace_id = "3" * 32
-    workflow_trace = Trace(
+    target_trace_id = "3" * 32
+    source_trace = Trace(
         trace_id=source_trace_id,
         spans=(
-            span(source_trace_id, "1" * 16, "Workflow", "arn:test"),
-            span(source_trace_id, "2" * 16, "Workflow", "arn:target"),
+            span(source_trace_id, "1" * 16, "Durable Execution Attempt #1", None),
+            span(source_trace_id, "2" * 16, "Workflow", "arn:test", "1" * 16),
+            span(source_trace_id, "3" * 16, "Invocation", "arn:test", "1" * 16),
         ),
     )
-    source_invocation_trace = Trace(
-        trace_id=source_invocation_trace_id,
+    target_trace = Trace(
+        trace_id=target_trace_id,
         spans=(
-            span(source_invocation_trace_id, "3" * 16, "handler", None),
-            span(source_invocation_trace_id, "4" * 16, "Invocation", "arn:test"),
+            span(target_trace_id, "4" * 16, "Durable Execution Attempt #1", None),
+            span(target_trace_id, "5" * 16, "Workflow", "arn:target", "4" * 16),
+            span(target_trace_id, "6" * 16, "Invocation", "arn:target", "4" * 16),
         ),
-    )
-    target_invocation_trace = Trace(
-        trace_id=target_invocation_trace_id,
-        spans=(span(target_invocation_trace_id, "5" * 16, "Invocation", "arn:target"),),
     )
     unrelated_trace = Trace(
         trace_id="4" * 32,
-        spans=(span("4" * 32, "6" * 16, "Invocation", "arn:other"),),
+        spans=(span("4" * 32, "7" * 16, "Invocation", "arn:other"),),
     )
 
     result = matching_trace(
         [
-            source_invocation_trace,
+            source_trace,
             unrelated_trace,
-            workflow_trace,
-            target_invocation_trace,
+            target_trace,
         ],
         replace(
             _query(),
@@ -315,16 +315,17 @@ def test_matching_trace_collects_ambient_invocations_by_execution_arn() -> None:
 
     assert result is not None
     assert result.trace_id == source_trace_id
-    assert [(item.name, item.attributes["durable.execution.arn"]) for item in result.spans] == [
+    assert [(item.name, item.attributes.get("durable.execution.arn")) for item in result.spans] == [
+        ("Durable Execution Attempt #1", None),
         ("Workflow", "arn:test"),
-        ("Workflow", "arn:target"),
         ("Invocation", "arn:test"),
+        ("Durable Execution Attempt #1", None),
+        ("Workflow", "arn:target"),
         ("Invocation", "arn:target"),
     ]
     assert {item.trace_id for item in result.spans} == {
         source_trace_id,
-        source_invocation_trace_id,
-        target_invocation_trace_id,
+        target_trace_id,
     }
 
 
@@ -851,7 +852,7 @@ def test_xray_queries_summaries_then_batch_get() -> None:
         batch_get_calls = 0
 
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
+            assert kwargs["FilterExpression"] == _XRAY_DISCOVERY_FILTER
             return {"TraceSummaries": [{"Id": "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
@@ -878,9 +879,8 @@ def test_xray_queries_summaries_then_batch_get() -> None:
     assert trace.spans[0].attributes["durable.execution.arn"] == "arn:test"
 
 
-def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
-    ambient_trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
-    workflow_trace_id = "1-aaaaaaaa-cccccccccccccccccccccccc"
+def test_xray_returns_backend_workflow_and_invocation_spans_from_one_trace() -> None:
+    trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
 
     def document(
         trace_id: str,
@@ -903,40 +903,32 @@ def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
 
     class _XRay:
         def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["FilterExpression"] == ('service("conformance") OR service("Workflow")')
-            return {
-                "TraceSummaries": [
-                    {"Id": ambient_trace_id},
-                    {"Id": workflow_trace_id},
-                ]
-            }
+            assert kwargs["FilterExpression"] == _XRAY_DISCOVERY_FILTER
+            return {"TraceSummaries": [{"Id": trace_id}]}
 
         def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["TraceIds"] == [ambient_trace_id, workflow_trace_id]
+            assert kwargs["TraceIds"] == [trace_id]
             return {
                 "Traces": [
                     {
                         "Segments": [
                             document(
-                                ambient_trace_id,
+                                trace_id,
                                 "1" * 16,
-                                "conformance",
+                                "Durable Execution Attempt #1",
                             ),
                             document(
-                                ambient_trace_id,
+                                trace_id,
                                 "2" * 16,
+                                "Workflow",
+                                parent_span_id="1" * 16,
+                            ),
+                            document(
+                                trace_id,
+                                "3" * 16,
                                 "Invocation",
                                 parent_span_id="1" * 16,
                             ),
-                        ]
-                    },
-                    {
-                        "Segments": [
-                            document(
-                                workflow_trace_id,
-                                "3" * 16,
-                                "Workflow",
-                            )
                         ]
                     },
                 ]
@@ -948,11 +940,12 @@ def test_xray_correlates_workflow_and_ambient_service_traces() -> None:
         PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
     )
 
-    assert trace.trace_id == "a" * 8 + "c" * 24
-    assert [(span.name, span.trace_id) for span in trace.spans] == [
-        ("Workflow", "a" * 8 + "c" * 24),
-        ("conformance", "a" * 8 + "b" * 24),
-        ("Invocation", "a" * 8 + "b" * 24),
+    normalized_trace_id = "a" * 8 + "b" * 24
+    assert trace.trace_id == normalized_trace_id
+    assert [(span.name, span.trace_id, span.parent_span_id) for span in trace.spans] == [
+        ("Durable Execution Attempt #1", normalized_trace_id, None),
+        ("Workflow", normalized_trace_id, "1" * 16),
+        ("Invocation", normalized_trace_id, "1" * 16),
     ]
 
 
