@@ -32,6 +32,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     PollingBackend,
 )
 
+_BACKEND_SERVICE_NAME = "Durable Execution Attempt #1"
 _WORKFLOW_SERVICE_NAME = "Workflow"
 
 
@@ -121,13 +122,14 @@ class XRayBackend(PollingBackend):
             if query.trace_id:
                 trace_ids = [query.trace_id]
             else:
-                # ADOT names a parentless INTERNAL root segment after its span,
-                # so the durable Workflow trace is indexed separately from the
-                # ambient trace that uses the configured service name.
                 summary_request = {
                     "StartTime": query.started_at,
                     "EndTime": query.ended_at,
-                    "FilterExpression": (f'service("{query.service_name}") OR service("{_WORKFLOW_SERVICE_NAME}")'),
+                    "FilterExpression": (
+                        f'service("{query.service_name}") '
+                        f'OR service("{_WORKFLOW_SERVICE_NAME}") '
+                        f'OR service("{_BACKEND_SERVICE_NAME}")'
+                    ),
                 }
                 while True:
                     response = self._client.get_trace_summaries(**summary_request)

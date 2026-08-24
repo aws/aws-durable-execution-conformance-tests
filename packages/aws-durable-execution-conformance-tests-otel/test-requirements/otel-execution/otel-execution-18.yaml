@@ -22,6 +22,10 @@ ExpectedResult:
 TelemetryAssertions:
   minimum_spans: 6
   require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
   require_unique_root_per_trace: true
   minimum_invocations: 3
   allowed_execution_arns:
@@ -34,7 +38,10 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: ERROR
         service_name: ${SERVICE_NAME}
         links: []
@@ -48,7 +55,10 @@ TelemetryAssertions:
         attributes:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
-        parent_span_id: null
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          name: "Durable Execution Attempt #1"
         status: ERROR
         service_name: ${SERVICE_NAME}
         links: []

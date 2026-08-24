@@ -124,7 +124,7 @@ class JsonHttpClient:
 
 
 def matching_trace(traces: list[Trace], query: TelemetryQuery) -> Trace | None:
-    """Build a correlated view from the workflow and ambient Lambda traces."""
+    """Build a correlated view from traces carrying the requested executions."""
 
     def execution_arns(trace: Trace) -> set[str]:
         return {
@@ -163,12 +163,7 @@ def matching_trace(traces: list[Trace], query: TelemetryQuery) -> Trace | None:
             correlated_trace_ids.add(trace.trace_id)
 
     ordered = [primary, *(trace for trace in correlated if trace is not primary)]
-    correlated_spans = tuple(
-        span
-        for trace in ordered
-        for span in trace.spans
-        if trace is primary or span.attributes.get("durable.execution.arn") in correlated_arns
-    )
+    correlated_spans = tuple(span for trace in ordered for span in trace.spans)
     log_trace_ids: list[str] = []
     for trace in ordered:
         log_trace_ids.extend(trace_id for trace_id in trace.log_trace_ids if trace_id not in log_trace_ids)

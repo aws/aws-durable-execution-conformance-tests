@@ -70,6 +70,8 @@ The currently supported telemetry assertions are:
 | `minimum_invocations` | Minimum canonical durable invocation span occurrences; identical spans are counted separately. Defaults to `1`. |
 | `require_execution_correlation` | Require the durable execution ARN on the trace; defaults to `true`. |
 | `require_unique_root_per_trace` | Reject any trace ID containing more than one distinct parentless span. Duplicate exports with the same span ID count once. |
+| `require_single_trace_per_execution` | Require every span carrying one durable execution ARN to use the same trace ID. Different chained executions may use different trace IDs. |
+| `require_parented_spans` | Require every span matching one partial span selector, or any selector in a sequence, to have a non-null parent span ID. The parent span does not need to be present in the backend response. |
 | `require_all_spans` | Require every normalized span to match at least one span assertion. |
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
 | `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |
@@ -81,7 +83,9 @@ number for repeated spans such as invocation or continuation spans. The
 assertions are evaluated in order, and a span selected by one assertion is not
 available to later selectors. The corresponding `expect` mapping is applied to
 every match and is otherwise a partial assertion, so unlisted properties and
-metadata are ignored:
+metadata are ignored. Add `expect_by_occurrence` with one mapping per
+chronologically ordered match when repeated spans must have distinct shapes.
+Each occurrence mapping overrides the common `expect` keys for that match:
 
 ```yaml
 TelemetryAssertions:
@@ -99,6 +103,22 @@ TelemetryAssertions:
           durable.operation.type: execution
       attributes:
         durable.operation.outcome: success
+```
+
+```yaml
+TelemetryAssertions:
+  span_assertions:
+    select:
+      name: durable wait
+    count: 2
+    expect:
+      status: OK
+    expect_by_occurrence:
+      - links:
+          - name: Workflow
+      - links:
+          - name: durable wait
+          - name: Workflow
 ```
 
 Use `require_all_spans: true` when a case defines the complete emitted span
@@ -173,16 +193,80 @@ distinct parentless spans because that creates a disconnected trace forest and
 makes backend-derived entry point, duration, critical path, and sampling
 behavior ambiguous.
 
+Set `require_single_trace_per_execution: true` when the complete durable
+execution must occupy one trace. The validator groups spans by the supported
+execution ARN attributes, so a chained target execution can use another trace
+without splitting either execution internally.
+
+Use `require_parented_spans` when an upstream parent may not be included in the
+normalized backend response. The assertion requires a non-null
+`parent_span_id`; unlike `expect.parent`, it does not require the referenced
+span to be available for property or timestamp validation:
+
+```yaml
+require_parented_spans:
+  - name: Workflow
+  - name: Invocation
+```
+
+Set `expect.parent.$allow_unresolved: true` when a known parent should be
+validated if it is returned, but may be omitted from a provider query. The
+selected span must still have a non-null parent ID. Other parent properties are
+checked whenever the referenced span is present. Combine it with
+`$allow_outside: true` when the child duration can extend beyond that upstream
+span.
+
+## Durable trace topology
+
+When `_X_AMZN_TRACE_ID` contains valid `Root` and `Parent` fields, the remote
+backend server span, named `Durable Execution Attempt #1`, is the authoritative
+execution ancestor. `Workflow` inherits `Root` and is a direct child of
+`Parent`. `Invocation` uses an ambient span only when that span is valid and
+uses the same trace ID; otherwise it is a direct child of `Parent`.
+
+Parent and sampling resolution are independent:
+
+| Header state | Canonical trace ID | Execution ancestor | Sampling |
+|---|---|---|---|
+| Valid `Root`, `Parent`, `Sampled=1` | Reuse `Root` | Remote `Parent` | Preserve sampled |
+| Valid `Root`, `Parent`, `Sampled=0` | Reuse `Root` | Remote `Parent` | Preserve not-sampled |
+| Valid `Root`, `Parent`, no valid `Sampled` | Reuse `Root` | Remote `Parent` | Leave the sampled trace flag unset; configured sampler behavior applies |
+| Valid `Root`, missing or invalid `Parent`, `Sampled=1` or `Sampled=0` | Reuse `Root` | Synthetic execution root | Preserve the explicit decision |
+| Valid `Root`, missing or invalid `Parent`, no valid `Sampled` | Reuse `Root` | Synthetic execution root | Configured root sampler decides |
+| Missing or invalid `Root` | Derive from execution ARN and stable execution start time | Synthetic execution root | Configured root sampler decides |
+
+Only `Sampled=0` and `Sampled=1` are authoritative upstream decisions. Missing
+`Sampled` does not replace a valid remote parent with a synthetic root. An
+unset sampled bit is treated as not sampled by `ParentBased`; a directly
+configured non-parent-based trace-ID-ratio sampler can decide from the stable
+canonical trace ID.
+
+```text
+Durable Execution Attempt #1
+├── Workflow
+├── Same-trace ambient Lambda span
+│   └── Invocation
+└── Invocation  [when no valid same-trace ambient span exists]
+```
+
+When no valid remote parent can be constructed:
+
+```text
+Synthetic execution root
+├── Workflow
+└── Invocation
+```
+
 The catalog uses separate requirements when two public plugins intentionally
 produce different trace views. Invocation-view cases assert per-invocation
-operation hierarchy. In execution-view cases, `Invocation` spans remain
-parented to the ambient Lambda trace while `Workflow` and operation spans use
-the durable execution trace. Backends assemble a correlated view from the
-workflow trace and every ambient trace containing a span with the same
-`durable.execution.arn`. Execution-view cases can therefore assert all
-`Invocation` spans, the `Workflow` hierarchy, and the links between them
-without requiring those spans to share a trace ID. Cases where no workflow or
-operation span completes assert the ambient `Invocation` span alone.
+operation hierarchy: operations are children of `Invocation`, link to
+`Workflow`, and continuation or replay segments also link to the initial
+logical operation span. Execution-view operations are children of `Workflow`
+and link to the current `Invocation`. Both views require `Workflow`,
+`Invocation`, and operations for one durable execution to share the canonical
+trace ID. Backends may still assemble correlated traces for different durable
+execution ARNs, such as a chained target execution. Cases where no workflow or
+operation span completes assert the `Invocation` span alone.
 
 ## Add SDK Test Handlers
 
