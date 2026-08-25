@@ -50,7 +50,7 @@ TelemetryAssertions:
         parent:
           $allow_unresolved: true
           $allow_outside: true
-          name: "Durable Execution Attempt #1"
+          $reject_sdk_span: true
         status: OK
         service_name: ${SERVICE_NAME}
         links: []
@@ -214,7 +214,7 @@ ExecutionTelemetryAssertions:
         parent:
           $allow_unresolved: true
           $allow_outside: true
-          name: "Durable Execution Attempt #1"
+          $reject_sdk_span: true
         status: OK
         service_name: ${SERVICE_NAME}
         links: []

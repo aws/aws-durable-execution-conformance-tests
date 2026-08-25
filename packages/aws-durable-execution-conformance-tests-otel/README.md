@@ -31,10 +31,13 @@ Lambda invocation. Execution-view requirements assert the terminal `Workflow`
 hierarchy and invocation links emitted across the durable execution.
 Both views require the backend-propagated trace to contain `Workflow`,
 `Invocation`, and operation spans for one durable execution. `Workflow` is
-parented to the remote backend server span named
-`Durable Execution Attempt #1`, while `Invocation` uses a valid same-trace
-ambient span or falls back to that remote parent. A deterministic synthetic
-execution root is used only when no valid remote parent can be constructed.
+parented either to the remote context propagated by Lambda or to a valid
+same-trace ambient span created from that context. `Invocation` uses a valid
+same-trace ambient span or falls back to the propagated remote parent. The
+propagated parent is not guaranteed to be the durable backend server span
+itself, and OpenTelemetry does not expose an ancestor chain that an SDK could
+traverse. A deterministic synthetic execution root is used only when no valid
+remote parent can be constructed.
 The long-running suite applies both invocation and execution views to waits,
 retry delays, callbacks, and chained invokes that can remain suspended for up
 to one day. Java, JavaScript, and Python all run both views. Each SDK
@@ -72,7 +75,9 @@ store; the runner redacts the secret parameter from commands and SAM output.
 `TelemetryAssertions.span_assertions` can select one or an exact number of
 canonical spans and assert any properties, nested attributes, parent
 relationships, and timestamp ordering. Every span must start at or before it
-ends, and every asserted parent must contain its child's complete timespan.
+ends. By default, an asserted parent must contain its child's complete
+timespan; `$allow_outside: true` permits an execution-scoped span to extend
+beyond an invocation-scoped parent.
 `before`, `after`, and `inside` compare a selected span with one other span.
 `inside` can target a span that is not the selected span's parent.
 `$linked: true` restricts the relation to spans linked by the selected span.

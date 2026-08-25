@@ -39,6 +39,52 @@ def _is_valid_span_id(value: str | None) -> bool:
     )
 
 
+def _is_durable_sdk_span(span: Span) -> bool:
+    attribute_keys = span.attributes.keys()
+    if span.name.lower() == "workflow" and (
+        "durable.execution.status" in span.attributes
+        or any(key in span.attributes for key in _EXECUTION_ATTRIBUTE_KEYS)
+    ):
+        return True
+    if span.name.lower() == "invocation" and (
+        any(key.startswith("durable.invocation.") for key in attribute_keys)
+        or any(key in span.attributes for key in _EXECUTION_ATTRIBUTE_KEYS)
+    ):
+        return True
+    return any(key.startswith(("durable.operation.", "durable.attempt.")) for key in attribute_keys)
+
+
+def _parent_chain_reaches_span(
+    parent: Span,
+    span: Span,
+    spans_by_id: Mapping[str, list[tuple[Span, Mapping[str, Any]]]],
+) -> bool:
+    pending = [parent]
+    visited: set[tuple[str, str]] = set()
+    while pending:
+        candidate = pending.pop()
+        candidate_key = (candidate.trace_id, candidate.span_id)
+        if candidate_key in visited:
+            continue
+        visited.add(candidate_key)
+        if candidate.span_id == span.span_id:
+            return True
+        parent_span_id = candidate.parent_span_id
+        if parent_span_id is None:
+            continue
+        if parent_span_id == span.span_id:
+            return True
+        pending.extend(
+            ancestor
+            for ancestor, _serialized_ancestor in spans_by_id.get(
+                parent_span_id,
+                [],
+            )
+            if ancestor.trace_id == span.trace_id
+        )
+    return False
+
+
 def _timestamp_tolerance(
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> timedelta:
@@ -287,8 +333,13 @@ def _parent_expectation_errors(
     allow_unresolved = expected.get("$allow_unresolved", False)
     if "$allow_unresolved" in expected and allow_unresolved is not True:
         return [f"{path}.$allow_unresolved must be true"]
+    reject_sdk_span = expected.get("$reject_sdk_span", False)
+    if "$reject_sdk_span" in expected and reject_sdk_span is not True:
+        return [f"{path}.$reject_sdk_span must be true"]
     expected_properties = {
-        key: value for key, value in expected.items() if key not in {"$allow_outside", "$allow_unresolved"}
+        key: value
+        for key, value in expected.items()
+        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span"}
     }
 
     parent_span_id = span.parent_span_id
@@ -303,15 +354,28 @@ def _parent_expectation_errors(
             return []
         return [f"{path}: parent span is not present in the trace"]
 
-    expectation_errors = [
-        _span_expectation_errors(
+    expectation_errors = []
+    for parent, serialized_parent in parents:
+        parent_errors = _span_expectation_errors(
             expected_properties,
             serialized_parent,
             path=path,
             feature_disparities=feature_disparities,
         )
-        for _parent, serialized_parent in parents
-    ]
+        if not parent_errors and _parent_chain_reaches_span(
+            parent,
+            span,
+            spans_by_id,
+        ):
+            parent_errors.append(
+                f"{path}: resolved parent span {parent.name!r} ({parent.span_id}) "
+                "is the selected span or one of its descendants"
+            )
+        if not parent_errors and reject_sdk_span and _is_durable_sdk_span(parent):
+            parent_errors.append(
+                f"{path}: resolved parent span {parent.name!r} ({parent.span_id}) is emitted by the durable SDK"
+            )
+        expectation_errors.append(parent_errors)
     matching_parents = [
         parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
     ]
