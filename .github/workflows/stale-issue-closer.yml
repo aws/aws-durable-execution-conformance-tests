@@ -1,0 +1,15 @@
+name: Stale Issue Closer
+
+on:
+  schedule:
+    - cron: "7 12 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  close-stale:
+    permissions:
+      contents: read
+      issues: write
+    uses: aws/aws-durable-execution-ci/.github/workflows/stale-issue-closer.yml@8de63fa646c1b7b778829126cf53b7874074795e
