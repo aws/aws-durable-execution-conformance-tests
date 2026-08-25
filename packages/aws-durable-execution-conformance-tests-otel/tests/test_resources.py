@@ -29,6 +29,7 @@ from aws_durable_execution_conformance_tests_otel.validators import validate_tra
 _WORKFLOW_PARENT = {
     "$allow_unresolved": True,
     "$allow_outside": True,
+    "$reject_sdk_span": True,
 }
 
 

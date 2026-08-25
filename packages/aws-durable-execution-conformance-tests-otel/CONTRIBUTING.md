@@ -214,12 +214,16 @@ validated if it is returned, but may be omitted from a provider query. The
 selected span must still have a non-null parent ID. Other parent properties are
 checked whenever the referenced span is present. Combine it with
 `$allow_outside: true` when the child duration can extend beyond that upstream
-span.
+span. Set `$reject_sdk_span: true` when the resolved parent must not be a
+`Workflow`, `Invocation`, durable operation, or durable attempt span emitted by
+the SDK. Parent assertions also reject a resolved parent that is the selected
+span or one of its descendants.
 
-An `expect.parent` mapping containing only `$allow_unresolved: true` and
-`$allow_outside: true` requires a valid parent ID without constraining the
-parent's identity or duration. Use this for `Workflow`, whose parent may be the
-propagated remote context or a same-trace ambient infrastructure span.
+Use `$allow_unresolved: true`, `$allow_outside: true`, and
+`$reject_sdk_span: true` for `Workflow`. This requires a valid parent ID and,
+when the parent is returned, constrains it to a non-SDK infrastructure span.
+The parent may be the propagated remote context or a same-trace ambient
+infrastructure span.
 
 ## Durable trace topology
 

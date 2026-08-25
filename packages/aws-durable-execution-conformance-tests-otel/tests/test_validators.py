@@ -1414,7 +1414,11 @@ def test_parent_assertion_can_allow_replay_backdated_child() -> None:
 def test_parent_assertion_can_accept_any_resolved_or_unresolved_parent() -> None:
     trace = _trace()
     root, child = trace.spans
-    ambient_parent = replace(root, name="ambient Lambda handler")
+    ambient_parent = replace(
+        root,
+        name="ambient Lambda handler",
+        attributes={"faas.invocation_id": "ambient-invocation"},
+    )
     backdated_child = replace(
         child,
         start_time=ambient_parent.start_time - timedelta(seconds=1),
@@ -1426,6 +1430,7 @@ def test_parent_assertion_can_accept_any_resolved_or_unresolved_parent() -> None
                 "parent": {
                     "$allow_unresolved": True,
                     "$allow_outside": True,
+                    "$reject_sdk_span": True,
                 }
             },
         }
@@ -1433,8 +1438,113 @@ def test_parent_assertion_can_accept_any_resolved_or_unresolved_parent() -> None
 
     assert validate_trace(replace(trace, spans=(ambient_parent, backdated_child)), assertions, _query()) == []
 
+    backend_parent = replace(
+        root,
+        name="Durable Execution Attempt #1",
+        attributes={"durable.execution.arn": "arn:test"},
+    )
+    assert (
+        validate_trace(
+            replace(trace, spans=(backend_parent, child)),
+            assertions,
+            _query(),
+        )
+        == []
+    )
+
     external_child = replace(child, parent_span_id="9" * 16)
     assert validate_trace(replace(trace, spans=(root, external_child)), assertions, _query()) == []
+
+
+def test_parent_assertion_rejects_resolved_durable_sdk_parent() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$allow_unresolved": True,
+                    "$allow_outside": True,
+                    "$reject_sdk_span": True,
+                }
+            },
+        }
+    }
+
+    invocation_parent = replace(
+        root,
+        name="Invocation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.invocation.first": True,
+        },
+    )
+    assert validate_trace(
+        replace(trace, spans=(invocation_parent, child)),
+        assertions,
+        _query(),
+    ) == [
+        "span_assertions[0].expect.parent: resolved parent span 'Invocation' "
+        f"({invocation_parent.span_id}) is emitted by the durable SDK"
+    ]
+
+    operation_parent = replace(
+        root,
+        name="operation",
+        attributes={
+            "durable.execution.arn": "arn:test",
+            "durable.operation.type": "STEP",
+        },
+    )
+    assert validate_trace(
+        replace(trace, spans=(operation_parent, child)),
+        assertions,
+        _query(),
+    ) == [
+        "span_assertions[0].expect.parent: resolved parent span 'operation' "
+        f"({operation_parent.span_id}) is emitted by the durable SDK"
+    ]
+
+
+def test_parent_assertion_rejects_parent_cycle() -> None:
+    trace = _trace()
+    _root, child = trace.spans
+    workflow = replace(
+        child,
+        span_id="5" * 16,
+        parent_span_id="6" * 16,
+        name="Workflow",
+    )
+    descendant_parent = replace(
+        child,
+        span_id="6" * 16,
+        parent_span_id=workflow.span_id,
+        name="ambient descendant",
+        attributes={"faas.invocation_id": "ambient-invocation"},
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "Workflow"},
+            "expect": {
+                "parent": {
+                    "$allow_unresolved": True,
+                    "$allow_outside": True,
+                    "$reject_sdk_span": True,
+                }
+            },
+        }
+    }
+
+    assert validate_trace(
+        replace(trace, spans=(workflow, descendant_parent)),
+        assertions,
+        _query(),
+    ) == [
+        "span_assertions[0].expect.parent: resolved parent span "
+        f"'ambient descendant' ({descendant_parent.span_id}) is the selected span "
+        "or one of its descendants"
+    ]
 
 
 def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
@@ -1546,12 +1656,29 @@ def test_parent_assertion_rejects_invalid_directives() -> None:
         },
         _query(),
     )
+    reject_sdk_span_errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {
+                    "parent": {
+                        "$reject_sdk_span": False,
+                    }
+                },
+            }
+        },
+        _query(),
+    )
 
     assert outside_errors == [
         "span_assertions[0].expect.parent.$allow_outside must be true",
     ]
     assert unresolved_errors == [
         "span_assertions[0].expect.parent.$allow_unresolved must be true",
+    ]
+    assert reject_sdk_span_errors == [
+        "span_assertions[0].expect.parent.$reject_sdk_span must be true",
     ]
 
 

@@ -33,6 +33,7 @@ TelemetryAssertions:
         parent:
           $allow_unresolved: true
           $allow_outside: true
+          $reject_sdk_span: true
         status: ERROR
         service_name: ${SERVICE_NAME}
         links: []
