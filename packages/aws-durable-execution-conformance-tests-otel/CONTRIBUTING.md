@@ -216,37 +216,62 @@ checked whenever the referenced span is present. Combine it with
 `$allow_outside: true` when the child duration can extend beyond that upstream
 span.
 
+An `expect.parent` mapping containing only `$allow_unresolved: true` and
+`$allow_outside: true` requires a valid parent ID without constraining the
+parent's identity or duration. Use this for `Workflow`, whose parent may be the
+propagated remote context or a same-trace ambient infrastructure span.
+
 ## Durable trace topology
 
-When `_X_AMZN_TRACE_ID` contains valid `Root` and `Parent` fields, the remote
-backend server span, named `Durable Execution Attempt #1`, is the authoritative
-execution ancestor. `Workflow` inherits `Root` and is a direct child of
-`Parent`. `Invocation` uses an ambient span only when that span is valid and
-uses the same trace ID; otherwise it is a direct child of `Parent`.
+When `_X_AMZN_TRACE_ID` contains valid `Root` and `Parent` fields, `Root`
+defines the canonical execution trace. The propagated `Parent` is the immediate
+remote context delivered to the runtime; it is not guaranteed to be the
+durable backend server span itself.
+
+`Workflow` inherits `Root` and may use either of these parents:
+
+- the remote context reconstructed from `Parent`; or
+- the current ambient span when it is valid and has the same trace ID.
+
+Auto-instrumentation can create a local handler span beneath the propagated
+remote context before the SDK runs. OpenTelemetry `SpanContext` does not expose
+parent or ancestor pointers, so an SDK cannot prove or traverse that complete
+chain. Same-trace membership is the portable validation for the ambient
+alternative. Reject unrelated ambient context.
+
+`Invocation` uses a valid same-trace ambient span when available and otherwise
+uses the reconstructed remote parent.
 
 Parent and sampling resolution are independent:
 
-| Header state | Canonical trace ID | Execution ancestor | Sampling |
+| Header state | Canonical trace ID | Workflow parent | Sampling |
 |---|---|---|---|
-| Valid `Root`, `Parent`, `Sampled=1` | Reuse `Root` | Remote `Parent` | Preserve sampled |
-| Valid `Root`, `Parent`, `Sampled=0` | Reuse `Root` | Remote `Parent` | Preserve not-sampled |
-| Valid `Root`, `Parent`, no valid `Sampled` | Reuse `Root` | Remote `Parent` | Leave the sampled trace flag unset; configured sampler behavior applies |
+| Valid `Root`, `Parent`, `Sampled=1` | Reuse `Root` | Remote `Parent` or same-trace ambient span | Preserve sampled |
+| Valid `Root`, `Parent`, `Sampled=0` | Reuse `Root` | Remote `Parent` or same-trace ambient span | Preserve not-sampled |
+| Valid `Root`, `Parent`, no valid `Sampled` | Reuse `Root` | Remote `Parent` or same-trace ambient span | Do not invent an authoritative decision; selected-parent and configured sampler behavior applies |
 | Valid `Root`, missing or invalid `Parent`, `Sampled=1` or `Sampled=0` | Reuse `Root` | Synthetic execution root | Preserve the explicit decision |
 | Valid `Root`, missing or invalid `Parent`, no valid `Sampled` | Reuse `Root` | Synthetic execution root | Configured root sampler decides |
 | Missing or invalid `Root` | Derive from execution ARN and stable execution start time | Synthetic execution root | Configured root sampler decides |
 
 Only `Sampled=0` and `Sampled=1` are authoritative upstream decisions. Missing
 `Sampled` does not replace a valid remote parent with a synthetic root. An
-unset sampled bit is treated as not sampled by `ParentBased`; a directly
-configured non-parent-based trace-ID-ratio sampler can decide from the stable
-canonical trace ID.
+implementation that selects the remote context represents an absent decision
+with an unset sampled bit; `ParentBased` treats that parent as not sampled,
+while a directly configured non-parent-based trace-ID-ratio sampler can decide
+from the stable canonical trace ID. An implementation that selects an ambient
+span uses the sampling state already established for that span.
 
 ```text
-Durable Execution Attempt #1
+Propagated remote parent
 ├── Workflow
 ├── Same-trace ambient Lambda span
 │   └── Invocation
 └── Invocation  [when no valid same-trace ambient span exists]
+
+Propagated remote parent
+└── Same-trace ambient Lambda span
+    ├── Workflow
+    └── Invocation
 ```
 
 When no valid remote parent can be constructed:
@@ -256,6 +281,13 @@ Synthetic execution root
 ├── Workflow
 └── Invocation
 ```
+
+Requirements must allow the Workflow parent to be external or omitted from the
+retrieved backend subset. When it is present, it may be a same-trace
+infrastructure span without durable attributes. Do not require the
+execution-scoped Workflow interval to be temporally contained by an ambient
+invocation span: the Workflow start represents the whole durable execution,
+while the selected local parent can cover only the terminal Lambda invocation.
 
 The catalog uses separate requirements when two public plugins intentionally
 produce different trace views. Invocation-view cases assert per-invocation

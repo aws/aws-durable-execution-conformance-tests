@@ -1411,6 +1411,32 @@ def test_parent_assertion_can_allow_replay_backdated_child() -> None:
     assert validate_trace(replace(trace, spans=(root, backdated_child)), assertions, _query()) == []
 
 
+def test_parent_assertion_can_accept_any_resolved_or_unresolved_parent() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    ambient_parent = replace(root, name="ambient Lambda handler")
+    backdated_child = replace(
+        child,
+        start_time=ambient_parent.start_time - timedelta(seconds=1),
+    )
+    assertions = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$allow_unresolved": True,
+                    "$allow_outside": True,
+                }
+            },
+        }
+    }
+
+    assert validate_trace(replace(trace, spans=(ambient_parent, backdated_child)), assertions, _query()) == []
+
+    external_child = replace(child, parent_span_id="9" * 16)
+    assert validate_trace(replace(trace, spans=(root, external_child)), assertions, _query()) == []
+
+
 def test_parent_assertion_can_allow_an_unresolved_external_parent() -> None:
     trace = _trace()
     root, child = trace.spans

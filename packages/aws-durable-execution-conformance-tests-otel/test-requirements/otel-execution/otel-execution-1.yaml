@@ -35,7 +35,6 @@ TelemetryAssertions:
         parent:
           $allow_unresolved: true
           $allow_outside: true
-          name: "Durable Execution Attempt #1"
         status: OK
         service_name: ${SERVICE_NAME}
         links: []
