@@ -216,10 +216,11 @@ jobs:
       - name: Delete rolled-back test stacks
         env:
           LEGACY_STACK_PREFIX: ${{ inputs.legacy_stack_prefix }}
+          BACKEND: ${{ matrix.backend }}
         run: |
           stack_names=("$TEST_STACK_NAME")
           if [ -n "$LEGACY_STACK_PREFIX" ]; then
-            stack_names+=("$LEGACY_STACK_PREFIX-${{ matrix.backend }}")
+            stack_names+=("$LEGACY_STACK_PREFIX-$BACKEND")
           fi
           for stack_name in "${stack_names[@]}"; do
             stack_status=$(
@@ -565,13 +566,15 @@ jobs:
             "$RUNNER_TEMP/opentelemetry-s3-collector-layer.zip"
 
       - name: Publish S3 collector Lambda layer
+        env:
+          COLLECTOR_COMPATIBLE_RUNTIME: ${{ inputs.collector_compatible_runtime }}
         run: |
           COLLECTOR_LAYER_ARN=$(
             aws lambda publish-layer-version \
               --layer-name "$COLLECTOR_LAYER_NAME" \
               --description "OpenTelemetry S3 collector for conformance run $GITHUB_RUN_ID" \
               --zip-file "fileb://$RUNNER_TEMP/opentelemetry-s3-collector-layer.zip" \
-              --compatible-runtimes "${{ inputs.collector_compatible_runtime }}" \
+              --compatible-runtimes "$COLLECTOR_COMPATIBLE_RUNTIME" \
               --compatible-architectures x86_64 \
               --query LayerVersionArn \
               --output text
@@ -664,6 +667,7 @@ jobs:
       - name: Run S3 collector conformance tests
         env:
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+          COLLECTOR_OTLP_ENDPOINT: ${{ inputs.collector_otlp_endpoint }}
         run: |
           hatch run validate \
             --template "$TEST_TEMPLATE" \
@@ -684,7 +688,7 @@ jobs:
               "OtelServiceName=$OTEL_RESOURCE_SERVICE_NAME" \
               "OtelSuite=$OTEL_SUITE" \
             --otel-exporter community \
-            --otel-endpoint "${{ inputs.collector_otlp_endpoint }}" \
+            --otel-endpoint "$COLLECTOR_OTLP_ENDPOINT" \
             --otel-service-name "$OTEL_RESOURCE_SERVICE_NAME" \
             --otel-backend collector \
             --otel-backend-endpoint "$OTEL_S3_URI" \

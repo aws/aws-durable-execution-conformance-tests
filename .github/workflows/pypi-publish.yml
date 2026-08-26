@@ -36,7 +36,7 @@ jobs:
         run: |
           version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)((a|b|rc)(0|[1-9][0-9]*))?(\.post(0|[1-9][0-9]*))?(\.dev(0|[1-9][0-9]*))?'
           if [[ ! "$RELEASE_TAG" =~ ^(core|otel)-v${version_re}$ ]]; then
-            echo "::error::Release tags must be core-vX.Y.Z or otel-vX.Y.Z, optionally followed by a PEP 440 pre-release, post-release or dev suffix (for example core-v1.2.3rc1). Got '$RELEASE_TAG'."
+            echo "::error::Release tag '$RELEASE_TAG' does not match the expected shape. Use core-vX.Y.Z or otel-vX.Y.Z, optionally followed by a canonically spelled PEP 440 suffix -- aN, bN, rcN, .postN or .devN, as in core-v1.2.3rc1. Non-canonical equivalents such as 1.2.3.rc1 and 1.2.3-rc1 are rejected even though PEP 440 normalizes them, because the tag must equal 'hatch version' exactly."
             exit 1
           fi
           case "$RELEASE_TAG" in
