@@ -39,32 +39,42 @@ jobs:
       - name: Select package from release tag
         id: package
         shell: bash
+        # RELEASE_TAG is attacker-influenced input and is passed via the
+        # environment rather than a ${{ }} template expression, so that the
+        # runner cannot substitute it into this script as executable code.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          case "${{ github.event.release.tag_name }}" in
+          if [[ ! "$RELEASE_TAG" =~ ^(core|otel)-v[0-9]+\.[0-9]+\.[0-9]+([.-]?[a-zA-Z0-9]+)*$ ]]; then
+            echo "::error::Release tags must be core-vX.Y.Z or otel-vX.Y.Z."
+            exit 1
+          fi
+          case "$RELEASE_TAG" in
             core-v*)
               echo "directory=packages/aws-durable-execution-conformance-tests" >> "$GITHUB_OUTPUT"
               echo "project=aws-durable-execution-conformance-tests" >> "$GITHUB_OUTPUT"
-              echo "version=${{ github.event.release.tag_name }}" | sed 's/^version=core-v/version=/' >> "$GITHUB_OUTPUT"
+              echo "version=${RELEASE_TAG#core-v}" >> "$GITHUB_OUTPUT"
               ;;
             otel-v*)
               echo "directory=packages/aws-durable-execution-conformance-tests-otel" >> "$GITHUB_OUTPUT"
               echo "project=aws-durable-execution-conformance-tests-otel" >> "$GITHUB_OUTPUT"
-              echo "version=${{ github.event.release.tag_name }}" | sed 's/^version=otel-v/version=/' >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Release tags must be core-vX.Y.Z or otel-vX.Y.Z."
-              exit 1
+              echo "version=${RELEASE_TAG#otel-v}" >> "$GITHUB_OUTPUT"
               ;;
           esac
 
       - name: Verify release version
         working-directory: ${{ steps.package.outputs.directory }}
+        shell: bash
+        # EXPECTED_VERSION derives from the release tag, so it inherits the
+        # same taint and is likewise passed via the environment.
+        env:
+          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: |
           actual="$(hatch version)"
-          test "$actual" = "${{ steps.package.outputs.version }}" || {
-            echo "::error::Tag version ${{ steps.package.outputs.version }} does not match package version $actual."
+          if [[ "$actual" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Tag version $EXPECTED_VERSION does not match package version $actual."
             exit 1
-          }
+          fi
 
       - name: Build release distribution
         working-directory: ${{ steps.package.outputs.directory }}
