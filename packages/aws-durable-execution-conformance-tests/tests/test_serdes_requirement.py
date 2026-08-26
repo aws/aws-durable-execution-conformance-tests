@@ -11,32 +11,37 @@ from typing import Any
 import yaml
 
 from aws_durable_execution_conformance_tests.config import TESTS_DIR
-from aws_durable_execution_conformance_tests.history import get_regex_pattern
+from aws_durable_execution_conformance_tests.history import EventHistoryMatcher
 
 _EXPECTED_CHECKSUM = "3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de"
 
 
-def _payload_pattern(event_id: int):
+def _payload_expectation(event_id: int) -> tuple[dict[str, Any], str]:
     requirement = yaml.safe_load((TESTS_DIR / "serdes" / "11-1.yaml").read_text())
     event = next(item for item in requirement["ExpectedExecutionHistory"] if item["EventId"] == event_id)
     details_key = "ExecutionSucceededDetails" if event_id == 10 else "StepSucceededDetails"
-    pattern = get_regex_pattern(event[details_key]["Result"]["Payload"])
-    assert pattern is not None
-    return pattern
+    return {
+        "EventId": event_id,
+        details_key: {"Result": {"Payload": event[details_key]["Result"]["Payload"]}},
+    }, details_key
 
 
-def _envelope(preview: dict[str, Any], *, file: Any = "/mnt/efs/payload.json") -> str:
-    return json.dumps(
-        {
-            "__durable_execution_filesystem_serdes": 1,
-            "ownerDurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:fn:1/durable-execution/run/id",
-            "ownerEntityId": "entity-1",
-            "payloadType": "UTF8",
-            "payloadDigest": "a" * 64,
-            "file": file,
-            "preview": preview,
-        }
-    )
+def _matches(event_id: int, payload: Any) -> bool:
+    expected, details_key = _payload_expectation(event_id)
+    actual = {"EventId": event_id, details_key: {"Result": {"Payload": payload}}}
+    return EventHistoryMatcher().match([expected], [actual]).success
+
+
+def _envelope(preview: dict[str, Any], *, file: Any = "/mnt/efs/payload.json") -> dict[str, Any]:
+    return {
+        "preview": preview,
+        "file": file,
+        "payloadDigest": "a" * 64,
+        "payloadType": "UTF8",
+        "ownerEntityId": "entity-1",
+        "ownerDurableExecutionArn": "arn:aws:lambda:us-west-2:123:function:fn:1/durable-execution/run/id",
+        "__durable_execution_filesystem_serdes": 1,
+    }
 
 
 def test_filesystem_serdes_payload_matchers_accept_valid_envelopes() -> None:
@@ -63,7 +68,7 @@ def test_filesystem_serdes_payload_matchers_accept_valid_envelopes() -> None:
     }
 
     for event_id, preview in previews.items():
-        assert _payload_pattern(event_id).search(_envelope(preview))
+        assert _matches(event_id, json.dumps(_envelope(preview)))
 
 
 def test_filesystem_serdes_payload_matchers_reject_invalid_envelopes() -> None:
@@ -73,23 +78,18 @@ def test_filesystem_serdes_payload_matchers_reject_invalid_envelopes() -> None:
         "id": "payload-1",
         "length": 41,
     }
-    pattern = _payload_pattern(3)
 
-    assert not pattern.search(_envelope(required_preview, file=""))
-    assert not pattern.search(_envelope(required_preview, file=None))
-    assert not pattern.search(
+    assert not _matches(3, json.dumps(_envelope(required_preview, file="")))
+    assert not _matches(3, json.dumps(_envelope(required_preview, file=None)))
+    assert not _matches(3, '{"file": "/mnt/efs/payload.json", "preview":')
+    assert not _matches(
+        3,
         json.dumps(
             {
-                "__durable_execution_filesystem_serdes": 1,
-                "ownerDurableExecutionArn": "arn",
-                "ownerEntityId": "entity-1",
-                "payloadType": "UTF8",
-                "payloadDigest": "a" * 64,
-                "file": "/mnt/efs/payload.json",
-                "preview": {},
+                **_envelope({}),
                 **required_preview,
             }
-        )
+        ),
     )
 
 
@@ -102,4 +102,7 @@ def test_filesystem_serdes_verification_requires_original_payload_checksum() -> 
         "checksum": "0" * 64,
     }
 
-    assert not _payload_pattern(8).search(_envelope(wrong_preview))
+    assert not _matches(8, json.dumps(_envelope(wrong_preview)))
+    wrong_preview["payloadKind"] = "OUTPUT"
+    wrong_preview.pop("operationName")
+    assert not _matches(10, json.dumps(_envelope(wrong_preview)))

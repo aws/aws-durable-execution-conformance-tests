@@ -48,6 +48,7 @@ Test requirements use placeholders to handle values that vary between executions
 
 - **`'*'` (wildcard):** Matches any value. Used for timestamps and other non-deterministic fields.
 - **`${ID1}`, `${ID2}`, ...:** Auto-bound ID placeholders. The validator binds these on first encounter and asserts consistency across subsequent references. For example, if `${ID1}` first matches `"abc-123"`, all later `${ID1}` references must also equal `"abc-123"`.
+- **`$json` matcher:** `{"$json": <expected>}` parses the actual string as JSON and recursively matches `<expected>` using these same rules. This supports order-independent assertions on JSON-encoded checkpoint payloads.
 - **`${GEN_STR:N}`:** Generates a random alphanumeric string of length N. Used in the `Variables` section to create unique test inputs.
 - **Named variables (`${VAR_NAME}`):** Defined in the `Variables` section, substituted into `Input`, `ExpectedResult`, `CallbackActions`, and `ExpectedExecutionHistory` before validation.
 

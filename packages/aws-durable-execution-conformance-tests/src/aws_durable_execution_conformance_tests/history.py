@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Event history matching for expected vs actual execution events.
 
-Provides pattern matching with placeholders, regex, wildcards, and literal
-equality for comparing expected event histories against actual results.
+Provides pattern matching with placeholders, regex, wildcards, structural JSON,
+and literal equality for comparing expected event histories against actual results.
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ PLACEHOLDER_PATTERN = re.compile(r"^\$\{(.+)\}$")
 
 # Pattern for regex matchers like ${/pattern/}
 REGEX_PATTERN = re.compile(r"^\$\{/(.+)/\}$")
+
+# Key for matching a JSON-encoded string as structured data
+JSON_MATCHER_KEY = "$json"
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +58,11 @@ def is_wildcard(value: Any) -> bool:
 def is_empty_object(value: Any) -> bool:
     """Check if value is {} (don't care / skip)."""
     return isinstance(value, dict) and len(value) == 0
+
+
+def is_json_matcher(value: Any) -> bool:
+    """Check if value is a single-key structural JSON matcher."""
+    return isinstance(value, dict) and set(value) == {JSON_MATCHER_KEY}
 
 
 def get_placeholder_name(value: Any) -> str | None:
@@ -104,6 +112,7 @@ class EventHistoryMatcher:
     Matching rules:
     - ${Xxx}  : placeholder — all occurrences must resolve to the same actual value
     - ${/re/} : regex — actual value must be a string matching the pattern
+    - {"$json": value} : parse the actual string as JSON, then recursively match value
     - {}      : empty object means "don't care", field is skipped
     - "*"     : wildcard, any value is accepted
     - Otherwise: literal equality is required
@@ -167,7 +176,14 @@ class EventHistoryMatcher:
     # Internal recursive matching
     # ------------------------------------------------------------------
 
-    def _match_value(self, expected: Any, actual: Any, path: str) -> None:
+    def _match_value(
+        self,
+        expected: Any,
+        actual: Any,
+        path: str,
+        *,
+        require_regex_string: bool = False,
+    ) -> None:
         """Recursively match an expected value against an actual value."""
         # Rule: empty object {} → don't care
         if is_empty_object(expected):
@@ -186,8 +202,15 @@ class EventHistoryMatcher:
         # Rule: ${/regex/flags}
         regex = get_regex_pattern(expected)
         if regex is not None:
-            if not regex.search(str(actual)):
+            if require_regex_string and not isinstance(actual, str):
+                self._errors.append(f"{path}: expected a string matching regex pattern {regex.pattern!r}")
+            elif not regex.search(str(actual)):
                 self._errors.append(f"{path}: value {actual!r} does not match regex pattern {regex.pattern!r}")
+            return
+
+        # Rule: {"$json": value} → parse actual JSON string, then recurse
+        if is_json_matcher(expected):
+            self._match_json_value(expected[JSON_MATCHER_KEY], actual, path)
             return
 
         # Both dicts → recurse on expected keys only
@@ -196,7 +219,12 @@ class EventHistoryMatcher:
                 if key not in actual:
                     self._errors.append(f"{path}.{key}: key missing in actual event")
                     continue
-                self._match_value(expected[key], actual[key], f"{path}.{key}")
+                self._match_value(
+                    expected[key],
+                    actual[key],
+                    f"{path}.{key}",
+                    require_regex_string=require_regex_string,
+                )
             return
 
         # Both lists → match element-wise
@@ -205,7 +233,7 @@ class EventHistoryMatcher:
                 self._errors.append(f"{path}: list length mismatch (expected {len(expected)}, got {len(actual)})")
                 return
             for i, (e, a) in enumerate(zip(expected, actual, strict=False)):
-                self._match_value(e, a, f"{path}[{i}]")
+                self._match_value(e, a, f"{path}[{i}]", require_regex_string=require_regex_string)
             return
 
         # Literal comparison — substitute known placeholders first
@@ -214,6 +242,18 @@ class EventHistoryMatcher:
             resolved_expected = self._context.substitute(expected)
         if resolved_expected != actual:
             self._errors.append(f"{path}: expected {resolved_expected!r}, got {actual!r}")
+
+    def _match_json_value(self, expected: Any, actual: Any, path: str) -> None:
+        """Parse an actual JSON-encoded string and recursively match its value."""
+        if not isinstance(actual, str):
+            self._errors.append(f"{path}: expected a JSON-encoded string, got {actual!r}")
+            return
+        try:
+            parsed = json.loads(actual)
+        except json.JSONDecodeError as e:
+            self._errors.append(f"{path}: value is not valid JSON ({e.msg})")
+            return
+        self._match_value(expected, parsed, f"{path}.{JSON_MATCHER_KEY}", require_regex_string=True)
 
     def _resolve_placeholder(self, name: str, actual_value: Any, path: str) -> None:
         """Bind or verify a placeholder value."""

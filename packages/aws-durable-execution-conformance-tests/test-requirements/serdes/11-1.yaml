@@ -40,20 +40,19 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
-        Payload: >-
-          ${/(?x)\A\s*\{
-          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
-          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"payloadType"\s*:\s*"UTF8"\s*,
-          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
-          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"preview"\s*:\s*\{
-          (?=[^{}]*"payloadKind"\s*:\s*"RESULT"\s*(?:,|\}))
-          (?=[^{}]*"operationName"\s*:\s*"store-payload"\s*(?:,|\}))
-          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
-          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
-          [^{}]*\}\s*\}\s*\Z/}
+        Payload:
+          $json:
+            __durable_execution_filesystem_serdes: 1
+            ownerDurableExecutionArn: '${/^.+$/}'
+            ownerEntityId: '${/^.+$/}'
+            payloadType: UTF8
+            payloadDigest: '${/^[0-9a-f]{64}$/}'
+            file: '${/^.+$/}'
+            preview:
+              payloadKind: RESULT
+              operationName: store-payload
+              id: payload-1
+              length: 41
   - EventType: WaitStarted
     SubType: Wait
     EventId: 4
@@ -85,21 +84,20 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
-        Payload: >-
-          ${/(?x)\A\s*\{
-          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
-          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"payloadType"\s*:\s*"UTF8"\s*,
-          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
-          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"preview"\s*:\s*\{
-          (?=[^{}]*"payloadKind"\s*:\s*"RESULT"\s*(?:,|\}))
-          (?=[^{}]*"operationName"\s*:\s*"verify-payload"\s*(?:,|\}))
-          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
-          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
-          (?=[^{}]*"checksum"\s*:\s*"3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de"\s*(?:,|\}))
-          [^{}]*\}\s*\}\s*\Z/}
+        Payload:
+          $json:
+            __durable_execution_filesystem_serdes: 1
+            ownerDurableExecutionArn: '${/^.+$/}'
+            ownerEntityId: '${/^.+$/}'
+            payloadType: UTF8
+            payloadDigest: '${/^[0-9a-f]{64}$/}'
+            file: '${/^.+$/}'
+            preview:
+              payloadKind: RESULT
+              operationName: verify-payload
+              id: payload-1
+              length: 41
+              checksum: 3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de
   - EventType: InvocationCompleted
     EventId: 9
     EventTimestamp: '*'
@@ -109,17 +107,16 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     ExecutionSucceededDetails:
       Result:
-        Payload: >-
-          ${/(?x)\A\s*\{
-          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
-          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"payloadType"\s*:\s*"UTF8"\s*,
-          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
-          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
-          \s*"preview"\s*:\s*\{
-          (?=[^{}]*"payloadKind"\s*:\s*"OUTPUT"\s*(?:,|\}))
-          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
-          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
-          (?=[^{}]*"checksum"\s*:\s*"3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de"\s*(?:,|\}))
-          [^{}]*\}\s*\}\s*\Z/}
+        Payload:
+          $json:
+            __durable_execution_filesystem_serdes: 1
+            ownerDurableExecutionArn: '${/^.+$/}'
+            ownerEntityId: '${/^.+$/}'
+            payloadType: UTF8
+            payloadDigest: '${/^[0-9a-f]{64}$/}'
+            file: '${/^.+$/}'
+            preview:
+              payloadKind: OUTPUT
+              id: payload-1
+              length: 41
+              checksum: 3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de
