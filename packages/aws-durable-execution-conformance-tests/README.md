@@ -35,7 +35,9 @@ test-requirements/
 ├── wait_for_condition/  # 6-N: Wait-for-condition suite
 ├── wait_for_callback/   # 7-N: Wait-for-callback suite
 ├── parallel/            # 8-N: Parallel operation suite
-└── map/                 # 9-N: Map operation suite
+├── map/                 # 9-N: Map operation suite
+├── plugin/              # 10-N: Instrumentation plugin suite
+└── serdes/              # 11-N: Serialization and deserialization suite
 ```
 
 Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).

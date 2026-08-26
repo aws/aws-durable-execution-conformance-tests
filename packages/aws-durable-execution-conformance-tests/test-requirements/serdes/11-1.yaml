@@ -1,0 +1,82 @@
+---
+# 11.1: Filesystem SerDes persists and rehydrates payloads across replay
+description: Filesystem SerDes offloads durable payloads and rehydrates a completed step after replay
+handler: |
+  Configure the handler's global serializer/deserializer pipeline with the SDK's filesystem-backed
+  SerDes in ALWAYS mode, using a durable mounted filesystem shared by reinvocations. Configure its
+  checkpoint preview to expose the payload kind, operation name, input id, and value length.
+  A step named "store-payload" returns the structured input. The handler then waits for 1 second to
+  force reinvocation. After replay, a step named "verify-payload" reads the completed first step's
+  rehydrated result and returns an object containing the same id and value length.
+invocations: |
+  - Handler runs "store-payload". The filesystem SerDes writes the serialized structured value to
+    the mounted filesystem and checkpoints a versioned file-reference envelope with preview
+    metadata. The handler starts "force-filesystem-replay", checkpoints WaitStarted, and suspends.
+  - Replay 1: The SDK reads the first step's file-reference envelope, validates and deserializes the
+    stored payload, and completes the wait. "verify-payload" receives the reconstructed value and
+    returns its id and length. Its result and the execution output are also checkpointed as
+    filesystem file-reference envelopes.
+Variables:
+  PAYLOAD: ${GEN_STR:4096}
+Input:
+  id: payload-1
+  value: ${PAYLOAD}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${STORE_STEP}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${STORE_STEP}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"RESULT")(?=.*"operationName"\s*:\s*"store-payload")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 4
+    Id: ${REPLAY_WAIT}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 6
+    Id: ${REPLAY_WAIT}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 7
+    Id: ${VERIFY_STEP}
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 8
+    Id: ${VERIFY_STEP}
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"RESULT")(?=.*"operationName"\s*:\s*"verify-payload")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
+  - EventType: InvocationCompleted
+    EventId: 9
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: ExecutionSucceeded
+    EventId: 10
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result:
+        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"OUTPUT")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
