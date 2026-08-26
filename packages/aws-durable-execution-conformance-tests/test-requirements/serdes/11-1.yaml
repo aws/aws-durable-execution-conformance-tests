@@ -4,20 +4,23 @@ description: Filesystem SerDes offloads durable payloads and rehydrates a comple
 handler: |
   Configure the handler's global serializer/deserializer pipeline with the SDK's filesystem-backed
   SerDes in ALWAYS mode, using a durable mounted filesystem shared by reinvocations. Configure its
-  checkpoint preview to expose the payload kind, operation name, input id, and value length.
+  checkpoint preview to expose the payload kind, operation name, input id, value length, and the
+  verification result's SHA-256 checksum.
   A step named "store-payload" returns the structured input. The handler then waits for 1 second to
   force reinvocation. After replay, a step named "verify-payload" reads the completed first step's
-  rehydrated result and returns an object containing the same id and value length.
+  rehydrated result and returns an object containing the same id, value length, and the SHA-256
+  checksum of the rehydrated value.
 invocations: |
   - Handler runs "store-payload". The filesystem SerDes writes the serialized structured value to
     the mounted filesystem and checkpoints a versioned file-reference envelope with preview
     metadata. The handler starts "force-filesystem-replay", checkpoints WaitStarted, and suspends.
   - Replay 1: The SDK reads the first step's file-reference envelope, validates and deserializes the
     stored payload, and completes the wait. "verify-payload" receives the reconstructed value and
-    returns its id and length. Its result and the execution output are also checkpointed as
-    filesystem file-reference envelopes.
+    returns its id, length, and SHA-256 checksum. Its result and the execution output are also
+    checkpointed as filesystem file-reference envelopes whose previews contain the checksum of the
+    original deterministic input.
 Variables:
-  PAYLOAD: ${GEN_STR:4096}
+  PAYLOAD: filesystem-serdes-round-trip-payload-11-1
 Input:
   id: payload-1
   value: ${PAYLOAD}
@@ -37,7 +40,20 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
-        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"RESULT")(?=.*"operationName"\s*:\s*"store-payload")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
+        Payload: >-
+          ${/(?x)\A\s*\{
+          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
+          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"payloadType"\s*:\s*"UTF8"\s*,
+          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
+          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"preview"\s*:\s*\{
+          (?=[^{}]*"payloadKind"\s*:\s*"RESULT"\s*(?:,|\}))
+          (?=[^{}]*"operationName"\s*:\s*"store-payload"\s*(?:,|\}))
+          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
+          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
+          [^{}]*\}\s*\}\s*\Z/}
   - EventType: WaitStarted
     SubType: Wait
     EventId: 4
@@ -69,7 +85,21 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     StepSucceededDetails:
       Result:
-        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"RESULT")(?=.*"operationName"\s*:\s*"verify-payload")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
+        Payload: >-
+          ${/(?x)\A\s*\{
+          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
+          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"payloadType"\s*:\s*"UTF8"\s*,
+          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
+          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"preview"\s*:\s*\{
+          (?=[^{}]*"payloadKind"\s*:\s*"RESULT"\s*(?:,|\}))
+          (?=[^{}]*"operationName"\s*:\s*"verify-payload"\s*(?:,|\}))
+          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
+          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
+          (?=[^{}]*"checksum"\s*:\s*"3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de"\s*(?:,|\}))
+          [^{}]*\}\s*\}\s*\Z/}
   - EventType: InvocationCompleted
     EventId: 9
     EventTimestamp: '*'
@@ -79,4 +109,17 @@ ExpectedExecutionHistory:
     EventTimestamp: '*'
     ExecutionSucceededDetails:
       Result:
-        Payload: '${/(?=.*"__durable_execution_filesystem_serdes"\s*:\s*1)(?=.*"file"\s*:)(?=.*"preview"\s*:\s*\{)(?=.*"payloadKind"\s*:\s*"OUTPUT")(?=.*"id"\s*:\s*"payload-1")(?=.*"length"\s*:\s*4096).*/}'
+        Payload: >-
+          ${/(?x)\A\s*\{
+          \s*"__durable_execution_filesystem_serdes"\s*:\s*1\s*,
+          \s*"ownerDurableExecutionArn"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"ownerEntityId"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"payloadType"\s*:\s*"UTF8"\s*,
+          \s*"payloadDigest"\s*:\s*"[0-9a-f]{64}"\s*,
+          \s*"file"\s*:\s*"(?:\\.|[^"\\])+"\s*,
+          \s*"preview"\s*:\s*\{
+          (?=[^{}]*"payloadKind"\s*:\s*"OUTPUT"\s*(?:,|\}))
+          (?=[^{}]*"id"\s*:\s*"payload-1"\s*(?:,|\}))
+          (?=[^{}]*"length"\s*:\s*41\s*(?:,|\}))
+          (?=[^{}]*"checksum"\s*:\s*"3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b29544de"\s*(?:,|\}))
+          [^{}]*\}\s*\}\s*\Z/}
