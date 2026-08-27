@@ -31,8 +31,7 @@ invocations: |
     terminal=true with status SUCCEEDED.
   An SDK whose info type omits any probed field fails the corresponding
   assertion — that red result is the parity signal this requirement exists to
-  produce (the reference field set is the union across SDKs, anchored on the
-  richest current surface).
+  produce.
 Variables:
   INPUT_1: ${GEN_STR:8}
 Input: ${INPUT_1}
@@ -102,8 +101,8 @@ ExpectedLogs:
       executionStartTimestamp: /^\d{4}-/
     count: 2
   # Suspending invocation-end: first flag read from the END info itself, and
-  # the non-terminal status token surface exists (token value SDK-divergent —
-  # presence only)
+  # the non-terminal status token surface exists (token value is
+  # implementation-specific — presence only)
   - match:
       plugin: CONFPLUGIN
       hook: invocation-end
