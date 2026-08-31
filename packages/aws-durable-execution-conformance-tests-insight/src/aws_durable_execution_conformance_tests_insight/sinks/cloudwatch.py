@@ -36,7 +36,6 @@ from aws_durable_execution_conformance_tests.cloudwatch import (
     CloudWatchLogRetriever,
 )
 from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
-
 from aws_durable_execution_conformance_tests_insight.model import InsightRecord, RecordQuery
 from aws_durable_execution_conformance_tests_insight.normalizers import (
     NormalizationError,
@@ -119,11 +118,7 @@ class CloudWatchSink(PollingSink):
         # console.log line in an envelope: {"timestamp", "level", "requestId",
         # "message": "<the logged string>"}. Unwrap it so the insight record
         # emitted by LambdaLogExporter is visible at the top level.
-        if (
-            isinstance(payload, Mapping)
-            and "recordType" not in payload
-            and isinstance(payload.get("message"), str)
-        ):
+        if isinstance(payload, Mapping) and "recordType" not in payload and isinstance(payload.get("message"), str):
             try:
                 inner = json.loads(payload["message"].strip())
             except json.JSONDecodeError:

@@ -141,7 +141,6 @@ def test_cloudwatch_sink_unwraps_lambda_structured_logging_envelope() -> None:
 def test_cloudwatch_log_group_resolution_uses_core_retriever_and_prefixed_stack() -> None:
     """Resolution must query CFN with the core's prefixed stack name, not the raw --name."""
     from aws_durable_execution_conformance_tests.config import STACK_NAME_PREFIX
-
     from aws_durable_execution_conformance_tests_insight.sinks.cloudwatch import (
         _resolve_log_group,
     )
