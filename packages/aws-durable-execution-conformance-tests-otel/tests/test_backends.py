@@ -17,6 +17,7 @@ from email.message import Message
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests_otel.backends._common import (
     JsonHttpClient,
@@ -1018,3 +1019,85 @@ def test_xray_paginates_summaries_and_trace_batches() -> None:
     assert len(trace.spans) == 2
     assert len(client.summary_calls) == 2
     assert len(client.batch_calls) == 3
+
+
+def test_xray_splits_long_summary_windows_and_deduplicates_trace_ids() -> None:
+    trace_id = "1-aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbb"
+
+    class _XRay:
+        def __init__(self) -> None:
+            self.summary_calls: list[dict[str, Any]] = []
+            self.batch_calls: list[dict[str, Any]] = []
+
+        def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
+            self.summary_calls.append(kwargs)
+            return {"TraceSummaries": [{"Id": trace_id}]}
+
+        def batch_get_traces(self, **kwargs: Any) -> dict[str, Any]:
+            self.batch_calls.append(kwargs)
+            return {
+                "Traces": [
+                    {
+                        "Segments": [
+                            {
+                                "Document": json.dumps(
+                                    {
+                                        "trace_id": trace_id,
+                                        "id": "1" * 16,
+                                        "name": "conformance",
+                                        "start_time": 1,
+                                        "end_time": 2,
+                                        "metadata": {"durable.execution.arn": "arn:test"},
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    started_at = datetime(2026, 8, 30, tzinfo=UTC)
+    ended_at = started_at + timedelta(hours=49)
+    client = _XRay()
+    backend = XRayBackend(client, sleep=lambda _seconds: None)
+
+    trace = backend.find_trace(
+        replace(_query(), started_at=started_at, ended_at=ended_at),
+        PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+    )
+
+    assert trace.trace_id == "a" * 8 + "b" * 24
+    assert [(call["StartTime"], call["EndTime"]) for call in client.summary_calls] == [
+        (started_at, started_at + timedelta(hours=24)),
+        (started_at + timedelta(hours=24), started_at + timedelta(hours=48)),
+        (started_at + timedelta(hours=48), ended_at),
+    ]
+    assert all(call["FilterExpression"] == _XRAY_DISCOVERY_FILTER for call in client.summary_calls)
+    assert client.batch_calls == [{"TraceIds": [trace_id]}]
+
+
+def test_xray_reports_service_error_details() -> None:
+    class _XRay:
+        def get_trace_summaries(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidRequestException",
+                        "Message": "Trace summary range must not exceed 24 hours",
+                    }
+                },
+                "GetTraceSummaries",
+            )
+
+    backend = XRayBackend(_XRay(), sleep=lambda _seconds: None)
+
+    with pytest.raises(BackendError) as raised:
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=1, interval_seconds=0, max_attempts=1),
+        )
+
+    message = str(raised.value)
+    assert "InvalidRequestException" in message
+    assert "Trace summary range must not exceed 24 hours" in message

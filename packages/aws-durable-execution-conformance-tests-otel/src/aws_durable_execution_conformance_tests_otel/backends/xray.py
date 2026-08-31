@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from datetime import timedelta
 from typing import Any
 
 import boto3
@@ -33,6 +34,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
 )
 
 _BACKEND_SERVICE_NAME = "Durable Execution Attempt #1"
+_MAX_TRACE_SUMMARY_WINDOW = timedelta(hours=24)
 _WORKFLOW_SERVICE_NAME = "Workflow"
 
 
@@ -122,22 +124,32 @@ class XRayBackend(PollingBackend):
             if query.trace_id:
                 trace_ids = [query.trace_id]
             else:
-                summary_request = {
-                    "StartTime": query.started_at,
-                    "EndTime": query.ended_at,
-                    "FilterExpression": (
-                        f'service("{query.service_name}") '
-                        f'OR service("{_WORKFLOW_SERVICE_NAME}") '
-                        f'OR service("{_BACKEND_SERVICE_NAME}")'
-                    ),
-                }
+                window_start = query.started_at
                 while True:
-                    response = self._client.get_trace_summaries(**summary_request)
-                    trace_ids.extend(item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id"))
-                    next_token = response.get("NextToken")
-                    if not next_token:
+                    window_end = min(
+                        window_start + _MAX_TRACE_SUMMARY_WINDOW,
+                        query.ended_at,
+                    )
+                    summary_request = {
+                        "StartTime": window_start,
+                        "EndTime": window_end,
+                        "FilterExpression": (
+                            f'service("{query.service_name}") '
+                            f'OR service("{_WORKFLOW_SERVICE_NAME}") '
+                            f'OR service("{_BACKEND_SERVICE_NAME}")'
+                        ),
+                    }
+                    while True:
+                        response = self._client.get_trace_summaries(**summary_request)
+                        trace_ids.extend(item["Id"] for item in response.get("TraceSummaries", []) if item.get("Id"))
+                        next_token = response.get("NextToken")
+                        if not next_token:
+                            break
+                        summary_request["NextToken"] = next_token
+                    if window_end >= query.ended_at:
                         break
-                    summary_request["NextToken"] = next_token
+                    window_start = window_end
+                trace_ids = list(dict.fromkeys(trace_ids))
             if not trace_ids:
                 return None
 
@@ -157,7 +169,8 @@ class XRayBackend(PollingBackend):
                         break
                     trace_request["NextToken"] = next_token
         except (BotoCoreError, ClientError) as exc:
-            raise BackendError(f"X-Ray telemetry query failed: {type(exc).__name__}") from exc
+            details = str(exc) or type(exc).__name__
+            raise BackendError(f"X-Ray telemetry query failed: {details}") from exc
         return matching_trace(normalize_xray(documents), query)
 
 
