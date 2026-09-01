@@ -505,10 +505,13 @@ def _validate_execution_result(
     # If non-success, validate the service-visible error when requested.
     if actual_status != "SUCCEEDED":
         if "Error" in expected_result:
+            if "Error" not in execution:
+                errors.append("ExpectedResult.Error: key missing in actual execution")
+                return errors
             matcher = EventHistoryMatcher(context=context)
             match_result = matcher.match_value(
                 expected_result["Error"],
-                execution.get("Error"),
+                execution["Error"],
                 path="ExpectedResult.Error",
             )
             errors.extend(match_result.errors)

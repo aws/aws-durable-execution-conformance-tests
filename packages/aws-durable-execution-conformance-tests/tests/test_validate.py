@@ -99,13 +99,46 @@ def test_failed_execution_result_matches_service_error() -> None:
             "ExecutionStatus": "FAILED",
             "Error": {
                 "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
-                "ErrorMessage": ("${/(?is)(?=.*non[-_ ]?determin)(?=.*\\bwait\\b)(?=.*\\bstep\\b).*/}"),
+                "ErrorMessage": (
+                    "${/(?is)(?=.*\\bexpected\\b(?:(?!\\b(?:actual|got|current|claimed)\\b).)*\\bwait\\b)"
+                    "(?=.*\\b(?:actual|got|current|claimed)\\b(?:(?!\\bexpected\\b).)*\\bstep\\b).*/}"
+                ),
             },
         },
         lambda_client=client,
     )
 
     assert errors == []
+
+
+def test_failed_execution_result_rejects_reversed_expected_and_actual() -> None:
+    client = _StubLambdaClient(
+        {
+            "Status": "FAILED",
+            "Error": {
+                "ErrorType": "NonDeterministicExecutionError",
+                "ErrorMessage": "Expected type STEP, but got WAIT.",
+            },
+        }
+    )
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={
+            "ExecutionStatus": "FAILED",
+            "Error": {
+                "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
+                "ErrorMessage": (
+                    "${/(?is)(?=.*\\bexpected\\b(?:(?!\\b(?:actual|got|current|claimed)\\b).)*\\bwait\\b)"
+                    "(?=.*\\b(?:actual|got|current|claimed)\\b(?:(?!\\bexpected\\b).)*\\bstep\\b).*/}"
+                ),
+            },
+        },
+        lambda_client=client,
+    )
+
+    assert len(errors) == 1
+    assert errors[0].startswith("ExpectedResult.Error.ErrorMessage:")
 
 
 def test_failed_execution_result_reports_service_error_mismatch() -> None:
@@ -134,6 +167,21 @@ def test_failed_execution_result_reports_service_error_mismatch() -> None:
     assert len(errors) == 2
     assert errors[0].startswith("ExpectedResult.Error.ErrorType:")
     assert errors[1].startswith("ExpectedResult.Error.ErrorMessage:")
+
+
+def test_failed_execution_result_requires_expected_error_field() -> None:
+    client = _StubLambdaClient({"Status": "FAILED"})
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={
+            "ExecutionStatus": "FAILED",
+            "Error": "*",
+        },
+        lambda_client=client,
+    )
+
+    assert errors == ["ExpectedResult.Error: key missing in actual execution"]
 
 
 def test_failed_execution_result_without_expected_error_checks_status_only() -> None:
