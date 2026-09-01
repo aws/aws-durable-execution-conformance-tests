@@ -13,3 +13,4 @@ def test_requirement_suites_are_available() -> None:
 
     assert "step" in suites
     assert "wait" in suites
+    assert "general" in suites

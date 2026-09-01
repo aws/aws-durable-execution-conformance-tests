@@ -35,10 +35,15 @@ test-requirements/
 ├── wait_for_condition/  # 6-N: Wait-for-condition suite
 ├── wait_for_callback/   # 7-N: Wait-for-callback suite
 ├── parallel/            # 8-N: Parallel operation suite
-└── map/                 # 9-N: Map operation suite
+├── map/                 # 9-N: Map operation suite
+├── plugin/              # 10-N: Instrumentation plugin suite
+└── general/             # 11-N: Tests not specific to one operation
 ```
 
 Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).
+
+The `general` suite contains cross-cutting SDK behavior that is not specific
+to one durable operation, such as replay consistency across operation types.
 
 ### Placeholders and Wildcards
 
@@ -58,6 +63,18 @@ AsyncInvoke: true
 ```
 
 The validator handles the full lifecycle: invoke the function, wait for suspension, perform callback actions (if any), wait for completion, then assert the final execution history.
+
+Failed executions can also assert the service-visible error. Error fields use
+the same wildcards, regexes, placeholders, and partial-object matching as
+execution history:
+
+```yaml
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '${/(?i).*non[-_ ]?determin.*/}'
+    ErrorMessage: '${/(?i).*expected.*wait.*step.*/}'
+```
 
 -----
 
