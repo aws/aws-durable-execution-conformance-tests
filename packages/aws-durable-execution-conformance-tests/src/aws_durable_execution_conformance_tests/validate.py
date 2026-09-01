@@ -471,13 +471,13 @@ def _validate_execution_result(
 
     Retrieves the execution details and validates:
     - Status first (always checked).
-    - If SUCCEEDED, validates the Result field.
-    - If non-success, validates status only.
+    - If SUCCEEDED, validates the Result field when expected.
+    - If non-success, validates the Error field when expected.
 
     Args:
         execution_arn: The durable execution ARN.
         expected_result: Dict with ExpectedResult fields from the test
-            requirement (ExecutionStatus, Result).
+            requirement (ExecutionStatus, Result, Error).
             Note: expected result is compared against the actual after a single json.loads;
                   YAML authors should write the post-decode form they expect
         context: Optional PlaceholderContext for substituting placeholders
@@ -502,8 +502,19 @@ def _validate_execution_result(
         errors.append(f"Expected ExecutionStatus={expected_status!r}, got {actual_status!r}")
         return errors
 
-    # If non-success, validate status only
+    # If non-success, validate the service-visible error when requested.
     if actual_status != "SUCCEEDED":
+        if "Error" in expected_result:
+            if "Error" not in execution:
+                errors.append("ExpectedResult.Error: key missing in actual execution")
+                return errors
+            matcher = EventHistoryMatcher(context=context)
+            match_result = matcher.match_value(
+                expected_result["Error"],
+                execution["Error"],
+                path="ExpectedResult.Error",
+            )
+            errors.extend(match_result.errors)
         return errors
 
     # If succeeded, validate the result

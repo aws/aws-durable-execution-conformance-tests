@@ -1,0 +1,63 @@
+---
+# 11.1: Replay rejects an operation-type mismatch
+description: Replay rejects a STEP emitted where a WAIT was checkpointed
+handler: |
+  Use the SDK's public replay indicator to choose between two deliberately
+  different operations at the first durable position. Configure the SDK's
+  context logging so records emitted during replay are included. On the
+  initial invocation, start a 1-second wait named "identity-slot" and suspend.
+  On replay after the wait completes, log the exact marker
+  "DETERMINISM_REPLAY_CANARY", then emit a step with the same name at that
+  position. The step body logs the exact marker
+  "DETERMINISM_STEP_BODY_EXECUTED" through its context logger under the same
+  replay-log configuration and returns a value. Do not catch the replay
+  mismatch.
+invocations: |
+  - Initial invocation: The handler emits WAIT "identity-slot" at position 1.
+    The SDK checkpoints WaitStarted, completes the invocation, and suspends.
+  - Replay 1: The service has completed the wait. The handler emits STEP
+    "identity-slot" at position 1 after logging the replay canary. Before
+    reading the WAIT checkpoint's status, result, error, or operation-specific
+    fields, the SDK detects that the checkpointed and current operation
+    identities differ. The step body does not run, and the durable execution
+    terminates as FAILED with a non-determinism error that identifies WAIT as
+    expected and STEP as actual.
+AsyncInvoke: true
+Input:
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '${/(?i).*non[-_ ]?determin.*/}'
+    ErrorMessage: '${/(?is)(?=.*\bexpected\b(?:(?!\b(?:actual|got|current|claimed)\b).)*\bwait\b)(?=.*\b(?:actual|got|current|claimed)\b(?:(?!\bexpected\b).)*\bstep\b).*/}'
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${WAIT1}
+    Name: identity-slot
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${WAIT1}
+    Name: identity-slot
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: ExecutionFailed
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '${/(?i).*non[-_ ]?determin.*/}'
+          ErrorMessage: '${/(?is)(?=.*\bexpected\b(?:(?!\b(?:actual|got|current|claimed)\b).)*\bwait\b)(?=.*\b(?:actual|got|current|claimed)\b(?:(?!\bexpected\b).)*\bstep\b).*/}'
+ExpectedLogs:
+  - match:
+      message: /DETERMINISM_REPLAY_CANARY/
+    count: 1
+  - match:
+      message: /DETERMINISM_STEP_BODY_EXECUTED/
+    count: 0

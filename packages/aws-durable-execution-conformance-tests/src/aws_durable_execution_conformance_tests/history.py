@@ -163,6 +163,26 @@ class EventHistoryMatcher:
             resolved_placeholders=self._context.bindings,
         )
 
+    def match_value(
+        self,
+        expected: Any,
+        actual: Any,
+        *,
+        path: str = "Value",
+    ) -> MatchResult:
+        """Compare one expected value against an actual value.
+
+        Uses the same placeholders, regexes, wildcards, and partial-dict
+        semantics as event-history matching.
+        """
+        self._errors = []
+        self._match_value(expected, actual, path)
+        return MatchResult(
+            success=len(self._errors) == 0,
+            errors=list(self._errors),
+            resolved_placeholders=self._context.bindings,
+        )
+
     # ------------------------------------------------------------------
     # Internal recursive matching
     # ------------------------------------------------------------------
