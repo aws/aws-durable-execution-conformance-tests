@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.callback import CallbackAction
 from aws_durable_execution_conformance_tests.validate import (
+    _validate_execution_result,
     discover_suites,
     find_matching_action,
     inherit_wait_for_callback_event_names,
@@ -70,6 +71,89 @@ def test_wait_for_callback_children_inherit_omitted_names() -> None:
     inherit_wait_for_callback_event_names(events)
 
     assert [event.get("Name") for event in events[1:]] == ["otel-callback"] * 3
+
+
+class _StubLambdaClient:
+    def __init__(self, execution: dict[str, Any]) -> None:
+        self.execution = execution
+
+    def get_durable_execution(self, **_kwargs: Any) -> dict[str, Any]:
+        return self.execution
+
+
+def test_failed_execution_result_matches_service_error() -> None:
+    client = _StubLambdaClient(
+        {
+            "Status": "FAILED",
+            "Error": {
+                "ErrorType": "NonDeterministicExecutionError",
+                "ErrorMessage": ("Non-deterministic execution detected: expected type WAIT, but got STEP."),
+                "StackTrace": ["internal detail"],
+            },
+        }
+    )
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={
+            "ExecutionStatus": "FAILED",
+            "Error": {
+                "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
+                "ErrorMessage": ("${/(?is)(?=.*non[-_ ]?determin)(?=.*\\bwait\\b)(?=.*\\bstep\\b).*/}"),
+            },
+        },
+        lambda_client=client,
+    )
+
+    assert errors == []
+
+
+def test_failed_execution_result_reports_service_error_mismatch() -> None:
+    client = _StubLambdaClient(
+        {
+            "Status": "FAILED",
+            "Error": {
+                "ErrorType": "RuntimeError",
+                "ErrorMessage": "operation failed",
+            },
+        }
+    )
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={
+            "ExecutionStatus": "FAILED",
+            "Error": {
+                "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
+                "ErrorMessage": "${/(?i).*wait.*step.*/}",
+            },
+        },
+        lambda_client=client,
+    )
+
+    assert len(errors) == 2
+    assert errors[0].startswith("ExpectedResult.Error.ErrorType:")
+    assert errors[1].startswith("ExpectedResult.Error.ErrorMessage:")
+
+
+def test_failed_execution_result_without_expected_error_checks_status_only() -> None:
+    client = _StubLambdaClient(
+        {
+            "Status": "FAILED",
+            "Error": {
+                "ErrorType": "AnyError",
+                "ErrorMessage": "any failure",
+            },
+        }
+    )
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={"ExecutionStatus": "FAILED"},
+        lambda_client=client,
+    )
+
+    assert errors == []
 
 
 def test_discovers_folders_with_yaml(tmp_path: Path) -> None:
