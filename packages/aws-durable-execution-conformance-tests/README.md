@@ -37,13 +37,17 @@ test-requirements/
 ├── parallel/            # 8-N: Parallel operation suite
 ├── map/                 # 9-N: Map operation suite
 ├── plugin/              # 10-N: Instrumentation plugin suite
-└── general/             # 11-N: Tests not specific to one operation
+├── general/             # 11-N: Tests not specific to one operation
+└── static_typing/       # 12-N: Capabilities specific to statically typed SDKs
 ```
 
 Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).
 
 The `general` suite contains cross-cutting SDK behavior that is not specific
 to one durable operation, such as replay consistency across operation types.
+
+The optional `static_typing` suite covers API guarantees that apply specifically
+to statically typed SDKs. Dynamically typed SDKs may leave this suite uncovered.
 
 ### Placeholders and Wildcards
 
@@ -141,12 +145,12 @@ Every requirement resolves to one status:
 | `FAILED` | Real mismatch or error | **yes** |
 | `OPTIONAL_FAILED` | Failed, but requirement marked `optional: true` | no |
 | `NOT_IMPLEMENTED` | Declared intentional SDK gap (see below) | no |
-| `UNCOVERED` | No mapped test case in the template, and not declared | no (see `--fail-on`) |
+| `UNCOVERED` | No mapped test case in the template, and not declared | no for optional requirements; otherwise see `--fail-on` |
 
 **Exit code** follows `--fail-on`: `failed` (default) exits non-zero only on
-`FAILED`; `failed+uncovered` also treats `UNCOVERED` as blocking.
-`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` never block — intentional gaps stay
-visible without failing the run.
+`FAILED`; `failed+uncovered` also treats non-optional `UNCOVERED` as blocking.
+Optional requirements, `NOT_IMPLEMENTED`, and `OPTIONAL_FAILED` never block —
+intentional gaps stay visible without failing the run.
 
 ### Declaring an intentional gap (`NOT_IMPLEMENTED`)
 

@@ -84,6 +84,19 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _load_requirement_metadata(requirement: RequirementCase | None) -> tuple[str | None, bool]:
+    """Return a requirement's description and optional flag."""
+    if requirement is None:
+        return None, False
+    try:
+        data = load_yaml_file(str(requirement.path))
+    except (OSError, ValueError, yaml.YAMLError):
+        return None, False
+    if not isinstance(data, dict):
+        return None, False
+    return data.get("description"), bool(data.get("optional", False))
+
+
 def parse_args(
     argv: list[str] | None = None,
     *,
@@ -193,7 +206,8 @@ def parse_args(
         choices=["failed", "failed+uncovered"],
         help="Exit-code policy: which statuses cause a non-zero exit. "
         "'failed' (default) blocks only on FAILED; 'failed+uncovered' also blocks "
-        "on UNCOVERED. NOT_IMPLEMENTED and OPTIONAL_FAILED never block.",
+        "on non-optional UNCOVERED. Optional requirements, NOT_IMPLEMENTED, and "
+        "OPTIONAL_FAILED never block.",
     )
     try:
         registry.add_arguments(parser)
@@ -367,22 +381,18 @@ def _deploy_validate_report(
         requirement = requirements.get(description_id)
         return requirement.suite.name if requirement else None
 
-    _description_cache: dict[str, str | None] = {}
+    _metadata_cache: dict[str, tuple[str | None, bool]] = {}
+
+    def _metadata_for(description_id: str) -> tuple[str | None, bool]:
+        if description_id not in _metadata_cache:
+            _metadata_cache[description_id] = _load_requirement_metadata(requirements.get(description_id))
+        return _metadata_cache[description_id]
 
     def _description_for(description_id: str) -> str | None:
-        if description_id in _description_cache:
-            return _description_cache[description_id]
-        description: str | None = None
-        requirement = requirements.get(description_id)
-        if requirement:
-            try:
-                data = load_yaml_file(str(requirement.path))
-                if isinstance(data, dict):
-                    description = data.get("description")
-            except (OSError, ValueError, yaml.YAMLError):
-                description = None
-        _description_cache[description_id] = description
-        return description
+        return _metadata_for(description_id)[0]
+
+    def _is_optional(description_id: str) -> bool:
+        return _metadata_for(description_id)[1]
 
     report = Report(
         run=RunMetadata(
@@ -413,11 +423,13 @@ def _deploy_validate_report(
                 status=status,
                 function=r.function_name,
                 description=_description_for(r.description_id),
+                is_optional=r.optional,
                 errors=list(r.errors),
             )
         )
 
     for did in uncovered:
+        is_optional = _is_optional(did)
         if did in not_implemented:
             report.add(
                 ReportEntry(
@@ -426,6 +438,7 @@ def _deploy_validate_report(
                     status=ReportStatus.NOT_IMPLEMENTED,
                     description=_description_for(did),
                     reason=not_implemented[did],
+                    is_optional=is_optional,
                 )
             )
         else:
@@ -435,6 +448,7 @@ def _deploy_validate_report(
                     suite=_suite_for(did),
                     status=ReportStatus.UNCOVERED,
                     description=_description_for(did),
+                    is_optional=is_optional,
                 )
             )
 
