@@ -1,0 +1,88 @@
+---
+# 8.23: Parallel with independently typed branch handles
+description: Parallel exposes independently typed handles for heterogeneous branch results
+handler: |
+  Handler opens a branch-oriented parallel operation named "typed-branches" with
+  max-concurrency 1. It registers three branches whose result types are declared independently:
+  a string branch returning "reserved", an integer branch returning 200, and a
+  map<string, string> branch returning {currency: "USD"}. The handler seals the parallel
+  operation, retrieves each result through its typed branch handle, and returns the values in
+  registration order. The handler must use the SDK's heterogeneous branch API rather than
+  erasing every branch to a shared object/envelope type.
+invocations: |
+  - Handler opens parallel(name="typed-branches", max-concurrency=1), registers the three typed
+    branches, and seals the operation. The SDK checkpoints ContextStarted (SubType Parallel),
+    then runs each branch sequentially in registration order, checkpointing
+    ContextStarted/ContextSucceeded (SubType ParallelBranch) with each branch's independently
+    serialized result. The SDK checkpoints ContextSucceeded (SubType Parallel), and the
+    invocation completes returning ["reserved", 200, {currency: "USD"}].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - reserved
+    - 200
+    - currency: USD
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"reserved"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '200'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 7
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 8
+    Id: ${CTX_B3}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 9
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 10
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}

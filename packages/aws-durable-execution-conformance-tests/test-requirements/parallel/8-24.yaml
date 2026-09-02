@@ -1,0 +1,72 @@
+---
+# 8.24: Parallel branches start before registration is sealed
+description: A parallel branch can complete before later branches are registered
+handler: |
+  Handler opens a branch-oriented parallel operation named "early-start" with
+  max-concurrency 1. It registers branch "first", which returns "ready", and waits for that
+  branch's typed handle while the parallel operation is still open. Only after the first branch
+  completes does the handler register branch "second", which returns "ready-second" using the
+  first result. The handler then seals the parallel operation and returns both results. This
+  proves branch registration starts work immediately instead of deferring all branches until the
+  operation is sealed.
+invocations: |
+  - Handler opens parallel(name="early-start", max-concurrency=1), registers branch "first", and
+    awaits its result before registering branch "second". The SDK checkpoints ContextStarted
+    (SubType Parallel), then ContextStarted/ContextSucceeded for the first ParallelBranch. The
+    second branch is registered only after that result is available, so its
+    ContextStarted/ContextSucceeded events follow. After registration is sealed, the SDK
+    checkpoints ContextSucceeded (SubType Parallel), and the invocation completes returning
+    ["ready", "ready-second"].
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: [ready, ready-second]
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Parallel
+    EventId: 2
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 3
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 4
+    Id: ${CTX_B1}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"ready"'
+  - EventType: ContextStarted
+    SubType: ParallelBranch
+    EventId: 5
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextSucceeded
+    SubType: ParallelBranch
+    EventId: 6
+    Id: ${CTX_B2}
+    ParentId: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"ready-second"'
+  - EventType: ContextSucceeded
+    SubType: Parallel
+    EventId: 7
+    Id: ${CTX_P}
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
