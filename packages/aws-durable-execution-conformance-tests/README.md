@@ -141,12 +141,12 @@ Every requirement resolves to one status:
 | `FAILED` | Real mismatch or error | **yes** |
 | `OPTIONAL_FAILED` | Failed, but requirement marked `optional: true` | no |
 | `NOT_IMPLEMENTED` | Declared intentional SDK gap (see below) | no |
-| `UNCOVERED` | No mapped test case in the template, and not declared | no (see `--fail-on`) |
+| `UNCOVERED` | No mapped test case in the template, and not declared | no for optional requirements; otherwise see `--fail-on` |
 
 **Exit code** follows `--fail-on`: `failed` (default) exits non-zero only on
-`FAILED`; `failed+uncovered` also treats `UNCOVERED` as blocking.
-`NOT_IMPLEMENTED` and `OPTIONAL_FAILED` never block — intentional gaps stay
-visible without failing the run.
+`FAILED`; `failed+uncovered` also treats non-optional `UNCOVERED` as blocking.
+Optional requirements, `NOT_IMPLEMENTED`, and `OPTIONAL_FAILED` never block —
+intentional gaps stay visible without failing the run.
 
 ### Declaring an intentional gap (`NOT_IMPLEMENTED`)
 

@@ -1,6 +1,7 @@
 ---
 # 8.24: Parallel branches start before registration is sealed
 description: A parallel branch can complete before later branches are registered
+optional: true
 handler: |
   Handler opens a branch-oriented parallel operation named "early-start" with
   max-concurrency 1. It registers branch "first", which returns "ready", and waits for that

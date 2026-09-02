@@ -36,6 +36,17 @@ def test_region_defaults_to_configured_region() -> None:
     assert args.region == DEFAULT_REGION
 
 
+def test_load_requirement_metadata_reads_optional_flag(tmp_path: Path) -> None:
+    path = tmp_path / "test-1.yaml"
+    path.write_text("description: Optional capability\noptional: true\n", encoding="utf-8")
+    suite = RequirementSuite(name="test", root=tmp_path)
+
+    description, optional = app_module._load_requirement_metadata(RequirementCase("test-1", path, suite))
+
+    assert description == "Optional capability"
+    assert optional is True
+
+
 def test_region_accepts_override() -> None:
     args = parse_args(
         [

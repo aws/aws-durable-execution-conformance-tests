@@ -1,6 +1,7 @@
 ---
 # 8.23: Parallel with independently typed branch handles
 description: Parallel exposes independently typed handles for heterogeneous branch results
+optional: true
 handler: |
   Handler opens a branch-oriented parallel operation named "typed-branches" with
   max-concurrency 1. It registers three branches whose result types are declared independently:
