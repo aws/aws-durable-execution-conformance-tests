@@ -37,13 +37,17 @@ test-requirements/
 ├── parallel/            # 8-N: Parallel operation suite
 ├── map/                 # 9-N: Map operation suite
 ├── plugin/              # 10-N: Instrumentation plugin suite
-└── general/             # 11-N: Tests not specific to one operation
+├── general/             # 11-N: Tests not specific to one operation
+└── static_typing/       # 12-N: Capabilities specific to statically typed SDKs
 ```
 
 Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).
 
 The `general` suite contains cross-cutting SDK behavior that is not specific
 to one durable operation, such as replay consistency across operation types.
+
+The optional `static_typing` suite covers API guarantees that apply specifically
+to statically typed SDKs. Dynamically typed SDKs may leave this suite uncovered.
 
 ### Placeholders and Wildcards
 

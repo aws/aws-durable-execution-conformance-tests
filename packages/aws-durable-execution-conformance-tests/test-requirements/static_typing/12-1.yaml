@@ -1,5 +1,5 @@
 ---
-# 8.23: Parallel with independently typed branch handles
+# 12.1: Parallel with independently typed branch handles
 description: Parallel exposes independently typed handles for heterogeneous branch results
 optional: true
 handler: |

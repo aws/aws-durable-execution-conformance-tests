@@ -1,5 +1,5 @@
 ---
-# 8.24: Parallel branches start before registration is sealed
+# 12.2: Parallel branches start before registration is sealed
 description: A parallel branch can complete before later branches are registered
 optional: true
 handler: |
