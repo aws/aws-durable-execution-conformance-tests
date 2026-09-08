@@ -81,6 +81,14 @@ class _StubLambdaClient:
         return self.execution
 
 
+_OPERATION_TYPE_MISMATCH_ERROR_PATTERN = (
+    "${/(?is)(?=.*\\b(?:expected|checkpoint(?:ed)?)\\b"
+    "(?:(?!\\b(?:actual|got|current|claimed)\\b).)*\\bwait\\b)"
+    "(?=.*\\b(?:actual|got|current|claimed)\\b"
+    "(?:(?!\\b(?:expected|checkpoint(?:ed)?)\\b).)*\\bstep\\b).*/}"
+)
+
+
 def test_failed_execution_result_matches_service_error() -> None:
     client = _StubLambdaClient(
         {
@@ -99,10 +107,37 @@ def test_failed_execution_result_matches_service_error() -> None:
             "ExecutionStatus": "FAILED",
             "Error": {
                 "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
+                "ErrorMessage": _OPERATION_TYPE_MISMATCH_ERROR_PATTERN,
+            },
+        },
+        lambda_client=client,
+    )
+
+    assert errors == []
+
+
+def test_failed_execution_result_matches_checkpoint_and_current_error() -> None:
+    client = _StubLambdaClient(
+        {
+            "Status": "FAILED",
+            "Error": {
+                "ErrorType": "NonDeterministicExecutionError",
                 "ErrorMessage": (
-                    "${/(?is)(?=.*\\bexpected\\b(?:(?!\\b(?:actual|got|current|claimed)\\b).)*\\bwait\\b)"
-                    "(?=.*\\b(?:actual|got|current|claimed)\\b(?:(?!\\bexpected\\b).)*\\bstep\\b).*/}"
+                    "Non-deterministic operation identity at id='operation-id': "
+                    "type checkpoint='WAIT' current='STEP', "
+                    "subtype checkpoint='Wait' current='Step'"
                 ),
+            },
+        }
+    )
+
+    errors = _validate_execution_result(
+        execution_arn="arn:execution",
+        expected_result={
+            "ExecutionStatus": "FAILED",
+            "Error": {
+                "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
+                "ErrorMessage": _OPERATION_TYPE_MISMATCH_ERROR_PATTERN,
             },
         },
         lambda_client=client,
@@ -128,10 +163,7 @@ def test_failed_execution_result_rejects_reversed_expected_and_actual() -> None:
             "ExecutionStatus": "FAILED",
             "Error": {
                 "ErrorType": "${/(?i).*non[-_ ]?determin.*/}",
-                "ErrorMessage": (
-                    "${/(?is)(?=.*\\bexpected\\b(?:(?!\\b(?:actual|got|current|claimed)\\b).)*\\bwait\\b)"
-                    "(?=.*\\b(?:actual|got|current|claimed)\\b(?:(?!\\bexpected\\b).)*\\bstep\\b).*/}"
-                ),
+                "ErrorMessage": _OPERATION_TYPE_MISMATCH_ERROR_PATTERN,
             },
         },
         lambda_client=client,
