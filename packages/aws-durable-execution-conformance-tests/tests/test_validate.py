@@ -491,6 +491,7 @@ def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
         start_time_ms=1_000_000,
         aws_clients=AwsClients({"cloudformation": _StubCfnClient(), "logs": logs_client}),
         context=context,
+        log_poll_timeout_seconds=0.0,
     )
     return errors, logs_client
 

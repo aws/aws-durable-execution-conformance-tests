@@ -265,8 +265,9 @@ def test_validates_descriptions_concurrently_and_preserves_order(
         region: str,
         aws_clients: AwsClients,
         output_dir: str | None = None,
+        log_poll_timeout_seconds: float = 120.0,
     ) -> DescriptionResult:
-        del test_file, invoker, tmp_dir, region, output_dir
+        del test_file, invoker, tmp_dir, region, output_dir, log_poll_timeout_seconds
         nonlocal active, max_active
         with lock:
             active += 1
@@ -298,6 +299,7 @@ def test_validates_descriptions_concurrently_and_preserves_order(
             language="python",
             max_workers=2,
             region="us-west-2",
+            log_poll_timeout=120,
         ),
         aws_clients=aws_clients,
     )

@@ -58,6 +58,7 @@ def test_queries_logs_for_one_durable_execution(
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=10.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -91,6 +92,7 @@ def test_polls_through_partial_execution_log_results(
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=10.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -128,6 +130,41 @@ def test_returns_empty_execution_logs_at_poll_timeout(
 
     assert events == []
     assert len(logs_client.filter_log_events_calls) == 3
+
+
+def test_default_event_poll_timeout_is_120_seconds() -> None:
+    """The default polling ceiling is generous enough to absorb CloudWatch
+    ingestion lag, which can leave a just-emitted record briefly absent from
+    FilterLogEvents responses."""
+    assert CloudWatchLogRetriever.EVENT_POLL_TIMEOUT_SECONDS == 120.0
+
+
+def test_event_poll_timeout_override_is_honored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-instance timeout controls how long polling continues, independent
+    of the class default."""
+    clock = _Clock()
+    logs_client = _LogsClient([{"events": []}] * 10)
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+        event_poll_timeout_seconds=3.0,
+    )
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        end_time_ms=2_000,
+        wait_seconds=0,
+    )
+
+    assert events == []
+    # 3s deadline with a 1s interval: queries at t=0,1,2,3 -> 4 calls.
+    assert len(logs_client.filter_log_events_calls) == 4
 
 
 def test_raises_when_filter_log_events_fails() -> None:

@@ -822,6 +822,12 @@ class PollingValidator:
 # region Single test description validation
 
 
+# Default ceiling for polling CloudWatch Logs when a requirement declares
+# ExpectedLogs. FilterLogEvents is eventually consistent, so this absorbs
+# ingestion lag; override with the --log-poll-timeout CLI flag.
+DEFAULT_LOG_POLL_TIMEOUT_SECONDS = 120.0
+
+
 def _validate_expected_logs(
     description_data: dict[str, Any],
     stack_name: str,
@@ -830,6 +836,7 @@ def _validate_expected_logs(
     start_time_ms: int,
     aws_clients: AwsClients,
     context: PlaceholderContext | None = None,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
 
@@ -853,6 +860,7 @@ def _validate_expected_logs(
     log_retriever = CloudWatchLogRetriever(
         cloudformation_client=aws_clients["cloudformation"],
         logs_client=aws_clients["logs"],
+        event_poll_timeout_seconds=log_poll_timeout_seconds,
     )
 
     log_group: str = log_retriever.get_log_group_name(stack_name, function_name)
@@ -877,6 +885,7 @@ def validate_description(
     region: str,
     aws_clients: AwsClients,
     output_dir: str | None = None,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
     if not Path(test_file).is_file():
@@ -910,6 +919,7 @@ def validate_description(
             output_dir=output_dir,
             region=region,
             aws_clients=aws_clients,
+            log_poll_timeout_seconds=log_poll_timeout_seconds,
         )
 
     # --- Substitute placeholders in Input ---
@@ -1029,6 +1039,7 @@ def validate_description(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(
@@ -1063,6 +1074,7 @@ def _validate_description_async(
     region: str,
     aws_clients: AwsClients,
     is_optional: bool = False,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
 ) -> DescriptionResult:
@@ -1195,6 +1207,7 @@ def _validate_description_async(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(

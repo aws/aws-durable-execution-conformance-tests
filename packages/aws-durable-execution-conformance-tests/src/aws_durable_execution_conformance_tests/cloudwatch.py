@@ -127,11 +127,33 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
 
     EVENT_POLL_INTERVAL_SECONDS = 1.0
-    EVENT_POLL_TIMEOUT_SECONDS = 10.0
+    # Default ceiling for polling one execution's log events. FilterLogEvents is
+    # eventually consistent and exposes no completeness signal, so a record can
+    # be absent from responses for many seconds after the execution finishes.
+    # The window is generous (and overridable per instance) to absorb that lag;
+    # observed ingestion lag is a few seconds, but AWS documents that recently
+    # ingested events may be missing from responses over short intervals.
+    EVENT_POLL_TIMEOUT_SECONDS = 120.0
 
-    def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
+    def __init__(
+        self,
+        cloudformation_client: Any,
+        logs_client: Any,
+        *,
+        event_poll_timeout_seconds: float | None = None,
+        event_poll_interval_seconds: float | None = None,
+    ) -> None:
         self._cfn_client = cloudformation_client
         self._logs_client = logs_client
+        # Fall back to the class defaults when unset. Reading them here (rather
+        # than in the poll loop) keeps existing tests that monkeypatch the class
+        # attribute before construction working unchanged.
+        self._event_poll_timeout_seconds = (
+            self.EVENT_POLL_TIMEOUT_SECONDS if event_poll_timeout_seconds is None else event_poll_timeout_seconds
+        )
+        self._event_poll_interval_seconds = (
+            self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
+        )
 
     @staticmethod
     def log_group_for_function(function_name: str) -> str:
@@ -275,7 +297,7 @@ class CloudWatchLogRetriever:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self._event_poll_timeout_seconds
         while True:
             events = self.get_log_events(
                 log_group_name=log_group_name,
@@ -286,7 +308,7 @@ class CloudWatchLogRetriever:
             )
             if time.monotonic() >= deadline:
                 return events
-            time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
+            time.sleep(self._event_poll_interval_seconds)
 
 
 # endregion

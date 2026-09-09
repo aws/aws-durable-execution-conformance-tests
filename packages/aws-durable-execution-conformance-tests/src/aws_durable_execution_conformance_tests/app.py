@@ -209,6 +209,16 @@ def parse_args(
         "on non-optional UNCOVERED. Optional requirements, NOT_IMPLEMENTED, and "
         "OPTIONAL_FAILED never block.",
     )
+    parser.add_argument(
+        "--log-poll-timeout",
+        type=_positive_int,
+        default=120,
+        metavar="SECONDS",
+        help="Maximum seconds to poll CloudWatch Logs for a requirement's "
+        "ExpectedLogs before asserting. FilterLogEvents is eventually "
+        "consistent, so a larger window absorbs log ingestion lag and avoids "
+        "false 'expected N, got 0' failures. Defaults to 120.",
+    )
     try:
         registry.add_arguments(parser)
     except Exception as exc:
@@ -558,6 +568,7 @@ def _validate_test_description(
         output_dir=args.history_dir,
         region=args.region,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=args.log_poll_timeout,
     )
     if result.passed and requirement.suite.validation_hook is not None:
         result = _run_extension_validation(
