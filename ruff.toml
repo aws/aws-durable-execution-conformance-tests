@@ -12,6 +12,7 @@ ignore = ["E501"]
 known-first-party = [
   "aws_durable_execution_conformance_tests",
   "aws_durable_execution_conformance_tests_otel",
+  "aws_durable_execution_conformance_tests_insight",
 ]
 
 [format]

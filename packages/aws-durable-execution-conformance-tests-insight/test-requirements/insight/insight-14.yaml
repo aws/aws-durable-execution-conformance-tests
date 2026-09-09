@@ -1,0 +1,86 @@
+---
+# insight-14: full-tree detail — parent and child, child.parentId == parent.id
+description: With operationDetail full-tree and a single non-suspending invocation, the record includes both the child-context parent named parent-context and its nested child-step; the child's parentId equals the parent's id
+handler: |
+  Handler `insight_full_tree` installs workflowInsight({ operationDetail:
+  "full-tree" }) with the sink exporter from env. In a single invocation (no suspend)
+  it runs `context.runInChildContext("parent-context", ...)` whose body runs one
+  `context.step("child-step", ...)`; both succeed.
+invocations: |
+  - Single invocation: the child context `parent-context` and its nested `child-step`
+    step succeed and the execution reaches terminal SUCCEEDED. Because there is no
+    suspend/resume, full-tree emits both operations and the child's parentId points at
+    the parent id.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+# History mirrors the validated core child-context reference (child/3-1.yaml):
+# a CONTEXT/RunInChildContext parent with a STEP/Step child whose ParentId is the
+# parent context Id, then ContextSucceeded and a single InvocationCompleted. The
+# parent context is named (parent-context); a named runInChildContext emits Name
+# on its context events, as the validated wait_for_callback reference (7-1 — itself
+# a named runInChildContext) demonstrates. Terminal sequence confirmed at live validation.
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${ID1}
+    Name: parent-context
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${ID2}
+    ParentId: ${ID1}
+    Name: child-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    ParentId: ${ID1}
+    Name: child-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 5
+    Id: ${ID1}
+    Name: parent-context
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: parent-context}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: CONTEXT
+            subType: RunInChildContext
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: child-step}
+          count: 1
+          expect:
+            id: ${OP2}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+            parentId: ${OP1}
+          absent: [result, error, truncated]

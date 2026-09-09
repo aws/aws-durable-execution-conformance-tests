@@ -1,0 +1,86 @@
+---
+# insight-5: wait suspend — single terminal record, no RUNNING record
+description: With default on-complete, an execution that suspends on a named wait emits no record on suspend and exactly one terminal SUCCEEDED record on resume
+async: true
+handler: |
+  Handler `insight_wait_single_record` installs workflowInsight({}) with default
+  config (emitMode on-complete) and the sink exporter from env. It awaits a real
+  `context.wait("pause", { seconds: 1 })` (WAIT/Wait) that suspends the execution,
+  then runs `context.step("after-wait", ...)` after the timer fires.
+invocations: |
+  - Invocation 1: the handler starts the `pause` wait; the SDK checkpoints
+    WaitStarted and the execution suspends. Under on-complete the plugin emits
+    nothing (no RUNNING record).
+  - Replay 1: the timer fires, the wait completes, the `after-wait` step runs, the
+    execution reaches terminal SUCCEEDED, and the plugin emits exactly one record.
+AsyncInvoke: true
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 2
+    Id: ${ID1}
+    Name: pause
+    EventTimestamp: '*'
+    WaitStartedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    WaitSucceededDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    Name: after-wait
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 6
+    Id: ${ID2}
+    Name: after-wait
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  # Terminal sequence mirrors the validated wait reference (wait/2-1), which ends
+  # on InvocationCompleted with no ExecutionSucceeded event. Confirmed at live
+  # validation.
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: pause}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: WAIT
+            subType: Wait
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: after-wait}
+          count: 1
+          expect:
+            id: ${OP2}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+          absent: [parentId, result, error, truncated]

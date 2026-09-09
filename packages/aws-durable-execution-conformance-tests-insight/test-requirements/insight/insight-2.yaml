@@ -1,0 +1,60 @@
+---
+# insight-2: Execution failure — one FAILED record, typed error.name, op FAILED
+description: A failing execution emits exactly one terminal FAILED WorkflowInsight record carrying a non-empty error.name, with the failed step surfaced FAILED and carrying its own non-empty error name (SDKs wrap customer errors differently, so the exact class name is not asserted)
+handler: |
+  Handler `insight_execution_failure` installs workflowInsight({}) with default
+  config and the sink exporter from env. It runs a single
+  `context.step("failing-step", ...)` that throws a typed `InsightTestError` (each SDK surfaces its own wrapper/class name) with no
+  retry; the error propagates and the execution terminates FAILED.
+invocations: |
+  - Single invocation: the step `failing-step` throws on its first attempt, the
+    execution reaches terminal FAILED, and the plugin emits one record on complete.
+Input: World
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: failing-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: failing-step
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionFailedDetails: '*'
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: FAILED
+        functionName: '*'
+        error:
+          name: '/.+/'
+      absent: [truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: failing-step}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: FAILED
+            error:
+              name: '/.+/'
+          absent: [parentId, result, truncated]

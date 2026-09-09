@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: TypeScript SDK examples for the durable execution Workflow Insight conformance suite
+
+# IAM note: functions run under the pre-created LambdaExecutionRoleArn (the
+# conformance runner injects it), so SAM cannot attach policies to it here. For
+# the `s3` sink (INSIGHT_SINK=s3) that role MUST grant s3:PutObject on
+# arn:aws:s3:::${InsightS3Bucket}/${InsightS3Prefix}* . The default `cloudwatch`
+# sink uses the built-in LambdaLogExporter (console.log to the function's own log
+# group) and needs no extra permissions beyond basic Lambda logging.
+
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Pre-created execution role for the test functions
+  InsightSink:
+    Type: String
+    Default: cloudwatch
+    AllowedValues:
+      - cloudwatch
+      - s3
+    Description: >-
+      Which insight exporter each function uses. cloudwatch = LambdaLogExporter
+      (operationsByName); s3 = S3Exporter (operations array).
+  InsightS3Bucket:
+    Type: String
+    Default: ""
+    Description: S3 bucket the s3 sink writes records to (required when InsightSink=s3)
+  InsightS3Prefix:
+    Type: String
+    Default: ""
+    Description: S3 key prefix the s3 sink writes records under
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures:
+      - x86_64
+    Timeout: 60
+    MemorySize: 512
+    DurableConfig:
+      ExecutionTimeout: 300
+      RetentionPeriodInDays: 1
+    Environment:
+      Variables:
+        INSIGHT_SINK: !Ref InsightSink
+        INSIGHT_S3_BUCKET: !Ref InsightS3Bucket
+        INSIGHT_S3_PREFIX: !Ref InsightS3Prefix
+
+Resources:
+  Insight1BasicSuccess:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-1
+    Properties:
+      CodeUri: dist/
+      Handler: insight_basic_success.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-1"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight2ExecutionFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-2
+    Properties:
+      CodeUri: dist/
+      Handler: insight_execution_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-2"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight3OnFailureSuccess:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-3
+    Properties:
+      CodeUri: dist/
+      Handler: insight_on_failure_success.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-3"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight4OnFailureFailure:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-4
+    Properties:
+      CodeUri: dist/
+      Handler: insight_on_failure_failure.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-4"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight5WaitSingleRecord:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-5
+    Properties:
+      CodeUri: dist/
+      Handler: insight_wait_single_record.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-5"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight6StepRetry:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-6
+    Properties:
+      CodeUri: dist/
+      Handler: insight_step_retry.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-6"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight7RepeatedOperationName:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-7
+    Properties:
+      CodeUri: dist/
+      Handler: insight_repeated_operation_name.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-7"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight8SamplingExcluded:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-8
+    Properties:
+      CodeUri: dist/
+      Handler: insight_sampling_excluded.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-8"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight9ContentOmitted:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-9
+    Properties:
+      CodeUri: dist/
+      Handler: insight_content_omitted.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-9"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight10ErrorsExcluded:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-10
+    Properties:
+      CodeUri: dist/
+      Handler: insight_errors_excluded.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-10"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight11OperationResultOptIn:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-11
+    Properties:
+      CodeUri: dist/
+      Handler: insight_operation_result_opt_in.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-11"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight12Truncation:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-12
+    Properties:
+      CodeUri: dist/
+      Handler: insight_truncation.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-12"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight13TopLevelOnly:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-13
+    Properties:
+      CodeUri: dist/
+      Handler: insight_top_level_only.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-13"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight14FullTree:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-14
+    Properties:
+      CodeUri: dist/
+      Handler: insight_full_tree.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-14"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight15SubtypeCoverage:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-15
+    Properties:
+      CodeUri: dist/
+      Handler: insight_subtype_coverage.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-15"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight16TruncationOperations:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-16
+    Properties:
+      CodeUri: dist/
+      Handler: insight_truncation_operations.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-16"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight17UnnamedOperationDropped:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-17
+    Properties:
+      CodeUri: dist/
+      Handler: insight_unnamed_operation_dropped.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-17"
+      Role: !Ref LambdaExecutionRoleArn
+
+  Insight18RetryMaxAttempt:
+    Type: AWS::Serverless::Function
+    TestingMetadata:
+      TestDescription:
+        - insight-18
+    Properties:
+      CodeUri: dist/
+      Handler: insight_retry_max_attempt.handler
+      FunctionName: !Sub "${AWS::StackName}-insight-18"
+      Role: !Ref LambdaExecutionRoleArn

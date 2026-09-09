@@ -1,0 +1,54 @@
+---
+# insight-9: content omitted by config — input/output absent, NOT drop-flagged
+description: With content.input and content.output set to false, the record omits input and output by configuration; the size-limiter drop flags droppedInput and droppedOutput are NOT set (config-omit is distinct from size-drop)
+handler: |
+  Handler `insight_content_omitted` installs workflowInsight({ content: { input:
+  false, output: false } }) with the sink exporter from env. It runs a single
+  `context.step("greet", ...)` that succeeds and returns the greeting.
+invocations: |
+  - Single invocation: the step succeeds and the execution reaches terminal
+    SUCCEEDED. The emitted record carries neither input nor output because the
+    content config omitted them — the record is complete, not truncated.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [input, output, droppedInput, droppedOutput, truncated, droppedOperations, error]
+      operations:
+        - select: {name: greet}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+          absent: [parentId, result, error, truncated]
