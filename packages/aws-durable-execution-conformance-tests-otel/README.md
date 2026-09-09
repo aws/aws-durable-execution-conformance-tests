@@ -107,6 +107,11 @@ long-running views:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
 
+The suite workflow schedules only ADOT/X-Ray and the AWS S3 collector. The
+Datadog and Dash0 adapters remain available for manual runs. The former
+backend-enable inputs and credential secrets remain accepted as ignored,
+deprecated compatibility fields.
+
 SDK repositories invoke it with repository and runtime metadata, the
 `examples_dir` path to their handlers, plus three optional shell hooks. The
 orchestrator resolves test revisions once before launching any workers:
@@ -164,11 +169,9 @@ dataset. The backend first locates a correlated span by service name and
 durable execution ARN, then retrieves every span in that trace with adaptive
 sampling disabled.
 
-The shared suite workflow runs Dash0 beside X-Ray for every calling language
-using the `us-west-2` Dash0 API and ingress endpoints. It uses
-`DASH0_AUTH_TOKEN` for both queries and the standard OTLP authorization header.
-When the token is not configured, the workflows skip Dash0 while continuing to
-run the other telemetry backends.
+The shared suite workflow does not schedule Dash0. Use the runner directly
+with `DASH0_AUTH_TOKEN` and the appropriate regional API and ingress endpoints
+to exercise this backend manually.
 
 ## Datadog
 
@@ -182,15 +185,10 @@ by this query, so the backend does not need a second full-trace search.
 Datadog search results expose millisecond timestamps, so temporal assertions
 allow at most 1 ms of backend-specific rounding at span boundaries.
 
-The shared Java, Python, and JavaScript suite workflow uses the generic
-`https://otlp.datadoghq.com` OTLP base endpoint and runs Datadog beside X-Ray
-and Dash0. The JavaScript examples reuse the Lambda layer's global tracer
-provider so endpoint and authentication settings are applied once instead of
-creating a second unauthenticated exporter. The workflow reads the API access
-token from `DATADOG_ACCESS_TOKEN` and the intake API key from
-`DATADOG_API_KEY`, formatting it as the `dd-api-key` OTLP header.
-When either credential is not configured, the workflows skip Datadog while
-continuing to run the other telemetry backends.
+The shared suite workflow does not schedule Datadog. Use the runner directly
+with `DATADOG_ACCESS_TOKEN`, `DATADOG_API_KEY`, and the generic
+`https://otlp.datadoghq.com` OTLP base endpoint to exercise this backend
+manually.
 
 Configure the Datadog account once with a 100% APM retention filter for
 `service:durable-execution-conformance` before running a suite. The shared
