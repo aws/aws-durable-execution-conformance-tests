@@ -822,12 +822,6 @@ class PollingValidator:
 # region Single test description validation
 
 
-# Default ceiling for polling CloudWatch Logs when a requirement declares
-# ExpectedLogs. FilterLogEvents is eventually consistent, so this absorbs
-# ingestion lag; override with the --log-poll-timeout CLI flag.
-DEFAULT_LOG_POLL_TIMEOUT_SECONDS = 120.0
-
-
 def _validate_expected_logs(
     description_data: dict[str, Any],
     stack_name: str,
@@ -836,7 +830,7 @@ def _validate_expected_logs(
     start_time_ms: int,
     aws_clients: AwsClients,
     context: PlaceholderContext | None = None,
-    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+    log_poll_timeout_seconds: float | None = None,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
 
@@ -885,7 +879,7 @@ def validate_description(
     region: str,
     aws_clients: AwsClients,
     output_dir: str | None = None,
-    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+    log_poll_timeout_seconds: float | None = None,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
     if not Path(test_file).is_file():
@@ -1074,7 +1068,7 @@ def _validate_description_async(
     region: str,
     aws_clients: AwsClients,
     is_optional: bool = False,
-    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+    log_poll_timeout_seconds: float | None = None,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
 ) -> DescriptionResult:
