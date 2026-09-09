@@ -17,7 +17,7 @@ _EXPECTED_CHECKSUM = "3ae2b07fb25ce0c7057d0b08c9b89e96aacf499b1a666c11e5dfe4d9b2
 
 
 def _payload_expectation(event_id: int) -> tuple[dict[str, Any], str]:
-    requirement = yaml.safe_load((TESTS_DIR / "serdes" / "11-1.yaml").read_text())
+    requirement = yaml.safe_load((TESTS_DIR / "serdes" / "13-1.yaml").read_text())
     event = next(item for item in requirement["ExpectedExecutionHistory"] if item["EventId"] == event_id)
     details_key = "ExecutionSucceededDetails" if event_id == 10 else "StepSucceededDetails"
     return {

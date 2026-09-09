@@ -52,7 +52,8 @@ def render_console(report: Report) -> str:
         lines.append(f"\n{title}:")
         for entry in entries:
             fn = f" ({entry.function})" if entry.function else ""
-            lines.append(f"  {_GLYPH[status]} {entry.id}{fn}")
+            optional = " [optional]" if entry.optional and status != ReportStatus.OPTIONAL_FAILED else ""
+            lines.append(f"  {_GLYPH[status]} {entry.id}{fn}{optional}")
             if entry.description:
                 lines.append(f"       {entry.description}")
             if show_reason and entry.reason:
@@ -93,7 +94,9 @@ def render_github_summary(report: Report) -> str:
         ),
     ]
 
-    blocking_entries = [entry for entry in report.entries if entry.status in report.blocking_statuses()]
+    blocking_entries = [
+        entry for entry in report.entries if entry.status in report.blocking_statuses() and not entry.optional
+    ]
     if not blocking_entries:
         lines.extend(["", "No blocking test failures."])
         return "\n".join(lines)

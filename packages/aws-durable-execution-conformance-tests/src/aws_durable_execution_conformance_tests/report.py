@@ -16,7 +16,7 @@ Status semantics:
 - ``UNCOVERED``       -- no example found and not declared (non-blocking by default; warn).
 
 Exit-code policy is controlled by ``fail_on``: by default only ``FAILED`` blocks;
-``failed+uncovered`` additionally blocks on ``UNCOVERED``.
+``failed+uncovered`` additionally blocks on non-optional ``UNCOVERED`` entries.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ class ReportEntry:
             None (e.g. for NOT_IMPLEMENTED / UNCOVERED there is no function).
         description: One-line requirement description (from the requirement YAML).
         reason: Human-readable explanation (used for NOT_IMPLEMENTED).
+        is_optional: Whether the source requirement is marked ``optional: true``.
         errors: Assertion error messages (for FAILED / OPTIONAL_FAILED).
         duration_seconds: Wall-clock time spent validating this requirement.
     """
@@ -69,16 +70,18 @@ class ReportEntry:
     function: str | None = None
     description: str | None = None
     reason: str | None = None
+    is_optional: bool = False
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
 
     @property
     def optional(self) -> bool:
-        """True when this entry is a non-blocking optional failure.
+        """True when this entry belongs to an optional requirement.
 
-        Derived from ``status`` so it can never contradict it.
+        ``OPTIONAL_FAILED`` implies optional for compatibility with callers that
+        construct report entries directly.
         """
-        return self.status == ReportStatus.OPTIONAL_FAILED
+        return self.is_optional or self.status == ReportStatus.OPTIONAL_FAILED
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict."""
@@ -166,7 +169,7 @@ class Report:
     def blocking_count(self) -> int:
         """Number of entries whose status blocks CI."""
         blocking = self.blocking_statuses()
-        return sum(1 for entry in self.entries if entry.status in blocking)
+        return sum(1 for entry in self.entries if entry.status in blocking and not entry.optional)
 
     def exit_code(self) -> int:
         """Process exit code: 1 if any blocking entry exists, else 0."""

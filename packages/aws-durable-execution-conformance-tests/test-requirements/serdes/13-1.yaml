@@ -1,5 +1,5 @@
 ---
-# 11.1: Filesystem SerDes persists and rehydrates payloads across replay
+# 13.1: Filesystem SerDes persists and rehydrates payloads across replay
 description: Filesystem SerDes offloads durable payloads and rehydrates a completed step after replay
 handler: |
   Configure the handler's global serializer/deserializer pipeline with the SDK's filesystem-backed
@@ -20,7 +20,7 @@ invocations: |
     checkpointed as filesystem file-reference envelopes whose previews contain the checksum of the
     original deterministic input.
 Variables:
-  PAYLOAD: filesystem-serdes-round-trip-payload-11-1
+  PAYLOAD: filesystem-serdes-round-trip-payload-13-1
 Input:
   id: payload-1
   value: ${PAYLOAD}

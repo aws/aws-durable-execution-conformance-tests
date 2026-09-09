@@ -74,7 +74,7 @@ on:
         default: ""
         type: string
       suite_timeout_minutes:
-        description: Timeout for X-Ray, Dash0, and Datadog suite jobs
+        description: Timeout for the ADOT/X-Ray suite job
         required: false
         default: 40
         type: number
@@ -111,13 +111,13 @@ on:
         description: Execution role assigned to test Lambda functions
         required: true
       DASH0_AUTH_TOKEN:
-        description: Optional Dash0 API and OTLP authentication token
+        description: Deprecated Dash0 token accepted for caller compatibility but ignored
         required: false
       DATADOG_ACCESS_TOKEN:
-        description: Optional Datadog API access token used to query spans
+        description: Deprecated Datadog access token accepted for caller compatibility but ignored
         required: false
       DATADOG_API_KEY:
-        description: Optional Datadog API key used for OTLP trace intake and retention configuration
+        description: Deprecated Datadog API key accepted for caller compatibility but ignored
         required: false
       DATADOG_APPLICATION_KEY:
         description: Deprecated Datadog application key accepted for caller compatibility
@@ -142,11 +142,6 @@ jobs:
       adot_release_repository: ${{ inputs.adot_release_repository }}
       adot_layer_arn: ${{ inputs.adot_layer_arn }}
       phase: ${{ inputs.phase }}
-    secrets:
-      DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
-      DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
-      DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
-
   invocation:
     name: Invocation view
     needs: resolve
@@ -175,8 +170,6 @@ jobs:
       suite: otel-invocation
       case_count: 20
       aws_region: ${{ inputs.aws_region }}
-      dash0_enabled: ${{ needs.resolve.outputs.dash0_enabled == 'true' }}
-      datadog_enabled: ${{ needs.resolve.outputs.datadog_enabled == 'true' }}
     secrets: inherit
 
   execution:
@@ -207,8 +200,6 @@ jobs:
       suite: otel-execution
       case_count: 20
       aws_region: ${{ inputs.aws_region }}
-      dash0_enabled: ${{ needs.resolve.outputs.dash0_enabled == 'true' }}
-      datadog_enabled: ${{ needs.resolve.outputs.datadog_enabled == 'true' }}
     secrets: inherit
 
   long-running-invocation:

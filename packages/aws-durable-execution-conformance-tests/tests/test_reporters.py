@@ -106,6 +106,21 @@ def test_github_summary_includes_uncovered_when_blocking() -> None:
     assert "<code>8-9</code> (UNCOVERED)" in text
 
 
+def test_github_summary_excludes_optional_uncovered_from_blocking() -> None:
+    report = _report()
+    report.entries[-1] = ReportEntry(
+        id="8-9",
+        suite="parallel",
+        status=ReportStatus.UNCOVERED,
+        is_optional=True,
+    )
+    report.fail_on = "failed+uncovered"
+
+    text = render_github_summary(report)
+
+    assert "<code>8-9</code> (UNCOVERED)" not in text
+
+
 def test_append_github_summary_preserves_existing_content(tmp_path: Path) -> None:
     summary_path = tmp_path / "summary.md"
     summary_path.write_text("# Existing\n", encoding="utf-8")

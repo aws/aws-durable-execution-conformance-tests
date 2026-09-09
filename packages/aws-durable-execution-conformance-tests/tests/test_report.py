@@ -73,6 +73,16 @@ def test_fail_on_uncovered_policy_blocks_uncovered() -> None:
     assert report.exit_code() == 1
 
 
+def test_fail_on_uncovered_policy_does_not_block_optional_uncovered() -> None:
+    report = _report(
+        [_entry("1-1", ReportStatus.UNCOVERED, is_optional=True)],
+        fail_on=FAIL_ON_FAILED_UNCOVERED,
+    )
+    assert report.entries[0].optional is True
+    assert report.blocking_count() == 0
+    assert report.exit_code() == 0
+
+
 def test_unknown_fail_on_policy_defaults_to_failed_only() -> None:
     report = _report([_entry("1-1", ReportStatus.UNCOVERED)], fail_on="bogus")
     # Unknown policy falls back to blocking only FAILED, so UNCOVERED passes.
