@@ -114,10 +114,10 @@ def test_returns_empty_execution_logs_at_poll_timeout(
     logs_client = _LogsClient([{"events": []}, {"events": []}, {"events": []}])
     monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
-    monkeypatch.setattr(CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 2.0)
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=2.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -132,18 +132,10 @@ def test_returns_empty_execution_logs_at_poll_timeout(
     assert len(logs_client.filter_log_events_calls) == 3
 
 
-def test_default_event_poll_timeout_is_120_seconds() -> None:
-    """The default polling ceiling is generous enough to absorb CloudWatch
-    ingestion lag, which can leave a just-emitted record briefly absent from
-    FilterLogEvents responses."""
-    assert CloudWatchLogRetriever.EVENT_POLL_TIMEOUT_SECONDS == 120.0
-
-
 def test_event_poll_timeout_override_is_honored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A per-instance timeout controls how long polling continues, independent
-    of the class default."""
+    """A per-instance timeout controls how long polling continues."""
     clock = _Clock()
     logs_client = _LogsClient([{"events": []}] * 10)
     monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
@@ -179,6 +171,7 @@ def test_raises_when_filter_log_events_fails() -> None:
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=1.0,
     )
 
     with pytest.raises(CloudWatchLogError, match="filter-log-events failed"):
@@ -317,8 +310,11 @@ def test_retrieval_pipeline_contract_top_level_arn_required(
             return {"events": kept}
 
     monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
-    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=_FilteringLogsClient())
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=_FilteringLogsClient(),
+        event_poll_timeout_seconds=0.0,
+    )
     events = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test", execution_arn=arn, start_time_ms=0, end_time_ms=10, wait_seconds=0
     )

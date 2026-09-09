@@ -212,7 +212,7 @@ def parse_args(
     parser.add_argument(
         "--log-poll-timeout",
         type=_positive_int,
-        default=None,
+        default=120,
         metavar="SECONDS",
         help="Maximum seconds to poll CloudWatch Logs for a requirement's "
         "ExpectedLogs before asserting. FilterLogEvents is eventually "

@@ -127,30 +127,24 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
 
     EVENT_POLL_INTERVAL_SECONDS = 1.0
-    # Default ceiling for polling one execution's log events. FilterLogEvents is
-    # eventually consistent and exposes no completeness signal, so a record can
-    # be absent from responses for many seconds after the execution finishes.
-    # The window is generous (and overridable per instance) to absorb that lag;
-    # observed ingestion lag is a few seconds, but AWS documents that recently
-    # ingested events may be missing from responses over short intervals.
-    EVENT_POLL_TIMEOUT_SECONDS = 120.0
 
     def __init__(
         self,
         cloudformation_client: Any,
         logs_client: Any,
         *,
-        event_poll_timeout_seconds: float | None = None,
+        event_poll_timeout_seconds: float,
         event_poll_interval_seconds: float | None = None,
     ) -> None:
         self._cfn_client = cloudformation_client
         self._logs_client = logs_client
-        # Fall back to the class defaults when unset. Reading them here (rather
-        # than in the poll loop) keeps existing tests that monkeypatch the class
-        # attribute before construction working unchanged.
-        self._event_poll_timeout_seconds = (
-            self.EVENT_POLL_TIMEOUT_SECONDS if event_poll_timeout_seconds is None else event_poll_timeout_seconds
-        )
+        # Maximum time to keep polling FilterLogEvents for one execution's log
+        # events. FilterLogEvents is eventually consistent and exposes no
+        # completeness signal, so a just-emitted record can be absent from
+        # responses for seconds after the execution finishes; the caller
+        # supplies a window generous enough to absorb that lag (the CLI's
+        # --log-poll-timeout default is 120s).
+        self._event_poll_timeout_seconds = event_poll_timeout_seconds
         self._event_poll_interval_seconds = (
             self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
         )

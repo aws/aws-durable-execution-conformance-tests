@@ -68,6 +68,12 @@ def test_suite_defaults_to_all() -> None:
     assert args.suite == ["all"]
 
 
+def test_log_poll_timeout_defaults_to_120() -> None:
+    args = parse_args(["--template", "template.yaml", "--language", "python"])
+
+    assert args.log_poll_timeout == 120
+
+
 def test_suite_accepts_discovered_suite() -> None:
     args = parse_args(
         [

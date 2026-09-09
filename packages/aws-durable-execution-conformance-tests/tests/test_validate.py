@@ -469,7 +469,6 @@ def _run_expected_logs(monkeypatch, expected_logs, messages_in_order):
     from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
     monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
 
     events = [
         {"message": msg, "timestamp": 1_000_000 + i, "ingestionTime": 1_000_100 + i}
@@ -559,6 +558,7 @@ def test_e2e_expected_logs_absent_field_skips_validation(monkeypatch) -> None:
         start_time_ms=0,
         aws_clients=AwsClients({}),  # must not be touched when ExpectedLogs is absent
         context=None,
+        log_poll_timeout_seconds=0.0,
     )
     assert errors == []
 
