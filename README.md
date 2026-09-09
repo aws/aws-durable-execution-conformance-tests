@@ -100,16 +100,15 @@ hatch run validate \
 Credentials are read only from the environment:
 
 - Optional Datadog search API: `DATADOG_ACCESS_TOKEN`
-- Optional Datadog OTLP intake in hosted workflows: `DATADOG_API_KEY`
+- Optional Datadog OTLP intake: `DATADOG_API_KEY`
 - Optional automated Datadog retention setup: `DATADOG_APPLICATION_KEY`
 - Optional Dash0: `DASH0_AUTH_TOKEN`
 - OTLP headers: `OTEL_EXPORTER_OTLP_HEADERS`
 - S3 collector: the AWS credential chain
 - X-Ray: the AWS credential chain
 
-Hosted workflows skip Dash0 when `DASH0_AUTH_TOKEN` is not configured and
-skip Datadog when either `DATADOG_ACCESS_TOKEN` or `DATADOG_API_KEY` is not
-configured. X-Ray and S3 collector tests continue to run.
+Hosted workflows run only ADOT/X-Ray and the S3 collector. Datadog and Dash0
+remain available for manual conformance runs.
 
 When `DATADOG_APPLICATION_KEY` is not configured, the Datadog account must
 already have a 100% APM retention filter for
@@ -164,9 +163,6 @@ jobs:
       CONFORMANCE_TEST_ROLE_ARN: ${{ secrets.TEST_ROLE_ARN }}
       CONFORMANCE_TEST_ACCOUNT_ID: ${{ secrets.TEST_ACCOUNT_ID }}
       CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.TEST_LAMBDA_EXECUTION_ROLE_ARN }}
-      DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
-      DATADOG_ACCESS_TOKEN: ${{ secrets.DATADOG_ACCESS_TOKEN }}
-      DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
 ```
 
 Use `phase: short` for pull requests and pushes. For day-scale tests, expose
@@ -179,10 +175,8 @@ Set `checkout_sdk: true` when `setup_command` or `prepare_command` needs an SDK
 checkout. Set it to `false` when the language example resolves the SDK through
 `sdk_repository` and `sdk_ref`, as Python does. Supply either
 `adot_release_repository` for layer discovery or a fixed `adot_layer_arn`.
-The Datadog account must already have the required 100% retention filter; the
-reusable workflow does not modify retention settings. It continues to accept
-the optional `DATADOG_APPLICATION_KEY` secret for compatibility with existing
-callers, but does not use it.
+The reusable workflow continues to accept its former optional Datadog and
+Dash0 secrets for compatibility with existing callers, but does not use them.
 
 See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
