@@ -829,6 +829,7 @@ def _validate_expected_logs(
     execution_arn: str,
     start_time_ms: int,
     aws_clients: AwsClients,
+    log_poll_timeout_seconds: float,
     context: PlaceholderContext | None = None,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
@@ -853,6 +854,7 @@ def _validate_expected_logs(
     log_retriever = CloudWatchLogRetriever(
         cloudformation_client=aws_clients["cloudformation"],
         logs_client=aws_clients["logs"],
+        event_poll_timeout_seconds=log_poll_timeout_seconds,
     )
 
     log_group: str = log_retriever.get_log_group_name(stack_name, function_name)
@@ -876,6 +878,7 @@ def validate_description(
     tmp_dir: str,
     region: str,
     aws_clients: AwsClients,
+    log_poll_timeout_seconds: float,
     output_dir: str | None = None,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
@@ -910,6 +913,7 @@ def validate_description(
             output_dir=output_dir,
             region=region,
             aws_clients=aws_clients,
+            log_poll_timeout_seconds=log_poll_timeout_seconds,
         )
 
     # --- Substitute placeholders in Input ---
@@ -1029,6 +1033,7 @@ def validate_description(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(
@@ -1062,6 +1067,7 @@ def _validate_description_async(
     tmp_dir: str,
     region: str,
     aws_clients: AwsClients,
+    log_poll_timeout_seconds: float,
     is_optional: bool = False,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
@@ -1195,6 +1201,7 @@ def _validate_description_async(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(
