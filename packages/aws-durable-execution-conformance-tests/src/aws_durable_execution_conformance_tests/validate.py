@@ -829,9 +829,8 @@ def _validate_expected_logs(
     execution_arn: str,
     start_time_ms: int,
     aws_clients: AwsClients,
-    context: PlaceholderContext | None = None,
-    *,
     log_poll_timeout_seconds: float,
+    context: PlaceholderContext | None = None,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
 
@@ -879,9 +878,8 @@ def validate_description(
     tmp_dir: str,
     region: str,
     aws_clients: AwsClients,
-    output_dir: str | None = None,
-    *,
     log_poll_timeout_seconds: float,
+    output_dir: str | None = None,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
     if not Path(test_file).is_file():
@@ -1069,11 +1067,10 @@ def _validate_description_async(
     tmp_dir: str,
     region: str,
     aws_clients: AwsClients,
+    log_poll_timeout_seconds: float,
     is_optional: bool = False,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
-    *,
-    log_poll_timeout_seconds: float,
 ) -> DescriptionResult:
     """Validate a test description using async invocation with polling.
 

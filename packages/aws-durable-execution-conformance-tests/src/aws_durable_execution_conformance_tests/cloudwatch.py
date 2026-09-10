@@ -132,7 +132,6 @@ class CloudWatchLogRetriever:
         self,
         cloudformation_client: Any,
         logs_client: Any,
-        *,
         event_poll_timeout_seconds: float,
         event_poll_interval_seconds: float | None = None,
     ) -> None:
