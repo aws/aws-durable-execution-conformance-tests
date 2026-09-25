@@ -16,10 +16,10 @@ handler: |
   `{"plugin": "CONFPLUGIN", "hook": "attempt-start|attempt-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "attempt": <int>, "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "isReplay": <bool>, "outcome": "<SUCCEEDED|FAILED>", "error": "<message>"}`.
   `isReplay` (whether THIS operation was observed via checkpointed state) is
   asserted by PRESENCE only — its value on a retry re-invocation is
-  legitimately SDK-divergent. A context-children replay indicator
-  (`isReplayingChildren`) exists in some SDKs but pertains to context-type
-  user functions, not step attempts; it is out of scope here and belongs to a
-  context-typed shape requirement. SDKs exposing it may dump it unasserted. Every record also carries a
+  implementation-specific. The context-children replay indicator
+  (`isReplayingChildren`) pertains to context-type user functions, not step
+  attempts; it is out of scope here and covered by the context-typed shape
+  requirement, and may appear in the dumps unasserted. Every record also carries a
   `durableExecutionArn` field (ARN captured at invocation-start, unasserted)
   so the runner's CloudWatch filter can scope logs to the execution.
 invocations: |
@@ -142,7 +142,7 @@ ExpectedLogs:
         attempt: 2
   # The attempt infos carry the operation-level replay indicator on BOTH
   # hooks (presence only — its value on a retry re-invocation is
-  # SDK-divergent; decoupled so each red identifies exactly one surface)
+  # implementation-specific; decoupled so each red identifies exactly one surface)
   - match:
       plugin: CONFPLUGIN
       hook: attempt-start
