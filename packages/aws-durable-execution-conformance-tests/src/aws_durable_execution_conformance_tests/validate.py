@@ -173,6 +173,23 @@ class _CfnSafeLoader(yaml.SafeLoader):
 _CfnSafeLoader.add_multi_constructor("!", _cfn_tag_constructor)
 
 
+def load_cfn_template(template_path: str | Path) -> Any:
+    """Load a CloudFormation or SAM template, keeping intrinsic tags as dicts.
+
+    Use this helper instead of ``yaml.load(stream, Loader=_CfnSafeLoader)``.
+    Security scanners (bandit B506, ruff S506) flag every ``yaml.load`` call
+    whose loader is not literally ``yaml.SafeLoader``. They cannot see that
+    ``_CfnSafeLoader`` subclasses ``yaml.SafeLoader``. So this helper builds
+    the loader directly, and ruff S506 rejects new ``yaml.load`` calls in CI.
+    """
+    with open(template_path, encoding="utf-8") as f:
+        loader = _CfnSafeLoader(f)
+        try:
+            return loader.get_single_data()
+        finally:
+            loader.dispose()
+
+
 def parse_function_descriptions(template_path: str) -> list[tuple[str, str]]:
     """Parse template.yaml and return (function_name, description_id) pairs.
 
@@ -183,12 +200,7 @@ def parse_function_descriptions(template_path: str) -> list[tuple[str, str]]:
     Metadata to avoid conflicts with SAM CLI, which reserves Metadata for its
     own purposes (BuildMethod, BuildProperties, DockerTag, etc.).
     """
-    with open(template_path) as f:
-        loader: _CfnSafeLoader = _CfnSafeLoader(f)
-        try:
-            template = loader.get_single_data()
-        finally:
-            loader.dispose()
+    template = load_cfn_template(template_path)
 
     results: list[tuple[str, str]] = []
     for name, resource in template.get("Resources", {}).items():
@@ -225,12 +237,7 @@ def parse_not_implemented(template_path: str) -> dict[str, str]:
         Mapping of requirement ID -> reason. When an ID is declared more than
         once, the first reason wins. Empty when nothing is declared.
     """
-    with open(template_path, encoding="utf-8") as f:
-        loader: _CfnSafeLoader = _CfnSafeLoader(f)
-        try:
-            template = loader.get_single_data()
-        finally:
-            loader.dispose()
+    template = load_cfn_template(template_path)
 
     result: dict[str, str] = {}
     if not isinstance(template, dict):

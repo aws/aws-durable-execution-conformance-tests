@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import pytest
+import yaml
+
 from aws_durable_execution_conformance_tests.callback import CallbackAction
 from aws_durable_execution_conformance_tests.validate import (
     _validate_execution_result,
     discover_suites,
     find_matching_action,
     inherit_wait_for_callback_event_names,
+    load_cfn_template,
     parse_not_implemented,
 )
 
@@ -301,6 +305,37 @@ def test_accepts_string_path(tmp_path: Path) -> None:
     _make_requirement(tmp_path / "step", "1-1.yaml")
 
     assert discover_suites(str(tmp_path)) == ["step"]
+
+
+# --- load_cfn_template ------------------------------------------------------
+
+
+def test_load_cfn_template_keeps_intrinsic_tags_as_dicts(tmp_path: Path) -> None:
+    template = _write_template(
+        tmp_path,
+        """
+Resources:
+  Fn:
+    Properties:
+      Role: !GetAtt [Role, Arn]
+      Name: !Sub "${AWS::StackName}-fn"
+      Env: !If
+        Cond: true
+""",
+    )
+    assert load_cfn_template(template)["Resources"]["Fn"]["Properties"] == {
+        "Role": {"GetAtt": ["Role", "Arn"]},
+        "Name": {"Sub": "${AWS::StackName}-fn"},
+        "Env": {"If": {"Cond": True}},
+    }
+
+
+def test_load_cfn_template_rejects_python_object_tags(tmp_path: Path) -> None:
+    # The loader subclasses yaml.SafeLoader. So a python/object tag raises
+    # ConstructorError instead of running os.system.
+    template = _write_template(tmp_path, "x: !!python/object/apply:os.system ['echo pwned']\n")
+    with pytest.raises(yaml.constructor.ConstructorError):
+        load_cfn_template(template)
 
 
 # --- parse_not_implemented --------------------------------------------------
