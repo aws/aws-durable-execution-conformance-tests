@@ -16,20 +16,35 @@ concurrency:
 jobs:
   validate:
     name: Validate
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner in the conformance testing account (Lambda
+    # compute, Amazon Linux python3.13 image). The label must match the
+    # CodeBuild project name exactly.
+    runs-on:
+      - codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
+    env:
+      # The runner image ships /etc/pip.conf with `[global] target =
+      # /tmp/opt/python/site-packages` and puts that directory on PYTHONPATH, so
+      # every pip install (including Hatch's env installs) would land in one
+      # shared directory. Ignore both so each environment stays isolated.
+      PIP_CONFIG_FILE: /dev/null
+      PYTHONPATH: ""
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        # The runner image is Amazon Linux; actions/setup-python only ships
+        # Ubuntu builds, so uv provides Python 3.14 and activates a venv.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
+          activate-environment: true
 
-      - name: Install Hatch
-        run: python -m pip install hatch==1.16.5
+      - name: Install Hatch and shellcheck
+        # shellcheck is not on the runner image; shellcheck-py ships the binary.
+        run: uv pip install hatch==1.16.5 shellcheck-py==0.11.0.1
 
       - name: Run unit tests
         run: hatch run test:all
