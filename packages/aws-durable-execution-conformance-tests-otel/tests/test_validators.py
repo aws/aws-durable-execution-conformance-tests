@@ -1954,3 +1954,81 @@ def test_redacts_secret_keys_and_values() -> None:
     assert safe["headers"] == REDACTED
     assert safe["nested"]["token"] == REDACTED
     assert safe["message"] == f"request used {REDACTED}"
+
+
+def test_parent_alternatives_preserve_sdk_root_or_ambient_but_reject_operation_scope() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    expected = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$any_of": [
+                        {"name": "Workflow", "attributes": {"durable.execution.arn": "arn:test"}},
+                        {"$reject_sdk_span": True, "$allow_unresolved": True},
+                    ]
+                },
+                "same_trace_as": {"span_id": root.span_id},
+            },
+        }
+    }
+    ambient = replace(root, attributes={"durable.execution.arn": "arn:test"})
+    assert validate_trace(replace(trace, spans=(ambient, child)), expected, _query()) == []
+    workflow = replace(ambient, name="Workflow")
+    assert validate_trace(replace(trace, spans=(workflow, child)), expected, _query()) == []
+    wrong_branch = replace(root, attributes={**root.attributes, "durable.operation.type": "CONTEXT"})
+    assert validate_trace(replace(trace, spans=(wrong_branch, child)), expected, _query())
+    wrong_execution = replace(workflow, attributes={"durable.execution.arn": "arn:other"})
+    assert validate_trace(replace(trace, spans=(wrong_execution, child)), expected, _query())
+    # An unresolved ambient parent is permitted, but the user span still must
+    # use the SDK root's trace rather than relying on a nonzero parent ID alone.
+    orphan_trace = replace(child, parent_span_id="a" * 16, trace_id="9" * 32)
+    errors = validate_trace(replace(trace, spans=(workflow, orphan_trace)), expected, _query())
+    assert any("different trace" in error for error in errors)
+
+
+def test_parent_alternatives_reject_invalid_shapes() -> None:
+    invalid_parents: tuple[dict[str, object], ...] = (
+        {"$any_of": []},
+        {"$any_of": "Workflow"},
+        {"$any_of": [None]},
+        {"$any_of": [{"name": "root"}], "name": "root"},
+    )
+    for parent in invalid_parents:
+        errors = validate_trace(
+            _trace(),
+            {"span_assertions": {"select": {"name": "child"}, "expect": {"parent": parent}}},
+            _query(),
+        )
+        assert any("non-empty sequence of parent mappings without sibling fields" in error for error in errors)
+
+
+def test_user_span_timestamp_rounding_is_explicit_and_bounded_to_one_millisecond() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    rounded = replace(
+        child,
+        start_time=root.start_time - timedelta(microseconds=500),
+        end_time=root.end_time + timedelta(microseconds=500),
+    )
+    trace = replace(trace, spans=(root, rounded))
+    strict = {"span_assertions": {"select": {"name": "child"}, "expect": {"parent": {"name": "root"}}}}
+    assert validate_trace(trace, strict, _query())
+    for relation in ("parent", "inside"):
+        bounded = {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {relation: {"name": "root", "$millisecond_precision": True}},
+            }
+        }
+        assert validate_trace(trace, bounded, _query()) == []
+        stale = replace(rounded, end_time=root.end_time + timedelta(milliseconds=2))
+        assert validate_trace(replace(trace, spans=(root, stale)), bounded, _query())
+        invalid = {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {relation: {"name": "root", "$millisecond_precision": False}},
+            }
+        }
+        assert validate_trace(trace, invalid, _query())

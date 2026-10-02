@@ -1,0 +1,199 @@
+description: Invocation view gives retried, polling, submitter, retry-helper and virtual callbacks their live user-function
+  context
+Input:
+  scenario: callback-function-context
+AsyncInvoke: true
+CallbackActions:
+  - CallbackName: '${/^otel-context-callback(?: create callback id|-callback)?$/}'
+    Operation: success
+    Payload: callback-complete
+    Delay: 1
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: callback-context-complete
+TelemetryAssertions:
+  minimum_spans: 11
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
+  require_unique_root_per_trace: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: conformance.retry-attempt-1
+        attributes:
+          conformance.callback: retry-attempt-1
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: retry-attempt-1
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-retry-step attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.retry-attempt-2
+        attributes:
+          conformance.callback: retry-attempt-2
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: retry-attempt-2
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-retry-step attempt 2
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.condition-check-1
+        attributes:
+          conformance.callback: condition-check-1
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: condition-check-1
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-condition attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.condition-check-2
+        attributes:
+          conformance.callback: condition-check-2
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: condition-check-2
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-condition attempt 2
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.callback-submitter
+        attributes:
+          conformance.callback: callback-submitter
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: callback-submitter
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: '${/^(?:otel-context-callback(?: submitter|-submitter)|STEP) attempt 1$/}'
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.name: '${/^otel-context-callback(?: submitter|-submitter)$/}'
+          $millisecond_precision: true
+    - select:
+        name: conformance.with-retry-body
+        attributes:
+          conformance.callback: with-retry-body
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: with-retry-body
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-with-retry
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.with-retry-strategy
+        attributes:
+          conformance.callback: with-retry-strategy
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: with-retry-strategy
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-with-retry
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.virtual-child
+        attributes:
+          conformance.callback: virtual-child
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: virtual-child
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-virtual
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true

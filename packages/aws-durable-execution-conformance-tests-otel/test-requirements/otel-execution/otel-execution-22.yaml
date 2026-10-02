@@ -1,0 +1,410 @@
+description: Execution view supplies and restores user-function span context across concurrent branches and resume
+Input:
+  scenario: user-function-context
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: context-complete
+TelemetryAssertions:
+  minimum_spans: 20
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
+  require_unique_root_per_trace: true
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: conformance.handler
+        attributes:
+          conformance.callback: handler
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: handler
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          $any_of:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+              $millisecond_precision: true
+            - $reject_sdk_span: true
+              $allow_unresolved: true
+              $millisecond_precision: true
+      count: 2
+      expect_by_occurrence:
+        - inside:
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: true
+            $millisecond_precision: true
+        - inside:
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: false
+            $millisecond_precision: true
+    - select:
+        name: conformance.step
+        attributes:
+          conformance.callback: step
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: step
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-step attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.child
+        attributes:
+          conformance.callback: child
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: child
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-child
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.child-step
+        attributes:
+          conformance.callback: child-step
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: child-step
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-child-step attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.child-restored
+        attributes:
+          conformance.callback: child-restored
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: child-restored
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-child
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.parallel-a
+        attributes:
+          conformance.callback: parallel-a
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: parallel-a
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-branch-a
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.parallel-step-a
+        attributes:
+          conformance.callback: parallel-step-a
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: parallel-step-a
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-branch-step-a attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.parallel-b
+        attributes:
+          conformance.callback: parallel-b
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: parallel-b
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-branch-b
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.parallel-step-b
+        attributes:
+          conformance.callback: parallel-step-b
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: parallel-step-b
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-branch-step-b attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.map-0
+        attributes:
+          conformance.callback: map-0
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: map-0
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-iteration-0
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.map-step-0
+        attributes:
+          conformance.callback: map-step-0
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: map-step-0
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-map-step-0 attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.map-1
+        attributes:
+          conformance.callback: map-1
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: map-1
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-iteration-1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.map-step-1
+        attributes:
+          conformance.callback: map-step-1
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: map-step-1
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          name: otel-context-map-step-1 attempt 1
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $millisecond_precision: true
+    - select:
+        name: conformance.handler-restored
+        attributes:
+          conformance.callback: handler-restored
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: handler-restored
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          $any_of:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+              $millisecond_precision: true
+            - $reject_sdk_span: true
+              $allow_unresolved: true
+              $millisecond_precision: true
+      count: 2
+      expect_by_occurrence:
+        - inside:
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: true
+            $millisecond_precision: true
+        - inside:
+            name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: false
+            $millisecond_precision: true
+    - select:
+        name: conformance.handler-after-resume
+        attributes:
+          conformance.callback: handler-after-resume
+      expect:
+        status: UNSET
+        kind: INTERNAL
+        service_name: ${SERVICE_NAME}
+        attributes:
+          conformance.callback: handler-after-resume
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        parent:
+          $any_of:
+            - name: Workflow
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+              $millisecond_precision: true
+            - $reject_sdk_span: true
+              $allow_unresolved: true
+              $millisecond_precision: true
+        inside:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+          $millisecond_precision: true

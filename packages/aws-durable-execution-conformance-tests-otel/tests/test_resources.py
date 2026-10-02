@@ -46,8 +46,8 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
         "otel-invocation",
         "otel-long-running",
     }
-    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 21)}
-    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 21)}
+    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 25)}
+    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 25)}
     assert set(_requirements("otel-long-running")) == {
         f"otel-long-running-{case_number}" for case_number in range(1, 5)
     }

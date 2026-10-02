@@ -416,3 +416,43 @@ examples hosted in separate SDK repositories can use the same build logic.
 - Requirement discovery works from both source and built wheels.
 - No secrets or provider credentials appear in fixtures, diagnostics, or
   artifacts.
+
+### User-function context assertions
+
+`expect.same_trace_as` selects exactly one other span and requires the selected
+span to have its trace ID. This is independent of parent identity and timestamps:
+
+```yaml
+expect:
+  same_trace_as:
+    name: Workflow
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+```
+
+`expect.parent.$any_of` accepts a non-empty list of complete parent expectations.
+Each alternative retains the usual parent-ID, cycle and timestamp checks. This
+allows a handler to preserve a same-trace Lambda instrumentation context or use
+the view's SDK root, without imposing a new parent choice on existing integrations:
+
+```yaml
+parent:
+  $any_of:
+    - name: Workflow
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - $reject_sdk_span: true
+      $allow_unresolved: true
+```
+
+Use `same_trace_as` alongside this alternative when the upstream parent may be
+omitted from a backend response. A user span on a different trace must still fail.
+Operation bodies should name their actual operation or attempt parent; they
+should not use this broad handler-root alternative.
+
+A parent expectation or temporal selector may set `$millisecond_precision: true`
+to allow at most 1 ms of timestamp rounding. Cases 22/23 use it for normal user
+spans: the public tracer can start them on a millisecond wall-clock tick while
+SDK spans use explicit monotonic timestamps. Parent identity, trace identity and
+cycle checks remain strict. This flag is opt-in; existing requirements retain
+their previous timing checks, and a stale parent outside the 1 ms bound fails.

@@ -1,0 +1,289 @@
+---
+description: Invocation view keeps completed-step replay segments correlated without
+  rerunning user code
+Input:
+  scenario: completed-step-replay
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: StepStarted
+    SubType: Step
+    Id: ${COMPLETED_STEP}
+    Name: otel-before-wait
+  - EventId: 3
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${COMPLETED_STEP}
+    Name: otel-before-wait
+  - EventId: 4
+    EventType: WaitStarted
+    SubType: Wait
+    Id: ${REPLAY_WAIT}
+    Name: otel-replay-wait
+  - EventId: 7
+    EventType: StepStarted
+    SubType: Step
+    Id: ${AFTER_STEP}
+    Name: otel-after-wait
+  - EventId: 8
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${AFTER_STEP}
+    Name: otel-after-wait
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: before-after
+TelemetryAssertions:
+  minimum_spans: 9
+  minimum_invocations: 2
+  require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
+  require_unique_root_per_trace: true
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+  exact_attribute_prefixes: [durable.]
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
+        name: otel-replay-wait
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        status: UNSET
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${REPLAY_WAIT}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: STARTED
+          durable.operation.name: otel-replay-wait
+        before:
+          name: otel-replay-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-replay-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - $occurrence: 1
+            name: otel-replay-wait
+            attributes:
+              durable.operation.id: ${REPLAY_WAIT}
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${REPLAY_WAIT}
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-replay-wait
+        after:
+          name: otel-replay-wait
+          attributes:
+            durable.operation.status: STARTED
+        before:
+          name: otel-after-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-after-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${AFTER_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-after-wait
+          durable.attempt.number: 1
+        after:
+          name: otel-replay-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+    - select:
+        name: otel-after-wait attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${AFTER_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-after-wait
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-after-wait
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${AFTER_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
+    - select:
+        name: otel-before-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${COMPLETED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-before-wait
+          durable.attempt.number: 1
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        before:
+          name: otel-after-wait
+          attributes:
+            durable.operation.id: ${AFTER_STEP}
+      count:
+        $any_of: [1, 2]
+    - select:
+        name: otel-before-wait attempt 1
+        attributes:
+          durable.attempt.number: 1
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${COMPLETED_STEP}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-before-wait
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-before-wait
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${COMPLETED_STEP}
+            durable.operation.type: STEP
+            durable.operation.subtype: Step
+        before:
+          name: otel-after-wait
+          attributes:
+            durable.operation.id: ${AFTER_STEP}

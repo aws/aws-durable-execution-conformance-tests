@@ -26,7 +26,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable_execution_arn",
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
-_TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
+_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as")
 _MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
 
 
@@ -327,6 +327,32 @@ def _parent_expectation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        failures = []
+        for index, alternative in enumerate(alternatives):
+            alternative_errors = _parent_expectation_errors(
+                alternative,
+                span,
+                spans_by_id,
+                path=f"{path}.$any_of[{index}]",
+                feature_disparities=feature_disparities,
+            )
+            if not alternative_errors:
+                return []
+            failures.extend(alternative_errors)
+        return [f"{path}: parent did not match any permitted alternative", *failures]
+
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     allow_outside = expected.get("$allow_outside", False)
     if "$allow_outside" in expected and allow_outside is not True:
         return [f"{path}.$allow_outside must be true"]
@@ -339,7 +365,7 @@ def _parent_expectation_errors(
     expected_properties = {
         key: value
         for key, value in expected.items()
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span"}
+        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision"}
     }
 
     parent_span_id = span.parent_span_id
@@ -387,7 +413,10 @@ def _parent_expectation_errors(
     if allow_outside:
         return []
 
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     candidate_errors = []
     for parent in matching_parents:
         errors: list[str] = []
@@ -516,7 +545,7 @@ def _link_expectation_errors(
     return errors
 
 
-def _temporal_relation_errors(
+def _span_relation_errors(
     relation: str,
     expected: Any,
     selected_span: Span,
@@ -530,12 +559,15 @@ def _temporal_relation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     linked_only = expected.get("$linked", False)
     if "$linked" in expected and linked_only is not True:
         return [f"{path}.$linked must be true"]
     if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
         return []
-    selector = {key: value for key, value in expected.items() if key != "$linked"}
+    selector = {key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision"}}
     linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
@@ -550,7 +582,14 @@ def _temporal_relation_errors(
         return [f"{path} matched {len(matches)} spans; it must select exactly one"]
 
     related_span = matches[0]
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    if relation == "same_trace_as":
+        if selected_span.trace_id != related_span.trace_id:
+            return [f"{path}: span {selected_span.name!r} uses a different trace than {related_span.name!r}"]
+        return []
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     selected_description = f"{selected_span.name!r} ({selected_span.span_id})"
     related_description = f"{related_span.name!r} ({related_span.span_id})"
     if relation == "before" and selected_span.end_time - related_span.start_time > timestamp_tolerance:
@@ -702,7 +741,7 @@ def _span_assertion_errors(
             expected_properties = {
                 key: value
                 for key, value in effective_expected.items()
-                if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
+                if key not in {"links", "parent"} and key not in _SPAN_RELATION_KEYS
             }
             expected_attributes = effective_expected.get("attributes")
             errors.extend(
@@ -734,10 +773,10 @@ def _span_assertion_errors(
                         feature_disparities=feature_disparities,
                     )
                 )
-            for relation in _TEMPORAL_RELATION_KEYS:
+            for relation in _SPAN_RELATION_KEYS:
                 if relation in effective_expected:
                     errors.extend(
-                        _temporal_relation_errors(
+                        _span_relation_errors(
                             relation,
                             effective_expected[relation],
                             trace.spans[span_index],
