@@ -2076,3 +2076,59 @@ def test_parent_alternative_schema_errors_are_not_hidden_by_a_matching_branch() 
             )
             assert errors
             assert any("must be" in error for error in errors)
+
+
+def test_nested_invalid_matchers_cannot_hide_in_unused_parent_alternatives() -> None:
+    invalid_cases: tuple[dict[str, object], ...] = (
+        {"name": {"$any_of": []}},
+        {"$not": {"attributes": {"conformance.callback": {"$any_of": []}}}},
+        {"name": "${/[invalid/}"},
+    )
+    for invalid in invalid_cases:
+        errors = validate_trace(
+            _trace(),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {"parent": {"$any_of": [invalid, {"name": "root"}]}},
+                }
+            },
+            _query(),
+        )
+        assert errors
+
+
+def test_inactive_count_branch_is_schema_validated() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "count": {"$any_of": [1, 2]},
+                "expect": {},
+                "expect_by_occurrence": {1: [{}], 2: [{"parent": {"$millisecond_precision": False}}, {}]},
+            }
+        },
+        _query(),
+    )
+    assert any("$millisecond_precision must be true" in error for error in errors)
+
+
+def test_same_trace_relation_rejects_link_filter_even_when_backend_lacks_links() -> None:
+    for disparities in ((), (BackendFeatureDisparity.SPAN_LINKS,)):
+        trace = _trace()
+        root, child = trace.spans
+        errors = validate_trace(
+            replace(trace, spans=(root, replace(child, trace_id="9" * 32))),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "same_trace_as": {"$linked": True, "name": "root"},
+                    },
+                },
+            },
+            _query(),
+            feature_disparities=disparities,
+        )
+        assert any("does not support $linked" in error for error in errors)

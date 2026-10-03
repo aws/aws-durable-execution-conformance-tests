@@ -474,3 +474,5 @@ permitted count to exactly that many occurrence expectations. Every permitted
 count must be covered. This lets invocation replay require one Workflow-linked
 initial segment, or that segment plus a distinct replay segment linked to both
 the original operation and Workflow. The existing sequence form is unchanged.
+
+Matcher syntax is validated recursively in every parent alternative and every count-dependent occurrence branch, including branches not selected by the observed trace. `same_trace_as` requires a direct selector and does not accept `$linked`, so missing backend link support cannot skip the trace-ID comparison.
