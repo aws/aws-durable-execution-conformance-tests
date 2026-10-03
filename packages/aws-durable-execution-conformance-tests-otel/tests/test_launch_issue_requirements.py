@@ -300,3 +300,16 @@ def replace_assertion_without_before(assertion: dict) -> dict:
     result = deepcopy(assertion)
     result["expect"].pop("before", None)
     return result
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
+def test_callback_case_requires_initial_and_terminal_invocations_not_duplicate_initial_exports(view: str) -> None:
+    assertions = _bound_assertions(f"otel-{view}", 23)
+    focused = {"minimum_invocations": 2, "span_assertions": assertions["span_assertions"][:3]}
+    base = _normal_successful_resume()
+    workflow, initial, terminal = base.spans[:3]
+    complete = replace(base, spans=(workflow, initial, terminal))
+    assert validate_trace(complete, focused, _query()) == []
+    duplicate_initial = replace(base, spans=(workflow, initial, initial))
+    errors = validate_trace(duplicate_initial, focused, _query())
+    assert any("matched no spans" in error for error in errors)

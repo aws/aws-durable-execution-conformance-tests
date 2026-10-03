@@ -45,6 +45,48 @@ TelemetryAssertions:
           durable.execution.arn: ${EXECUTION_ARN}
           durable.execution.status: SUCCEEDED
     - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+    - select:
         name: conformance.retry-attempt-1
         attributes:
           conformance.callback: retry-attempt-1

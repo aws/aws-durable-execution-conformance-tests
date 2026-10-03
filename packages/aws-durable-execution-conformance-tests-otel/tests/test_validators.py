@@ -2054,3 +2054,25 @@ def test_count_dependent_occurrence_expectations_must_cover_all_allowed_counts()
             _query(),
         )
         assert any("expect_by_occurrence" in error for error in errors)
+
+
+def test_parent_alternative_schema_errors_are_not_hidden_by_a_matching_branch() -> None:
+    invalid_cases: tuple[dict[str, object], ...] = (
+        {"$millisecond_precision": False},
+        {"$not": None},
+        {"$any_of": []},
+    )
+    for invalid in invalid_cases:
+        for alternatives in ([invalid, {"name": "root"}], [{"name": "root"}, invalid]):
+            errors = validate_trace(
+                _trace(),
+                {
+                    "span_assertions": {
+                        "select": {"name": "child"},
+                        "expect": {"parent": {"$any_of": alternatives}},
+                    }
+                },
+                _query(),
+            )
+            assert errors
+            assert any("must be" in error for error in errors)

@@ -316,6 +316,34 @@ def _span_expectation_errors(
     return errors
 
 
+def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Validate every parent alternative independently of observed telemetry."""
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _parent_schema_errors(alternative, path=f"{path}.$any_of[{index}]")
+        ]
+    errors = [
+        f"{path}.{flag} must be true"
+        for flag in ("$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision")
+        if flag in expected and expected[flag] is not True
+    ]
+    if "$not" in expected and not isinstance(expected["$not"], Mapping):
+        errors.append(f"{path}.$not must be a span selector mapping")
+    return errors
+
+
 def _parent_expectation_errors(
     expected: Any,
     span: Span,
@@ -324,6 +352,9 @@ def _parent_expectation_errors(
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> list[str]:
+    schema_errors = _parent_schema_errors(expected, path=path)
+    if schema_errors:
+        return schema_errors
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
