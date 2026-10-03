@@ -1,6 +1,4 @@
----
-description: Execution view exports a successfully completed operation only once across
-  a normal wait/resume
+description: Execution view exports a successfully completed operation only once across a normal wait/resume
 Input:
   scenario: completed-step-replay
 AsyncInvoke: true
@@ -251,3 +249,4 @@ TelemetryAssertions:
           name: otel-after-wait
           attributes:
             durable.operation.id: ${AFTER_STEP}
+  quiescence_seconds: 5

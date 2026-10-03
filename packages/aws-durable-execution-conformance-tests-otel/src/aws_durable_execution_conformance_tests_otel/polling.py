@@ -5,13 +5,15 @@
 
 from __future__ import annotations
 
+import json
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
+from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace, span_to_dict
 
 
 class BackendError(RuntimeError):
@@ -48,6 +50,7 @@ class PollingPolicy:
     timeout_seconds: float = 60.0
     interval_seconds: float = 2.0
     max_attempts: int = 30
+    quiescence_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0:
@@ -56,6 +59,14 @@ class PollingPolicy:
             raise ValueError("poll interval cannot be negative")
         if self.max_attempts <= 0:
             raise ValueError("poll max attempts must be greater than zero")
+        if (
+            isinstance(self.quiescence_seconds, bool)
+            or not isinstance(self.quiescence_seconds, (int, float))
+            or not math.isfinite(self.quiescence_seconds)
+            or self.quiescence_seconds < 0
+            or self.quiescence_seconds > self.timeout_seconds
+        ):
+            raise ValueError("poll quiescence must be finite, non-negative, and within the timeout")
 
 
 class PollingBackend(ABC):
@@ -84,6 +95,9 @@ class PollingBackend(ABC):
         attempts = 0
         latest_trace: Trace | None = None
         latest_retryable_error: RetryableBackendError | None = None
+        latest_acceptable = False
+        stable_since: float | None = None
+        stable_signature: tuple[str, tuple[str, ...], tuple[str, ...]] | None = None
         while attempts < policy.max_attempts:
             attempts += 1
             delay_seconds = policy.interval_seconds
@@ -91,14 +105,41 @@ class PollingBackend(ABC):
                 trace = self._lookup(query)
             except RetryableBackendError as exc:
                 latest_retryable_error = exc
+                stable_since = None
+                stable_signature = None
                 if exc.retry_after_seconds is not None:
                     delay_seconds = max(delay_seconds, exc.retry_after_seconds)
             else:
                 latest_retryable_error = None
                 if trace is not None:
                     latest_trace = trace
-                    if accept is None or accept(trace):
-                        return trace
+                    latest_acceptable = accept is None or accept(trace)
+                    if latest_acceptable:
+                        if not policy.quiescence_seconds:
+                            return trace
+                        # Ignore provider artifacts/order but retain duplicate span
+                        # occurrences: a late identical export must reset stability.
+                        signature = (
+                            trace.trace_id,
+                            tuple(
+                                sorted(
+                                    json.dumps(span_to_dict(span), sort_keys=True, default=str) for span in trace.spans
+                                )
+                            ),
+                            tuple(sorted(trace.log_trace_ids)),
+                        )
+                        now = self._monotonic()
+                        if signature != stable_signature:
+                            stable_signature = signature
+                            stable_since = now
+                        elif stable_since is not None and now - stable_since >= policy.quiescence_seconds:
+                            return trace
+                    else:
+                        stable_since = None
+                        stable_signature = None
+                else:
+                    stable_since = None
+                    stable_signature = None
             if attempts >= policy.max_attempts:
                 break
             elapsed = self._monotonic() - started
@@ -107,6 +148,11 @@ class PollingBackend(ABC):
             self._sleep(min(delay_seconds, policy.timeout_seconds - elapsed))
 
         if latest_trace is not None:
+            if policy.quiescence_seconds and latest_acceptable:
+                raise TelemetryTimeout(
+                    f"Correlated trace did not remain valid and unchanged for "
+                    f"{policy.quiescence_seconds:g}s within the polling budget"
+                )
             return latest_trace
         if latest_retryable_error is not None:
             raise latest_retryable_error

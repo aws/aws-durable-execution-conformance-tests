@@ -238,3 +238,65 @@ def test_user_function_contract_rejects_orphans_and_wrong_active_scope(
     assert validate_trace(
         replace(trace, spans=(parent, replace(user_span, trace_id="9" * 32), *others)), focused, _query()
     )
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
+def test_handler_restore_rejects_a_stale_user_span_as_ambient_parent(view: str) -> None:
+    assertions = _bound_assertions(f"otel-{view}", 22)
+    assertion = next(
+        a for a in assertions["span_assertions"] if a["select"]["name"] == "conformance.handler-after-resume"
+    )
+    workflow = _span(1, "Workflow", 0, 5, None, {})
+    invocation = _span(2, "Invocation", 3, 5, None, {"durable.invocation.first": False})
+    stale_user = _span(3, "conformance.step", 3, 4, 2, {"conformance.callback": "step"})
+    restored = replace(
+        _span(4, "conformance.handler-after-resume", 4, 4, 3, {"conformance.callback": "handler-after-resume"}),
+        status="UNSET",
+    )
+    trace = Trace(TRACE_ID, (workflow, invocation, stale_user, restored))
+    errors = validate_trace(trace, {"span_assertions": [assertion]}, _query())
+    assert any("forbidden span selector" in error for error in errors)
+
+
+def test_invocation_replay_permitted_counts_require_distinct_linked_segments() -> None:
+    placeholders = PlaceholderContext()
+    for name, value in {
+        "EXECUTION_ARN": EXECUTION_ARN,
+        "SERVICE_NAME": SERVICE_NAME,
+        "COMPLETED_STEP": "before",
+    }.items():
+        placeholders.bind(name, value)
+    requirement = placeholders.substitute(_requirement("otel-invocation", 21)["TelemetryAssertions"])
+    assertion = next(a for a in requirement["span_assertions"] if a["select"]["name"] == "otel-before-wait")
+    # This test focuses on replay linkage/parentage, independent of the later step.
+    assertion = replace_assertion_without_before(assertion)
+    workflow = _span(1, "Workflow", 0, 5, None, {})
+    initial = _span(2, "Invocation", 0, 2, None, {"durable.invocation.first": True})
+    resumed = _span(3, "Invocation", 3, 5, None, {"durable.invocation.first": False})
+    attributes = {
+        "durable.operation.id": "before",
+        "durable.operation.type": "STEP",
+        "durable.operation.subtype": "Step",
+        "durable.operation.name": "otel-before-wait",
+        "durable.operation.status": "SUCCEEDED",
+        "durable.attempt.number": 1,
+    }
+    first = _span(4, "otel-before-wait", 0.5, 1, 2, attributes, links=(1,))
+    second = _span(5, "otel-before-wait", 3.1, 3.2, 3, attributes, links=(4, 1))
+    focused = {"span_assertions": [assertion]}
+    trace = Trace(TRACE_ID, (workflow, initial, resumed, first))
+    assert validate_trace(trace, focused, _query()) == []
+    assert validate_trace(replace(trace, spans=(*trace.spans, second)), focused, _query()) == []
+    assert validate_trace(replace(trace, spans=(*trace.spans, first)), focused, _query())
+    assert validate_trace(replace(trace, spans=(*trace.spans, replace(second, links=()))), focused, _query())
+    assert validate_trace(
+        replace(trace, spans=(workflow, initial, resumed, replace(first, links=()))), focused, _query()
+    )
+
+
+def replace_assertion_without_before(assertion: dict) -> dict:
+    from copy import deepcopy
+
+    result = deepcopy(assertion)
+    result["expect"].pop("before", None)
+    return result

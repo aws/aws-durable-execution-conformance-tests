@@ -456,3 +456,21 @@ spans: the public tracer can start them on a millisecond wall-clock tick while
 SDK spans use explicit monotonic timestamps. Parent identity, trace identity and
 cycle checks remain strict. This flag is opt-in; existing requirements retain
 their previous timing checks, and a stale parent outside the 1 ms bound fails.
+
+Exact-count requirements may set `TelemetryAssertions.quiescence_seconds` to a
+finite, non-negative interval within the polling timeout. A passing normalized
+trace must remain unchanged for that interval. Span multiplicity is preserved,
+so a duplicate arriving in a later S3 object invalidates the earlier match.
+Observation gaps and retryable backend errors restart the interval; exhausting
+the polling budget before stability is confirmed fails validation. The default
+is zero, preserving existing polling behavior. Cases 21 use a five-second window.
+
+A parent expectation may use `$not: <span selector>` to reject a matching parent.
+The handler ambient fallback rejects parents with `conformance.callback`, so a
+leaked probe span cannot be accepted as Lambda ambient context.
+
+For `count: {$any_of: [1, 2]}`, `expect_by_occurrence` may be a mapping from each
+permitted count to exactly that many occurrence expectations. Every permitted
+count must be covered. This lets invocation replay require one Workflow-linked
+initial segment, or that segment plus a distinct replay segment linked to both
+the original operation and Workflow. The existing sequence form is unchanged.

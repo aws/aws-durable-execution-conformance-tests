@@ -359,13 +359,16 @@ def _parent_expectation_errors(
     allow_unresolved = expected.get("$allow_unresolved", False)
     if "$allow_unresolved" in expected and allow_unresolved is not True:
         return [f"{path}.$allow_unresolved must be true"]
+    rejected_parent = expected.get("$not")
+    if "$not" in expected and not isinstance(rejected_parent, Mapping):
+        return [f"{path}.$not must be a span selector mapping"]
     reject_sdk_span = expected.get("$reject_sdk_span", False)
     if "$reject_sdk_span" in expected and reject_sdk_span is not True:
         return [f"{path}.$reject_sdk_span must be true"]
     expected_properties = {
         key: value
         for key, value in expected.items()
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision"}
+        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision", "$not"}
     }
 
     parent_span_id = span.parent_span_id
@@ -401,6 +404,12 @@ def _parent_expectation_errors(
             parent_errors.append(
                 f"{path}: resolved parent span {parent.name!r} ({parent.span_id}) is emitted by the durable SDK"
             )
+        if (
+            not parent_errors
+            and isinstance(rejected_parent, Mapping)
+            and _matches_span(rejected_parent, serialized_parent, feature_disparities)
+        ):
+            parent_errors.append(f"{path}: resolved parent matches the forbidden span selector")
         expectation_errors.append(parent_errors)
     matching_parents = [
         parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
@@ -668,7 +677,21 @@ def _span_assertion_errors(
             errors.append(f"{path}.expect must be a mapping")
             continue
         occurrence_expectations: list[Mapping[str, Any]] | None = None
-        if raw_occurrence_expectations is not None:
+        count_occurrence_expectations: Mapping[int, Any] | None = None
+        if isinstance(raw_occurrence_expectations, Mapping):
+            if not raw_occurrence_expectations or not all(
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and count > 0
+                and _is_sequence(items)
+                and len(items) == count
+                and all(isinstance(item, Mapping) for item in items)
+                for count, items in raw_occurrence_expectations.items()
+            ):
+                errors.append(f"{path}.expect_by_occurrence must map positive counts to that many expectation mappings")
+                continue
+            count_occurrence_expectations = raw_occurrence_expectations
+        elif raw_occurrence_expectations is not None:
             if not _is_sequence(raw_occurrence_expectations) or not all(
                 isinstance(occurrence_expected, Mapping) for occurrence_expected in raw_occurrence_expectations
             ):
@@ -709,6 +732,11 @@ def _span_assertion_errors(
             allowed_counts = " or ".join(str(count) for count in expected_counts)
             errors.append(f"{path}.select matched {len(matches)} spans; expected {allowed_counts}")
             continue
+        if count_occurrence_expectations is not None:
+            if set(count_occurrence_expectations) != set(expected_counts):
+                errors.append(f"{path}.expect_by_occurrence must cover every permitted count")
+                continue
+            occurrence_expectations = list(count_occurrence_expectations[len(matches)])
         if occurrence_expectations is not None:
             if len(occurrence_expectations) != len(matches):
                 errors.append(

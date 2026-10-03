@@ -60,3 +60,14 @@ New requirements and SDK handler updates should be reviewed together. Configure
 `conformance_test_ref` to the new requirement commit when validating the handler
 PRs; an older pinned requirement revision filters out the new handlers and is not
 coverage evidence.
+
+
+Case 21 now requires five seconds of valid, unchanged normalized telemetry before
+passing. Late duplicate records reset or invalidate that candidate. Handler-root
+fallbacks reject probe spans tagged with `conformance.callback`, and invocation
+replay checks the required link shape for each allowed segment count.
+
+The self-test workflow pins the Python companion fixture from SDK PR #758 so all
+24 cases are exercised before the new handlers reach SDK main. Runtime
+prerequisites are the focused fixes #752 and #756. Manual dispatch can override
+that revision; the `failed+uncovered` coverage threshold is unchanged.

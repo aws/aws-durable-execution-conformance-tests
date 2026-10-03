@@ -183,3 +183,101 @@ def test_polling_preserves_exhausted_retryable_error() -> None:
 def test_invalid_polling_limits_are_rejected(policy: dict) -> None:
     with pytest.raises(ValueError):
         PollingPolicy(**policy)
+
+
+class _TimedBackend(_Backend):
+    def __init__(self, responses: list[Trace | BackendError | None]) -> None:
+        super().__init__(responses)
+        self.now = 0.0
+        self._monotonic = lambda: self.now
+        self._sleep = self.advance
+
+    def advance(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _one_span_trace() -> Trace:
+    from aws_durable_execution_conformance_tests_otel.model import Span
+
+    now = datetime.now(UTC)
+    return Trace(
+        trace_id="1" * 32,
+        spans=(Span(trace_id="1" * 32, span_id="2" * 16, name="completed-step", start_time=now, end_time=now),),
+    )
+
+
+def test_quiescence_observes_duplicate_arriving_after_an_initial_exact_count_match() -> None:
+    from dataclasses import replace
+
+    first = _one_span_trace()
+    duplicate = replace(first, spans=(*first.spans, first.spans[0]))
+    backend = _TimedBackend([first, first, duplicate, duplicate])
+    result = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=4, quiescence_seconds=2),
+        accept=lambda trace: len(trace.spans) == 1,
+    )
+    assert result is duplicate
+    assert backend.attempts == 4
+
+
+def test_quiescence_ignores_artifact_changes_but_preserves_span_multiplicity() -> None:
+    from dataclasses import replace
+
+    first = _one_span_trace()
+    second = replace(first, raw_artifact={"query_id": "different"})
+    backend = _TimedBackend([first, second, second])
+    result = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=3, quiescence_seconds=2),
+    )
+    assert result is second
+    assert backend.attempts == 3
+
+
+def test_quiescence_does_not_return_passing_data_when_the_budget_is_too_short() -> None:
+    first = _one_span_trace()
+    backend = _TimedBackend([first, first])
+    with pytest.raises(TelemetryTimeout, match="did not remain valid and unchanged"):
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=2, quiescence_seconds=2),
+        )
+
+
+@pytest.mark.parametrize("interruption", [None, RetryableBackendError("temporary ingestion failure")])
+def test_quiescence_restarts_after_an_observation_gap(interruption: BackendError | None) -> None:
+    first = _one_span_trace()
+    backend = _TimedBackend([first, interruption, first, first, first])
+    assert (
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=5, quiescence_seconds=2),
+        )
+        is first
+    )
+    assert backend.attempts == 5
+
+
+@pytest.mark.parametrize("quiescence", [-1, True, float("nan"), float("inf"), 11])
+def test_invalid_quiescence_is_rejected(quiescence: float) -> None:
+    with pytest.raises(ValueError, match="quiescence"):
+        PollingPolicy(timeout_seconds=10, quiescence_seconds=quiescence)
+
+
+def test_quiescence_restarts_when_an_acceptable_trace_gains_data() -> None:
+    from dataclasses import replace
+
+    first = _one_span_trace()
+    changed = replace(first, spans=(*first.spans, replace(first.spans[0], span_id="3" * 16)))
+    backend = _TimedBackend([first, changed, changed, changed])
+    assert (
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=4, quiescence_seconds=2),
+            accept=lambda _trace: True,
+        )
+        is changed
+    )
+    assert backend.attempts == 4

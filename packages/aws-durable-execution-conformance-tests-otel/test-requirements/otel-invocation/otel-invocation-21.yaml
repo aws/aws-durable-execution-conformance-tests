@@ -1,6 +1,4 @@
----
-description: Invocation view keeps completed-step replay segments correlated without
-  rerunning user code
+description: Invocation view keeps completed-step replay segments correlated without rerunning user code
 Input:
   scenario: completed-step-replay
 AsyncInvoke: true
@@ -48,7 +46,8 @@ TelemetryAssertions:
   span_assertion_scope:
     attributes:
       durable.execution.arn: ${EXECUTION_ARN}
-  exact_attribute_prefixes: [durable.]
+  exact_attribute_prefixes:
+    - durable.
   span_assertions:
     - select:
         name: Workflow
@@ -255,7 +254,46 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${AFTER_STEP}
       count:
-        $any_of: [1, 2]
+        $any_of:
+          - 1
+          - 2
+      expect_by_occurrence:
+        1:
+          - links:
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              name: Invocation
+              kind: INTERNAL
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: true
+        2:
+          - links:
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              name: Invocation
+              kind: INTERNAL
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: true
+          - links:
+              - $occurrence: 1
+                name: otel-before-wait
+                attributes:
+                  durable.operation.id: ${COMPLETED_STEP}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              name: Invocation
+              kind: INTERNAL
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: false
     - select:
         name: otel-before-wait attempt 1
         attributes:
@@ -287,3 +325,4 @@ TelemetryAssertions:
           name: otel-after-wait
           attributes:
             durable.operation.id: ${AFTER_STEP}
+  quiescence_seconds: 5

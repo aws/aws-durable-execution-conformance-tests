@@ -2032,3 +2032,25 @@ def test_user_span_timestamp_rounding_is_explicit_and_bounded_to_one_millisecond
             }
         }
         assert validate_trace(trace, invalid, _query())
+
+
+def test_count_dependent_occurrence_expectations_must_cover_all_allowed_counts() -> None:
+    invalid_cases: tuple[dict[int, list[dict[str, object]]], ...] = (
+        {1: [{}]},
+        {1: [], 2: [{}, {}]},
+        {True: [{}], 2: [{}, {}]},
+    )
+    for by_count in invalid_cases:
+        errors = validate_trace(
+            _trace(),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "count": {"$any_of": [1, 2]},
+                    "expect": {},
+                    "expect_by_occurrence": by_count,
+                }
+            },
+            _query(),
+        )
+        assert any("expect_by_occurrence" in error for error in errors)

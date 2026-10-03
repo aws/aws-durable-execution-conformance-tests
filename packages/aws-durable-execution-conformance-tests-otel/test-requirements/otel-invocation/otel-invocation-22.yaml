@@ -103,6 +103,9 @@ TelemetryAssertions:
             - $reject_sdk_span: true
               $allow_unresolved: true
               $millisecond_precision: true
+              $not:
+                attributes:
+                  conformance.callback: '*'
       count: 2
       expect_by_occurrence:
         - inside:
@@ -368,6 +371,9 @@ TelemetryAssertions:
             - $reject_sdk_span: true
               $allow_unresolved: true
               $millisecond_precision: true
+              $not:
+                attributes:
+                  conformance.callback: '*'
       count: 2
       expect_by_occurrence:
         - inside:
@@ -405,6 +411,9 @@ TelemetryAssertions:
             - $reject_sdk_span: true
               $allow_unresolved: true
               $millisecond_precision: true
+              $not:
+                attributes:
+                  conformance.callback: '*'
         inside:
           name: Invocation
           attributes:
