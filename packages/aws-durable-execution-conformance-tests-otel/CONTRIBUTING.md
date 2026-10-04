@@ -416,3 +416,63 @@ examples hosted in separate SDK repositories can use the same build logic.
 - Requirement discovery works from both source and built wheels.
 - No secrets or provider credentials appear in fixtures, diagnostics, or
   artifacts.
+
+### User-function context assertions
+
+`expect.same_trace_as` selects exactly one other span and requires the selected
+span to have its trace ID. This is independent of parent identity and timestamps:
+
+```yaml
+expect:
+  same_trace_as:
+    name: Workflow
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+```
+
+`expect.parent.$any_of` accepts a non-empty list of complete parent expectations.
+Each alternative retains the usual parent-ID, cycle and timestamp checks. This
+allows a handler to preserve a same-trace Lambda instrumentation context or use
+the view's SDK root, without imposing a new parent choice on existing integrations:
+
+```yaml
+parent:
+  $any_of:
+    - name: Workflow
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - $reject_sdk_span: true
+      $allow_unresolved: true
+```
+
+Use `same_trace_as` alongside this alternative when the upstream parent may be
+omitted from a backend response. A user span on a different trace must still fail.
+Operation bodies should name their actual operation or attempt parent; they
+should not use this broad handler-root alternative.
+
+A parent expectation or temporal selector may set `$millisecond_precision: true`
+to allow at most 1 ms of timestamp rounding. Cases 22/23 use it for normal user
+spans: the public tracer can start them on a millisecond wall-clock tick while
+SDK spans use explicit monotonic timestamps. Parent identity, trace identity and
+cycle checks remain strict. This flag is opt-in; existing requirements retain
+their previous timing checks, and a stale parent outside the 1 ms bound fails.
+
+Exact-count requirements may set `TelemetryAssertions.quiescence_seconds` to a
+finite, non-negative interval within the polling timeout. A passing normalized
+trace must remain unchanged for that interval. Span multiplicity is preserved,
+so a duplicate arriving in a later S3 object invalidates the earlier match.
+Observation gaps and retryable backend errors restart the interval; exhausting
+the polling budget before stability is confirmed fails validation. The default
+is zero, preserving existing polling behavior. Cases 21 use a five-second window.
+
+A parent expectation may use `$not: <span selector>` to reject a matching parent.
+The handler ambient fallback rejects parents with `conformance.callback`, so a
+leaked probe span cannot be accepted as Lambda ambient context.
+
+For `count: {$any_of: [1, 2]}`, `expect_by_occurrence` may be a mapping from each
+permitted count to exactly that many occurrence expectations. Every permitted
+count must be covered. This lets invocation replay require one Workflow-linked
+initial segment, or that segment plus a distinct replay segment linked to both
+the original operation and Workflow. The existing sequence form is unchanged.
+
+Matcher syntax is validated recursively in every parent alternative and every count-dependent occurrence branch, including branches not selected by the observed trace. `same_trace_as` requires a direct selector and does not accept `$linked`, so missing backend link support cannot skip the trace-ID comparison.

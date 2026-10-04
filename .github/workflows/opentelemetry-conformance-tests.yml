@@ -7,10 +7,11 @@ name: OpenTelemetry Conformance Tests
 # - Orchestrator is called by relative path so the PR's own workflow copy runs.
 # - conformance_test_ref is omitted, so resolve uses github.sha (this PR's
 #   requirements).
-# - sdk_ref tracks SDK main (not pinned) so newly added handlers are picked up
-#   automatically; a pin would report every new requirement as UNCOVERED until
-#   bumped. Cost: a broken SDK main can red these PRs -- re-run once it is fixed.
-#   Manual dispatch can pin a commit to reproduce a failure.
+# - sdk_ref pins the reference fixture revision that implements the full
+#   catalog. Update it alongside companion SDK handler PRs; otherwise new cases
+#   are UNCOVERED before those handlers reach SDK main. Manual dispatch can select
+#   another revision (including main) without reducing the coverage threshold.
+#   Reference handlers: aws/aws-durable-execution-sdk-python#758, with #752/#756.
 
 on:
   pull_request:
@@ -42,7 +43,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk_ref:
-        description: SDK commit or branch to test against (default is the SDK main branch)
+        description: SDK commit or branch to test against (default is the pinned reference fixture)
         required: false
         type: string
       phase:
@@ -81,8 +82,8 @@ jobs:
       language: py
       resource_prefix: py-self
       sdk_repository: aws/aws-durable-execution-sdk-python
-      # Empty => SDK main (see header). Overridable on manual dispatch.
-      sdk_ref: ${{ inputs.sdk_ref || '' }}
+      # Reference fixture implementing cases 1–24; overridable on manual dispatch.
+      sdk_ref: ${{ inputs.sdk_ref || '55a7870423dfe1bac0f057d959d654d5f302a7cd' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel

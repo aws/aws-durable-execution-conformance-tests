@@ -249,6 +249,7 @@ class OtelExtension:
                     timeout_seconds=timeout,
                     interval_seconds=float(options["otel_poll_interval"]),
                     max_attempts=int(options["otel_poll_attempts"]),
+                    quiescence_seconds=assertions.get("quiescence_seconds", 0.0),
                 ),
                 accept=lambda candidate: not validate_trace(
                     candidate,

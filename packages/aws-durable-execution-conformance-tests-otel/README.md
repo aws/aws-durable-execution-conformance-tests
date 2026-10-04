@@ -302,3 +302,7 @@ Names must be unique. A backend factory exposes `name` and
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidance on adding OTel requirements,
 SDK test handlers, provider-neutral assertions, and test coverage.
+
+## Launch regression coverage
+
+Cases 21–24 cover completed-operation replay exports, active context in SDK user functions, and invocation-retry status. See [the coverage matrix and callback boundaries](LAUNCH_ISSUE_COVERAGE.md).

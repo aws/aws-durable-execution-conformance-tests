@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
@@ -26,7 +27,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable_execution_arn",
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
-_TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
+_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as")
 _MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
 
 
@@ -316,6 +317,128 @@ def _span_expectation_errors(
     return errors
 
 
+def _matcher_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Validate nested value matchers without consulting observed values."""
+    if isinstance(expected, str):
+        try:
+            get_regex_pattern(expected)
+        except re.error as exc:
+            return [f"{path}: invalid regex matcher: {exc}"]
+        return []
+    if isinstance(expected, Mapping):
+        if set(expected) == {"$any_of"}:
+            alternatives = expected["$any_of"]
+            if not _is_sequence(alternatives) or not alternatives:
+                return [f"{path}.$any_of must be a non-empty sequence"]
+            return [
+                error
+                for i, alternative in enumerate(alternatives)
+                for error in _matcher_schema_errors(alternative, path=f"{path}.$any_of[{i}]")
+            ]
+        return [
+            error for key, value in expected.items() for error in _matcher_schema_errors(value, path=f"{path}.{key}")
+        ]
+    if _is_sequence(expected):
+        return [
+            error for i, value in enumerate(expected) for error in _matcher_schema_errors(value, path=f"{path}[{i}]")
+        ]
+    return []
+
+
+def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+    errors = [
+        f"{path}.{flag} must be true"
+        for flag in ("$linked", "$millisecond_precision")
+        if flag in expected and expected[flag] is not True
+    ]
+    if relation == "same_trace_as" and "$linked" in expected:
+        errors.append(f"{path} does not support $linked; select the comparison span directly")
+    errors.extend(
+        _matcher_schema_errors(
+            {key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision"}},
+            path=path,
+        )
+    )
+    return errors
+
+
+def _links_schema_errors(expected: Any, *, path: str) -> list[str]:
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for i, alternative in enumerate(alternatives)
+            for error in _links_schema_errors(alternative, path=f"{path}.$any_of[{i}]")
+        ]
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence"]
+    errors = []
+    for i, item in enumerate(expected):
+        item_path = f"{path}[{i}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{item_path} must be a mapping")
+            continue
+        for key in ("count", "$occurrence"):
+            if key in item and (isinstance(item[key], bool) or not isinstance(item[key], int) or item[key] < 1):
+                errors.append(f"{item_path}.{key} must be a positive integer")
+        errors.extend(
+            _matcher_schema_errors(
+                {key: value for key, value in item.items() if key not in {"count", "$occurrence"}}, path=item_path
+            )
+        )
+    return errors
+
+
+def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
+    errors = []
+    for key, value in expected.items():
+        child = f"{path}.{key}"
+        if key == "parent":
+            errors.extend(_parent_schema_errors(value, path=child))
+        elif key == "links":
+            errors.extend(_links_schema_errors(value, path=child))
+        elif key in _SPAN_RELATION_KEYS:
+            errors.extend(_relation_schema_errors(key, value, path=child))
+        else:
+            errors.extend(_matcher_schema_errors(value, path=child))
+    return errors
+
+
+def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Validate every parent alternative independently of observed telemetry."""
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _parent_schema_errors(alternative, path=f"{path}.$any_of[{index}]")
+        ]
+    errors = [
+        f"{path}.{flag} must be true"
+        for flag in ("$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision")
+        if flag in expected and expected[flag] is not True
+    ]
+    if "$not" in expected and not isinstance(expected["$not"], Mapping):
+        errors.append(f"{path}.$not must be a span selector mapping")
+    for key, value in expected.items():
+        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision"}:
+            errors.extend(_matcher_schema_errors(value, path=f"{path}.{key}"))
+    return errors
+
+
 def _parent_expectation_errors(
     expected: Any,
     span: Span,
@@ -324,22 +447,54 @@ def _parent_expectation_errors(
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> list[str]:
+    schema_errors = _parent_schema_errors(expected, path=path)
+    if schema_errors:
+        return schema_errors
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        failures = []
+        for index, alternative in enumerate(alternatives):
+            alternative_errors = _parent_expectation_errors(
+                alternative,
+                span,
+                spans_by_id,
+                path=f"{path}.$any_of[{index}]",
+                feature_disparities=feature_disparities,
+            )
+            if not alternative_errors:
+                return []
+            failures.extend(alternative_errors)
+        return [f"{path}: parent did not match any permitted alternative", *failures]
+
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     allow_outside = expected.get("$allow_outside", False)
     if "$allow_outside" in expected and allow_outside is not True:
         return [f"{path}.$allow_outside must be true"]
     allow_unresolved = expected.get("$allow_unresolved", False)
     if "$allow_unresolved" in expected and allow_unresolved is not True:
         return [f"{path}.$allow_unresolved must be true"]
+    rejected_parent = expected.get("$not")
+    if "$not" in expected and not isinstance(rejected_parent, Mapping):
+        return [f"{path}.$not must be a span selector mapping"]
     reject_sdk_span = expected.get("$reject_sdk_span", False)
     if "$reject_sdk_span" in expected and reject_sdk_span is not True:
         return [f"{path}.$reject_sdk_span must be true"]
     expected_properties = {
         key: value
         for key, value in expected.items()
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span"}
+        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision", "$not"}
     }
 
     parent_span_id = span.parent_span_id
@@ -375,6 +530,12 @@ def _parent_expectation_errors(
             parent_errors.append(
                 f"{path}: resolved parent span {parent.name!r} ({parent.span_id}) is emitted by the durable SDK"
             )
+        if (
+            not parent_errors
+            and isinstance(rejected_parent, Mapping)
+            and _matches_span(rejected_parent, serialized_parent, feature_disparities)
+        ):
+            parent_errors.append(f"{path}: resolved parent matches the forbidden span selector")
         expectation_errors.append(parent_errors)
     matching_parents = [
         parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
@@ -387,7 +548,10 @@ def _parent_expectation_errors(
     if allow_outside:
         return []
 
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     candidate_errors = []
     for parent in matching_parents:
         errors: list[str] = []
@@ -516,7 +680,7 @@ def _link_expectation_errors(
     return errors
 
 
-def _temporal_relation_errors(
+def _span_relation_errors(
     relation: str,
     expected: Any,
     selected_span: Span,
@@ -530,12 +694,15 @@ def _temporal_relation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     linked_only = expected.get("$linked", False)
     if "$linked" in expected and linked_only is not True:
         return [f"{path}.$linked must be true"]
     if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
         return []
-    selector = {key: value for key, value in expected.items() if key != "$linked"}
+    selector = {key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision"}}
     linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
@@ -550,7 +717,14 @@ def _temporal_relation_errors(
         return [f"{path} matched {len(matches)} spans; it must select exactly one"]
 
     related_span = matches[0]
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    if relation == "same_trace_as":
+        if selected_span.trace_id != related_span.trace_id:
+            return [f"{path}: span {selected_span.name!r} uses a different trace than {related_span.name!r}"]
+        return []
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     selected_description = f"{selected_span.name!r} ({selected_span.span_id})"
     related_description = f"{related_span.name!r} ({related_span.span_id})"
     if relation == "before" and selected_span.end_time - related_span.start_time > timestamp_tolerance:
@@ -629,7 +803,21 @@ def _span_assertion_errors(
             errors.append(f"{path}.expect must be a mapping")
             continue
         occurrence_expectations: list[Mapping[str, Any]] | None = None
-        if raw_occurrence_expectations is not None:
+        count_occurrence_expectations: Mapping[int, Any] | None = None
+        if isinstance(raw_occurrence_expectations, Mapping):
+            if not raw_occurrence_expectations or not all(
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and count > 0
+                and _is_sequence(items)
+                and len(items) == count
+                and all(isinstance(item, Mapping) for item in items)
+                for count, items in raw_occurrence_expectations.items()
+            ):
+                errors.append(f"{path}.expect_by_occurrence must map positive counts to that many expectation mappings")
+                continue
+            count_occurrence_expectations = raw_occurrence_expectations
+        elif raw_occurrence_expectations is not None:
             if not _is_sequence(raw_occurrence_expectations) or not all(
                 isinstance(occurrence_expected, Mapping) for occurrence_expected in raw_occurrence_expectations
             ):
@@ -653,6 +841,27 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer or $any_of positive integers")
             continue
 
+        schema_errors = _matcher_schema_errors(selector, path=f"{path}.select")
+        schema_errors.extend(_expectation_schema_errors(expected, path=f"{path}.expect"))
+        if count_occurrence_expectations is not None:
+            if set(count_occurrence_expectations) != set(expected_counts):
+                schema_errors.append(f"{path}.expect_by_occurrence must cover every permitted count")
+            for count, branches in count_occurrence_expectations.items():
+                for occurrence_index, branch in enumerate(branches):
+                    schema_errors.extend(
+                        _expectation_schema_errors(
+                            branch, path=f"{path}.expect_by_occurrence[{count}][{occurrence_index}]"
+                        )
+                    )
+        elif occurrence_expectations is not None:
+            for occurrence_index, branch in enumerate(occurrence_expectations):
+                schema_errors.extend(
+                    _expectation_schema_errors(branch, path=f"{path}.expect_by_occurrence[{occurrence_index}]")
+                )
+        if schema_errors:
+            errors.extend(schema_errors)
+            continue
+
         matches = _select_span_matches(
             selector,
             spans,
@@ -670,6 +879,11 @@ def _span_assertion_errors(
             allowed_counts = " or ".join(str(count) for count in expected_counts)
             errors.append(f"{path}.select matched {len(matches)} spans; expected {allowed_counts}")
             continue
+        if count_occurrence_expectations is not None:
+            if set(count_occurrence_expectations) != set(expected_counts):
+                errors.append(f"{path}.expect_by_occurrence must cover every permitted count")
+                continue
+            occurrence_expectations = list(count_occurrence_expectations[len(matches)])
         if occurrence_expectations is not None:
             if len(occurrence_expectations) != len(matches):
                 errors.append(
@@ -702,7 +916,7 @@ def _span_assertion_errors(
             expected_properties = {
                 key: value
                 for key, value in effective_expected.items()
-                if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
+                if key not in {"links", "parent"} and key not in _SPAN_RELATION_KEYS
             }
             expected_attributes = effective_expected.get("attributes")
             errors.extend(
@@ -734,10 +948,10 @@ def _span_assertion_errors(
                         feature_disparities=feature_disparities,
                     )
                 )
-            for relation in _TEMPORAL_RELATION_KEYS:
+            for relation in _SPAN_RELATION_KEYS:
                 if relation in effective_expected:
                     errors.extend(
-                        _temporal_relation_errors(
+                        _span_relation_errors(
                             relation,
                             effective_expected[relation],
                             trace.spans[span_index],
