@@ -1,0 +1,1 @@
+{"finding_digest":"99371e281fcb8c1571931a3de666355ccbc241b5686b7481a1c210bbfea2456f","finding_id":"arf_v1_te3r4ka7zogbk4mtdi66mzrvlt","identity_key":"tests/test_resources.py::otel-catalog::new-cases-skip-invariant-coverage","pull_request_number":131,"repository":{"full_name":"aws/aws-durable-execution-conformance-tests","id":1303200455},"reviewer":"codex","schema_version":1}
