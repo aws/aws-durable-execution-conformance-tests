@@ -129,6 +129,10 @@ class PollingBackend(ABC):
                             tuple(sorted(trace.log_trace_ids)),
                         )
                         now = self._monotonic()
+                        # Lookup and validation also consume the polling budget.
+                        # A late confirmation cannot establish in-budget stability.
+                        if now - started > policy.timeout_seconds:
+                            break
                         if signature != stable_signature:
                             stable_signature = signature
                             stable_since = now

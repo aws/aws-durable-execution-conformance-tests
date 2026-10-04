@@ -246,6 +246,45 @@ def test_quiescence_does_not_return_passing_data_when_the_budget_is_too_short() 
         )
 
 
+@pytest.mark.parametrize("delay_phase", ["lookup", "validation"])
+def test_quiescence_rejects_confirmation_that_finishes_after_the_deadline(delay_phase: str) -> None:
+    first = _one_span_trace()
+
+    class SlowBackend(_TimedBackend):
+        def _lookup(self, query: TelemetryQuery) -> Trace | None:
+            result = super()._lookup(query)
+            if self.attempts == 2 and delay_phase == "lookup":
+                self.now += 10
+            return result
+
+    backend = SlowBackend([first, first])
+
+    def accept(_trace: Trace) -> bool:
+        if backend.attempts == 2 and delay_phase == "validation":
+            backend.now += 10
+        return True
+
+    with pytest.raises(TelemetryTimeout, match="did not remain valid and unchanged"):
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=2, quiescence_seconds=2),
+            accept=accept,
+        )
+    assert backend.attempts == 2
+
+
+def test_quiescence_accepts_confirmation_at_the_deadline() -> None:
+    first = _one_span_trace()
+    backend = _TimedBackend([first, first])
+    assert (
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=2, interval_seconds=2, max_attempts=2, quiescence_seconds=2),
+        )
+        is first
+    )
+
+
 @pytest.mark.parametrize("interruption", [None, RetryableBackendError("temporary ingestion failure")])
 def test_quiescence_restarts_after_an_observation_gap(interruption: BackendError | None) -> None:
     first = _one_span_trace()
