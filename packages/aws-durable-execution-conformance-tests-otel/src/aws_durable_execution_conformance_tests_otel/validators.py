@@ -28,6 +28,24 @@ _EXECUTION_ATTRIBUTE_KEYS = (
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
 _SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as")
+# These are serialized properties from span_to_dict, not provider payload fields
+# or the fields of a dataclass. Attribute mappings remain open-ended.
+_SPAN_PROPERTIES = frozenset(
+    {
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "name",
+        "kind",
+        "start_time",
+        "end_time",
+        "status",
+        "service_name",
+        "attributes",
+        "links",
+    }
+)
+_SERIALIZED_LINK_PROPERTIES = frozenset({"trace_id", "span_id"})
 _MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
 
 
@@ -317,7 +335,12 @@ def _span_expectation_errors(
     return errors
 
 
-def _matcher_schema_errors(expected: Any, *, path: str) -> list[str]:
+def _unknown_field_errors(expected: Mapping[str, Any], allowed: Collection[str], *, path: str) -> list[str]:
+    unknown = sorted(set(expected) - set(allowed), key=str)
+    return [f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}"] if unknown else []
+
+
+def _matcher_schema_errors(expected: Any, *, path: str, allowed_keys: Collection[str] | None = None) -> list[str]:
     """Validate nested value matchers without consulting observed values."""
     if isinstance(expected, str):
         try:
@@ -333,31 +356,51 @@ def _matcher_schema_errors(expected: Any, *, path: str) -> list[str]:
             return [
                 error
                 for i, alternative in enumerate(alternatives)
-                for error in _matcher_schema_errors(alternative, path=f"{path}.$any_of[{i}]")
+                for error in _matcher_schema_errors(alternative, path=f"{path}.$any_of[{i}]", allowed_keys=allowed_keys)
             ]
-        return [
+        errors = _unknown_field_errors(expected, allowed_keys, path=path) if allowed_keys is not None else []
+        return errors + [
             error for key, value in expected.items() for error in _matcher_schema_errors(value, path=f"{path}.{key}")
         ]
     if _is_sequence(expected):
         return [
-            error for i, value in enumerate(expected) for error in _matcher_schema_errors(value, path=f"{path}[{i}]")
+            error
+            for i, value in enumerate(expected)
+            for error in _matcher_schema_errors(value, path=f"{path}[{i}]", allowed_keys=allowed_keys)
         ]
     return []
+
+
+def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
+    """Direct selectors contain serialized span properties, never relation controls."""
+    errors = _unknown_field_errors(expected, _SPAN_PROPERTIES, path=path)
+    for key, value in expected.items():
+        if key in _SPAN_PROPERTIES:
+            errors.extend(
+                _matcher_schema_errors(
+                    value,
+                    path=f"{path}.{key}",
+                    # In a direct selector links match the serialized ID pairs.
+                    # Only expect.links resolves those pairs to full linked spans.
+                    allowed_keys=_SERIALIZED_LINK_PROPERTIES if key == "links" else None,
+                )
+            )
+    return errors
 
 
 def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
+    # Preserve the existing relation flags; same_trace_as still forbids link filtering.
+    controls = {"$linked", "$millisecond_precision"}
     errors = [
-        f"{path}.{flag} must be true"
-        for flag in ("$linked", "$millisecond_precision")
-        if flag in expected and expected[flag] is not True
+        f"{path}.{flag} must be true" for flag in sorted(controls) if flag in expected and expected[flag] is not True
     ]
     if relation == "same_trace_as" and "$linked" in expected:
         errors.append(f"{path} does not support $linked; select the comparison span directly")
     errors.extend(
-        _matcher_schema_errors(
-            {key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision"}},
+        _span_selector_schema_errors(
+            {key: value for key, value in expected.items() if key not in controls},
             path=path,
         )
     )
@@ -386,7 +429,7 @@ def _links_schema_errors(expected: Any, *, path: str) -> list[str]:
             if key in item and (isinstance(item[key], bool) or not isinstance(item[key], int) or item[key] < 1):
                 errors.append(f"{item_path}.{key} must be a positive integer")
         errors.extend(
-            _matcher_schema_errors(
+            _span_selector_schema_errors(
                 {key: value for key, value in item.items() if key not in {"count", "$occurrence"}}, path=item_path
             )
         )
@@ -394,7 +437,7 @@ def _links_schema_errors(expected: Any, *, path: str) -> list[str]:
 
 
 def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
-    errors = []
+    errors = _unknown_field_errors(expected, _SPAN_PROPERTIES | {"parent", *_SPAN_RELATION_KEYS}, path=path)
     for key, value in expected.items():
         child = f"{path}.{key}"
         if key == "parent":
@@ -403,7 +446,7 @@ def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> lis
             errors.extend(_links_schema_errors(value, path=child))
         elif key in _SPAN_RELATION_KEYS:
             errors.extend(_relation_schema_errors(key, value, path=child))
-        else:
+        elif key in _SPAN_PROPERTIES:
             errors.extend(_matcher_schema_errors(value, path=child))
     return errors
 
@@ -431,11 +474,22 @@ def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
         for flag in ("$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision")
         if flag in expected and expected[flag] is not True
     ]
-    if "$not" in expected and not isinstance(expected["$not"], Mapping):
-        errors.append(f"{path}.$not must be a span selector mapping")
-    for key, value in expected.items():
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision"}:
-            errors.extend(_matcher_schema_errors(value, path=f"{path}.{key}"))
+    if "$not" in expected:
+        if not isinstance(expected["$not"], Mapping):
+            errors.append(f"{path}.$not must be a span selector mapping")
+        else:
+            errors.extend(_span_selector_schema_errors(expected["$not"], path=f"{path}.$not"))
+    errors.extend(
+        _span_selector_schema_errors(
+            {
+                key: value
+                for key, value in expected.items()
+                if key
+                not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision", "$not"}
+            },
+            path=path,
+        )
+    )
     return errors
 
 
@@ -841,7 +895,7 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer or $any_of positive integers")
             continue
 
-        schema_errors = _matcher_schema_errors(selector, path=f"{path}.select")
+        schema_errors = _span_selector_schema_errors(selector, path=f"{path}.select")
         schema_errors.extend(_expectation_schema_errors(expected, path=f"{path}.expect"))
         if count_occurrence_expectations is not None:
             if set(count_occurrence_expectations) != set(expected_counts):
@@ -1008,6 +1062,10 @@ def _parented_span_errors(
         if not isinstance(selector, Mapping):
             errors.append(f"{path} must be a mapping")
             continue
+        schema_errors = _span_selector_schema_errors(selector, path=path)
+        if schema_errors:
+            errors.extend(schema_errors)
+            continue
         for span, serialized_span in zip(trace.spans, serialized_spans, strict=True):
             if not _matches_span(selector, serialized_span, feature_disparities):
                 continue
@@ -1114,6 +1172,14 @@ def validate_trace(
     else:
         errors.append("span_assertion_scope must be a mapping or sequence of mappings")
         assertion_scopes = ({},)
+
+    valid_scopes = []
+    for index, scope in enumerate(assertion_scopes):
+        schema_errors = _span_selector_schema_errors(scope, path=f"span_assertion_scope[{index}]")
+        errors.extend(schema_errors)
+        if not schema_errors:
+            valid_scopes.append(scope)
+    assertion_scopes = tuple(valid_scopes)
 
     errors.extend(
         _span_assertion_errors(

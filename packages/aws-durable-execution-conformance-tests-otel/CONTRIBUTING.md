@@ -135,7 +135,7 @@ The OTel validator binds `${SERVICE_NAME}` to the configured
 requirement remains independent of the deployed resource name.
 
 Both `select` and `expect` can use any canonical span property: `trace_id`,
-`span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,
+`span_id`, `parent_span_id`, `name`, `kind`, `start_time`, `end_time`, `status`,
 `service_name`, `attributes`, or `links`. Nested mappings support arbitrary
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions compare length, order, and nested values. Each `expect.links` item
@@ -476,3 +476,17 @@ initial segment, or that segment plus a distinct replay segment linked to both
 the original operation and Workflow. The existing sequence form is unchanged.
 
 Matcher syntax is validated recursively in every parent alternative and every count-dependent occurrence branch, including branches not selected by the observed trace. `same_trace_as` requires a direct selector and does not accept `$linked`, so missing backend link support cannot skip the trace-ID comparison.
+
+
+Selector field names are checked against the canonical serialized span properties,
+including in inactive occurrence branches and parent/link alternatives. Unknown
+fields and controls in the wrong context are rejected before matching telemetry or
+applying backend feature disparities. Direct `select`, `span_assertion_scope`,
+`require_parented_spans`, and parent `$not` selectors accept canonical properties
+only. `expect` additionally accepts `parent` and the documented relations; parent,
+temporal, and linked-span selectors accept only their documented controls.
+`same_trace_as` continues to reject `$linked` because missing backend links must
+not bypass trace-identity comparison. In direct selectors, `links` matches
+serialized `trace_id`/`span_id` pairs; `expect.links` instead resolves those links
+to spans and accepts their canonical properties plus `count` and `$occurrence`.
+Attribute keys, nested attribute mappings, and valid value matchers remain open-ended.
