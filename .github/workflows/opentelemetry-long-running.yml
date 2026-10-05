@@ -83,6 +83,11 @@ on:
         required: false
         default: us-west-2
         type: string
+      runs_on:
+        description: Runner label for the run job
+        required: false
+        default: ubuntu-latest
+        type: string
     outputs:
       check_status:
         description: Terminal or pending status from a deferred check
@@ -131,7 +136,7 @@ jobs:
             || (inputs.phase == 'launch' && 'Launch' || 'Check'))
       ) }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: 120
     env:
       CURRENT_CHECKER: ${{ github.workspace }}/.build/workflow-support
