@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       sdk_ref:
-        description: Full SDK commit SHA; defaults to the SDK main branch
+        description: SDK commit SHA or named ref; defaults to the SDK main branch
         required: false
         default: ""
         type: string
@@ -169,21 +169,22 @@ jobs:
       - name: Resolve SDK commit
         id: resolve-sdk
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_SDK_REF: ${{ inputs.sdk_ref }}
           SDK_REPOSITORY: ${{ inputs.sdk_repository }}
         run: |
-          SDK_REF="$REQUESTED_SDK_REF"
-          if [ -z "$SDK_REF" ]; then
-            SDK_REF=$(
-              git ls-remote \
-                "https://github.com/$SDK_REPOSITORY.git" \
-                refs/heads/main |
-                awk '{print $1}'
+          SDK_REF="${REQUESTED_SDK_REF:-main}"
+          if [[ "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            SDK_SHA="$SDK_REF"
+          else
+            SDK_SHA=$(
+              gh api --method GET "repos/$SDK_REPOSITORY/commits" \
+                -f "sha=$SDK_REF" -F per_page=1 --jq '.[0].sha'
             )
           fi
-          if [[ ! "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          if [[ ! "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "sdk_ref must resolve to a full 40-character commit SHA"
             exit 1
           fi
-          echo "Using $SDK_REPOSITORY commit $SDK_REF"
-          echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"
+          echo "Using $SDK_REPOSITORY commit $SDK_SHA"
+          echo "ref=$SDK_SHA" >> "$GITHUB_OUTPUT"

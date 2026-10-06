@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       sdk_ref:
-        description: Full SDK commit SHA; defaults to the SDK main branch
+        description: SDK commit SHA or named ref; defaults to the SDK main branch
         required: false
         default: ""
         type: string

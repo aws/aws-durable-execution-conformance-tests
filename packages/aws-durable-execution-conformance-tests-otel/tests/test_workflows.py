@@ -373,3 +373,88 @@ def test_otel_stack_names_do_not_depend_on_run_numbers() -> None:
                 value = str(environment.get(variable, ""))
                 assert "github.run_" not in value.lower(), (path, variable)
                 assert "GITHUB_RUN_" not in value, (path, variable)
+
+
+@pytest.mark.parametrize(
+    "requested_ref", ["", "main", "feature/otel-context", "refs/heads/feature/otel-context", "v2.0.1"]
+)
+def test_sdk_resolver_resolves_named_refs_to_commit_sha(tmp_path: Path, requested_ref: str) -> None:
+    expected_sha = "a" * 40
+    result, output, arguments = _run_sdk_resolver(tmp_path, requested_ref, expected_sha)
+
+    assert result.returncode == 0, result.stderr
+    assert output == f"ref={expected_sha}\n"
+    assert arguments == [
+        "api",
+        "--method",
+        "GET",
+        "repos/aws/aws-durable-execution-sdk-python/commits",
+        "-f",
+        f"sha={requested_ref or 'main'}",
+        "-F",
+        "per_page=1",
+        "--jq",
+        ".[0].sha",
+    ]
+
+
+def test_sdk_resolver_keeps_pinned_sha_without_network_lookup(tmp_path: Path) -> None:
+    pinned_sha = "b" * 40
+    result, output, arguments = _run_sdk_resolver(tmp_path, pinned_sha, "", api_status=1)
+
+    assert result.returncode == 0, result.stderr
+    assert output == f"ref={pinned_sha}\n"
+    assert arguments == []
+
+
+@pytest.mark.parametrize(("api_output", "api_status"), [("null", 0), ("invalid-sha", 0), ("", 1)])
+def test_sdk_resolver_fails_without_a_resolved_commit(
+    tmp_path: Path,
+    api_output: str,
+    api_status: int,
+) -> None:
+    result, output, _ = _run_sdk_resolver(tmp_path, "missing-branch", api_output, api_status=api_status)
+
+    assert result.returncode != 0
+    assert output == ""
+
+
+def _run_sdk_resolver(
+    tmp_path: Path,
+    requested_ref: str,
+    api_output: str,
+    *,
+    api_status: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], str, list[str]]:
+    workflow = _load(RESOLVER_WORKFLOW)
+    step = next(step for step in workflow["jobs"]["resolve"]["steps"] if step.get("id") == "resolve-sdk")
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_GH_ARGUMENTS"\n'
+        'printf "%s\\n" "$TEST_GH_OUTPUT"\nexit "$TEST_GH_STATUS"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    output_path = tmp_path / "output"
+    args_path = tmp_path / "args"
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "REQUESTED_SDK_REF": requested_ref,
+            "SDK_REPOSITORY": "aws/aws-durable-execution-sdk-python",
+            "GITHUB_OUTPUT": str(output_path),
+            "TEST_GH_ARGUMENTS": str(args_path),
+            "TEST_GH_OUTPUT": api_output,
+            "TEST_GH_STATUS": str(api_status),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (
+        result,
+        output_path.read_text() if output_path.exists() else "",
+        args_path.read_text().splitlines() if args_path.exists() else [],
+    )
