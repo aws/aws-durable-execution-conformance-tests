@@ -1,6 +1,5 @@
 ---
-description: Execution view marks a retried invocation RETRYING and UNSET before successful
-  recovery
+description: Execution view marks a retried invocation RETRYING and UNSET before successful recovery
 Input:
   scenario: invocation-retry-status
 AsyncInvoke: true
@@ -55,41 +54,75 @@ TelemetryAssertions:
         name: Invocation
         attributes:
           durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: true
-          durable.invocation.status: RETRYING
+      count:
+        $any_of:
+          - 2
+          - 3
       expect:
-        status: UNSET
         service_name: ${SERVICE_NAME}
         links: []
         kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: true
-          durable.invocation.status: RETRYING
-        before:
-          name: Invocation
-          attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
-            durable.invocation.first: false
-            durable.invocation.status: SUCCEEDED
-    - select:
-        name: Invocation
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-          durable.invocation.status: SUCCEEDED
-      expect:
-        status: OK
-        service_name: ${SERVICE_NAME}
-        links: []
-        kind: INTERNAL
-        attributes:
-          durable.execution.arn: ${EXECUTION_ARN}
-          durable.invocation.first: false
-          durable.invocation.status: SUCCEEDED
-        after:
-          name: Invocation
-          attributes:
-            durable.execution.arn: ${EXECUTION_ARN}
-            durable.invocation.first: true
-            durable.invocation.status: RETRYING
+      expect_by_occurrence:
+        2:
+          - status: UNSET
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: true
+              durable.invocation.status: RETRYING
+            before:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: false
+                durable.invocation.status: SUCCEEDED
+          - status: OK
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: false
+              durable.invocation.status: SUCCEEDED
+            after:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: true
+                durable.invocation.status: RETRYING
+        3:
+          - status: UNSET
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: true
+              durable.invocation.status: RETRYING
+            before:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: false
+                durable.invocation.status: SUCCEEDED
+          - status: OK
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: false
+              durable.invocation.status: PENDING
+            after:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: true
+                durable.invocation.status: RETRYING
+            before:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: false
+                durable.invocation.status: SUCCEEDED
+          - status: OK
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+              durable.invocation.first: false
+              durable.invocation.status: SUCCEEDED
+            after:
+              name: Invocation
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.invocation.first: true
+                durable.invocation.status: RETRYING

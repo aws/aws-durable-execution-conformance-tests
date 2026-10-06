@@ -182,8 +182,25 @@ def _assert_completed_replay_catalog(span_assertions: list[dict], suite_name: st
 def _assert_catalog_span_roles(span_assertions: list[dict], case_number: int, suite_name: str) -> None:
     for assertion in span_assertions:
         if assertion["select"]["name"] in {"Workflow", "Invocation"}:
-            assert assertion.get("count", 1) == 1
-            assert "expect_by_occurrence" not in assertion
+            if case_number == 24 and assertion["select"]["name"] == "Invocation":
+                assert assertion["select"] == {
+                    "name": "Invocation",
+                    "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+                }
+                assert assertion["count"] == {"$any_of": [2, 3]}
+                branches = assertion["expect_by_occurrence"]
+                assert set(branches) == {2, 3}
+                for count, states in ((2, ["RETRYING", "SUCCEEDED"]), (3, ["RETRYING", "PENDING", "SUCCEEDED"])):
+                    assert len(branches[count]) == count
+                    assert [item["attributes"]["durable.invocation.status"] for item in branches[count]] == states
+                    assert [item["attributes"]["durable.invocation.first"] for item in branches[count]] == [
+                        True,
+                        *([False] * (count - 1)),
+                    ]
+                    assert [item["status"] for item in branches[count]] == ["UNSET", *(["OK"] * (count - 1))]
+            else:
+                assert assertion.get("count", 1) == 1
+                assert "expect_by_occurrence" not in assertion
             assert assertion["expect"]["links"] == []
     probes = [assertion for assertion in span_assertions if assertion["select"]["name"].startswith("conformance.")]
     assert {assertion["select"]["attributes"]["conformance.callback"] for assertion in probes} == _CASE_PROBES.get(
@@ -816,12 +833,15 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         "SUCCEEDED": "OK",
                     }[expected_attributes["durable.invocation.status"]]
                 )
-                assert (
-                    selector_attributes["durable.invocation.first"] == expected_attributes["durable.invocation.first"]
-                )
-                assert (
-                    selector_attributes["durable.invocation.status"] == expected_attributes["durable.invocation.status"]
-                )
+                if case_number != 24:
+                    assert (
+                        selector_attributes["durable.invocation.first"]
+                        == expected_attributes["durable.invocation.first"]
+                    )
+                    assert (
+                        selector_attributes["durable.invocation.status"]
+                        == expected_attributes["durable.invocation.status"]
+                    )
                 if case_number == 19:
                     assert expected_attributes["durable.invocation.status"] == "FAILED"
             if selected_name == "Workflow":
@@ -950,7 +970,10 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             if item["select"]["name"] == "Invocation"
         ]
         assert invocations == expected_invocations
-        assert assertions.get("minimum_invocations", 1) == len(expected_invocations)
+        assert assertions.get("minimum_invocations", 1) == sum(
+            min(item["count"]["$any_of"]) if isinstance(item.get("count"), dict) else item.get("count", 1)
+            for item in expected_invocations
+        )
 
         descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
         assert bool(descendants) is (case_number not in ambient_only_cases | {24})
@@ -1224,16 +1247,12 @@ def test_catalog_rejects_corrupted_new_requirements(
             return requirement
         spans = requirement["TelemetryAssertions"]["span_assertions"]
         if corruption.startswith("status-"):
-            retrying = next(
-                item
-                for item in spans
-                if item["select"].get("attributes", {}).get("durable.invocation.status") == "RETRYING"
-            )
+            invocation = next(item for item in spans if item["select"]["name"] == "Invocation")
+            retrying = invocation["expect_by_occurrence"][2][0]
             if corruption == "status-label":
-                retrying["select"]["attributes"]["durable.invocation.status"] = "RETRY"
-                retrying["expect"]["attributes"]["durable.invocation.status"] = "RETRY"
+                retrying["attributes"]["durable.invocation.status"] = "RETRY"
             else:
-                retrying["expect"]["status"] = "OK"
+                retrying["status"] = "OK"
         elif corruption == "root-count":
             workflow = next(item for item in spans if item["select"]["name"] == "Workflow")
             workflow["count"] = 2
@@ -1263,8 +1282,15 @@ def test_catalog_rejects_corrupted_new_requirements(
             step["expect"]["before"]["attributes"]["durable.operation.id"] = "${UNBOUND_OPERATION}"
         elif corruption == "ordering":
             for item in spans:
-                item["expect"].pop("before", None)
-                item["expect"].pop("after", None)
+                expectations = [item["expect"]]
+                occurrences = item.get("expect_by_occurrence", [])
+                if isinstance(occurrences, dict):
+                    expectations.extend(branch for items in occurrences.values() for branch in items)
+                else:
+                    expectations.extend(occurrences)
+                for expectation in expectations:
+                    expectation.pop("before", None)
+                    expectation.pop("after", None)
         else:
             raise AssertionError(f"Unknown mutation {corruption}")
         return requirement

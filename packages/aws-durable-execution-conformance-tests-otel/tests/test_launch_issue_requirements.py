@@ -189,6 +189,38 @@ def test_invocation_retry_contract_rejects_old_python_alias_and_false_success(vi
 
 
 @pytest.mark.parametrize("view", ["execution", "invocation"])
+def test_invocation_retry_contract_allows_a_checkpointed_step_retry_delay(view: str) -> None:
+    normal = _normal_successful_resume()
+    workflow, first, resumed = normal.spans[:3]
+    retrying = replace(first, status="UNSET", attributes={**first.attributes, "durable.invocation.status": "RETRYING"})
+    # Recovering an interrupted at-most-once step can checkpoint a retry timer.
+    # That is a real PENDING invocation between the invocation failure and success.
+    pending = replace(
+        first,
+        span_id="e" * 16,
+        start_time=START + timedelta(seconds=2.2),
+        end_time=START + timedelta(seconds=2.8),
+        attributes={**first.attributes, "durable.invocation.first": False, "durable.invocation.status": "PENDING"},
+    )
+    trace = replace(normal, spans=(workflow, retrying, pending, resumed))
+    assertions = _bound_assertions(f"otel-{view}", 24)
+    assert validate_trace(trace, assertions, _query()) == []
+    # The optional phase has a precise mapping and order, not an arbitrary extra span allowance.
+    assert validate_trace(
+        replace(trace, spans=(workflow, retrying, replace(pending, status="ERROR"), resumed)), assertions, _query()
+    )
+    assert validate_trace(
+        replace(trace, spans=(workflow, retrying, replace(pending, status="UNSET"), resumed)), assertions, _query()
+    )
+    assert validate_trace(replace(trace, spans=(workflow, retrying, pending, pending, resumed)), assertions, _query())
+    assert validate_trace(replace(trace, spans=(workflow, pending, resumed)), assertions, _query())
+    assert (
+        validate_trace(replace(trace, spans=(*trace.spans, normal.spans[3], normal.spans[3])), assertions, _query())
+        == []
+    )
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
 @pytest.mark.parametrize("unexpected_status", ["RETRY", "PENDING", "FAILED"])
 def test_invocation_retry_contract_rejects_additional_lifecycle_spans(view: str, unexpected_status: str) -> None:
     normal = _normal_successful_resume()

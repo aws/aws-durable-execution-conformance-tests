@@ -73,7 +73,11 @@ prerequisites are the focused fixes #752 and #756. Manual dispatch can override
 that revision; the `failed+uncovered` coverage threshold is unchanged.
 
 Case 24 covers every execution-correlated Invocation span and requires five
-seconds of stable telemetry. Extra lifecycle spans, including legacy RETRY labels,
-fail even when the expected RETRYING and SUCCEEDED spans are also present. This
-complete-coverage scope excludes operation spans so expected redelivery after
-invocation failure remains allowed.
+seconds of stable telemetry. The normal lifecycle is RETRYING/UNSET followed by
+SUCCEEDED/OK. Recovering an interrupted at-most-once step can additionally
+checkpoint one retry timer, yielding a non-first PENDING/OK invocation between
+those phases. Both two- and three-invocation sequences are checked in full,
+including order and status mappings. Legacy RETRY labels, failed or repeated
+phases, and incorrect sampling-independent status values still fail. Operation
+spans remain outside complete-coverage scope so expected redelivery after
+invocation failure is allowed.
