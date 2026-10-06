@@ -2242,11 +2242,23 @@ def test_every_serialized_span_property_remains_supported() -> None:
 def test_open_attributes_and_nested_serialized_link_matchers_remain_supported() -> None:
     trace = _trace()
     root, child = trace.spans
-    metadata = {"parnet": None, "$linked": True, "before": {"arbitrary": [1, 2]}}
+    metadata: dict[str, object] = {
+        "parnet": None,
+        "$linked": True,
+        "before": {"arbitrary": [1, 2]},
+        "$bogus": {"$anyof": []},
+    }
     root = replace(root, attributes={**root.attributes, "custom": metadata})
     child = replace(child, attributes={**child.attributes, "custom": metadata})
     trace = replace(trace, spans=(root, child))
-    attributes = {"custom": {"parnet": {"$any_of": [None, "unused"]}, "$linked": True, "before": {"arbitrary": [1, 2]}}}
+    attributes = {
+        "custom": {
+            "parnet": {"$any_of": [None, "unused"]},
+            "$linked": True,
+            "before": {"arbitrary": [1, 2]},
+            "$bogus": {"$anyof": []},
+        }
+    }
     raw_links = {"$any_of": [[], [{"trace_id": "${/^[0-9a-f]+$/}", "span_id": root.span_id}]]}
     assert (
         validate_trace(
@@ -2280,3 +2292,20 @@ def test_unused_parent_alternative_cannot_hide_unknown_fields() -> None:
                 _query(),
             )
             assert any("parent.$any_of" in error and "unknown field(s)" in error for error in errors)
+
+
+@pytest.mark.parametrize("invalid", [{"$bogus": "x"}, {"$any_of": ["unused", {"$anyof": []}]}, []])
+@pytest.mark.parametrize("location", ["select", "parent-alternative", "inactive-count", "serialized-link"])
+def test_scalar_matcher_schema_rejects_invalid_inactive_branches(invalid: object, location: str) -> None:
+    assertion: dict = {"select": {"name": "child"}, "expect": {}}
+    if location == "select":
+        assertion["select"]["name"] = {"$any_of": ["child", invalid]}
+    elif location == "parent-alternative":
+        assertion["expect"]["parent"] = {"$any_of": [{"name": "root"}, {"name": invalid}]}
+    elif location == "inactive-count":
+        assertion["count"] = {"$any_of": [1, 2]}
+        assertion["expect_by_occurrence"] = {1: [{}], 2: [{"name": invalid}, {}]}
+    else:
+        assertion["select"]["links"] = {"$any_of": ["*", [{"trace_id": invalid, "span_id": "*"}]]}
+    errors = validate_trace(_trace(), {"span_assertions": assertion}, _query())
+    assert any("scalar matcher" in error for error in errors)

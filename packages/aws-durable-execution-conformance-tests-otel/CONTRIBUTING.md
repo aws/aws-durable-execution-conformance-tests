@@ -490,3 +490,9 @@ not bypass trace-identity comparison. In direct selectors, `links` matches
 serialized `trace_id`/`span_id` pairs; `expect.links` instead resolves those links
 to spans and accepts their canonical properties plus `count` and `$occurrence`.
 Attribute keys, nested attribute mappings, and valid value matchers remain open-ended.
+
+Scalar span properties and serialized link IDs accept scalar matchers (including
+wildcards and regexes) or recursively valid `$any_of` alternatives. Ordinary
+mappings or sequences are invalid for those scalar properties, including inside
+unused parent or occurrence alternatives. Attribute metadata remains open-ended:
+arbitrary nested mappings and arrays are still supported there.

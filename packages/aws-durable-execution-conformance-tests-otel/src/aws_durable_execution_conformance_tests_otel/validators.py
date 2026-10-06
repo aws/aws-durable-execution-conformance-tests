@@ -340,7 +340,13 @@ def _unknown_field_errors(expected: Mapping[str, Any], allowed: Collection[str],
     return [f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}"] if unknown else []
 
 
-def _matcher_schema_errors(expected: Any, *, path: str, allowed_keys: Collection[str] | None = None) -> list[str]:
+def _matcher_schema_errors(
+    expected: Any,
+    *,
+    path: str,
+    allowed_keys: Collection[str] | None = None,
+    scalar_only: bool = False,
+) -> list[str]:
     """Validate nested value matchers without consulting observed values."""
     if isinstance(expected, str):
         try:
@@ -356,13 +362,24 @@ def _matcher_schema_errors(expected: Any, *, path: str, allowed_keys: Collection
             return [
                 error
                 for i, alternative in enumerate(alternatives)
-                for error in _matcher_schema_errors(alternative, path=f"{path}.$any_of[{i}]", allowed_keys=allowed_keys)
+                for error in _matcher_schema_errors(
+                    alternative,
+                    path=f"{path}.$any_of[{i}]",
+                    allowed_keys=allowed_keys,
+                    scalar_only=scalar_only,
+                )
             ]
+        if scalar_only:
+            return [f"{path} must be a scalar matcher or a valid $any_of mapping"]
         errors = _unknown_field_errors(expected, allowed_keys, path=path) if allowed_keys is not None else []
         return errors + [
-            error for key, value in expected.items() for error in _matcher_schema_errors(value, path=f"{path}.{key}")
+            error
+            for key, value in expected.items()
+            for error in _matcher_schema_errors(value, path=f"{path}.{key}", scalar_only=allowed_keys is not None)
         ]
     if _is_sequence(expected):
+        if scalar_only:
+            return [f"{path} must be a scalar matcher or a valid $any_of mapping"]
         return [
             error
             for i, value in enumerate(expected)
@@ -383,6 +400,7 @@ def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> l
                     # In a direct selector links match the serialized ID pairs.
                     # Only expect.links resolves those pairs to full linked spans.
                     allowed_keys=_SERIALIZED_LINK_PROPERTIES if key == "links" else None,
+                    scalar_only=key not in {"attributes", "links"},
                 )
             )
     return errors
@@ -447,7 +465,7 @@ def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> lis
         elif key in _SPAN_RELATION_KEYS:
             errors.extend(_relation_schema_errors(key, value, path=child))
         elif key in _SPAN_PROPERTIES:
-            errors.extend(_matcher_schema_errors(value, path=child))
+            errors.extend(_matcher_schema_errors(value, path=child, scalar_only=key != "attributes"))
     return errors
 
 
