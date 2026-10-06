@@ -100,6 +100,11 @@ on:
         required: false
         default: us-west-2
         type: string
+      runs_on:
+        description: Runner label for every job, e.g. a CodeBuild-hosted runner label
+        required: false
+        default: ubuntu-latest
+        type: string
     secrets:
       CONFORMANCE_TEST_ROLE_ARN:
         description: AWS role assumed by the test jobs
@@ -142,6 +147,7 @@ jobs:
       adot_release_repository: ${{ inputs.adot_release_repository }}
       adot_layer_arn: ${{ inputs.adot_layer_arn }}
       phase: ${{ inputs.phase }}
+      runs_on: ${{ inputs.runs_on }}
   invocation:
     name: Invocation view
     needs: resolve
@@ -170,6 +176,7 @@ jobs:
       suite: otel-invocation
       case_count: 24
       aws_region: ${{ inputs.aws_region }}
+      runs_on: ${{ inputs.runs_on }}
     secrets: inherit
 
   execution:
@@ -200,6 +207,7 @@ jobs:
       suite: otel-execution
       case_count: 24
       aws_region: ${{ inputs.aws_region }}
+      runs_on: ${{ inputs.runs_on }}
     secrets: inherit
 
   long-running-invocation:
@@ -229,6 +237,7 @@ jobs:
           && '60' || inputs.delay_seconds }}
       examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
+      runs_on: ${{ inputs.runs_on }}
     secrets: inherit
 
   long-running-execution:
@@ -258,4 +267,5 @@ jobs:
           && '60' || inputs.delay_seconds }}
       examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
+      runs_on: ${{ inputs.runs_on }}
     secrets: inherit

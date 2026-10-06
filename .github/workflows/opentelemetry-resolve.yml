@@ -45,6 +45,11 @@ on:
         required: false
         default: short
         type: string
+      runs_on:
+        description: Runner label for the resolve job
+        required: false
+        default: ubuntu-latest
+        type: string
     outputs:
       conformance_test_sha:
         description: Full conformance test commit SHA
@@ -75,7 +80,7 @@ permissions:
 jobs:
   resolve:
     name: Resolve test commits
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       conformance_test_sha: ${{ steps.resolve-conformance.outputs.sha }}
       dash0_enabled: ${{ false }}
