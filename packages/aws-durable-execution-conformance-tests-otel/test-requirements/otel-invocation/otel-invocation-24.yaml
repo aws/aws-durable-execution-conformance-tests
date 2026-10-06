@@ -21,6 +21,8 @@ ExpectedResult:
 TelemetryAssertions:
   minimum_spans: 3
   minimum_invocations: 2
+  require_all_spans: true
+  quiescence_seconds: 5
   require_execution_correlation: true
   require_single_trace_per_execution: true
   require_parented_spans:
@@ -28,6 +30,7 @@ TelemetryAssertions:
     - name: Invocation
   require_unique_root_per_trace: true
   span_assertion_scope:
+    name: Invocation
     attributes:
       durable.execution.arn: ${EXECUTION_ARN}
   span_assertions:

@@ -189,6 +189,21 @@ def test_invocation_retry_contract_rejects_old_python_alias_and_false_success(vi
 
 
 @pytest.mark.parametrize("view", ["execution", "invocation"])
+@pytest.mark.parametrize("unexpected_status", ["RETRY", "PENDING", "FAILED"])
+def test_invocation_retry_contract_rejects_additional_lifecycle_spans(view: str, unexpected_status: str) -> None:
+    normal = _normal_successful_resume()
+    workflow, first, resumed = normal.spans[:3]
+    retrying = replace(first, status="UNSET", attributes={**first.attributes, "durable.invocation.status": "RETRYING"})
+    unexpected = replace(
+        retrying,
+        span_id="e" * 16,
+        attributes={**retrying.attributes, "durable.invocation.status": unexpected_status},
+    )
+    trace = replace(normal, spans=(workflow, retrying, resumed, unexpected))
+    assert validate_trace(trace, _bound_assertions(f"otel-{view}", 24), _query())
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
 @pytest.mark.parametrize(
     ("callback", "parent_name"),
     [

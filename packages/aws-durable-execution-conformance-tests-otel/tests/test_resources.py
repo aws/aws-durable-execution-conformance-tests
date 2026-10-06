@@ -585,7 +585,7 @@ def test_long_callback_assertions_accept_javascript_generic_span_names(
 
 
 @pytest.mark.parametrize("case_number", _VIEW_CASE_NUMBERS)
-def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_number: int) -> None:
+def test_views_share_scenarios_and_preserve_view_contracts(case_number: int) -> None:
     invocation = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
     execution = load_yaml_file(_requirements("otel-execution")[f"otel-execution-{case_number}"])
 
@@ -596,7 +596,12 @@ def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_num
         requirement.pop("TelemetryAssertions")
 
     assert comparable_invocation == comparable_execution
-    assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
+    if case_number == 24:
+        # Invocation lifecycle status has the same contract in both views;
+        # operation-span layout and redelivery are outside this case's scope.
+        assert invocation["TelemetryAssertions"] == execution["TelemetryAssertions"]
+    else:
+        assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
 
 
 def test_virtual_context_case_emits_telemetry_without_context_history() -> None:
@@ -652,13 +657,15 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             {"name": "Workflow"},
             {"name": "Invocation"},
         ]
-        if case_number in _PARTIAL_INVOCATION_CASES:
+        if case_number in _PARTIAL_INVOCATION_CASES - {24}:
             assert "require_all_spans" not in assertions
         else:
             assert assertions["require_all_spans"] is True
-        expected_scopes = [
+        expected_scopes: list[dict[str, object]] = [
             {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}},
         ]
+        if case_number == 24:
+            expected_scopes[0]["name"] = "Invocation"
         if case_number in {11, 18}:
             expected_scopes.append(
                 {"attributes": {"durable.execution.arn": "${TARGET_EXECUTION_ARN}"}},
@@ -903,7 +910,14 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             {"name": "Workflow"},
             {"name": "Invocation"},
         ]
-        assert "require_all_spans" not in assertions
+        if case_number == 24:
+            assert assertions["require_all_spans"] is True
+            assert assertions["span_assertion_scope"] == {
+                "name": "Invocation",
+                "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+            }
+        else:
+            assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
         assert assertions["minimum_spans"] >= len(span_assertions)
         assert len(workflows) == len(expected_workflow_statuses)

@@ -71,3 +71,9 @@ The self-test workflow pins the Python companion fixture from SDK PR #758 so all
 24 cases are exercised before the new handlers reach SDK main. Runtime
 prerequisites are the focused fixes #752 and #756. Manual dispatch can override
 that revision; the `failed+uncovered` coverage threshold is unchanged.
+
+Case 24 covers every execution-correlated Invocation span and requires five
+seconds of stable telemetry. Extra lifecycle spans, including legacy RETRY labels,
+fail even when the expected RETRYING and SUCCEEDED spans are also present. This
+complete-coverage scope excludes operation spans so expected redelivery after
+invocation failure remains allowed.
