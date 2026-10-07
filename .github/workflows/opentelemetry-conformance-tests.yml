@@ -76,6 +76,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/opentelemetry-orchestrator.yml
     with:
+      runs_on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
       # Distinct language/prefix from the Python SDK's own run (python / p) to
       # avoid sharing stacks, buckets, or concurrency groups. normalize_runtime
       # maps "py" to the python runtime.
