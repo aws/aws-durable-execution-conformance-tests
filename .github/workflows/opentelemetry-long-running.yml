@@ -104,6 +104,7 @@ permissions:
 concurrency:
   group: ${{ inputs.language }}-otel-long-running-${{ inputs.view || 'all' }}-${{ inputs.aws_region || 'us-west-2' }}
   cancel-in-progress: false
+  queue: max
 
 env:
   AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}

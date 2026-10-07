@@ -117,6 +117,7 @@ permissions:
 concurrency:
   group: ${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
+  queue: max
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
