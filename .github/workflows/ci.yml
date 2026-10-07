@@ -16,11 +16,11 @@ concurrency:
 jobs:
   validate:
     name: Validate
-    # CodeBuild-hosted runner in the conformance testing account (Lambda
-    # compute, Amazon Linux python3.13 image). The label must match the
-    # CodeBuild project name exactly.
-    runs-on:
-      - codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
+    # Keep fork PR validation on GitHub-hosted runners. Same-repository PRs
+    # and main pushes use the CodeBuild project in the conformance testing account.
+    # PRs can edit this workflow, so the repository's external-contributor
+    # approval policy and CodeBuild's admission controls remain the trust boundary.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 15
     env:
       # The runner image ships /etc/pip.conf with `[global] target =
