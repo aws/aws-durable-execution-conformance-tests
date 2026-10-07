@@ -20,6 +20,19 @@ retains repeated OTLP span records, including repeated trace/span IDs. X-Ray can
 merge updates to the same ID and normalizes unset status, so it cannot by itself
 prove those two properties.
 
+Case 21 checks the deployed SDK's step replay exports and the single export of
+the externally completed timer wait, `otel-replay-wait`. It does not exercise
+the JS local runner's invocation-event wrapper. The `UpdatedOperationIds`
+copying regression fixed by
+[JS PR #954](https://github.com/aws/aws-durable-execution-sdk-js/pull/954)
+is covered by the SDK's
+[local runner integration test](https://github.com/aws/aws-durable-execution-sdk-js/blob/19ee19fa0619093943f079b69943f7b5cdee7ac7/packages/aws-durable-execution-sdk-js-testing/src/test-runner/local/__tests__/integration/plugin-external-completion.integration.test.ts),
+not by this cloud suite, and is not a prerequisite for these cloud cases.
+The existing core plugin requirements
+[10-9](../aws-durable-execution-conformance-tests/test-requirements/plugin/10-9.yaml)
+and [10-19](../aws-durable-execution-conformance-tests/test-requirements/plugin/10-19.yaml)
+separately check service-supplied externally updated operations on resume.
+
 ## User-function coverage and limits
 
 Cases 22 and 23 cover handler entry and resume, successful and retried step
