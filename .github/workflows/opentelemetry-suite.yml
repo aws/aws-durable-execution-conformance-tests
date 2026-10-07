@@ -105,6 +105,11 @@ on:
         required: false
         default: us-west-2
         type: string
+      runs_on:
+        description: Runner label for the suite jobs
+        required: false
+        default: ubuntu-latest
+        type: string
 permissions:
   contents: read
   id-token: write
@@ -112,6 +117,7 @@ permissions:
 concurrency:
   group: ${{ inputs.language }}-otel-${{ inputs.suite }}-${{ inputs.aws_region }}
   cancel-in-progress: false
+  queue: max
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
@@ -136,7 +142,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.suite_timeout_minutes }}
     env:
       HISTORY_DIR: /tmp/${{ inputs.language }}-otel-xray-history
@@ -317,7 +323,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       (github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: 50
     env:
       COLLECTOR_LAYER_NAME: durable-execution-conformance-${{ inputs.language }}-s3-collector

@@ -3,7 +3,10 @@ line-length = 120
 extend-exclude = ["dist", "build"]
 
 [lint]
-select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+# S506 matches the bandit B506 rule. It rejects yaml.load calls whose
+# loader is not yaml.SafeLoader. Use yaml.safe_load, or validate.load_cfn_template
+# for CloudFormation templates.
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP", "S506"]
 ignore = ["E501"]
 
 [lint.isort]
