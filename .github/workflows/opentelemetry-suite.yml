@@ -375,6 +375,26 @@ jobs:
           sdk-ref: ${{ inputs.sdk_ref }}
           sdk-repository: ${{ inputs.sdk_repository }}
 
+      # Temporary PR131 diagnostic uses this job's existing credential setup and view lock.
+      - name: Probe empty callback failure before changing test resources
+        if: github.event_name == 'pull_request' && github.repository == 'aws/aws-durable-execution-conformance-tests' && github.event.pull_request.number == 131 && github.event.pull_request.head.repo.full_name == github.repository && inputs.language == 'py'
+        timeout-minutes: 6
+        env:
+          EXPECTED_TEST_ACCOUNT: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+          PROBE_VIEW: ${{ inputs.suite == 'otel-invocation' && 'invocation' || 'execution' }}
+          PROBE_PHASE: short
+          PROBE_REQUESTED_REGION: ${{ inputs.aws_region }}
+          PROBE_SDK_REF: ""
+        run: hatch run python scripts/probe_empty_callback_failure.py
+
+      - name: Save bounded callback probe evidence
+        if: always() && github.event_name == 'pull_request' && github.repository == 'aws/aws-durable-execution-conformance-tests' && github.event.pull_request.number == 131 && inputs.language == 'py'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: empty-callback-${{ env.OTEL_VIEW_SUFFIX }}-${{ github.run_id }}
+          path: probe-results/
+          if-no-files-found: warn
+
       - name: Test collector contract
         run: hatch run test:all packages/aws-durable-execution-conformance-tests-otel/tests/test_collector.py
 
