@@ -16,20 +16,35 @@ concurrency:
 jobs:
   validate:
     name: Validate
-    runs-on: ubuntu-latest
+    # Keep fork PR validation on GitHub-hosted runners. Same-repository PRs
+    # and main pushes use the CodeBuild project in the conformance testing account.
+    # PRs can edit this workflow, so the repository's external-contributor
+    # approval policy and CodeBuild's admission controls remain the trust boundary.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 15
+    env:
+      # The runner image ships /etc/pip.conf with `[global] target =
+      # /tmp/opt/python/site-packages` and puts that directory on PYTHONPATH, so
+      # every pip install (including Hatch's env installs) would land in one
+      # shared directory. Ignore both so each environment stays isolated.
+      PIP_CONFIG_FILE: /dev/null
+      PYTHONPATH: ""
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        # The runner image is Amazon Linux; actions/setup-python only ships
+        # Ubuntu builds, so uv provides Python 3.14 and activates a venv.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
+          activate-environment: true
 
-      - name: Install Hatch
-        run: python -m pip install hatch==1.16.5
+      - name: Install Hatch and shellcheck
+        # shellcheck is not on the runner image; shellcheck-py ships the binary.
+        run: uv pip install hatch==1.16.5 shellcheck-py==0.11.0.1
 
       - name: Run unit tests
         run: hatch run test:all
