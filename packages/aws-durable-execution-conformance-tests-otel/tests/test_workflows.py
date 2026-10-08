@@ -36,7 +36,7 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-def _run_resolver_validation(resource_prefix: str) -> subprocess.CompletedProcess[str]:
+def _run_resolver_validation(resource_prefix: str, *, case_count: str = "26") -> subprocess.CompletedProcess[str]:
     workflow = _load(RESOLVER_WORKFLOW)
     validation = next(
         step for step in workflow["jobs"]["resolve"]["steps"] if step["name"] == "Validate workflow inputs"
@@ -49,6 +49,7 @@ def _run_resolver_validation(resource_prefix: str) -> subprocess.CompletedProces
             "ADOT_RELEASE_REPOSITORY": "aws-observability/aws-otel-python-instrumentation",
             "CONFORMANCE_REPOSITORY": "aws/aws-durable-execution-conformance-tests",
             "LANGUAGE": "python",
+            "REQUESTED_CASE_COUNT": case_count,
             "REQUESTED_PHASE": "short",
             "RESOURCE_PREFIX": resource_prefix,
             "SDK_REPOSITORY": "aws/aws-durable-execution-sdk-python",
@@ -169,6 +170,37 @@ def test_resource_prefix_validation_matches_lambda_name_limit(
     assert result.returncode == expected_return_code
     if expected_return_code:
         assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
+
+
+@pytest.mark.parametrize("case_count", ["20", "26"])
+def test_resolver_accepts_supported_catalog_counts(case_count: str) -> None:
+    result = _run_resolver_validation("py", case_count=case_count)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "24", "27", "20; exit 0"])
+def test_resolver_rejects_unsupported_catalog_counts(case_count: str) -> None:
+    result = _run_resolver_validation("py", case_count=case_count)
+    assert result.returncode != 0
+    assert "case_count must be one of: 20, 26" in result.stdout
+
+
+def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_refs() -> None:
+    orchestrator = _load(ORCHESTRATOR)
+    resolver = _load(RESOLVER_WORKFLOW)
+    for workflow in (orchestrator, resolver):
+        definition = _triggers(workflow)["workflow_call"]["inputs"]["case_count"]
+        assert definition["type"] == "number"
+        assert definition["required"] is False
+        assert definition["default"] == 26
+    jobs = orchestrator["jobs"]
+    for name in ("resolve", "invocation", "execution"):
+        assert jobs[name]["with"]["case_count"] == "${{ inputs.case_count }}"
+    assert jobs["resolve"]["with"]["conformance_test_ref"] == "${{ inputs.conformance_test_ref }}"
+    for view in ("invocation", "execution"):
+        assert "case_count" not in jobs[f"long-running-{view}"]["with"]
+    self_test = _load(WORKFLOWS_DIR / "opentelemetry-conformance-tests.yml")
+    assert "case_count" not in self_test["jobs"]["opentelemetry"]["with"]
 
 
 def test_orchestrator_owns_suite_and_long_running_views() -> None:
