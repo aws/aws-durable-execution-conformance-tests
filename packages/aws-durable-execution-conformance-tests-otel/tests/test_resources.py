@@ -689,6 +689,8 @@ def _assert_external_completion_catalog(assertions: dict, suite: str) -> None:
         item for item in terminal if item["expect"]["attributes"]["durable.operation.id"] == "${TARGET_CALLBACK}"
     )
     assert target["expect"]["parent"]["name"] == ("Invocation" if suite == "otel-invocation" else "Workflow")
+    if suite == "otel-invocation":
+        assert target["expect"]["parent"]["$occurrence"] == 2
     assert target["expect"]["before"] == {
         "name": "otel-external-target-observed attempt 1",
         "attributes": {"durable.operation.id": "${TARGET_OBSERVED}"},

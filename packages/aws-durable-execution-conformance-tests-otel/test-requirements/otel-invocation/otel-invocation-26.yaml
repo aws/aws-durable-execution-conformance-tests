@@ -241,6 +241,7 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 2
         same_trace_as:
           name: Workflow
           attributes:

@@ -492,6 +492,12 @@ def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
         for flag in ("$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision")
         if flag in expected and expected[flag] is not True
     ]
+    if "$occurrence" in expected:
+        occurrence = expected["$occurrence"]
+        if type(occurrence) is not int or occurrence <= 0:
+            errors.append(f"{path}.$occurrence must be a positive integer")
+        if expected.get("$allow_unresolved") is True:
+            errors.append(f"{path}.$occurrence requires a resolved parent")
     if "$not" in expected:
         if not isinstance(expected["$not"], Mapping):
             errors.append(f"{path}.$not must be a span selector mapping")
@@ -503,7 +509,14 @@ def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
                 key: value
                 for key, value in expected.items()
                 if key
-                not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision", "$not"}
+                not in {
+                    "$allow_outside",
+                    "$allow_unresolved",
+                    "$reject_sdk_span",
+                    "$millisecond_precision",
+                    "$not",
+                    "$occurrence",
+                }
             },
             path=path,
         )
@@ -566,7 +579,15 @@ def _parent_expectation_errors(
     expected_properties = {
         key: value
         for key, value in expected.items()
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision", "$not"}
+        if key
+        not in {
+            "$allow_outside",
+            "$allow_unresolved",
+            "$reject_sdk_span",
+            "$millisecond_precision",
+            "$not",
+            "$occurrence",
+        }
     }
 
     parent_span_id = span.parent_span_id
@@ -616,6 +637,26 @@ def _parent_expectation_errors(
         if len(parents) > 1:
             return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
         return expectation_errors[0]
+
+    expected_occurrence = expected.get("$occurrence")
+    if expected_occurrence is not None:
+        candidates = {
+            (candidate.trace_id, candidate.span_id): serialized
+            for entries in spans_by_id.values()
+            for candidate, serialized in entries
+            if candidate.trace_id == span.trace_id
+            and _matches_span(expected_properties, serialized, feature_disparities)
+        }
+        ordered_candidates = sorted(
+            candidates,
+            key=lambda key: (candidates[key]["start_time"], candidates[key]["end_time"], key[0], key[1]),
+        )
+        parent_key = (span.trace_id, parent_span_id)
+        actual_occurrence = ordered_candidates.index(parent_key) + 1
+        if actual_occurrence != expected_occurrence:
+            return [
+                f"{path}.$occurrence: parent span is occurrence {actual_occurrence}, expected {expected_occurrence}"
+            ]
 
     if allow_outside:
         return []

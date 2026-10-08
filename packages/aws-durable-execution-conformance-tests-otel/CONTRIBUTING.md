@@ -477,6 +477,13 @@ the original operation and Workflow. The existing sequence form is unchanged.
 
 Matcher syntax is validated recursively in every parent alternative and every count-dependent occurrence branch, including branches not selected by the observed trace. `same_trace_as` requires a direct selector and does not accept `$linked`, so missing backend link support cannot skip the trace-ID comparison.
 
+A resolved parent expectation may set `$occurrence: 2` to require the second
+chronological unique `(trace_id, span_id)` matching the parent properties in the
+child's trace. Ordering uses start time, end time and identifiers, as for link
+occurrences. The value must be a positive integer and cannot be combined with
+`$allow_unresolved`. Case 26 uses this to associate the terminal root callback
+with the first resumed Invocation, independently of asynchronous exporter arrival.
+
 
 Selector field names are checked against the canonical serialized span properties,
 including in inactive occurrence branches and parent/link alternatives. Unknown

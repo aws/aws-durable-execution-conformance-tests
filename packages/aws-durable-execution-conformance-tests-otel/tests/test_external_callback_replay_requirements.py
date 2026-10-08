@@ -245,3 +245,54 @@ def test_contract_requires_three_real_callback_deliveries_and_four_phases(view: 
     assert len({e["Id"] for e in events if e["EventType"] == "CallbackStarted"}) == 3
     assert req["TelemetryAssertions"]["quiescence_seconds"] == 5
     assert req["ExpectedResult"] == {"ExecutionStatus": "SUCCEEDED", "Result": "target/one/two"}
+
+
+@pytest.mark.parametrize("parent,start,end", [(10, 1.96, 1.99), (12, 3.4, 4.4), (12, 6.4, 7.4)])
+def test_target_terminal_must_belong_to_first_completion_invocation(parent: int, start: float, end: float) -> None:
+    value = trace("invocation")
+    target = next(
+        s
+        for s in value.spans
+        if s.attributes.get("durable.operation.id") == "cb0"
+        and s.attributes.get("durable.operation.status") == "SUCCEEDED"
+    )
+    bad = replace(
+        target,
+        parent_span_id=f"{parent:016x}",
+        start_time=START + timedelta(seconds=start),
+        end_time=START + timedelta(seconds=end),
+    )
+    errors = validate(replace(value, spans=tuple(bad if s is target else s for s in value.spans)), "invocation")
+    assert any("parent.$occurrence" in error for error in errors)
+
+
+@pytest.mark.parametrize("occurrence", [None, True, 0, -1, "2"])
+def test_parent_occurrence_is_strictly_positive_integer(occurrence: object) -> None:
+    config = assertions("invocation")
+    item = next(
+        item
+        for item in config["span_assertions"]
+        if item["expect"].get("attributes", {}).get("durable.operation.id") == "cb0"
+        and item["expect"]["attributes"].get("durable.operation.status") == "SUCCEEDED"
+    )
+    item["expect"]["parent"]["$occurrence"] = occurrence
+    errors = validate_trace(
+        trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
+    )
+    assert any("$occurrence must be a positive integer" in error for error in errors)
+
+
+def test_parent_occurrence_cannot_be_bypassed_by_unresolved_alternative() -> None:
+    config = assertions("invocation")
+    item = next(
+        item
+        for item in config["span_assertions"]
+        if item["expect"].get("attributes", {}).get("durable.operation.id") == "cb0"
+        and item["expect"]["attributes"].get("durable.operation.status") == "SUCCEEDED"
+    )
+    valid = item["expect"]["parent"]
+    item["expect"]["parent"] = {"$any_of": [valid, {"name": "Invocation", "$allow_unresolved": True, "$occurrence": 2}]}
+    errors = validate_trace(
+        trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
+    )
+    assert any("$occurrence requires a resolved parent" in error for error in errors)
