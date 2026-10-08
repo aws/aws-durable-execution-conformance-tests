@@ -754,6 +754,10 @@ class PollingValidator:
 
                 action, idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
                 if action is None:
+                    # Another callback may have consumed the eligible action
+                    # while this callback waited. Preserve ordinary matching
+                    # behavior rather than retaining a stale phase requirement.
+                    deferred_callback_ids.discard(callback_id)
                     if not actions:
                         # No actions configured — timeout test, expected behaviour
                         print(

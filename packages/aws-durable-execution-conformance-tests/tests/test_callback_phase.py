@@ -175,3 +175,31 @@ def test_multiple_matching_callbacks_use_delivery_time_action_indices(monkeypatc
     result = validate.PollingValidator(service).validate(ARN, [{"EventId": 3}, {"EventId": 4}], None, actions)
     assert result.passed and result.callbacks_sent == 2
     assert service.requests == [(2, {"CallbackId": "target-capability"}), (2, {"CallbackId": "second-capability"})]
+
+
+@pytest.mark.parametrize("history_only", [False, True])
+def test_one_action_two_matching_callbacks_preserve_delivery_time_rules(
+    monkeypatch: pytest.MonkeyPatch, history_only: bool
+) -> None:
+    other = {**CALLBACK, "EventId": 4, "CallbackStartedDetails": {"CallbackId": "second-capability"}}
+
+    def run(gated: bool):
+        service = Service([[CALLBACK, other], [CALLBACK, other, {"EventId": 6, "EventType": "InvocationCompleted"}]])
+        ticks = count()
+        monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+        monkeypatch.setattr(validate, "get_execution_history", service.history)
+        action = CallbackAction.from_dict(
+            {"CallbackName": "target", "Operation": "failure", "AfterInvocationCompleted": gated}
+        )
+        result = validate.PollingValidator(service).validate(
+            ARN, [{"EventId": 3}, {"EventId": 4}], None if history_only else {"ExecutionStatus": "FAILED"}, [action]
+        )
+        assert result.callbacks_sent == 1
+        assert service.requests == [(2 if gated else 1, {"CallbackId": "target-capability"})]
+        return result
+
+    ordinary = run(False)
+    gated = run(True)
+    # Preserve the existing unmatched-callback outcome; only delivery timing changes.
+    assert gated.passed == ordinary.passed
+    assert gated.errors == ordinary.errors
