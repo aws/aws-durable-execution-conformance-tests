@@ -34,7 +34,11 @@ class RetryableBackendError(BackendError):
 
 
 class TelemetryTimeout(BackendError):
-    """Raised when no matching trace arrives before the polling limit."""
+    """Polling failed to find or stabilize a trace within its budget."""
+
+    def __init__(self, *args: object, latest_trace: Trace | None = None) -> None:
+        super().__init__(*args)
+        self.latest_trace = latest_trace
 
 
 class BackendFeatureDisparity(StrEnum):
@@ -155,7 +159,8 @@ class PollingBackend(ABC):
             if policy.quiescence_seconds and latest_acceptable:
                 raise TelemetryTimeout(
                     f"Correlated trace did not remain valid and unchanged for "
-                    f"{policy.quiescence_seconds:g}s within the polling budget"
+                    f"{policy.quiescence_seconds:g}s within the polling budget",
+                    latest_trace=latest_trace,
                 )
             return latest_trace
         if latest_retryable_error is not None:

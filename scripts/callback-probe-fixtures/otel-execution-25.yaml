@@ -1,5 +1,4 @@
 ---
-# The same public handler as case17 is reused; only callback failure omits Error.
 description: Execution view keeps the failed callback leaf UNSET when failure supplies
   no error details
 Input:
@@ -42,7 +41,14 @@ ExpectedExecutionHistory:
     ParentId: ${FAILED_CALLBACK_CONTEXT}
     Name: '${/^otel-failed-callback(?: create callback id|-callback)?$/}'
     $absent:
-      - [CallbackFailedDetails, Error]
+      - [CallbackFailedDetails, Error, Payload, ErrorType]
+      - [CallbackFailedDetails, Error, Payload, ErrorMessage]
+      - [CallbackFailedDetails, Error, Payload, ErrorData]
+      - [CallbackFailedDetails, Error, Payload, StackTrace]
+    CallbackFailedDetails:
+      Error:
+        Payload: ${/^\{\}$/}
+        Truncated: false
   - EventId: 8
     EventType: ContextFailed
     SubType: WaitForCallback

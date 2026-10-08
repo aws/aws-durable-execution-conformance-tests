@@ -11,6 +11,7 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests.history import EventHistoryMatcher, load_yaml_file
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
@@ -24,6 +25,7 @@ TEST_ACCOUNT = "164176880947"
 SERVICE = "durable-execution-conformance"
 TERMINAL = {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}
 SENSITIVE_VALUES: set[str] = set()
+CURRENT_STAGE = "bootstrap"
 
 
 def sanitized(value: Any) -> Any:
@@ -93,14 +95,31 @@ def preflight(sts: Any, client: Any, expected_account: str, view: str) -> dict[s
     }
 
 
-def history(client: Any, arn: str) -> list[dict[str, Any]]:
+def read_created_execution(client: Any, operation: str, request: dict[str, Any], deadline: float | None) -> Any:
+    """Retry only visibility reads for the ARN returned and validated by Invoke."""
+    if operation not in {"get_durable_execution_history", "get_durable_execution"}:
+        raise ValueError("Only durable execution reads may use the visibility retry")
+    while True:
+        try:
+            return getattr(client, operation)(**request)
+        except ClientError as error:
+            if (
+                deadline is None
+                or error.response.get("Error", {}).get("Code") != "ResourceNotFoundException"
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
+def history(client: Any, arn: str, deadline: float | None = None) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     marker = None
     for _ in range(10):
         request = {"DurableExecutionArn": arn, "IncludeExecutionData": True, "MaxItems": 100}
         if marker:
             request["Marker"] = marker
-        page = client.get_durable_execution_history(**request)
+        page = read_created_execution(client, "get_durable_execution_history", request, deadline)
         events.extend(page.get("Events", []))
         marker = page.get("NextMarker")
         if not marker:
@@ -109,7 +128,11 @@ def history(client: Any, arn: str) -> list[dict[str, Any]]:
 
 
 def execute_probe(view: str, expected_account: str, run_name: str, output_dir: Path) -> dict[str, Any]:
-    config = Config(connect_timeout=10, read_timeout=25, retries={"mode": "standard", "max_attempts": 2})
+    global CURRENT_STAGE
+    CURRENT_STAGE = "preflight"
+    # Invoke and callback writes are never retried automatically. Only the
+    # validated newly-created ARN's visibility reads have explicit bounded retries.
+    config = Config(connect_timeout=10, read_timeout=25, retries={"mode": "standard", "total_max_attempts": 1})
     client = boto3.client("lambda", region_name=REGION, config=config)
     sts = boto3.client("sts", region_name=REGION, config=config)
     target = preflight(sts, client, expected_account, view)
@@ -125,6 +148,7 @@ def execute_probe(view: str, expected_account: str, run_name: str, output_dir: P
         "qualifier_provenance": "Existing conformance sam.Invoker._invoke_boto3 explicitly uses Qualifier=$LATEST",
     }
     (output_dir / "preflight.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    CURRENT_STAGE = "invoke"
     response = client.invoke(
         FunctionName=target["FunctionName"],
         Qualifier="$LATEST",
@@ -136,10 +160,12 @@ def execute_probe(view: str, expected_account: str, run_name: str, output_dir: P
     if not isinstance(arn, str) or not arn.startswith(target["FunctionArn"] + ":$LATEST/durable-execution/"):
         raise RuntimeError("Invoke did not return an execution in the exact test-function scope")
     report["execution_arn"] = arn
+    (output_dir / "execution-created.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     deadline = time.monotonic() + 180
     started_callback = None
+    CURRENT_STAGE = "await_callback_after_invocation_completed"
     while time.monotonic() < deadline:
-        events = history(client, arn)
+        events = history(client, arn, deadline)
         callbacks = [event for event in events if event.get("EventType") == "CallbackStarted"]
         if callbacks:
             if len(callbacks) != 1 or callbacks[0].get("Name") != "otel-failed-callback create callback id":
@@ -160,17 +186,22 @@ def execute_probe(view: str, expected_account: str, run_name: str, output_dir: P
     # The request deliberately has exactly one key. Never log the capability ID.
     capability = started_callback["CallbackStartedDetails"]["CallbackId"]
     SENSITIVE_VALUES.add(capability)
+    CURRENT_STAGE = "send_callback_failure"
     client.send_durable_execution_callback_failure(CallbackId=capability)
     report["failure_request_keys"] = ["CallbackId"]
     execution = {}
+    CURRENT_STAGE = "await_terminal_execution"
     while time.monotonic() < deadline:
-        execution = client.get_durable_execution(DurableExecutionArn=arn, IncludeExecutionData=True)
+        execution = read_created_execution(
+            client, "get_durable_execution", {"DurableExecutionArn": arn, "IncludeExecutionData": True}, deadline
+        )
         if execution.get("Status") in TERMINAL:
             break
         time.sleep(2)
     if execution.get("Status") not in TERMINAL:
         raise RuntimeError("Probe execution did not reach a terminal outcome within the bound")
-    events = history(client, arn)
+    CURRENT_STAGE = "read_terminal_history"
+    events = history(client, arn, deadline)
     (output_dir / "history.json").write_text(json.dumps(sanitized({"Events": events}), indent=2, default=str) + "\n")
     failures = [
         event
@@ -179,15 +210,25 @@ def execute_probe(view: str, expected_account: str, run_name: str, output_dir: P
     ]
     details = failures[0].get("CallbackFailedDetails", {}) if len(failures) == 1 else None
     error_absent = isinstance(details, dict) and "Error" not in details
+    error_wrapper = details.get("Error") if isinstance(details, dict) else None
+    error_payload = error_wrapper.get("Payload") if isinstance(error_wrapper, dict) else None
+    error_payload_empty = (
+        isinstance(error_wrapper, dict)
+        and isinstance(error_payload, dict)
+        and not error_payload
+        and error_wrapper.get("Truncated") is False
+    )
     report.update(
         execution_status=execution["Status"],
         callback_failed_events=len(failures),
         service_error_absent=error_absent,
+        service_error_payload_empty=error_payload_empty,
         callback_failure_details=sanitized(failures[0].get("CallbackFailedDetails")) if failures else None,
     )
     # Preserve service evidence even if telemetry retrieval/SDK behavior fails later.
     (output_dir / "service-result.json").write_text(json.dumps(sanitized(report), indent=2, default=str) + "\n")
     suffix = "inv" if view == "invocation" else "exec"
+    CURRENT_STAGE = "read_telemetry"
     backend = CollectorBackend(
         boto3.client("s3", region_name=REGION, config=config),
         f"dex-otel-py-{suffix}-{expected_account}-{REGION}",
@@ -221,11 +262,12 @@ def execute_probe(view: str, expected_account: str, run_name: str, output_dir: P
     report["candidate_telemetry_errors"] = validate_trace(
         trace, context.substitute(candidate["TelemetryAssertions"]), query
     )
+    CURRENT_STAGE = "verify_configuration_stability"
     after = client.get_function_configuration(FunctionName=target["FunctionName"])
     report["code_unchanged"] = after["CodeSha256"] == target["CodeSha256"]
     report["configuration_unchanged"] = after["RevisionId"] == target["RevisionId"]
     report["feasible"] = bool(
-        error_absent
+        error_payload_empty
         and leaves
         and all(span.status == "UNSET" for span in leaves)
         and execution["Status"] == "FAILED"
@@ -260,6 +302,7 @@ def main() -> int:
                         "view",
                         "execution_status",
                         "service_error_absent",
+                        "service_error_payload_empty",
                         "terminal_callback_span_statuses",
                         "feasible",
                     )
@@ -272,6 +315,8 @@ def main() -> int:
         detail = {
             "error_type": type(error).__name__,
             "service_error_code": getattr(error, "response", {}).get("Error", {}).get("Code"),
+            "operation_name": getattr(error, "operation_name", None),
+            "stage": CURRENT_STAGE,
         }
         (output / "probe-error.json").write_text(json.dumps(detail, indent=2) + "\n")
         print(json.dumps(detail))

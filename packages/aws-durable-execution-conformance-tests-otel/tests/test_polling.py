@@ -239,11 +239,12 @@ def test_quiescence_ignores_artifact_changes_but_preserves_span_multiplicity() -
 def test_quiescence_does_not_return_passing_data_when_the_budget_is_too_short() -> None:
     first = _one_span_trace()
     backend = _TimedBackend([first, first])
-    with pytest.raises(TelemetryTimeout, match="did not remain valid and unchanged"):
+    with pytest.raises(TelemetryTimeout, match="did not remain valid and unchanged") as captured:
         backend.find_trace(
             _query(),
             PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=2, quiescence_seconds=2),
         )
+    assert captured.value.latest_trace is first
 
 
 @pytest.mark.parametrize("delay_phase", ["lookup", "validation"])
@@ -320,3 +321,10 @@ def test_quiescence_restarts_when_an_acceptable_trace_gains_data() -> None:
         is changed
     )
     assert backend.attempts == 4
+
+
+def test_timeout_preserves_runtime_error_argument_compatibility() -> None:
+    assert TelemetryTimeout().args == ()
+    error = TelemetryTimeout("expired", 2)
+    assert error.args == ("expired", 2)
+    assert error.latest_trace is None
