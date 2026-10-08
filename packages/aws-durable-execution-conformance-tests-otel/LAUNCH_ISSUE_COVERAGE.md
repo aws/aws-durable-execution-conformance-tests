@@ -1,6 +1,6 @@
 # OTel launch regression coverage
 
-These requirements add normal user spans through each SDK's public APIs. The
+The context requirements add normal user spans through each SDK's public APIs. The
 handlers read the active span context and create a span without an explicit
 parent. They never attach a replacement context, fabricate SDK spans, or invoke
 instrumentation hooks themselves.
@@ -8,6 +8,8 @@ instrumentation hooks themselves.
 | Launch work item | Requirements | Regression detected |
 | --- | --- | --- |
 | 4 — Python status mapping | `otel-invocation-24`, `otel-execution-24` | A genuine invocation retry must report `RETRYING` and `UNSET`, followed by successful recovery. An ordinary step retry reports `PENDING` and does not test this path. |
+| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A real callback failure sent without error details must export the FAILED callback leaf as UNSET. Service history must contain an untruncated, exactly empty error payload. |
+| External-completion replay | `otel-invocation-26`, `otel-execution-26` | A root callback first completes before a checkpointed observation step, then is visited again on two later resumes without another terminal export. |
 | 5 — User-function context | `otel-invocation-22..23`, `otel-execution-22..23` | User code must receive valid context on the execution's trace, with the appropriate operation/attempt parent and restoration after nested work and resume. |
 | 6 — Completed-operation replay exports | `otel-execution-21` | A completed step before a normal wait/resume must not export its operation or user attempt again. The paired invocation-view case permits that view's distinct replay segments. |
 
@@ -63,11 +65,34 @@ SDK-owned callback boundary. These phases cannot universally be required to have
 an active SDK span under the existing lifecycle. The callback audit must remain
 explicit about these limits rather than accepting fabricated test context.
 
-The Python status fix also covers non-success operation-end records without an
-error object. Public callback failure with omitted error details is a candidate
-cloud scenario, but the current local testing service does not faithfully expose
-that null-error operation-end path. That branch keeps focused plugin contract
-coverage; case 24 is the verified public invocation-retry conformance path.
+Case 25 sends the public callback-failure API only the callback ID, after the
+callback's creating invocation has completed. The service represents this as a
+present `Error` wrapper with `Payload: {}` and `Truncated: false`. The requirement
+checks that exact empty payload and its object type; it does not treat every
+empty error object as `None`, and it does not require the wrapper to be absent.
+The callback leaf must be `FAILED/UNSET`. The enclosing invocation and workflow
+still fail, and the wait-for-callback context may have an SDK-derived error.
+Case 17 retains its existing strict `FAILED/ERROR` checks for supplied errors.
+No normalized exception-event assertion is claimed.
+
+The Python status contract also requires `UNSET` for no-error `CANCELLED`,
+`TIMED_OUT`, and `STOPPED` operation-end records. SDK unit truth-table controls
+must cover those states as well as `FAILED`, `SUCCEEDED/OK`, supplied-error
+`ERROR`, and invocation `RETRYING/UNSET`. Case 25 exercises the actual cloud
+`FAILED` path; this catalog does not claim cloud coverage of the other three
+no-error terminal states. An execution timeout leaving a wait `STARTED` (case
+15) is not evidence of an operation ending `TIMED_OUT` without an error.
+
+Case 26 uses a direct root `createCallback` operation, not a callback hidden in
+a completed child context. Every replay visits that same operation. After its
+first result, a durable step records the value once; two separate callback
+barriers then force two later resumes. Driver actions wait for a newer
+`InvocationCompleted` event before delivering each response. The four-invocation
+history, stable operation IDs, root parentage and first-completion timing are
+checked. Raw S3 terminal records must occur exactly once, including when two
+records have identical span IDs. Five seconds of unchanged telemetry are
+required. X-Ray merging cannot establish this raw export-count property.
+This cloud scenario does not exercise the JS local invocation-event wrapper.
 
 New requirements and SDK handler updates should be reviewed together. Configure
 `conformance_test_ref` to the new requirement commit when validating the handler
@@ -81,7 +106,7 @@ fallbacks reject probe spans tagged with `conformance.callback`, and invocation
 replay checks the required link shape for each allowed segment count.
 
 The self-test workflow pins the Python companion fixture from SDK PR #758 so all
-24 cases are exercised before the new handlers reach SDK main. Runtime
+26 cases are exercised before the new handlers reach SDK main. Runtime
 prerequisites are the focused fixes #752 and #756. Manual dispatch can override
 that revision; the `failed+uncovered` coverage threshold is unchanged.
 

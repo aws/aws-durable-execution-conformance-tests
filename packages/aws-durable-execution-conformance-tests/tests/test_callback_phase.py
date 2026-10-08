@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
+"""Exercise callback delivery through the real polling validator and sender."""
+
+from __future__ import annotations
+
+from itertools import count
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from aws_durable_execution_conformance_tests import validate
+from aws_durable_execution_conformance_tests.callback import CallbackAction
+
+ARN = "arn:test:owned-execution"
+CALLBACK = {
+    "EventId": 3,
+    "EventType": "CallbackStarted",
+    "Name": "target",
+    "CallbackStartedDetails": {"CallbackId": "target-capability"},
+}
+
+
+class Service:
+    def __init__(self, frames: list[list[dict[str, Any]]]):
+        self.frames = frames
+        self.reads: list[str] = []
+        self.requests: list[tuple[int, dict[str, Any]]] = []
+
+    def history(self, arn: str, client: Any) -> dict[str, Any]:
+        assert client is self
+        self.reads.append(arn)
+        if self.requests:
+            return {"Events": [*self.frames[-1], {"EventId": 10, "EventType": "ExecutionFailed"}]}
+        return {"Events": self.frames[min(len(self.reads) - 1, len(self.frames) - 1)]}
+
+    def send_durable_execution_callback_failure(self, **kwargs: Any) -> dict:
+        self.requests.append((len(self.reads), kwargs))
+        return {}
+
+    def get_durable_execution(self, **kwargs: Any) -> dict:
+        assert kwargs["DurableExecutionArn"] == ARN
+        return {"Status": "FAILED"}
+
+
+def run_validator(monkeypatch: pytest.MonkeyPatch, service: Service, raw: dict, *, history_only=False):
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    action = CallbackAction.from_dict({"CallbackName": "target", "Operation": "failure", **raw})
+    return validate.PollingValidator(
+        service, validate.AsyncValidationConfig(poll_interval_seconds=0, no_progress_timeout_seconds=2)
+    ).validate(
+        ARN,
+        [{"EventId": 3, "EventType": "CallbackStarted"}],
+        None if history_only else {"ExecutionStatus": "FAILED"},
+        [action],
+    )
+
+
+@pytest.mark.parametrize("value", [None, "true", "false", 0, 1, [], {}])
+def test_phase_option_rejects_non_boolean(value: Any) -> None:
+    with pytest.raises(ValueError, match="AfterInvocationCompleted must be a boolean"):
+        CallbackAction.from_dict({"CallbackName": "target", "Operation": "failure", "AfterInvocationCompleted": value})
+
+
+@pytest.mark.parametrize("raw", [{}, {"AfterInvocationCompleted": False}])
+def test_missing_or_false_preserves_delivery_before_completion(monkeypatch: pytest.MonkeyPatch, raw: dict) -> None:
+    service = Service([[CALLBACK]])
+    result = run_validator(monkeypatch, service, raw)
+    assert result.passed and result.callbacks_sent == 1
+    assert service.requests == [(1, {"CallbackId": "target-capability"})]
+
+
+@pytest.mark.parametrize("history_only", [False, True])
+def test_gate_waits_for_later_completion_without_consuming_action(
+    monkeypatch: pytest.MonkeyPatch, history_only: bool
+) -> None:
+    old_completion = {"EventId": 2, "EventType": "InvocationCompleted"}
+    completion = {"EventId": 6, "EventType": "InvocationCompleted"}
+    service = Service([[old_completion, CALLBACK], [old_completion, CALLBACK, completion]])
+    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=history_only)
+    assert result.passed and result.callbacks_sent == 1
+    assert service.requests == [(2, {"CallbackId": "target-capability"})]
+    assert service.reads == [ARN] * (2 if history_only else 3)
+
+
+@pytest.mark.parametrize("completion_id", [None, 2, 3, "6", True])
+def test_missing_older_equal_or_malformed_completion_does_not_deliver(
+    monkeypatch: pytest.MonkeyPatch, completion_id: Any
+) -> None:
+    completion = [] if completion_id is None else [{"EventId": completion_id, "EventType": "InvocationCompleted"}]
+    service = Service([[*completion, CALLBACK]])
+    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=True)
+    assert not result.passed
+    assert any("No new events" in error for error in result.errors)
+    assert result.callbacks_sent == 0 and service.requests == []
+
+
+def test_completed_unrelated_callback_is_not_target_phase_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = Service([[CALLBACK, {"EventId": 6, "EventType": "CallbackSucceeded"}]])
+    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=True)
+    assert not result.passed and not service.requests
+
+
+@pytest.mark.parametrize("terminal_on_first_poll", [False, True])
+def test_terminal_execution_cannot_hide_undelivered_phase_action(
+    monkeypatch: pytest.MonkeyPatch, terminal_on_first_poll: bool
+) -> None:
+    terminal = [CALLBACK, {"EventId": 5, "EventType": "ExecutionFailed"}]
+    service = Service([terminal] if terminal_on_first_poll else [[CALLBACK], terminal])
+    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=True)
+    assert not result.passed and not service.requests
+    assert "Callback actions awaiting InvocationCompleted were not delivered" in result.errors

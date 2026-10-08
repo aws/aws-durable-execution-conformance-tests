@@ -1,0 +1,330 @@
+---
+description: Execution view exports each external callback completion once before
+  subsequent replay barriers
+Input:
+  scenario: external-callback-completion-replay
+AsyncInvoke: true
+CallbackActions:
+  - CallbackName: otel-external-target
+    Operation: success
+    Payload: target
+    AfterInvocationCompleted: true
+  - CallbackName: '${/^otel-external-barrier-one(?: create callback id|-callback)?$/}'
+    Operation: success
+    Payload: one
+    AfterInvocationCompleted: true
+  - CallbackName: '${/^otel-external-barrier-two(?: create callback id|-callback)?$/}'
+    Operation: success
+    Payload: two
+    AfterInvocationCompleted: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: CallbackStarted
+    SubType: Callback
+    Id: ${TARGET_CALLBACK}
+    Name: otel-external-target
+  - EventId: 3
+    EventType: InvocationCompleted
+  - EventId: 4
+    EventType: CallbackSucceeded
+    SubType: Callback
+    Id: ${TARGET_CALLBACK}
+    Name: otel-external-target
+  - EventId: 5
+    EventType: StepStarted
+    SubType: Step
+    Id: ${TARGET_OBSERVED}
+    Name: otel-external-target-observed
+  - EventId: 6
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${TARGET_OBSERVED}
+    Name: otel-external-target-observed
+  - EventId: 7
+    EventType: ContextStarted
+    SubType: WaitForCallback
+    Id: ${BARRIER_ONE_CONTEXT}
+    Name: otel-external-barrier-one
+  - EventId: 8
+    EventType: CallbackStarted
+    SubType: Callback
+    Id: ${BARRIER_ONE_CALLBACK}
+    ParentId: ${BARRIER_ONE_CONTEXT}
+  - EventId: 9
+    EventType: StepStarted
+    SubType: Step
+    Id: ${BARRIER_ONE_SUBMITTER}
+    ParentId: ${BARRIER_ONE_CONTEXT}
+  - EventId: 10
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${BARRIER_ONE_SUBMITTER}
+    ParentId: ${BARRIER_ONE_CONTEXT}
+  - EventId: 11
+    EventType: InvocationCompleted
+  - EventId: 12
+    EventType: CallbackSucceeded
+    SubType: Callback
+    Id: ${BARRIER_ONE_CALLBACK}
+    ParentId: ${BARRIER_ONE_CONTEXT}
+  - EventId: 13
+    EventType: ContextSucceeded
+    SubType: WaitForCallback
+    Id: ${BARRIER_ONE_CONTEXT}
+    Name: otel-external-barrier-one
+  - EventId: 14
+    EventType: ContextStarted
+    SubType: WaitForCallback
+    Id: ${BARRIER_TWO_CONTEXT}
+    Name: otel-external-barrier-two
+  - EventId: 15
+    EventType: CallbackStarted
+    SubType: Callback
+    Id: ${BARRIER_TWO_CALLBACK}
+    ParentId: ${BARRIER_TWO_CONTEXT}
+  - EventId: 16
+    EventType: StepStarted
+    SubType: Step
+    Id: ${BARRIER_TWO_SUBMITTER}
+    ParentId: ${BARRIER_TWO_CONTEXT}
+  - EventId: 17
+    EventType: StepSucceeded
+    SubType: Step
+    Id: ${BARRIER_TWO_SUBMITTER}
+    ParentId: ${BARRIER_TWO_CONTEXT}
+  - EventId: 18
+    EventType: InvocationCompleted
+  - EventId: 19
+    EventType: CallbackSucceeded
+    SubType: Callback
+    Id: ${BARRIER_TWO_CALLBACK}
+    ParentId: ${BARRIER_TWO_CONTEXT}
+  - EventId: 20
+    EventType: ContextSucceeded
+    SubType: WaitForCallback
+    Id: ${BARRIER_TWO_CONTEXT}
+    Name: otel-external-barrier-two
+  - EventId: 21
+    EventType: InvocationCompleted
+  - EventId: 22
+    EventType: ExecutionSucceeded
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: target/one/two
+TelemetryAssertions:
+  minimum_spans: 9
+  minimum_invocations: 4
+  require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
+  require_unique_root_per_trace: true
+  require_all_spans: true
+  span_assertion_scope:
+    - name: Workflow
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - name: Invocation
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+        durable.operation.type: CALLBACK
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      count: 4
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+      expect_by_occurrence:
+        - attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+            durable.invocation.status: PENDING
+          before:
+            name: otel-external-target-observed attempt 1
+            attributes:
+              durable.operation.id: ${TARGET_OBSERVED}
+        - attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: PENDING
+        - attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: PENDING
+          after:
+            name: otel-external-target-observed attempt 1
+            attributes:
+              durable.operation.id: ${TARGET_OBSERVED}
+        - attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+            durable.invocation.status: SUCCEEDED
+          after:
+            name: otel-external-target-observed attempt 1
+            attributes:
+              durable.operation.id: ${TARGET_OBSERVED}
+    - select:
+        name: ${/^(?:otel-external-target|CALLBACK)$/}
+        attributes:
+          durable.operation.id: ${TARGET_CALLBACK}
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${TARGET_CALLBACK}
+          durable.operation.type: CALLBACK
+          durable.operation.subtype: Callback
+          durable.operation.name: otel-external-target
+          durable.operation.status: SUCCEEDED
+        parent:
+          name: Workflow
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        links:
+          - name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+            $occurrence: 2
+        before:
+          name: otel-external-target-observed attempt 1
+          attributes:
+            durable.operation.id: ${TARGET_OBSERVED}
+    - select:
+        name: '${/^(?:otel-external-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
+        attributes:
+          durable.operation.id: ${BARRIER_ONE_CALLBACK}
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BARRIER_ONE_CALLBACK}
+          durable.operation.type: CALLBACK
+          durable.operation.subtype: Callback
+          durable.operation.name: '${/^otel-external-barrier-one(?: create callback
+            id|-callback)$/}'
+          durable.operation.status: SUCCEEDED
+        parent:
+          name: otel-external-barrier-one
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${BARRIER_ONE_CONTEXT}
+          $allow_outside: true
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        links:
+          - name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+            $occurrence: 3
+        after:
+          name: otel-external-target-observed attempt 1
+          attributes:
+            durable.operation.id: ${TARGET_OBSERVED}
+    - select:
+        name: '${/^(?:otel-external-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
+        attributes:
+          durable.operation.id: ${BARRIER_TWO_CALLBACK}
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${BARRIER_TWO_CALLBACK}
+          durable.operation.type: CALLBACK
+          durable.operation.subtype: Callback
+          durable.operation.name: '${/^otel-external-barrier-two(?: create callback
+            id|-callback)$/}'
+          durable.operation.status: SUCCEEDED
+        parent:
+          name: otel-external-barrier-two
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${BARRIER_TWO_CONTEXT}
+          $allow_outside: true
+        same_trace_as:
+          name: Workflow
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+        links:
+          - name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+            $occurrence: 4
+        after:
+          name: otel-external-target-observed attempt 1
+          attributes:
+            durable.operation.id: ${TARGET_OBSERVED}
+    - select:
+        name: otel-external-target-observed attempt 1
+        attributes:
+          durable.operation.id: ${TARGET_OBSERVED}
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${TARGET_OBSERVED}
+          durable.operation.type: STEP
+          durable.operation.subtype: Step
+          durable.operation.name: otel-external-target-observed
+          durable.attempt.number: 1
+          durable.attempt.outcome: SUCCEEDED
+        parent:
+          name: otel-external-target-observed
+          kind: INTERNAL
+          attributes:
+            durable.operation.id: ${TARGET_OBSERVED}
+        after:
+          name: ${/^(?:otel-external-target|CALLBACK)$/}
+          attributes:
+            durable.operation.id: ${TARGET_CALLBACK}
+            durable.operation.status: SUCCEEDED
+        links:
+          - name: Invocation
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+            $occurrence: 2
+        inside:
+          name: Invocation
+          $linked: true
+  quiescence_seconds: 5

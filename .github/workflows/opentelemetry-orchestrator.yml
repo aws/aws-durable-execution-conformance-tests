@@ -174,7 +174,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-invocation
-      case_count: 24
+      case_count: 26
       aws_region: ${{ inputs.aws_region }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit
@@ -205,7 +205,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-execution
-      case_count: 24
+      case_count: 26
       aws_region: ${{ inputs.aws_region }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit

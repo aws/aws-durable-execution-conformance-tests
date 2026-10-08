@@ -83,8 +83,8 @@ jobs:
       language: py
       resource_prefix: py-self
       sdk_repository: aws/aws-durable-execution-sdk-python
-      # Reference fixture implementing cases 1–24; overridable on manual dispatch.
-      sdk_ref: ${{ inputs.sdk_ref || '55a7870423dfe1bac0f057d959d654d5f302a7cd' }}
+      # Reference fixture implementing cases 1–26; overridable on manual dispatch.
+      sdk_ref: ${{ inputs.sdk_ref || '12e760cf72dc14055ae0dec48bf0a20ad73451b2' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel

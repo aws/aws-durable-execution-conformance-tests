@@ -747,6 +747,19 @@ class PollingValidator:
                     handled_callback_ids.add(callback_id)
                     continue
 
+                if action.after_invocation_completed:
+                    callback_event_id = cb_event.get("EventId")
+                    phase_reached = type(callback_event_id) is int and any(
+                        event.get("EventType") == "InvocationCompleted"
+                        and type(event.get("EventId")) is int
+                        and event["EventId"] > callback_event_id
+                        for event in actual_events
+                    )
+                    if not phase_reached:
+                        # This history belongs to execution_arn. Keep both the
+                        # action and callback available for the next poll.
+                        continue
+
                 if idx is not None:
                     used_action_indices.add(idx)
 
@@ -772,7 +785,11 @@ class PollingValidator:
 
             # In history-only mode, stop polling once all expected
             # events are matched rather than waiting for terminal status.
-            if history_only_mode and expected_events:
+            phase_actions_pending = any(
+                action.after_invocation_completed and idx not in used_action_indices
+                for idx, action in enumerate(actions)
+            )
+            if history_only_mode and expected_events and not phase_actions_pending:
                 matcher = EventHistoryMatcher(context=self._context)
                 match_result = matcher.match(expected_events, actual_events)
                 if match_result.success:
@@ -784,6 +801,11 @@ class PollingValidator:
                         final_status=final_status,
                         event_count=len(actual_events),
                     )
+
+        if any(
+            action.after_invocation_completed and idx not in used_action_indices for idx, action in enumerate(actions)
+        ):
+            errors.append("Callback actions awaiting InvocationCompleted were not delivered")
 
         # --- Final assertion: match event history ---
         if expected_events:

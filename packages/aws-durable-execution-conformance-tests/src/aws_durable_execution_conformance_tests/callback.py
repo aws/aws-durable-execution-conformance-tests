@@ -49,12 +49,16 @@ class CallbackAction:
         delay_seconds: Optional delay in seconds before sending the
             callback. Defaults to 0 (no delay). Useful for controlling
             the order of callback responses in multi-callback tests.
+        after_invocation_completed: Wait for an InvocationCompleted history
+            event after the target CallbackStarted before sending. Defaults
+            to False; a delay alone does not guarantee this execution phase.
     """
 
     callback_name: str
     operation: str
     payload: Any = None
     delay_seconds: float = 0
+    after_invocation_completed: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CallbackAction:
@@ -86,11 +90,15 @@ class CallbackAction:
 
         payload: Any = data.get("Payload")
         delay_seconds: float = float(data.get("Delay", 0))
+        after_invocation_completed = data.get("AfterInvocationCompleted", False)
+        if not isinstance(after_invocation_completed, bool):
+            raise ValueError("AfterInvocationCompleted must be a boolean")
         return cls(
             callback_name=callback_name,
             operation=operation.lower(),
             payload=payload,
             delay_seconds=delay_seconds,
+            after_invocation_completed=after_invocation_completed,
         )
 
 
