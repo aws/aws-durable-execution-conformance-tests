@@ -135,6 +135,26 @@ hatch run validate --template path/to/template.yaml \
                    --report console json junit github --report-file build/report
 ```
 
+### CloudWatch log polling
+
+For requirements with `ExpectedLogs`, `--log-poll-timeout SECONDS` sets the
+maximum polling window (default: 120 seconds). Polling starts immediately and
+accumulates events across all responses, deduplicating by CloudWatch event ID.
+A later response that omits a previously seen event does not remove it from
+validation, and distinct events with identical messages still count separately.
+
+Successful validation can finish early after all log expectations pass and no
+new execution events have appeared for 10 seconds. New events restart this quiet
+window, allowing late duplicates, forbidden records, and ordering violations to
+be detected. Missing or failing expectations continue until the polling timeout.
+CloudWatch provides no completeness signal, so the quiet window is an ingestion
+heuristic: records that become visible after polling stops cannot be checked.
+
+Programmatic callers may override `log_poll_timeout_seconds` on
+`validate_description` or `event_poll_timeout_seconds` on
+`CloudWatchLogRetriever`; both default to the same 120-second limit. Direct
+retriever calls without a `completion_check` collect events for the full window.
+
 ### Result statuses
 
 Every requirement resolves to one status:

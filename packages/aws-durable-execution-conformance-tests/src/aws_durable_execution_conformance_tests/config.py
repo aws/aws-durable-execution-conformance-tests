@@ -20,6 +20,7 @@ BUILD_DIR: Path = _RUNTIME_ROOT / "build"
 STACK_NAME_PREFIX = "conformance-tests"
 DEFAULT_REGION = "us-west-2"
 DEFAULT_MAX_WORKERS = 4
+DEFAULT_LOG_POLL_TIMEOUT_SECONDS = 120
 
 # Async polling configuration
 POLL_INTERVAL_SECONDS = 2.0

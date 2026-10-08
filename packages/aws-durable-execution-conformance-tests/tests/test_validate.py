@@ -599,3 +599,159 @@ def test_e2e_expected_logs_absent_field_skips_validation(monkeypatch) -> None:
 
 
 # endregion
+
+
+def _poll_expected_logs(monkeypatch, expected_logs, batches, timeout=120):
+    """Exercise real retrieval and validation with a deterministic ingestion clock."""
+    import aws_durable_execution_conformance_tests.cloudwatch as cloudwatch_module
+    from aws_durable_execution_conformance_tests.clients import AwsClients
+    from aws_durable_execution_conformance_tests.validate import _validate_expected_logs
+
+    now = 0.0
+    query_times: list[float] = []
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    class IngestingLogsClient:
+        def filter_log_events(self, **_kwargs):
+            batch = batches[min(len(query_times), len(batches) - 1)]
+            query_times.append(now)
+            return {"events": batch}
+
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", lambda: now)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", sleep)
+    errors = _validate_expected_logs(
+        description_data={"ExpectedLogs": expected_logs},
+        stack_name="my-stack",
+        function_name="PluginFn",
+        execution_arn="arn:execution",
+        start_time_ms=0,
+        aws_clients=AwsClients({"cloudformation": _StubCfnClient(), "logs": IngestingLogsClient()}),
+        log_poll_timeout_seconds=timeout,
+    )
+    return errors, now, query_times
+
+
+def test_expected_logs_passes_after_quiet_window_without_pre_wait(monkeypatch):
+    errors, elapsed, query_times = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "done"}, "count": 1}],
+        [[{"eventId": "1", "message": "done"}]],
+    )
+
+    assert errors == []
+    assert elapsed == 10
+    assert query_times == list(range(11))
+
+
+def test_expected_logs_waits_for_delayed_required_record(monkeypatch):
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "done"}, "count": 1}],
+        [[]] * 25 + [[{"eventId": "1", "message": "done"}]],
+    )
+
+    assert errors == []
+    assert elapsed == 35
+
+
+def test_expected_logs_missing_record_uses_full_timeout(monkeypatch):
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "done"}, "min_count": 1}],
+        [[]],
+    )
+
+    assert len(errors) == 1
+    assert "expected at least 1 match(es), got 0" in errors[0]
+    assert elapsed == 120
+
+
+def test_expected_logs_negative_assertion_observes_quiet_window(monkeypatch):
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "forbidden"}, "count": 0}],
+        [[]],
+    )
+
+    assert errors == []
+    assert elapsed == 10
+
+
+def test_expected_logs_new_unmatched_record_restarts_quiet_window(monkeypatch):
+    done = {"eventId": "1", "message": "done"}
+    noise = {"eventId": "2", "message": "other"}
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "done"}, "count": 1}],
+        [[done]] * 9 + [[done, noise]],
+    )
+
+    assert errors == []
+    assert elapsed == 19
+
+
+@pytest.mark.parametrize(
+    ("expected_logs", "initial", "late", "error"),
+    [
+        (
+            [{"match": {"message": "done"}, "count": 1}],
+            [{"eventId": "1", "message": "done", "timestamp": 2}],
+            {"eventId": "2", "message": "done", "timestamp": 2},
+            "expected exactly 1 match(es), got 2",
+        ),
+        (
+            [{"match": {"message": "forbidden"}, "count": 0}],
+            [],
+            {"eventId": "1", "message": "forbidden"},
+            "expected exactly 0 match(es), got 1",
+        ),
+        (
+            [{"match": {"message": "done"}, "max_count": 1}],
+            [{"eventId": "1", "message": "done"}],
+            {"eventId": "2", "message": "done"},
+            "expected at most 1 match(es), got 2",
+        ),
+        (
+            [{"match": {"message": "done"}, "count": 1, "after": {"message": "start"}}],
+            [
+                {"eventId": "1", "message": "start", "timestamp": 1},
+                {"eventId": "2", "message": "done", "timestamp": 2},
+            ],
+            {"eventId": "3", "message": "start", "timestamp": 3},
+            "log records out of order",
+        ),
+    ],
+    ids=["duplicate", "forbidden", "max-count", "order"],
+)
+def test_expected_logs_retains_late_violations_even_if_they_disappear(monkeypatch, expected_logs, initial, late, error):
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        expected_logs,
+        [initial] * 4 + [[*initial, late], initial],
+        timeout=20,
+    )
+
+    assert len(errors) == 1
+    assert error in errors[0]
+    assert elapsed == 20
+
+
+def test_expected_logs_combines_inconsistent_results_in_timestamp_order(monkeypatch):
+    errors, elapsed, _ = _poll_expected_logs(
+        monkeypatch,
+        [
+            {"match": {"message": "start"}, "count": 1},
+            {"match": {"message": "done"}, "count": 1, "after": {"message": "start"}},
+        ],
+        [
+            [{"eventId": "2", "message": "done", "timestamp": 2}],
+            [{"eventId": "1", "message": "start", "timestamp": 1}],
+            [],
+        ],
+    )
+
+    assert errors == []
+    assert elapsed == 11

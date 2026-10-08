@@ -28,6 +28,7 @@ import yaml
 from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.config import (
     BUILD_DIR,
+    DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
     DEFAULT_MAX_WORKERS,
     DEFAULT_REGION,
     OUTPUT_DIR,
@@ -212,12 +213,12 @@ def parse_args(
     parser.add_argument(
         "--log-poll-timeout",
         type=_positive_int,
-        default=120,
+        default=DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
         metavar="SECONDS",
-        help="Maximum seconds to poll CloudWatch Logs for a requirement's "
-        "ExpectedLogs before asserting. FilterLogEvents is eventually "
-        "consistent, so a larger window absorbs log ingestion lag and avoids "
-        "false 'expected N, got 0' failures. Defaults to 120.",
+        help="Maximum polling budget in seconds for a requirement's ExpectedLogs. "
+        "Successful validation may finish early after 10 seconds with no new log events. "
+        "FilterLogEvents is eventually consistent, so a larger budget allows for log ingestion lag. "
+        f"Defaults to {DEFAULT_LOG_POLL_TIMEOUT_SECONDS}.",
     )
     try:
         registry.add_arguments(parser)

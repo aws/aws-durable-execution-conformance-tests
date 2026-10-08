@@ -19,7 +19,11 @@ from aws_durable_execution_conformance_tests.app import (
     parse_args,
 )
 from aws_durable_execution_conformance_tests.clients import AwsClients
-from aws_durable_execution_conformance_tests.config import DEFAULT_MAX_WORKERS, DEFAULT_REGION
+from aws_durable_execution_conformance_tests.config import (
+    DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+    DEFAULT_MAX_WORKERS,
+    DEFAULT_REGION,
+)
 from aws_durable_execution_conformance_tests.extensions import RequirementCase, RequirementSuite
 from aws_durable_execution_conformance_tests.sam import Invoker
 from aws_durable_execution_conformance_tests.validate import DescriptionResult
@@ -68,10 +72,24 @@ def test_suite_defaults_to_all() -> None:
     assert args.suite == ["all"]
 
 
-def test_log_poll_timeout_defaults_to_120() -> None:
+def test_log_poll_timeout_defaults_to_configured_value() -> None:
     args = parse_args(["--template", "template.yaml", "--language", "python"])
 
-    assert args.log_poll_timeout == 120
+    assert args.log_poll_timeout == DEFAULT_LOG_POLL_TIMEOUT_SECONDS
+
+
+def test_log_poll_timeout_accepts_positive_override() -> None:
+    args = parse_args(["--template", "template.yaml", "--language", "python", "--log-poll-timeout", "45"])
+
+    assert args.log_poll_timeout == 45
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "invalid"])
+def test_log_poll_timeout_rejects_invalid_values(value: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        parse_args(["--template", "template.yaml", "--language", "python", "--log-poll-timeout", value])
+
+    assert exc.value.code == 2
 
 
 def test_suite_accepts_discovered_suite() -> None:
@@ -254,6 +272,7 @@ def test_validates_descriptions_concurrently_and_preserves_order(
     completion_order: list[str] = []
     validation_thread_ids: list[int] = []
     received_clients: list[AwsClients] = []
+    received_timeouts: list[float] = []
     aws_clients = AwsClients(
         {
             "lambda": object(),
@@ -271,15 +290,16 @@ def test_validates_descriptions_concurrently_and_preserves_order(
         region: str,
         aws_clients: AwsClients,
         output_dir: str | None = None,
-        log_poll_timeout_seconds: float | None = None,
+        log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
     ) -> DescriptionResult:
-        del test_file, invoker, tmp_dir, region, output_dir, log_poll_timeout_seconds
+        del test_file, invoker, tmp_dir, region, output_dir
         nonlocal active, max_active
         with lock:
             active += 1
             max_active = max(max_active, active)
             validation_thread_ids.append(get_ident())
             received_clients.append(aws_clients)
+            received_timeouts.append(log_poll_timeout_seconds)
         barrier.wait(timeout=1)
         if description_id == "test-1":
             time.sleep(0.02)
@@ -300,12 +320,19 @@ def test_validates_descriptions_concurrently_and_preserves_order(
         requirements=requirements,
         invoker=Invoker(stack_name="test-stack"),
         tmp_dir=str(tmp_path),
-        args=argparse.Namespace(
-            history_dir=str(tmp_path),
-            language="python",
-            max_workers=2,
-            region="us-west-2",
-            log_poll_timeout=120,
+        args=parse_args(
+            [
+                "--template",
+                "template.yaml",
+                "--language",
+                "python",
+                "--history-dir",
+                str(tmp_path),
+                "--max-workers",
+                "2",
+                "--log-poll-timeout",
+                "45",
+            ]
         ),
         aws_clients=aws_clients,
     )
@@ -315,3 +342,4 @@ def test_validates_descriptions_concurrently_and_preserves_order(
     assert [result.description_id for result in results] == ["test-1", "test-2"]
     assert all(thread_id != main_thread_id for thread_id in validation_thread_ids)
     assert received_clients == [aws_clients, aws_clients]
+    assert received_timeouts == [45, 45]

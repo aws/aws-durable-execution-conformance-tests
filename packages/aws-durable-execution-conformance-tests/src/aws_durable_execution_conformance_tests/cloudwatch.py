@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from aws_durable_execution_conformance_tests.config import DEFAULT_LOG_POLL_TIMEOUT_SECONDS
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 # region Exceptions
@@ -127,12 +131,13 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
 
     EVENT_POLL_INTERVAL_SECONDS = 1.0
+    EVENT_SETTLE_SECONDS = 10.0
 
     def __init__(
         self,
         cloudformation_client: Any,
         logs_client: Any,
-        event_poll_timeout_seconds: float,
+        event_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
         event_poll_interval_seconds: float | None = None,
     ) -> None:
         self._cfn_client = cloudformation_client
@@ -140,9 +145,7 @@ class CloudWatchLogRetriever:
         # Maximum time to keep polling FilterLogEvents for one execution's log
         # events. FilterLogEvents is eventually consistent and exposes no
         # completeness signal, so a just-emitted record can be absent from
-        # responses for seconds after the execution finishes; the caller
-        # supplies a window generous enough to absorb that lag (the CLI's
-        # --log-poll-timeout default is 120s).
+        # responses for seconds after the execution finishes.
         self._event_poll_timeout_seconds = event_poll_timeout_seconds
         self._event_poll_interval_seconds = (
             self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
@@ -257,6 +260,7 @@ class CloudWatchLogRetriever:
         start_time_ms: int,
         end_time_ms: int | None = None,
         wait_seconds: int | None = None,
+        completion_check: Callable[[list[dict]], bool] | None = None,
     ) -> list[dict]:
         """Fetch log events associated with one durable execution.
 
@@ -265,7 +269,14 @@ class CloudWatchLogRetriever:
         field names keeps concurrent executions of the same function isolated
         without relying on Logs Insights indexing. The method polls through a
         bounded ingestion window because ``FilterLogEvents`` has no signal that
-        all matching records are available.
+        all matching records are available. Events are accumulated across polls
+        because a later response can omit previously visible records.
+
+        When ``completion_check`` is supplied, polling may finish once it passes
+        and no new events have appeared for ``EVENT_SETTLE_SECONDS``. This quiet
+        window allows late duplicates and forbidden records to invalidate a
+        passing snapshot; it is a bounded ingestion heuristic, not proof of
+        completeness. Without a check, polling uses the full timeout.
 
         Args:
             log_group_name: The full log group name.
@@ -274,6 +285,7 @@ class CloudWatchLogRetriever:
             end_time_ms: End of the time range in epoch milliseconds.
                          Defaults to current time if not provided.
             wait_seconds: Seconds to wait before querying for log propagation.
+            completion_check: Optional predicate over all observed events.
 
         Returns:
             A list of log event dicts, each with at least a "message" key.
@@ -290,7 +302,10 @@ class CloudWatchLogRetriever:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        deadline = time.monotonic() + self._event_poll_timeout_seconds
+        started_at = time.monotonic()
+        deadline = started_at + self._event_poll_timeout_seconds
+        last_new_event_at = started_at
+        observed: dict[tuple, dict] = {}
         while True:
             events = self.get_log_events(
                 log_group_name=log_group_name,
@@ -299,9 +314,32 @@ class CloudWatchLogRetriever:
                 filter_pattern=filter_pattern,
                 wait_seconds=0,
             )
-            if time.monotonic() >= deadline:
-                return events
-            time.sleep(self._event_poll_interval_seconds)
+            previous_count = len(observed)
+            occurrences: dict[str, int] = {}
+            for event in events:
+                if event.get("eventId"):
+                    key = ("eventId", event.get("logStreamName"), event["eventId"])
+                else:
+                    # Non-AWS clients may omit eventId. Preserve the maximum
+                    # observed multiplicity of identical records across polls.
+                    fingerprint = json.dumps(event, sort_keys=True)
+                    occurrences[fingerprint] = occurrences.get(fingerprint, 0) + 1
+                    key = ("record", fingerprint, occurrences[fingerprint])
+                observed.setdefault(key, event)
+
+            now = time.monotonic()
+            if len(observed) != previous_count:
+                last_new_event_at = now
+            accumulated = list(observed.values())
+            if now >= deadline:
+                return accumulated
+            if (
+                completion_check is not None
+                and now - last_new_event_at >= self.EVENT_SETTLE_SECONDS
+                and completion_check(accumulated)
+            ):
+                return accumulated
+            time.sleep(min(self._event_poll_interval_seconds, deadline - now))
 
 
 # endregion
