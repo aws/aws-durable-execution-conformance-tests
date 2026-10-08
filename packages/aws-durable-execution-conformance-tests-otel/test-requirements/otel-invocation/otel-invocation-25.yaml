@@ -41,7 +41,6 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${FAILED_CALLBACK}
     ParentId: ${FAILED_CALLBACK_CONTEXT}
-    Name: '${/^otel-failed-callback(?: create callback id|-callback)?$/}'
     $absent:
       - [CallbackFailedDetails, Error, Payload, ErrorType]
       - [CallbackFailedDetails, Error, Payload, ErrorMessage]

@@ -636,6 +636,16 @@ def find_matching_action(
 # region Async validator
 
 
+def _callback_invocation_completed(callback_event: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    callback_event_id = callback_event.get("EventId")
+    return type(callback_event_id) is int and any(
+        event.get("EventType") == "InvocationCompleted"
+        and type(event.get("EventId")) is int
+        and event["EventId"] > callback_event_id
+        for event in events
+    )
+
+
 class PollingValidator:
     """Polls execution history, handles callbacks, and asserts results.
 
@@ -684,6 +694,7 @@ class PollingValidator:
         actions: list[CallbackAction] = callback_actions or []
         handled_callback_ids: set[str] = set()
         used_action_indices: set[int] = set()
+        deferred_callback_ids: set[str] = set()
         callbacks_sent: int = 0
         last_event_count: int = 0
         last_progress_time: float = time.time()
@@ -713,6 +724,14 @@ class PollingValidator:
             # Check if execution reached a terminal state (before
             # no-progress check so quick completions exit cleanly)
             if final_status in _TERMINAL_STATUSES:
+                for cb_event in extract_callback_events(actual_events, handled_callback_ids):
+                    action, _idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
+                    if (
+                        action is not None
+                        and action.after_invocation_completed
+                        and not _callback_invocation_completed(cb_event, actual_events)
+                    ):
+                        deferred_callback_ids.add(cb_event["CallbackStartedDetails"]["CallbackId"])
                 break
 
             # Check for progress
@@ -747,18 +766,13 @@ class PollingValidator:
                     handled_callback_ids.add(callback_id)
                     continue
 
-                if action.after_invocation_completed:
-                    callback_event_id = cb_event.get("EventId")
-                    phase_reached = type(callback_event_id) is int and any(
-                        event.get("EventType") == "InvocationCompleted"
-                        and type(event.get("EventId")) is int
-                        and event["EventId"] > callback_event_id
-                        for event in actual_events
-                    )
-                    if not phase_reached:
-                        # This history belongs to execution_arn. Keep both the
-                        # action and callback available for the next poll.
-                        continue
+                if action.after_invocation_completed and not _callback_invocation_completed(cb_event, actual_events):
+                    # This history belongs to execution_arn. Keep both the
+                    # action and callback available for the next poll.
+                    # Do not reserve an action index: multiple matching
+                    # callbacks still use the existing delivery-time rules.
+                    deferred_callback_ids.add(callback_id)
+                    continue
 
                 if idx is not None:
                     used_action_indices.add(idx)
@@ -778,6 +792,7 @@ class PollingValidator:
                         payload=self._context.substitute(action.payload),
                     )
                     self._callback_sender.send(callback_id, resolved_action)
+                    deferred_callback_ids.discard(callback_id)
                     callbacks_sent += 1
                     print(f"  Sent {action.operation} callback for '{action.callback_name}' (id={callback_id})")
                 except CallbackError as e:
@@ -785,11 +800,7 @@ class PollingValidator:
 
             # In history-only mode, stop polling once all expected
             # events are matched rather than waiting for terminal status.
-            phase_actions_pending = any(
-                action.after_invocation_completed and idx not in used_action_indices
-                for idx, action in enumerate(actions)
-            )
-            if history_only_mode and expected_events and not phase_actions_pending:
+            if history_only_mode and expected_events and not deferred_callback_ids:
                 matcher = EventHistoryMatcher(context=self._context)
                 match_result = matcher.match(expected_events, actual_events)
                 if match_result.success:
@@ -802,9 +813,7 @@ class PollingValidator:
                         event_count=len(actual_events),
                     )
 
-        if any(
-            action.after_invocation_completed and idx not in used_action_indices for idx, action in enumerate(actions)
-        ):
+        if deferred_callback_ids:
             errors.append("Callback actions awaiting InvocationCompleted were not delivered")
 
         # --- Final assertion: match event history ---

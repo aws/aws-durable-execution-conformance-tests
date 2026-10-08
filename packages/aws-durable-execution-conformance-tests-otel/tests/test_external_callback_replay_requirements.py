@@ -296,3 +296,62 @@ def test_parent_occurrence_cannot_be_bypassed_by_unresolved_alternative() -> Non
         trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
     )
     assert any("$occurrence requires a resolved parent" in error for error in errors)
+
+
+@pytest.mark.parametrize("occurrence", [0, True, "2"])
+def test_invalid_parent_occurrence_in_unused_alternative_still_fails(occurrence: object) -> None:
+    config = assertions("invocation")
+    item = next(
+        item
+        for item in config["span_assertions"]
+        if item["expect"].get("attributes", {}).get("durable.operation.id") == "cb0"
+        and item["expect"]["attributes"].get("durable.operation.status") == "SUCCEEDED"
+    )
+    valid = item["expect"]["parent"]
+    item["expect"]["parent"] = {"$any_of": [valid, {**valid, "$occurrence": occurrence}]}
+    errors = validate_trace(
+        trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
+    )
+    assert any("$occurrence must be a positive integer" in error for error in errors)
+
+
+def test_parent_occurrence_out_of_range_is_validation_error() -> None:
+    config = assertions("invocation")
+    item = next(
+        item
+        for item in config["span_assertions"]
+        if item["expect"].get("attributes", {}).get("durable.operation.id") == "cb0"
+        and item["expect"]["attributes"].get("durable.operation.status") == "SUCCEEDED"
+    )
+    item["expect"]["parent"]["$occurrence"] = 99
+    errors = validate_trace(
+        trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
+    )
+    assert any("parent span is occurrence 2, expected 99" in error for error in errors)
+
+
+def test_parent_occurrence_ignores_other_trace_id_collision_and_accepts_matchers() -> None:
+    from aws_durable_execution_conformance_tests_otel.model import span_to_dict
+    from aws_durable_execution_conformance_tests_otel.validators import _parent_expectation_errors
+
+    value = trace("invocation")
+    target = next(
+        s
+        for s in value.spans
+        if s.attributes.get("durable.operation.id") == "cb0"
+        and s.attributes.get("durable.operation.status") == "SUCCEEDED"
+    )
+    parent = next(s for s in value.spans if s.span_id == target.parent_span_id)
+    collision = replace(
+        parent, trace_id="0" * 32, start_time=START - timedelta(seconds=10), end_time=START - timedelta(seconds=8)
+    )
+    by_id: dict = {}
+    for item in (*value.spans, collision, parent):
+        by_id.setdefault(item.span_id, []).append((item, span_to_dict(item)))
+    expected = {
+        "name": "${/^Invocation$/}",
+        "attributes": {"durable.execution.arn": {"$any_of": [ARN, "arn:other"]}},
+        "status": {"$any_of": ["OK", "UNSET"]},
+        "$occurrence": 2,
+    }
+    assert _parent_expectation_errors(expected, target, by_id, path="parent", feature_disparities=()) == []

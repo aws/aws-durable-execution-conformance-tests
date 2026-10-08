@@ -328,3 +328,45 @@ def test_case25_requires_untruncated_empty_error_evidence(view: str, error: dict
         "CallbackFailedDetails": {"Error": error},
     }
     assert not EventHistoryMatcher().match([expected], [actual]).success
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_unnamed_failed_child_retains_strict_identity(view: str) -> None:
+    requirement = _requirement(view)
+    expected = next(event for event in requirement["ExpectedExecutionHistory"] if event["EventId"] == 7)
+    assert "Name" not in expected
+    assert all(
+        event["Name"] == "otel-failed-callback"
+        for event in requirement["ExpectedExecutionHistory"]
+        if event["EventType"] in {"ContextStarted", "ContextFailed"}
+    )
+    actual = {
+        "EventId": 7,
+        "EventType": "CallbackFailed",
+        "SubType": "Callback",
+        "Id": "callback",
+        "ParentId": "context",
+        "CallbackFailedDetails": {"Error": {"Payload": {}, "Truncated": False}},
+    }
+    context = PlaceholderContext()
+    context.bind("FAILED_CALLBACK", "callback")
+    context.bind("FAILED_CALLBACK_CONTEXT", "context")
+    matcher = EventHistoryMatcher(context)
+    assert matcher.match([expected], [actual]).success
+    for field, value in [
+        ("Id", "wrong"),
+        ("ParentId", "wrong"),
+        ("SubType", "wrong"),
+        ("EventType", "CallbackSucceeded"),
+    ]:
+        assert not matcher.match([expected], [{**actual, field: value}]).success
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("case", [25, 26])
+def test_new_cases_cannot_pass_before_callbacks_appear(view: str, case: int) -> None:
+    assert (
+        not EventHistoryMatcher()
+        .match(_requirement(view, case)["ExpectedExecutionHistory"], [{"EventId": 1, "EventType": "ExecutionStarted"}])
+        .success
+    )

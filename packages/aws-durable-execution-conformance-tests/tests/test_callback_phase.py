@@ -114,3 +114,64 @@ def test_terminal_execution_cannot_hide_undelivered_phase_action(
     result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=True)
     assert not result.passed and not service.requests
     assert "Callback actions awaiting InvocationCompleted were not delivered" in result.errors
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_unmatched_phase_action_preserves_unused_action_behavior(
+    monkeypatch: pytest.MonkeyPatch, terminal: bool
+) -> None:
+    events = [{"EventId": 1, "EventType": "ExecutionStarted"}]
+    if terminal:
+        events.append({"EventId": 2, "EventType": "ExecutionFailed"})
+    service = Service([events])
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    action = CallbackAction.from_dict(
+        {"CallbackName": "unused", "Operation": "failure", "AfterInvocationCompleted": True}
+    )
+    result = validate.PollingValidator(service).validate(
+        ARN,
+        [{"EventId": 1, "EventType": "ExecutionStarted"}],
+        {"ExecutionStatus": "FAILED"} if terminal else None,
+        [action],
+    )
+    assert result.passed and result.errors == []
+    assert service.reads == [ARN] and service.requests == []
+
+
+def test_later_target_still_waits_for_phase_and_unused_action_does_not_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = Service(
+        [
+            [{"EventId": 1, "EventType": "ExecutionStarted"}],
+            [CALLBACK],
+            [CALLBACK, {"EventId": 6, "EventType": "InvocationCompleted"}],
+        ]
+    )
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    actions = [
+        CallbackAction.from_dict({"CallbackName": name, "Operation": "failure", "AfterInvocationCompleted": True})
+        for name in ["unused", "target"]
+    ]
+    result = validate.PollingValidator(service).validate(
+        ARN, [{"EventId": 3, "EventType": "CallbackStarted"}], None, actions
+    )
+    assert result.passed and result.callbacks_sent == 1
+    assert service.requests == [(3, {"CallbackId": "target-capability"})]
+
+
+def test_multiple_matching_callbacks_use_delivery_time_action_indices(monkeypatch: pytest.MonkeyPatch) -> None:
+    other = {**CALLBACK, "EventId": 4, "CallbackStartedDetails": {"CallbackId": "second-capability"}}
+    service = Service([[CALLBACK, other], [CALLBACK, other, {"EventId": 6, "EventType": "InvocationCompleted"}]])
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    actions = [
+        CallbackAction.from_dict({"CallbackName": "target", "Operation": "failure", "AfterInvocationCompleted": True})
+        for _ in range(2)
+    ]
+    result = validate.PollingValidator(service).validate(ARN, [{"EventId": 3}, {"EventId": 4}], None, actions)
+    assert result.passed and result.callbacks_sent == 2
+    assert service.requests == [(2, {"CallbackId": "target-capability"}), (2, {"CallbackId": "second-capability"})]
