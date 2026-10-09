@@ -33,6 +33,186 @@ _WORKFLOW_PARENT = {
 }
 
 
+_VIEW_CASE_NUMBERS = range(1, 27)
+_ORDERED_CASES = {2, 3, 8, 9, 10, 11, 17, 18, 21, 22, 23, 24, 25, 26}
+# Context probes and invocation-retry recovery intentionally assert selected spans,
+# not a complete SDK span set (failed invocations may redeliver operations).
+_PARTIAL_INVOCATION_CASES = {22, 23, 24}
+_EXECUTION_ATTRIBUTES = {"durable.execution.arn": "${EXECUTION_ARN}"}
+_PROBE_PARENTS = {
+    "step": "otel-context-step attempt 1",
+    "child": "otel-context-child",
+    "child-step": "otel-context-child-step attempt 1",
+    "child-restored": "otel-context-child",
+    "with-retry-body": "otel-context-with-retry",
+    "with-retry-strategy": "otel-context-with-retry",
+    "virtual-child": "otel-context-virtual",
+    "callback-submitter": "${/^(?:otel-context-callback(?: submitter|-submitter)|STEP) attempt 1$/}",
+    **{f"parallel-{branch}": f"otel-context-branch-{branch}" for branch in ("a", "b")},
+    **{f"parallel-step-{branch}": f"otel-context-branch-step-{branch} attempt 1" for branch in ("a", "b")},
+    **{f"map-{index}": f"otel-context-iteration-{index}" for index in (0, 1)},
+    **{f"map-step-{index}": f"otel-context-map-step-{index} attempt 1" for index in (0, 1)},
+    **{f"retry-attempt-{attempt}": f"otel-context-retry-step attempt {attempt}" for attempt in (1, 2)},
+    **{f"condition-check-{attempt}": f"otel-context-condition attempt {attempt}" for attempt in (1, 2)},
+}
+_HANDLER_PROBES = {"handler", "handler-restored", "handler-after-resume"}
+_CASE_PROBES = {
+    22: _HANDLER_PROBES
+    | {"step", "child", "child-step", "child-restored"}
+    | {f"parallel{step}-{branch}" for step in ("", "-step") for branch in ("a", "b")}
+    | {f"map{step}-{index}" for step in ("", "-step") for index in (0, 1)},
+    23: {"callback-submitter", "with-retry-body", "with-retry-strategy", "virtual-child"}
+    | {f"retry-attempt-{attempt}" for attempt in (1, 2)}
+    | {f"condition-check-{attempt}" for attempt in (1, 2)},
+}
+
+
+def _assertion_variants(assertion: dict) -> list[dict]:
+    """Inspect every effective expectation, including every allowed count branch."""
+    count = assertion.get("count", 1)
+    if isinstance(count, dict):
+        assert set(count) == {"$any_of"}
+        counts = count["$any_of"]
+        assert isinstance(counts, list) and counts
+        assert len(set(counts)) == len(counts)
+    else:
+        counts = [count]
+    assert all(type(value) is int and value > 0 for value in counts)
+    occurrences = assertion.get("expect_by_occurrence")
+    if isinstance(occurrences, dict):
+        assert set(occurrences) == set(counts)
+    elif occurrences is not None:
+        assert len(counts) == 1
+    variants = []
+    for allowed_count in counts:
+        overrides = occurrences[allowed_count] if isinstance(occurrences, dict) else occurrences
+        if overrides is None:
+            overrides = [{}] * allowed_count
+        assert isinstance(overrides, list) and len(overrides) == allowed_count
+        for override in overrides:
+            assert isinstance(override, dict)
+            variants.append({"select": assertion["select"], "expect": assertion["expect"] | override})
+    return variants
+
+
+def _assert_user_probe(assertion: dict, suite_name: str) -> None:
+    """User spans require real callback parentage, not SDK attributes or links."""
+    selected = assertion["select"]
+    label = selected["attributes"]["conformance.callback"]
+    assert selected == {"name": f"conformance.{label}", "attributes": {"conformance.callback": label}}
+    repeated = label in {"handler", "handler-restored"}
+    assert assertion.get("count", 1) == (2 if repeated else 1)
+    for index, variant in enumerate(_assertion_variants(assertion)):
+        expected = variant["expect"]
+        assert expected["status"] == "UNSET"
+        assert expected["kind"] == "INTERNAL"
+        assert expected["service_name"] == "${SERVICE_NAME}"
+        assert expected["attributes"] == {"conformance.callback": label}
+        assert expected["same_trace_as"] == {"name": "Workflow", "attributes": _EXECUTION_ATTRIBUTES}
+        assert "links" not in expected
+        if label in _HANDLER_PROBES:
+            assert expected["parent"] == {
+                "$any_of": [
+                    {
+                        "name": "Invocation" if suite_name == "otel-invocation" else "Workflow",
+                        "attributes": _EXECUTION_ATTRIBUTES,
+                        "$millisecond_precision": True,
+                    },
+                    {
+                        "$reject_sdk_span": True,
+                        "$allow_unresolved": True,
+                        "$millisecond_precision": True,
+                        "$not": {"attributes": {"conformance.callback": "*"}},
+                    },
+                ]
+            }
+            assert expected["inside"] == {
+                "name": "Invocation",
+                "attributes": _EXECUTION_ATTRIBUTES | {"durable.invocation.first": repeated and index == 0},
+                "$millisecond_precision": True,
+            }
+        else:
+            parent_attributes = dict(_EXECUTION_ATTRIBUTES)
+            if label == "callback-submitter":
+                parent_attributes["durable.operation.name"] = "${/^otel-context-callback(?: submitter|-submitter)$/}"
+            assert expected["parent"] == {
+                "name": _PROBE_PARENTS[label],
+                "attributes": parent_attributes,
+                "$millisecond_precision": True,
+            }
+            assert "inside" not in expected
+
+
+def _assert_completed_replay_catalog(span_assertions: list[dict], suite_name: str) -> None:
+    completed = [item for item in span_assertions if item["select"]["name"] == "otel-before-wait"]
+    assert len(completed) == 1
+    step = completed[0]
+    for assertion in span_assertions:
+        if assertion is not step:
+            assert assertion.get("count", 1) == 1
+            assert "expect_by_occurrence" not in assertion
+    if suite_name == "otel-execution":
+        assert step.get("count", 1) == 1
+        assert "expect_by_occurrence" not in step
+        return
+    assert step["count"] == {"$any_of": [1, 2]}
+    workflow_link = {"name": "Workflow", "attributes": _EXECUTION_ATTRIBUTES}
+    first = {
+        "links": [workflow_link],
+        "parent": {
+            "name": "Invocation",
+            "kind": "INTERNAL",
+            "attributes": _EXECUTION_ATTRIBUTES | {"durable.invocation.first": True},
+        },
+    }
+    replay = {
+        "links": [
+            {"$occurrence": 1, "name": "otel-before-wait", "attributes": {"durable.operation.id": "${COMPLETED_STEP}"}},
+            workflow_link,
+        ],
+        "parent": {
+            "name": "Invocation",
+            "kind": "INTERNAL",
+            "attributes": _EXECUTION_ATTRIBUTES | {"durable.invocation.first": False},
+        },
+    }
+    assert step["expect_by_occurrence"] == {1: [first], 2: [first, replay]}
+
+
+def _assert_catalog_span_roles(span_assertions: list[dict], case_number: int, suite_name: str) -> None:
+    for assertion in span_assertions:
+        if assertion["select"]["name"] in {"Workflow", "Invocation"}:
+            if case_number == 24 and assertion["select"]["name"] == "Invocation":
+                assert assertion["select"] == {
+                    "name": "Invocation",
+                    "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+                }
+                assert assertion["count"] == {"$any_of": [2, 3]}
+                branches = assertion["expect_by_occurrence"]
+                assert set(branches) == {2, 3}
+                for count, states in ((2, ["RETRYING", "SUCCEEDED"]), (3, ["RETRYING", "PENDING", "SUCCEEDED"])):
+                    assert len(branches[count]) == count
+                    assert [item["attributes"]["durable.invocation.status"] for item in branches[count]] == states
+                    assert [item["attributes"]["durable.invocation.first"] for item in branches[count]] == [
+                        True,
+                        *([False] * (count - 1)),
+                    ]
+                    assert [item["status"] for item in branches[count]] == ["UNSET", *(["OK"] * (count - 1))]
+            else:
+                assert assertion.get("count", 1) == 1
+                assert "expect_by_occurrence" not in assertion
+            assert assertion["expect"]["links"] == []
+    probes = [assertion for assertion in span_assertions if assertion["select"]["name"].startswith("conformance.")]
+    assert {assertion["select"]["attributes"]["conformance.callback"] for assertion in probes} == _CASE_PROBES.get(
+        case_number, set()
+    )
+    assert len(probes) == len(_CASE_PROBES.get(case_number, set()))
+    for probe in probes:
+        _assert_user_probe(probe, suite_name)
+    if case_number == 21:
+        _assert_completed_replay_catalog(span_assertions, suite_name)
+
+
 def _requirements(suite_name: str) -> dict[str, str]:
     suites = {suite.name: suite for suite in OtelExtension().requirement_suites()}
     return discover_test_files(suites[suite_name].root, suite="all")
@@ -46,8 +226,12 @@ def test_extension_exposes_packaged_otel_view_requirements() -> None:
         "otel-invocation",
         "otel-long-running",
     }
-    assert set(_requirements("otel-invocation")) == {f"otel-invocation-{case_number}" for case_number in range(1, 21)}
-    assert set(_requirements("otel-execution")) == {f"otel-execution-{case_number}" for case_number in range(1, 21)}
+    assert set(_requirements("otel-invocation")) == {
+        f"otel-invocation-{case_number}" for case_number in _VIEW_CASE_NUMBERS
+    }
+    assert set(_requirements("otel-execution")) == {
+        f"otel-execution-{case_number}" for case_number in _VIEW_CASE_NUMBERS
+    }
     assert set(_requirements("otel-long-running")) == {
         f"otel-long-running-{case_number}" for case_number in range(1, 5)
     }
@@ -417,8 +601,8 @@ def test_long_callback_assertions_accept_javascript_generic_span_names(
     )
 
 
-@pytest.mark.parametrize("case_number", range(1, 21))
-def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_number: int) -> None:
+@pytest.mark.parametrize("case_number", _VIEW_CASE_NUMBERS)
+def test_views_share_scenarios_and_preserve_view_contracts(case_number: int) -> None:
     invocation = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
     execution = load_yaml_file(_requirements("otel-execution")[f"otel-execution-{case_number}"])
 
@@ -429,7 +613,12 @@ def test_views_share_scenarios_but_define_distinct_telemetry_assertions(case_num
         requirement.pop("TelemetryAssertions")
 
     assert comparable_invocation == comparable_execution
-    assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
+    if case_number == 24:
+        # Invocation lifecycle status has the same contract in both views;
+        # operation-span layout and redelivery are outside this case's scope.
+        assert invocation["TelemetryAssertions"] == execution["TelemetryAssertions"]
+    else:
+        assert invocation["TelemetryAssertions"] != execution["TelemetryAssertions"]
 
 
 def test_virtual_context_case_emits_telemetry_without_context_history() -> None:
@@ -468,16 +657,64 @@ def test_virtual_context_case_emits_telemetry_without_context_history() -> None:
         assert virtual_span["expect"]["parent"]["name"] == parent_name
 
 
+def _assert_external_completion_catalog(assertions: dict, suite: str) -> None:
+    assert assertions["require_execution_correlation"] is True
+    assert assertions["require_single_trace_per_execution"] is True
+    assert assertions["require_all_spans"] is True
+    assert assertions["minimum_invocations"] == 4
+    assert assertions["quiescence_seconds"] == 5
+    assert assertions["span_assertion_scope"] == [
+        {"name": "Workflow", "attributes": _EXECUTION_ATTRIBUTES},
+        {"name": "Invocation", "attributes": _EXECUTION_ATTRIBUTES},
+        {"attributes": _EXECUTION_ATTRIBUTES | {"durable.operation.type": "CALLBACK"}},
+    ]
+    spans = assertions["span_assertions"]
+    invocations = next(item for item in spans if item["select"]["name"] == "Invocation")
+    assert invocations["count"] == 4
+    phases = invocations["expect_by_occurrence"]
+    assert [item["attributes"]["durable.invocation.status"] for item in phases] == ["PENDING"] * 3 + ["SUCCEEDED"]
+    assert [item["attributes"]["durable.invocation.first"] for item in phases] == [True, False, False, False]
+    callbacks = [
+        item for item in spans if item["expect"].get("attributes", {}).get("durable.operation.type") == "CALLBACK"
+    ]
+    assert len(callbacks) == (6 if suite == "otel-invocation" else 3)
+    terminal = [item for item in callbacks if item["expect"]["attributes"]["durable.operation.status"] == "SUCCEEDED"]
+    assert {item["expect"]["attributes"]["durable.operation.id"] for item in terminal} == {
+        "${TARGET_CALLBACK}",
+        "${BARRIER_ONE_CALLBACK}",
+        "${BARRIER_TWO_CALLBACK}",
+    }
+    assert all(item.get("count", 1) == 1 and item["expect"]["status"] == "OK" for item in terminal)
+    target = next(
+        item for item in terminal if item["expect"]["attributes"]["durable.operation.id"] == "${TARGET_CALLBACK}"
+    )
+    assert target["expect"]["parent"]["name"] == ("Invocation" if suite == "otel-invocation" else "Workflow")
+    if suite == "otel-invocation":
+        assert target["expect"]["parent"]["$occurrence"] == 2
+    assert target["expect"]["before"] == {
+        "name": "otel-external-target-observed attempt 1",
+        "attributes": {"durable.operation.id": "${TARGET_OBSERVED}"},
+    }
+    for item in spans:
+        assert item["expect"]["service_name"] == "${SERVICE_NAME}"
+        assert item["expect"]["kind"] == "INTERNAL"
+        assert "links" in item["expect"]
+
+
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
     callback_submitter_span_names = {
         10: "${/^(?:otel-callback(?: submitter|-submitter)|STEP)$/}",
         17: "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}",
+        25: "${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}",
     }
 
-    for case_number in range(1, 21):
+    for case_number in _VIEW_CASE_NUMBERS:
         requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 26:
+            _assert_external_completion_catalog(assertions, "otel-invocation")
+            continue
 
         assert assertions["require_execution_correlation"] is True
         assert assertions["require_single_trace_per_execution"] is True
@@ -485,10 +722,15 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             {"name": "Workflow"},
             {"name": "Invocation"},
         ]
-        assert assertions["require_all_spans"] is True
-        expected_scopes = [
+        if case_number in _PARTIAL_INVOCATION_CASES - {24}:
+            assert "require_all_spans" not in assertions
+        else:
+            assert assertions["require_all_spans"] is True
+        expected_scopes: list[dict[str, object]] = [
             {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}},
         ]
+        if case_number == 24:
+            expected_scopes[0]["name"] = "Invocation"
         if case_number in {11, 18}:
             expected_scopes.append(
                 {"attributes": {"durable.execution.arn": "${TARGET_EXECUTION_ARN}"}},
@@ -501,7 +743,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         if isinstance(actual_scopes, dict):
             actual_scopes = [actual_scopes]
         assert actual_scopes == expected_scopes
-        if case_number == 20:
+        if case_number == 20 or case_number in _PARTIAL_INVOCATION_CASES:
             assert "exact_attribute_prefixes" not in assertions
         else:
             assert assertions["exact_attribute_prefixes"] == ["durable."]
@@ -542,17 +784,28 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         },
                     },
                 }
-        for span_assertion in span_assertions:
+        _assert_catalog_span_roles(span_assertions, case_number, "otel-invocation")
+        if case_number <= 20:
+            assert all("count" not in assertion for assertion in span_assertions)
+        for span_assertion in (variant for assertion in span_assertions for variant in _assertion_variants(assertion)):
             assert "count" not in span_assertion
             selected_name = span_assertion["select"]["name"]
             expected = span_assertion["expect"]
             assert "name" not in expected
-            assert expected["status"] in {
-                "ERROR",
-                "OK",
-                "UNSET",
-            }
+            if (
+                case_number == 25
+                and selected_name == "otel-failed-callback"
+                and expected["attributes"]["durable.operation.status"] == "FAILED"
+            ):
+                # The aggregate error object is SDK-derived; case25 targets the callback leaf.
+                assert "status" not in expected
+                assert span_assertion["select"]["attributes"]["durable.operation.status"] == "FAILED"
+            else:
+                assert expected["status"] in {"ERROR", "OK", "UNSET"}
             assert expected["service_name"] == "${SERVICE_NAME}"
+            if selected_name.startswith("conformance."):
+                # Full user-probe invariants, including occurrence parents, are checked above.
+                continue
             if "links" not in expected:
                 assert case_number in {15, 20}
                 assert selected_name in {
@@ -621,7 +874,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                 assert expected_attributes["durable.invocation.status"] in {
                     "FAILED",
                     "PENDING",
-                    "RETRY",
+                    "RETRYING",
                     "SUCCEEDED",
                 }
                 assert (
@@ -629,16 +882,19 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     == {
                         "FAILED": "ERROR",
                         "PENDING": "OK",
-                        "RETRY": "UNSET",
+                        "RETRYING": "UNSET",
                         "SUCCEEDED": "OK",
                     }[expected_attributes["durable.invocation.status"]]
                 )
-                assert (
-                    selector_attributes["durable.invocation.first"] == expected_attributes["durable.invocation.first"]
-                )
-                assert (
-                    selector_attributes["durable.invocation.status"] == expected_attributes["durable.invocation.status"]
-                )
+                if case_number != 24:
+                    assert (
+                        selector_attributes["durable.invocation.first"]
+                        == expected_attributes["durable.invocation.first"]
+                    )
+                    assert (
+                        selector_attributes["durable.invocation.status"]
+                        == expected_attributes["durable.invocation.status"]
+                    )
                 if case_number == 19:
                     assert expected_attributes["durable.invocation.status"] == "FAILED"
             if selected_name == "Workflow":
@@ -654,7 +910,10 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         history_placeholders = set(re.findall(r"\$\{([A-Z0-9_]+)\}", history_json))
 
         assert "${/^(?:OK|UNSET)$/}" not in telemetry_json
-        assert '"*"' not in telemetry_json
+        sdk_assertions = [item for item in span_assertions if not item["select"]["name"].startswith("conformance.")]
+        assert '"*"' not in json.dumps(sdk_assertions)
+        if case_number not in _CASE_PROBES:
+            assert '"*"' not in telemetry_json
         assert telemetry_placeholders <= history_placeholders | {
             "EXECUTION_ARN",
             "SERVICE_NAME",
@@ -688,17 +947,27 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}",
             "otel-failed-callback",
         },
+        25: {
+            "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}",
+            "otel-failed-callback",
+        },
         18: {"otel-failed-invoke"},
+        21: {"otel-replay-wait", "otel-after-wait", "otel-after-wait attempt 1"},
     }
 
-    for case_number in range(1, 21):
+    for case_number in _VIEW_CASE_NUMBERS:
         requirement = load_yaml_file(execution_requirements[f"otel-execution-{case_number}"])
         invocation_requirement = load_yaml_file(
             invocation_requirements[f"otel-invocation-{case_number}"],
         )
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 26:
+            _assert_external_completion_catalog(assertions, "otel-execution")
+            continue
         span_assertions = assertions["span_assertions"]
-        assert all("count" not in assertion for assertion in span_assertions)
+        if case_number <= 20:
+            assert all("count" not in assertion for assertion in span_assertions)
+        _assert_catalog_span_roles(span_assertions, case_number, "otel-execution")
         workflows = [item for item in span_assertions if item["select"]["name"] == "Workflow"]
         expected_workflow_statuses = (
             {}
@@ -721,7 +990,14 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             {"name": "Workflow"},
             {"name": "Invocation"},
         ]
-        assert "require_all_spans" not in assertions
+        if case_number == 24:
+            assert assertions["require_all_spans"] is True
+            assert assertions["span_assertion_scope"] == {
+                "name": "Invocation",
+                "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+            }
+        else:
+            assert "require_all_spans" not in assertions
         assert "exact_attribute_prefixes" not in assertions
         assert assertions["minimum_spans"] >= len(span_assertions)
         assert len(workflows) == len(expected_workflow_statuses)
@@ -754,14 +1030,20 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             if item["select"]["name"] == "Invocation"
         ]
         assert invocations == expected_invocations
-        assert assertions.get("minimum_invocations", 1) == len(expected_invocations)
+        assert assertions.get("minimum_invocations", 1) == sum(
+            min(item["count"]["$any_of"]) if isinstance(item.get("count"), dict) else item.get("count", 1)
+            for item in expected_invocations
+        )
 
         descendants = [item for item in span_assertions if item not in workflows and item not in invocations]
-        assert bool(descendants) is (case_number not in ambient_only_cases)
-        for descendant in descendants:
+        assert bool(descendants) is (case_number not in ambient_only_cases | {24})
+        for descendant in (variant for assertion in descendants for variant in _assertion_variants(assertion)):
             selected_name = descendant["select"]["name"]
             expected = descendant["expect"]
             assert expected["kind"] == "INTERNAL"
+            if selected_name.startswith("conformance."):
+                # User probes validate callback context, not SDK operation export links.
+                continue
             assert expected["links"] == [
                 {
                     "$occurrence": (2 if selected_name in second_invocation_descendants.get(case_number, set()) else 1),
@@ -781,7 +1063,7 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             parent = expected["parent"]
             if parent["name"] == "Workflow":
                 assert "$allow_outside" not in parent
-            elif case_number in {3, 9, 10, 17}:
+            elif case_number in {3, 9, 10, 17, 25}:
                 assert parent["$allow_outside"] is True
             else:
                 assert "$allow_outside" not in parent
@@ -966,8 +1248,8 @@ def test_invocation_callback_context_assertions_distinguish_suspension_from_term
 @pytest.mark.parametrize(
     ("suite_name", "ordered_cases"),
     [
-        ("otel-execution", {2, 3, 8, 9, 10, 11, 17, 18}),
-        ("otel-invocation", {2, 3, 8, 9, 10, 11, 17, 18}),
+        ("otel-execution", _ORDERED_CASES),
+        ("otel-invocation", _ORDERED_CASES),
     ],
 )
 def test_otel_catalog_asserts_every_deterministic_span_order(
@@ -976,7 +1258,7 @@ def test_otel_catalog_asserts_every_deterministic_span_order(
 ) -> None:
     requirements = _requirements(suite_name)
 
-    for case_number in range(1, 21):
+    for case_number in _VIEW_CASE_NUMBERS:
         requirement = load_yaml_file(requirements[f"{suite_name}-{case_number}"])
         assert all(
             not {"before", "after"} & set(span_assertion["select"])
@@ -984,10 +1266,100 @@ def test_otel_catalog_asserts_every_deterministic_span_order(
         )
         relationships = {
             key
-            for span_assertion in requirement["TelemetryAssertions"]["span_assertions"]
+            for assertion in requirement["TelemetryAssertions"]["span_assertions"]
+            for span_assertion in _assertion_variants(assertion)
             for key in {"before", "after"} & set(span_assertion["expect"])
         }
 
         assert bool(relationships) is (case_number in ordered_cases)
         if relationships:
             assert relationships == {"before", "after"}
+
+
+@pytest.mark.parametrize(
+    ("suite_name", "case_number", "corruption"),
+    [
+        ("otel-invocation", 24, "status-label"),
+        ("otel-invocation", 24, "root-count"),
+        ("otel-invocation", 24, "status-mapping"),
+        ("otel-execution", 24, "status-mapping"),
+        ("otel-invocation", 21, "replay-link"),
+        ("otel-invocation", 21, "replay-parent"),
+        ("otel-execution", 21, "invocation-link"),
+        ("otel-invocation", 22, "probe-trace"),
+        ("otel-execution", 23, "probe-parent"),
+        ("otel-execution", 22, "probe-phase"),
+        ("otel-invocation", 22, "probe-count"),
+        ("otel-invocation", 21, "placeholder"),
+        ("otel-execution", 21, "placeholder"),
+        ("otel-invocation", 24, "ordering"),
+        ("otel-execution", 24, "ordering"),
+    ],
+)
+def test_catalog_rejects_corrupted_new_requirements(
+    monkeypatch: pytest.MonkeyPatch, suite_name: str, case_number: int, corruption: str
+) -> None:
+    original_load = load_yaml_file
+
+    def load_corrupted(requirement_path: str) -> dict:
+        requirement = original_load(requirement_path)
+        if not str(requirement_path).endswith(f"{suite_name}-{case_number}.yaml"):
+            return requirement
+        spans = requirement["TelemetryAssertions"]["span_assertions"]
+        if corruption.startswith("status-"):
+            invocation = next(item for item in spans if item["select"]["name"] == "Invocation")
+            retrying = invocation["expect_by_occurrence"][2][0]
+            if corruption == "status-label":
+                retrying["attributes"]["durable.invocation.status"] = "RETRY"
+            else:
+                retrying["status"] = "OK"
+        elif corruption == "root-count":
+            workflow = next(item for item in spans if item["select"]["name"] == "Workflow")
+            workflow["count"] = 2
+        elif corruption.startswith("replay-"):
+            step = next(item for item in spans if item["select"]["name"] == "otel-before-wait")
+            replay = step["expect_by_occurrence"][2][1]
+            if corruption == "replay-link":
+                replay["links"] = replay["links"][1:]
+            else:
+                replay["parent"]["attributes"]["durable.invocation.first"] = True
+        elif corruption == "invocation-link":
+            step = next(item for item in spans if item["select"]["name"] == "otel-after-wait")
+            step["expect"]["links"][0]["$occurrence"] = 1
+        elif corruption.startswith("probe-"):
+            probe = next(item for item in spans if item["select"]["name"].startswith("conformance."))
+            if corruption == "probe-trace":
+                probe["expect"]["same_trace_as"]["name"] = "unrelated-trace"
+            elif corruption == "probe-parent":
+                probe["expect"]["parent"]["name"] = "unrelated-operation"
+            elif corruption == "probe-phase":
+                probe["expect_by_occurrence"][1]["inside"]["attributes"]["durable.invocation.first"] = True
+            else:
+                probe["count"] = 1
+                probe["expect_by_occurrence"] = probe["expect_by_occurrence"][:1]
+        elif corruption == "placeholder":
+            step = next(item for item in spans if item["select"]["name"] == "otel-before-wait")
+            step["expect"]["before"]["attributes"]["durable.operation.id"] = "${UNBOUND_OPERATION}"
+        elif corruption == "ordering":
+            for item in spans:
+                expectations = [item["expect"]]
+                occurrences = item.get("expect_by_occurrence", [])
+                if isinstance(occurrences, dict):
+                    expectations.extend(branch for items in occurrences.values() for branch in items)
+                else:
+                    expectations.extend(occurrences)
+                for expectation in expectations:
+                    expectation.pop("before", None)
+                    expectation.pop("after", None)
+        else:
+            raise AssertionError(f"Unknown mutation {corruption}")
+        return requirement
+
+    monkeypatch.setitem(globals(), "load_yaml_file", load_corrupted)
+    with pytest.raises(AssertionError):
+        if corruption == "ordering":
+            test_otel_catalog_asserts_every_deterministic_span_order(suite_name, _ORDERED_CASES)
+        elif suite_name == "otel-invocation":
+            test_invocation_view_catalog_exercises_span_hierarchy_assertions()
+        else:
+            test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links()

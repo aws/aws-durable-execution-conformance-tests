@@ -8,11 +8,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from aws_durable_execution_conformance_tests_otel.model import (
     Span,
     SpanLink,
     TelemetryQuery,
     Trace,
+    span_to_dict,
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
@@ -1954,3 +1957,355 @@ def test_redacts_secret_keys_and_values() -> None:
     assert safe["headers"] == REDACTED
     assert safe["nested"]["token"] == REDACTED
     assert safe["message"] == f"request used {REDACTED}"
+
+
+def test_parent_alternatives_preserve_sdk_root_or_ambient_but_reject_operation_scope() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    expected = {
+        "span_assertions": {
+            "select": {"name": "child"},
+            "expect": {
+                "parent": {
+                    "$any_of": [
+                        {"name": "Workflow", "attributes": {"durable.execution.arn": "arn:test"}},
+                        {"$reject_sdk_span": True, "$allow_unresolved": True},
+                    ]
+                },
+                "same_trace_as": {"span_id": root.span_id},
+            },
+        }
+    }
+    ambient = replace(root, attributes={"durable.execution.arn": "arn:test"})
+    assert validate_trace(replace(trace, spans=(ambient, child)), expected, _query()) == []
+    workflow = replace(ambient, name="Workflow")
+    assert validate_trace(replace(trace, spans=(workflow, child)), expected, _query()) == []
+    wrong_branch = replace(root, attributes={**root.attributes, "durable.operation.type": "CONTEXT"})
+    assert validate_trace(replace(trace, spans=(wrong_branch, child)), expected, _query())
+    wrong_execution = replace(workflow, attributes={"durable.execution.arn": "arn:other"})
+    assert validate_trace(replace(trace, spans=(wrong_execution, child)), expected, _query())
+    # An unresolved ambient parent is permitted, but the user span still must
+    # use the SDK root's trace rather than relying on a nonzero parent ID alone.
+    orphan_trace = replace(child, parent_span_id="a" * 16, trace_id="9" * 32)
+    errors = validate_trace(replace(trace, spans=(workflow, orphan_trace)), expected, _query())
+    assert any("different trace" in error for error in errors)
+
+
+def test_parent_alternatives_reject_invalid_shapes() -> None:
+    invalid_parents: tuple[dict[str, object], ...] = (
+        {"$any_of": []},
+        {"$any_of": "Workflow"},
+        {"$any_of": [None]},
+        {"$any_of": [{"name": "root"}], "name": "root"},
+    )
+    for parent in invalid_parents:
+        errors = validate_trace(
+            _trace(),
+            {"span_assertions": {"select": {"name": "child"}, "expect": {"parent": parent}}},
+            _query(),
+        )
+        assert any("non-empty sequence of parent mappings without sibling fields" in error for error in errors)
+
+
+def test_user_span_timestamp_rounding_is_explicit_and_bounded_to_one_millisecond() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    rounded = replace(
+        child,
+        start_time=root.start_time - timedelta(microseconds=500),
+        end_time=root.end_time + timedelta(microseconds=500),
+    )
+    trace = replace(trace, spans=(root, rounded))
+    strict = {"span_assertions": {"select": {"name": "child"}, "expect": {"parent": {"name": "root"}}}}
+    assert validate_trace(trace, strict, _query())
+    for relation in ("parent", "inside"):
+        bounded = {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {relation: {"name": "root", "$millisecond_precision": True}},
+            }
+        }
+        assert validate_trace(trace, bounded, _query()) == []
+        stale = replace(rounded, end_time=root.end_time + timedelta(milliseconds=2))
+        assert validate_trace(replace(trace, spans=(root, stale)), bounded, _query())
+        invalid = {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {relation: {"name": "root", "$millisecond_precision": False}},
+            }
+        }
+        assert validate_trace(trace, invalid, _query())
+
+
+def test_count_dependent_occurrence_expectations_must_cover_all_allowed_counts() -> None:
+    invalid_cases: tuple[dict[int, list[dict[str, object]]], ...] = (
+        {1: [{}]},
+        {1: [], 2: [{}, {}]},
+        {True: [{}], 2: [{}, {}]},
+    )
+    for by_count in invalid_cases:
+        errors = validate_trace(
+            _trace(),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "count": {"$any_of": [1, 2]},
+                    "expect": {},
+                    "expect_by_occurrence": by_count,
+                }
+            },
+            _query(),
+        )
+        assert any("expect_by_occurrence" in error for error in errors)
+
+
+def test_parent_alternative_schema_errors_are_not_hidden_by_a_matching_branch() -> None:
+    invalid_cases: tuple[dict[str, object], ...] = (
+        {"$millisecond_precision": False},
+        {"$not": None},
+        {"$any_of": []},
+    )
+    for invalid in invalid_cases:
+        for alternatives in ([invalid, {"name": "root"}], [{"name": "root"}, invalid]):
+            errors = validate_trace(
+                _trace(),
+                {
+                    "span_assertions": {
+                        "select": {"name": "child"},
+                        "expect": {"parent": {"$any_of": alternatives}},
+                    }
+                },
+                _query(),
+            )
+            assert errors
+            assert any("must be" in error for error in errors)
+
+
+def test_nested_invalid_matchers_cannot_hide_in_unused_parent_alternatives() -> None:
+    invalid_cases: tuple[dict[str, object], ...] = (
+        {"name": {"$any_of": []}},
+        {"$not": {"attributes": {"conformance.callback": {"$any_of": []}}}},
+        {"name": "${/[invalid/}"},
+    )
+    for invalid in invalid_cases:
+        errors = validate_trace(
+            _trace(),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {"parent": {"$any_of": [invalid, {"name": "root"}]}},
+                }
+            },
+            _query(),
+        )
+        assert errors
+
+
+def test_inactive_count_branch_is_schema_validated() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "count": {"$any_of": [1, 2]},
+                "expect": {},
+                "expect_by_occurrence": {1: [{}], 2: [{"parent": {"$millisecond_precision": False}}, {}]},
+            }
+        },
+        _query(),
+    )
+    assert any("$millisecond_precision must be true" in error for error in errors)
+
+
+def test_same_trace_relation_rejects_link_filter_even_when_backend_lacks_links() -> None:
+    for disparities in ((), (BackendFeatureDisparity.SPAN_LINKS,)):
+        trace = _trace()
+        root, child = trace.spans
+        errors = validate_trace(
+            replace(trace, spans=(root, replace(child, trace_id="9" * 32))),
+            {
+                "span_assertions": {
+                    "select": {"name": "child"},
+                    "expect": {
+                        "same_trace_as": {"$linked": True, "name": "root"},
+                    },
+                },
+            },
+            _query(),
+            feature_disparities=disparities,
+        )
+        assert any("does not support $linked" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"parnet": None},
+        {"$linked": True},
+        {"parent": {"parnet": None}},
+        {"parent": {"$linked": True}},
+        {"parent": {"$not": {"parnet": None}}},
+        {"parent": {"$not": {"parent": {"name": "root"}}}},
+        {"parent": {"$any_of": [{"name": "root"}, {"raw_artifact": None}]}},
+        {"before": {"parnet": None}},
+        {"after": {"count": 1}},
+        {"inside": {"$allow_unresolved": True}},
+        {"same_trace_as": {"$not": {"name": "root"}}},
+        {"links": [{"parnet": None}]},
+        {"links": [{"$linked": True}]},
+        {"links": {"$any_of": [[{"name": "root"}], [{"parent": {"name": "root"}}]]}},
+        {"parent": {"links": [{"name": "root"}]}},
+        {"links": [{"links": {"$any_of": [[], [{"count": 1}]]}}]},
+    ],
+)
+def test_inactive_occurrence_rejects_unknown_or_misplaced_span_fields(invalid: dict) -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "count": {"$any_of": [1, 2]},
+                "expect": {},
+                "expect_by_occurrence": {1: [{}], 2: [invalid, {}]},
+            }
+        },
+        _query(),
+    )
+    assert errors, "Invalid fields in an unobserved occurrence branch must not pass"
+    assert any("expect_by_occurrence[2][0]" in error for error in errors)
+
+
+@pytest.mark.parametrize("location", ["unresolved-parent", "forbidden-parent", "parented-selector", "coverage-scope"])
+def test_null_unknown_span_field_cannot_disable_active_selectors(location: str) -> None:
+    trace = _trace()
+    assertions: dict = {"span_assertions": {"select": {"name": "child"}, "expect": {}}}
+    if location == "unresolved-parent":
+        root, child = trace.spans
+        trace = replace(trace, spans=(root, replace(child, parent_span_id="a" * 16)))
+        assertions["span_assertions"]["expect"] = {"parent": {"$allow_unresolved": True, "parnet": None}}
+    elif location == "forbidden-parent":
+        assertions["span_assertions"]["expect"] = {"parent": {"$not": {"parnet": None}}}
+    elif location == "parented-selector":
+        assertions = {"require_parented_spans": {"parnet": None}}
+    else:
+        assertions = {"require_all_spans": True, "span_assertion_scope": {"parnet": None}, "span_assertions": []}
+    errors = validate_trace(trace, assertions, _query())
+    assert errors, f"Unknown null-valued field must not silently disable {location}"
+    assert any("parnet" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "invalid", [{"parnet": None}, {"$linked": True}, {"count": 1}, {"parent": {}}, {"raw_artifact": None}]
+)
+@pytest.mark.parametrize("location", ["select", "scope", "parented", "forbidden-parent"])
+def test_direct_selectors_reject_expectation_fields_and_controls(location: str, invalid: dict) -> None:
+    assertions: dict = {"span_assertions": {"select": {"name": "child"}, "expect": {}}}
+    if location == "select":
+        assertions["span_assertions"]["select"].update(invalid)
+    elif location == "scope":
+        assertions["span_assertion_scope"] = invalid
+    elif location == "parented":
+        assertions["require_parented_spans"] = invalid
+    else:
+        assertions["span_assertions"]["expect"] = {"parent": {"$not": invalid}}
+    errors = validate_trace(_trace(), assertions, _query())
+    assert any("unknown field(s)" in error and next(iter(invalid)) in error for error in errors)
+
+
+@pytest.mark.parametrize("disparities", [(), (BackendFeatureDisparity.SPAN_LINKS,)])
+def test_selector_schema_is_checked_before_link_backend_disparity(disparities: tuple) -> None:
+    for expected in ({"links": [{"parnet": None}]}, {"inside": {"$linked": True, "parnet": None}}):
+        errors = validate_trace(
+            _trace(),
+            {"span_assertions": {"select": {"name": "child"}, "expect": expected}},
+            _query(),
+            feature_disparities=disparities,
+        )
+        assert any("unknown field(s)" in error and "parnet" in error for error in errors)
+
+
+def test_every_serialized_span_property_remains_supported() -> None:
+    trace = _trace()
+    serialized = span_to_dict(trace.spans[1])
+    # The serializer defines this contract, including kind and the serialized
+    # timestamp/link shapes; a future field addition must update validation too.
+    assert (
+        validate_trace(
+            trace,
+            {"span_assertions": {"select": serialized, "expect": serialized}},
+            _query(),
+        )
+        == []
+    )
+
+
+def test_open_attributes_and_nested_serialized_link_matchers_remain_supported() -> None:
+    trace = _trace()
+    root, child = trace.spans
+    metadata: dict[str, object] = {
+        "parnet": None,
+        "$linked": True,
+        "before": {"arbitrary": [1, 2]},
+        "$bogus": {"$anyof": []},
+    }
+    root = replace(root, attributes={**root.attributes, "custom": metadata})
+    child = replace(child, attributes={**child.attributes, "custom": metadata})
+    trace = replace(trace, spans=(root, child))
+    attributes = {
+        "custom": {
+            "parnet": {"$any_of": [None, "unused"]},
+            "$linked": True,
+            "before": {"arbitrary": [1, 2]},
+            "$bogus": {"$anyof": []},
+        }
+    }
+    raw_links = {"$any_of": [[], [{"trace_id": "${/^[0-9a-f]+$/}", "span_id": root.span_id}]]}
+    assert (
+        validate_trace(
+            trace,
+            {
+                "span_assertion_scope": {"attributes": attributes},
+                "require_parented_spans": {"name": "child", "attributes": attributes},
+                "span_assertions": {
+                    "select": {"name": {"$any_of": ["child", "unused"]}, "attributes": attributes, "links": raw_links},
+                    "expect": {
+                        "attributes": attributes,
+                        "parent": {"name": "root", "attributes": attributes, "links": {"$any_of": [[], "*"]}},
+                        "links": [{"name": "root", "attributes": attributes, "count": 1, "$occurrence": 1}],
+                        "inside": {"name": "root", "$linked": True, "$millisecond_precision": True},
+                        "same_trace_as": {"name": "root", "$millisecond_precision": True},
+                    },
+                },
+            },
+            _query(),
+        )
+        == []
+    )
+
+
+def test_unused_parent_alternative_cannot_hide_unknown_fields() -> None:
+    for invalid in ({"parnet": None}, {"$linked": True}):
+        for alternatives in ([invalid, {"name": "root"}], [{"name": "root"}, invalid]):
+            errors = validate_trace(
+                _trace(),
+                {"span_assertions": {"select": {"name": "child"}, "expect": {"parent": {"$any_of": alternatives}}}},
+                _query(),
+            )
+            assert any("parent.$any_of" in error and "unknown field(s)" in error for error in errors)
+
+
+@pytest.mark.parametrize("invalid", [{"$bogus": "x"}, {"$any_of": ["unused", {"$anyof": []}]}, []])
+@pytest.mark.parametrize("location", ["select", "parent-alternative", "inactive-count", "serialized-link"])
+def test_scalar_matcher_schema_rejects_invalid_inactive_branches(invalid: object, location: str) -> None:
+    assertion: dict = {"select": {"name": "child"}, "expect": {}}
+    if location == "select":
+        assertion["select"]["name"] = {"$any_of": ["child", invalid]}
+    elif location == "parent-alternative":
+        assertion["expect"]["parent"] = {"$any_of": [{"name": "root"}, {"name": invalid}]}
+    elif location == "inactive-count":
+        assertion["count"] = {"$any_of": [1, 2]}
+        assertion["expect_by_occurrence"] = {1: [{}], 2: [{"name": invalid}, {}]}
+    else:
+        assertion["select"]["links"] = {"$any_of": ["*", [{"trace_id": invalid, "span_id": "*"}]]}
+    errors = validate_trace(_trace(), {"span_assertions": assertion}, _query())
+    assert any("scalar matcher" in error for error in errors)

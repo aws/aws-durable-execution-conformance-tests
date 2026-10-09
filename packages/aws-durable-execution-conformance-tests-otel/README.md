@@ -120,6 +120,15 @@ orchestrator resolves test revisions once before launching any workers:
 - `contract_test_command` validates the example and template contract.
 - `prepare_command` builds the handlers against the resolved SDK commit.
 
+The optional `case_count` input defaults to `26`. A caller with a pinned legacy
+20-case catalog can set `case_count: 20` while keeping its existing
+`conformance_test_ref`, and update only the reusable workflow revision to receive
+workflow maintenance fixes. Other counts are rejected before workers start.
+This input controls diagnostic log enumeration; it does not select or filter
+requirements. The pinned test revision determines the catalog, and both suite
+workers still fail on failed or uncovered requirements. The four-case short
+long-running suite is unchanged.
+
 The hooks run in one Bash process after the optional SDK checkout, so setup
 exports remain available to the contract and preparation commands. They receive
 `SDK_CHECKOUT`, `SDK_REF`, and the shared workflow environment, including
@@ -302,3 +311,7 @@ Names must be unique. A backend factory exposes `name` and
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidance on adding OTel requirements,
 SDK test handlers, provider-neutral assertions, and test coverage.
+
+## Launch regression coverage
+
+Cases 21–26 cover completed-operation replay exports, active context in SDK user functions, invocation-retry status, errorless callback failure, and first external callback completion followed by later replays. See [the coverage matrix and callback boundaries](LAUNCH_ISSUE_COVERAGE.md).

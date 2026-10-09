@@ -354,7 +354,7 @@ jobs:
             echo "Could not resolve an ADOT layer for $LANGUAGE in $AWS_REGION"
             exit 1
           fi
-          aws lambda get-layer-version-by-arn \
+          AWS_MAX_ATTEMPTS=8 AWS_RETRY_MODE=standard aws lambda get-layer-version-by-arn \
             --arn "$ADOT_LAYER_ARN" \
             --region "$AWS_REGION" \
             --query LayerVersionArn \

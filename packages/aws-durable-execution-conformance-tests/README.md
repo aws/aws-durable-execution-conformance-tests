@@ -58,6 +58,24 @@ Test requirements use placeholders to handle values that vary between executions
 - **`${GEN_STR:N}`:** Generates a random alphanumeric string of length N. Used in the `Variables` section to create unique test inputs.
 - **Named variables (`${VAR_NAME}`):** Defined in the `Variables` section, substituted into `Input`, `ExpectedResult`, `CallbackActions`, and `ExpectedExecutionHistory` before validation.
 
+An expected history event can require an exact field absence with `$absent`:
+
+```yaml
+ExpectedExecutionHistory:
+  - EventId: 7
+    EventType: CallbackFailed
+    $absent:
+      - [CallbackFailedDetails, Error]
+```
+
+Each entry is a non-empty path of literal string keys. A missing parent or final
+key satisfies the assertion. A present final key fails, even when its value is
+`null` or `{}`; a present intermediate value must be an object. This control is
+reserved at the root of an expected history event. Nested payload dictionaries
+and `ExpectedResult` retain normal matching semantics. In particular, `null`
+still requires a present null value and `{}` still skips a present value; neither
+means that the key must be absent.
+
 ### Async Test Requirements
 
 Tests for operations that suspend execution (wait, callback, invoke) include additional fields:
@@ -67,6 +85,29 @@ AsyncInvoke: true
 ```
 
 The validator handles the full lifecycle: invoke the function, wait for suspension, perform callback actions (if any), wait for completion, then assert the final execution history.
+
+Callback actions can opt into a specific resume boundary:
+
+```yaml
+CallbackActions:
+  - CallbackName: callback-name
+    Operation: failure
+    AfterInvocationCompleted: true
+```
+
+The runner waits for an `InvocationCompleted` event in the same execution whose
+`EventId` is greater than the target `CallbackStarted` event's ID. Until then,
+neither the action nor the callback is consumed, and history-only validation
+cannot finish while that action is deferred. The existing polling timeout still
+applies. If the execution becomes terminal before a matching gated action is
+sent, validation fails even if that snapshot contains the completion event.
+This option accepts only a boolean and defaults to `false`; missing or
+false preserves immediate delivery. `Delay` is an additional delay after the
+phase gate and does not itself prove that an invocation completed. Omitting
+`Payload` on a failure omits `Error` from the request. The service may still
+return an error-history wrapper with an empty payload. Case 25 combines an
+exact empty-object regex with nested `$absent` paths that require object parents;
+a literal `{}` alone remains a wildcard and must not be used to assert emptiness.
 
 Failed executions can also assert the service-visible error. Error fields use
 the same wildcards, regexes, placeholders, and partial-object matching as

@@ -110,6 +110,9 @@ class EventHistoryMatcher:
 
     Expected events are matched to actual events by EventId.
     Extra events in the actual history that are not in the expected list are ignored.
+    An expected event may use ``$absent`` with a list of string-key paths to
+    require fields to be absent. This control applies only at the event root;
+    nested payloads and ``match_value`` retain ordinary dictionary semantics.
     """
 
     def __init__(self, context: PlaceholderContext | None = None) -> None:
@@ -145,6 +148,10 @@ class EventHistoryMatcher:
                 actual_by_id[eid] = evt
 
         for expected in expected_events:
+            absent_paths = expected.get("$absent", [])
+            if "$absent" in expected and not self._valid_absent_paths(absent_paths):
+                self._errors.append("Expected event $absent must be a non-empty list of non-empty string-key paths")
+                continue
             eid = expected.get("EventId")
             if eid is None:
                 self._errors.append(f"Expected event missing EventId: {expected}")
@@ -155,7 +162,9 @@ class EventHistoryMatcher:
                 self._errors.append(f"No actual event found for EventId={eid}")
                 continue
 
-            self._match_value(expected, actual, path=f"Event[EventId={eid}]")
+            path = f"Event[EventId={eid}]"
+            self._match_absent_paths(absent_paths, actual, path)
+            self._match_value({key: value for key, value in expected.items() if key != "$absent"}, actual, path)
 
         return MatchResult(
             success=len(self._errors) == 0,
@@ -186,6 +195,33 @@ class EventHistoryMatcher:
     # ------------------------------------------------------------------
     # Internal recursive matching
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _valid_absent_paths(paths: Any) -> bool:
+        return (
+            isinstance(paths, list)
+            and bool(paths)
+            and all(
+                isinstance(keys, list) and bool(keys) and all(isinstance(key, str) and bool(key) for key in keys)
+                for keys in paths
+            )
+        )
+
+    def _match_absent_paths(self, paths: list[list[str]], actual: dict[str, Any], path: str) -> None:
+        for keys in paths:
+            current: Any = actual
+            current_path = path
+            for index, key in enumerate(keys):
+                if not isinstance(current, dict):
+                    self._errors.append(f"{current_path}: expected an object while checking $absent")
+                    break
+                current_path = f"{current_path}.{key}"
+                if key not in current:
+                    break
+                if index == len(keys) - 1:
+                    self._errors.append(f"{current_path}: expected field to be absent")
+                else:
+                    current = current[key]
 
     def _match_value(self, expected: Any, actual: Any, path: str) -> None:
         """Recursively match an expected value against an actual value."""

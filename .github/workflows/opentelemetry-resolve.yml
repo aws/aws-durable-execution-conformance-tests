@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       sdk_ref:
-        description: Full SDK commit SHA; defaults to the SDK main branch
+        description: SDK commit SHA or named ref; defaults to the SDK main branch
         required: false
         default: ""
         type: string
@@ -30,6 +30,11 @@ on:
         required: false
         default: ""
         type: string
+      case_count:
+        description: Suite size for diagnostics; 20 for pinned legacy catalogs or 26
+        required: false
+        default: 26
+        type: number
       adot_release_repository:
         description: GitHub repository whose latest release lists regional ADOT layers
         required: false
@@ -93,10 +98,18 @@ jobs:
           ADOT_RELEASE_REPOSITORY: ${{ inputs.adot_release_repository }}
           CONFORMANCE_REPOSITORY: ${{ inputs.conformance_repository }}
           LANGUAGE: ${{ inputs.language }}
+          REQUESTED_CASE_COUNT: ${{ inputs.case_count }}
           REQUESTED_PHASE: ${{ inputs.phase }}
           RESOURCE_PREFIX: ${{ inputs.resource_prefix }}
           SDK_REPOSITORY: ${{ inputs.sdk_repository }}
         run: |
+          case "$REQUESTED_CASE_COUNT" in
+            20|26) ;;
+            *)
+              echo "case_count must be one of: 20, 26"
+              exit 1
+              ;;
+          esac
           case "$REQUESTED_PHASE" in
             short|launch|check) ;;
             *)
@@ -169,21 +182,22 @@ jobs:
       - name: Resolve SDK commit
         id: resolve-sdk
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_SDK_REF: ${{ inputs.sdk_ref }}
           SDK_REPOSITORY: ${{ inputs.sdk_repository }}
         run: |
-          SDK_REF="$REQUESTED_SDK_REF"
-          if [ -z "$SDK_REF" ]; then
-            SDK_REF=$(
-              git ls-remote \
-                "https://github.com/$SDK_REPOSITORY.git" \
-                refs/heads/main |
-                awk '{print $1}'
+          SDK_REF="${REQUESTED_SDK_REF:-main}"
+          if [[ "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            SDK_SHA="$SDK_REF"
+          else
+            SDK_SHA=$(
+              gh api --method GET "repos/$SDK_REPOSITORY/commits" \
+                -f "sha=$SDK_REF" -F per_page=1 --jq '.[0].sha'
             )
           fi
-          if [[ ! "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          if [[ ! "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "sdk_ref must resolve to a full 40-character commit SHA"
             exit 1
           fi
-          echo "Using $SDK_REPOSITORY commit $SDK_REF"
-          echo "ref=$SDK_REF" >> "$GITHUB_OUTPUT"
+          echo "Using $SDK_REPOSITORY commit $SDK_SHA"
+          echo "ref=$SDK_SHA" >> "$GITHUB_OUTPUT"

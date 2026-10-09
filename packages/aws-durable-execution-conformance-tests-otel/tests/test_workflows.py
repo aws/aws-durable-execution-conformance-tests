@@ -36,7 +36,7 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-def _run_resolver_validation(resource_prefix: str) -> subprocess.CompletedProcess[str]:
+def _run_resolver_validation(resource_prefix: str, *, case_count: str = "26") -> subprocess.CompletedProcess[str]:
     workflow = _load(RESOLVER_WORKFLOW)
     validation = next(
         step for step in workflow["jobs"]["resolve"]["steps"] if step["name"] == "Validate workflow inputs"
@@ -49,6 +49,7 @@ def _run_resolver_validation(resource_prefix: str) -> subprocess.CompletedProces
             "ADOT_RELEASE_REPOSITORY": "aws-observability/aws-otel-python-instrumentation",
             "CONFORMANCE_REPOSITORY": "aws/aws-durable-execution-conformance-tests",
             "LANGUAGE": "python",
+            "REQUESTED_CASE_COUNT": case_count,
             "REQUESTED_PHASE": "short",
             "RESOURCE_PREFIX": resource_prefix,
             "SDK_REPOSITORY": "aws/aws-durable-execution-sdk-python",
@@ -169,6 +170,37 @@ def test_resource_prefix_validation_matches_lambda_name_limit(
     assert result.returncode == expected_return_code
     if expected_return_code:
         assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
+
+
+@pytest.mark.parametrize("case_count", ["20", "26"])
+def test_resolver_accepts_supported_catalog_counts(case_count: str) -> None:
+    result = _run_resolver_validation("py", case_count=case_count)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "24", "27", "20; exit 0"])
+def test_resolver_rejects_unsupported_catalog_counts(case_count: str) -> None:
+    result = _run_resolver_validation("py", case_count=case_count)
+    assert result.returncode != 0
+    assert "case_count must be one of: 20, 26" in result.stdout
+
+
+def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_refs() -> None:
+    orchestrator = _load(ORCHESTRATOR)
+    resolver = _load(RESOLVER_WORKFLOW)
+    for workflow in (orchestrator, resolver):
+        definition = _triggers(workflow)["workflow_call"]["inputs"]["case_count"]
+        assert definition["type"] == "number"
+        assert definition["required"] is False
+        assert definition["default"] == 26
+    jobs = orchestrator["jobs"]
+    for name in ("resolve", "invocation", "execution"):
+        assert jobs[name]["with"]["case_count"] == "${{ inputs.case_count }}"
+    assert jobs["resolve"]["with"]["conformance_test_ref"] == "${{ inputs.conformance_test_ref }}"
+    for view in ("invocation", "execution"):
+        assert "case_count" not in jobs[f"long-running-{view}"]["with"]
+    self_test = _load(WORKFLOWS_DIR / "opentelemetry-conformance-tests.yml")
+    assert "case_count" not in self_test["jobs"]["opentelemetry"]["with"]
 
 
 def test_orchestrator_owns_suite_and_long_running_views() -> None:
@@ -373,3 +405,88 @@ def test_otel_stack_names_do_not_depend_on_run_numbers() -> None:
                 value = str(environment.get(variable, ""))
                 assert "github.run_" not in value.lower(), (path, variable)
                 assert "GITHUB_RUN_" not in value, (path, variable)
+
+
+@pytest.mark.parametrize(
+    "requested_ref", ["", "main", "feature/otel-context", "refs/heads/feature/otel-context", "v2.0.1"]
+)
+def test_sdk_resolver_resolves_named_refs_to_commit_sha(tmp_path: Path, requested_ref: str) -> None:
+    expected_sha = "a" * 40
+    result, output, arguments = _run_sdk_resolver(tmp_path, requested_ref, expected_sha)
+
+    assert result.returncode == 0, result.stderr
+    assert output == f"ref={expected_sha}\n"
+    assert arguments == [
+        "api",
+        "--method",
+        "GET",
+        "repos/aws/aws-durable-execution-sdk-python/commits",
+        "-f",
+        f"sha={requested_ref or 'main'}",
+        "-F",
+        "per_page=1",
+        "--jq",
+        ".[0].sha",
+    ]
+
+
+def test_sdk_resolver_keeps_pinned_sha_without_network_lookup(tmp_path: Path) -> None:
+    pinned_sha = "b" * 40
+    result, output, arguments = _run_sdk_resolver(tmp_path, pinned_sha, "", api_status=1)
+
+    assert result.returncode == 0, result.stderr
+    assert output == f"ref={pinned_sha}\n"
+    assert arguments == []
+
+
+@pytest.mark.parametrize(("api_output", "api_status"), [("null", 0), ("invalid-sha", 0), ("", 1)])
+def test_sdk_resolver_fails_without_a_resolved_commit(
+    tmp_path: Path,
+    api_output: str,
+    api_status: int,
+) -> None:
+    result, output, _ = _run_sdk_resolver(tmp_path, "missing-branch", api_output, api_status=api_status)
+
+    assert result.returncode != 0
+    assert output == ""
+
+
+def _run_sdk_resolver(
+    tmp_path: Path,
+    requested_ref: str,
+    api_output: str,
+    *,
+    api_status: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], str, list[str]]:
+    workflow = _load(RESOLVER_WORKFLOW)
+    step = next(step for step in workflow["jobs"]["resolve"]["steps"] if step.get("id") == "resolve-sdk")
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_GH_ARGUMENTS"\n'
+        'printf "%s\\n" "$TEST_GH_OUTPUT"\nexit "$TEST_GH_STATUS"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    output_path = tmp_path / "output"
+    args_path = tmp_path / "args"
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "REQUESTED_SDK_REF": requested_ref,
+            "SDK_REPOSITORY": "aws/aws-durable-execution-sdk-python",
+            "GITHUB_OUTPUT": str(output_path),
+            "TEST_GH_ARGUMENTS": str(args_path),
+            "TEST_GH_OUTPUT": api_output,
+            "TEST_GH_STATUS": str(api_status),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (
+        result,
+        output_path.read_text() if output_path.exists() else "",
+        args_path.read_text().splitlines() if args_path.exists() else [],
+    )
