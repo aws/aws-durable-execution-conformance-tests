@@ -35,12 +35,22 @@ class _LogsClient:
 class _Clock:
     def __init__(self) -> None:
         self.now = 0.0
+        self.sleeps: list[float] = []
 
     def monotonic(self) -> float:
         return self.now
 
     def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
         self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    return clock
 
 
 def test_queries_logs_for_one_durable_execution(
@@ -58,6 +68,7 @@ def test_queries_logs_for_one_durable_execution(
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=10.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -91,6 +102,7 @@ def test_polls_through_partial_execution_log_results(
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=10.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -112,10 +124,10 @@ def test_returns_empty_execution_logs_at_poll_timeout(
     logs_client = _LogsClient([{"events": []}, {"events": []}, {"events": []}])
     monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
-    monkeypatch.setattr(CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 2.0)
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=2.0,
     )
 
     events = retriever.get_execution_log_events(
@@ -130,6 +142,214 @@ def test_returns_empty_execution_logs_at_poll_timeout(
     assert len(logs_client.filter_log_events_calls) == 3
 
 
+def test_event_poll_timeout_override_is_honored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-instance timeout controls how long polling continues."""
+    clock = _Clock()
+    logs_client = _LogsClient([{"events": []}] * 10)
+    monkeypatch.setattr(cloudwatch_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cloudwatch_module.time, "sleep", clock.sleep)
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=logs_client,
+        event_poll_timeout_seconds=3.0,
+    )
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        end_time_ms=2_000,
+        wait_seconds=0,
+    )
+
+    assert events == []
+    # 3s deadline with a 1s interval: queries at t=0,1,2,3 -> 4 calls.
+    assert len(logs_client.filter_log_events_calls) == 4
+
+
+def test_legacy_two_client_constructor_uses_default_timeout(fake_clock: _Clock) -> None:
+    logs_client = _LogsClient([{"events": []}] * 121)
+    retriever = CloudWatchLogRetriever(object(), logs_client)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == []
+    assert fake_clock.now == 120.0
+    assert len(logs_client.filter_log_events_calls) == 121
+
+
+def test_accumulates_events_missing_from_later_polls(fake_clock: _Clock) -> None:
+    first_event = {"eventId": "first", "timestamp": 1_500, "message": "first"}
+    second_event = {"eventId": "second", "timestamp": 1_600, "message": "second"}
+    logs_client = _LogsClient([{"events": [first_event]}, {"events": [second_event]}, {"events": []}])
+    retriever = CloudWatchLogRetriever(object(), logs_client, event_poll_timeout_seconds=2.0)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == [first_event, second_event]
+    assert fake_clock.now == 2.0
+
+
+def test_deduplicates_event_ids_across_pages_and_polls(fake_clock: _Clock) -> None:
+    first_event = {"eventId": "first", "logStreamName": "stream", "message": "first"}
+    second_event = {"eventId": "second", "logStreamName": "stream", "message": "second"}
+    logs_client = _LogsClient(
+        [
+            {"events": [first_event], "nextToken": "page-2"},
+            {"events": [first_event, second_event]},
+            {"events": [first_event, second_event]},
+        ]
+    )
+    retriever = CloudWatchLogRetriever(object(), logs_client, event_poll_timeout_seconds=1.0)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == [first_event, second_event]
+    assert [call.get("nextToken") for call in logs_client.filter_log_events_calls] == [None, "page-2", None]
+    assert fake_clock.now == 1.0
+
+
+def test_preserves_identical_payloads_with_distinct_event_ids(fake_clock: _Clock) -> None:
+    first_event = {
+        "eventId": "first",
+        "logStreamName": "stream",
+        "timestamp": 1_500,
+        "ingestionTime": 2_000,
+        "message": "step executed",
+    }
+    second_event = {**first_event, "eventId": "second"}
+    logs_client = _LogsClient([{"events": [first_event]}, {"events": [first_event, second_event]}])
+    retriever = CloudWatchLogRetriever(object(), logs_client, event_poll_timeout_seconds=1.0)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == [first_event, second_event]
+    result = CloudWatchLogValidator().validate([{"match": {"message": "step executed"}, "count": 1}], events)
+    assert not result.success
+    assert "got 2" in result.errors[0]
+    assert fake_clock.now == 1.0
+
+
+def test_preserves_multiplicity_when_clients_omit_event_ids(fake_clock: _Clock) -> None:
+    event = {"timestamp": 1_500, "ingestionTime": 2_000, "message": "same record"}
+    logs_client = _LogsClient(
+        [
+            {"events": [event]},
+            {"events": [event, dict(event)]},
+            {"events": [event]},
+            {"events": []},
+        ]
+    )
+    retriever = CloudWatchLogRetriever(object(), logs_client, event_poll_timeout_seconds=3.0)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == [event, event]
+    assert fake_clock.now == 3.0
+
+
+@pytest.mark.parametrize(("timeout", "expected_sleeps"), [(0.0, []), (0.25, [0.25]), (1.25, [1.0, 0.25])])
+def test_polling_respects_zero_and_fractional_timeout(
+    fake_clock: _Clock, timeout: float, expected_sleeps: list[float]
+) -> None:
+    logs_client = _LogsClient([{"events": []}] * (len(expected_sleeps) + 1))
+    retriever = CloudWatchLogRetriever(object(), logs_client, event_poll_timeout_seconds=timeout)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert events == []
+    assert fake_clock.now == timeout
+    assert fake_clock.sleeps == expected_sleeps
+    assert len(logs_client.filter_log_events_calls) == len(expected_sleeps) + 1
+
+
+def test_poll_interval_override_is_honored(fake_clock: _Clock) -> None:
+    logs_client = _LogsClient([{"events": []}] * 4)
+    retriever = CloudWatchLogRetriever(
+        object(), logs_client, event_poll_timeout_seconds=1.25, event_poll_interval_seconds=0.5
+    )
+
+    retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+    )
+
+    assert fake_clock.sleeps == [0.5, 0.5, 0.25]
+    assert fake_clock.now == 1.25
+    assert len(logs_client.filter_log_events_calls) == 4
+
+
+def test_completion_check_uses_accumulated_events_after_settling(fake_clock: _Clock) -> None:
+    event = {"eventId": "first", "message": "first"}
+    logs_client = _LogsClient([{"events": [event]}] + [{"events": []}] * 20)
+    retriever = CloudWatchLogRetriever(object(), logs_client)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+        completion_check=lambda observed: observed == [event],
+    )
+
+    assert events == [event]
+    assert fake_clock.now == 20.0
+    assert len(logs_client.filter_log_events_calls) == 21
+
+
+def test_new_events_restart_settling_window(fake_clock: _Clock) -> None:
+    first_event = {"eventId": "first", "message": "first"}
+    second_event = {"eventId": "second", "message": "second"}
+    logs_client = _LogsClient([{"events": [first_event]}] * 15 + [{"events": [first_event, second_event]}] * 11)
+    retriever = CloudWatchLogRetriever(object(), logs_client)
+
+    events = retriever.get_execution_log_events(
+        log_group_name="/aws/lambda/test",
+        execution_arn="arn:execution",
+        start_time_ms=1_000,
+        wait_seconds=0,
+        completion_check=bool,
+    )
+
+    assert events == [first_event, second_event]
+    assert fake_clock.now == 25.0
+    assert len(logs_client.filter_log_events_calls) == 26
+
+
 def test_raises_when_filter_log_events_fails() -> None:
     class _FailingLogsClient:
         def filter_log_events(self, **_kwargs: Any) -> dict[str, Any]:
@@ -142,6 +362,7 @@ def test_raises_when_filter_log_events_fails() -> None:
     retriever = CloudWatchLogRetriever(
         cloudformation_client=object(),
         logs_client=logs_client,
+        event_poll_timeout_seconds=1.0,
     )
 
     with pytest.raises(CloudWatchLogError, match="filter-log-events failed"):
@@ -280,8 +501,11 @@ def test_retrieval_pipeline_contract_top_level_arn_required(
             return {"events": kept}
 
     monkeypatch.setattr(cloudwatch_module.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(cloudwatch_module.CloudWatchLogRetriever, "EVENT_POLL_TIMEOUT_SECONDS", 0.0)
-    retriever = CloudWatchLogRetriever(cloudformation_client=object(), logs_client=_FilteringLogsClient())
+    retriever = CloudWatchLogRetriever(
+        cloudformation_client=object(),
+        logs_client=_FilteringLogsClient(),
+        event_poll_timeout_seconds=0.0,
+    )
     events = retriever.get_execution_log_events(
         log_group_name="/aws/lambda/test", execution_arn=arn, start_time_ms=0, end_time_ms=10, wait_seconds=0
     )

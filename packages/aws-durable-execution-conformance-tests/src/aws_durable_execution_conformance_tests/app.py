@@ -28,6 +28,7 @@ import yaml
 from aws_durable_execution_conformance_tests.clients import AwsClients
 from aws_durable_execution_conformance_tests.config import (
     BUILD_DIR,
+    DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
     DEFAULT_MAX_WORKERS,
     DEFAULT_REGION,
     OUTPUT_DIR,
@@ -208,6 +209,17 @@ def parse_args(
         "'failed' (default) blocks only on FAILED; 'failed+uncovered' also blocks "
         "on non-optional UNCOVERED. Optional requirements, NOT_IMPLEMENTED, and "
         "OPTIONAL_FAILED never block.",
+    )
+    parser.add_argument(
+        "--log-poll-timeout",
+        type=_positive_int,
+        default=DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help="Maximum polling budget in seconds for a requirement's ExpectedLogs. "
+        "Successful validation may finish early after at least 20 seconds of observation "
+        "and 10 seconds with no new log events; a shorter timeout still caps polling. "
+        "FilterLogEvents is eventually consistent, so a larger budget allows for log ingestion lag. "
+        f"Defaults to {DEFAULT_LOG_POLL_TIMEOUT_SECONDS}.",
     )
     try:
         registry.add_arguments(parser)
@@ -558,6 +570,7 @@ def _validate_test_description(
         output_dir=args.history_dir,
         region=args.region,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=args.log_poll_timeout,
     )
     if result.passed and requirement.suite.validation_hook is not None:
         result = _run_extension_validation(
