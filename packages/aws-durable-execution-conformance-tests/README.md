@@ -143,6 +143,14 @@ accumulates events across all responses, deduplicating by CloudWatch event ID.
 A later response that omits a previously seen event does not remove it from
 validation, and distinct events with identical messages still count separately.
 
+A freshly deployed Lambda's log group may not yet be visible. Polling retries
+`ResourceNotFoundException` within the same timeout and starts a fresh quiet
+window when retrieval recovers. Records from successful pages remain accumulated
+even if a later page fails. If the log group is still unavailable at the deadline,
+validation raises the retrieval error instead of treating unavailable logs as an
+empty result. Other retrieval errors, including access-denied errors, propagate
+immediately.
+
 Successful validation can finish early once all log expectations pass, polling
 has observed at least 20 seconds, and no new execution events have appeared for
 10 seconds. The 20-second minimum preserves the former 10-second pre-wait plus

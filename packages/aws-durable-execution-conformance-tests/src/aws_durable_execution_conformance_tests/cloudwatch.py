@@ -31,10 +31,12 @@ if TYPE_CHECKING:
 class CloudWatchLogError(Exception):
     """Raised when CloudWatch log retrieval fails."""
 
-    def __init__(self, log_group: str, reason: str) -> None:
+    def __init__(self, log_group: str, reason: str, partial_events: list[dict] | None = None) -> None:
         super().__init__(f"CloudWatch log error for {log_group}: {reason}")
         self.log_group = log_group
         self.reason = reason
+        # Preserve records from successful pages if a later page fails.
+        self.partial_events = partial_events if partial_events is not None else []
 
 
 # endregion
@@ -257,6 +259,7 @@ class CloudWatchLogRetriever:
             raise CloudWatchLogError(
                 log_group=log_group_name,
                 reason=f"filter-log-events failed: {e}",
+                partial_events=all_events,
             ) from e
 
         return all_events
@@ -289,6 +292,13 @@ class CloudWatchLogRetriever:
         These windows are an ingestion heuristic, not proof of completeness.
         Without a check, polling uses the full timeout.
 
+        A not-yet-visible log group (``ResourceNotFoundException``) is retried
+        within the same deadline. Failed polls cannot complete validation, and
+        recovery starts a fresh quiet window. Records from successful pages are
+        retained even if a later page fails. If the group is still unavailable
+        at the deadline, the retrieval error is raised; other errors propagate
+        immediately.
+
         Args:
             log_group_name: The full log group name.
             execution_arn: Durable execution ARN to filter on.
@@ -315,16 +325,28 @@ class CloudWatchLogRetriever:
 
         started_at = time.monotonic()
         deadline = started_at + self._event_poll_timeout_seconds
-        last_new_event_at = started_at
+        quiet_since = started_at
+        recovering = False
         observed: dict[tuple, dict] = {}
         while True:
-            events = self.get_log_events(
-                log_group_name=log_group_name,
-                start_time_ms=start_time_ms,
-                end_time_ms=end_time_ms,
-                filter_pattern=filter_pattern,
-                wait_seconds=0,
-            )
+            poll_error: CloudWatchLogError | None = None
+            try:
+                events = self.get_log_events(
+                    log_group_name=log_group_name,
+                    start_time_ms=start_time_ms,
+                    end_time_ms=end_time_ms,
+                    filter_pattern=filter_pattern,
+                    wait_seconds=0,
+                )
+            except CloudWatchLogError as exc:
+                cause = exc.__cause__
+                if (
+                    not isinstance(cause, ClientError)
+                    or cause.response.get("Error", {}).get("Code") != "ResourceNotFoundException"
+                ):
+                    raise
+                poll_error = exc
+                events = exc.partial_events
             previous_count = len(observed)
             occurrences: dict[str, int] = {}
             for event in events:
@@ -339,15 +361,19 @@ class CloudWatchLogRetriever:
                 observed.setdefault(key, event)
 
             now = time.monotonic()
-            if len(observed) != previous_count:
-                last_new_event_at = now
+            if len(observed) != previous_count or recovering or poll_error is not None:
+                quiet_since = now
+            recovering = poll_error is not None
             accumulated = list(observed.values())
             if now >= deadline:
+                if poll_error is not None:
+                    raise poll_error
                 return accumulated
             if (
-                completion_check is not None
+                poll_error is None
+                and completion_check is not None
                 and now - started_at >= self.EVENT_MIN_OBSERVATION_SECONDS
-                and now - last_new_event_at >= self.EVENT_SETTLE_SECONDS
+                and now - quiet_since >= self.EVENT_SETTLE_SECONDS
                 and completion_check(accumulated)
             ):
                 return accumulated
