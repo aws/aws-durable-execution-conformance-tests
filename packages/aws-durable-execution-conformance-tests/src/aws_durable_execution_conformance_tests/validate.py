@@ -700,6 +700,7 @@ class PollingValidator:
         last_event_count: int = 0
         last_progress_time: float = time.time()
         errors: list[str] = []
+        callback_delivery_failed = False
         final_status: str | None = None
         actual_events: list[dict[str, Any]] = []
         history_only_mode: bool = expected_result is None
@@ -779,6 +780,7 @@ class PollingValidator:
                     deferred_callback_ids.add(callback_id)
                     continue
 
+                deferred_callback_ids.discard(callback_id)
                 if idx is not None:
                     used_action_indices.add(idx)
 
@@ -797,11 +799,11 @@ class PollingValidator:
                         payload=self._context.substitute(action.payload),
                     )
                     self._callback_sender.send(callback_id, resolved_action)
-                    deferred_callback_ids.discard(callback_id)
                     callbacks_sent += 1
                     print(f"  Sent {action.operation} callback for '{action.callback_name}' (id={callback_id})")
                 except CallbackError as e:
                     errors.append(str(e))
+                    callback_delivery_failed = True
 
             # In history-only mode, stop polling once all expected
             # events are matched rather than waiting for terminal status.
@@ -810,8 +812,8 @@ class PollingValidator:
                 match_result = matcher.match(expected_events, actual_events)
                 if match_result.success:
                     return AsyncValidationResult(
-                        passed=True,
-                        errors=[],
+                        passed=not callback_delivery_failed,
+                        errors=errors if callback_delivery_failed else [],
                         placeholders=match_result.resolved_placeholders,
                         callbacks_sent=callbacks_sent,
                         final_status=final_status,

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests import validate
 from aws_durable_execution_conformance_tests.callback import CallbackAction
@@ -203,3 +204,35 @@ def test_one_action_two_matching_callbacks_preserve_delivery_time_rules(
     # Preserve the existing unmatched-callback outcome; only delivery timing changes.
     assert gated.passed == ordinary.passed
     assert gated.errors == ordinary.errors
+
+
+@pytest.mark.parametrize("operation", ["success", "failure", "heartbeat"])
+@pytest.mark.parametrize("gated", [False, True])
+@pytest.mark.parametrize("history_only", [False, True])
+def test_callback_delivery_error_is_not_a_pending_phase_or_history_success(
+    monkeypatch: pytest.MonkeyPatch, operation: str, gated: bool, history_only: bool
+) -> None:
+    completed = [CALLBACK, {"EventId": 6, "EventType": "InvocationCompleted"}]
+    service = Service([[CALLBACK], completed, [*completed, {"EventId": 10, "EventType": "ExecutionFailed"}]])
+    attempts: list[tuple[int, dict[str, Any]]] = []
+
+    def reject_callback(**kwargs: Any) -> dict:
+        attempts.append((len(service.reads), kwargs))
+        raise ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "callback delivery denied"}},
+            f"SendDurableExecutionCallback{operation.title()}",
+        )
+
+    monkeypatch.setattr(service, f"send_durable_execution_callback_{operation}", reject_callback, raising=False)
+    result = run_validator(
+        monkeypatch, service, {"Operation": operation, "AfterInvocationCompleted": gated}, history_only=history_only
+    )
+    assert not result.passed
+    assert result.callbacks_sent == 0
+    assert attempts == [(2 if gated else 1, {"CallbackId": "target-capability"})]
+    # An ordinary heartbeat remains matchable for a follow-up action. With
+    # none configured, preserve its existing unmatched-action diagnostic.
+    assert len(result.errors) == (2 if operation == "heartbeat" and not gated and not history_only else 1)
+    assert result.errors[0].startswith(f"Callback {operation} failed")
+    assert "callback delivery denied" in result.errors[0]
+    assert len(service.reads) == ((2 if gated else 1) if history_only else 3)
