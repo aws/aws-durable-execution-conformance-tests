@@ -107,14 +107,30 @@ def test_completed_unrelated_callback_is_not_target_phase_proof(monkeypatch: pyt
 
 
 @pytest.mark.parametrize("terminal_on_first_poll", [False, True])
+@pytest.mark.parametrize("invocation_completed", [False, True])
+@pytest.mark.parametrize("history_only", [False, True])
 def test_terminal_execution_cannot_hide_undelivered_phase_action(
-    monkeypatch: pytest.MonkeyPatch, terminal_on_first_poll: bool
+    monkeypatch: pytest.MonkeyPatch, terminal_on_first_poll: bool, invocation_completed: bool, history_only: bool
 ) -> None:
-    terminal = [CALLBACK, {"EventId": 5, "EventType": "ExecutionFailed"}]
+    completion = [{"EventId": 4, "EventType": "InvocationCompleted"}] if invocation_completed else []
+    terminal = [CALLBACK, *completion, {"EventId": 5, "EventType": "ExecutionFailed"}]
     service = Service([terminal] if terminal_on_first_poll else [[CALLBACK], terminal])
-    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=True)
+    result = run_validator(monkeypatch, service, {"AfterInvocationCompleted": True}, history_only=history_only)
     assert not result.passed and not service.requests
-    assert "Callback actions awaiting InvocationCompleted were not delivered" in result.errors
+    assert "Callback actions gated on InvocationCompleted were not delivered" in result.errors
+
+
+@pytest.mark.parametrize("raw", [{}, {"AfterInvocationCompleted": False}])
+@pytest.mark.parametrize("history_only", [False, True])
+def test_terminal_ordinary_callback_preserves_existing_completion_behavior(
+    monkeypatch: pytest.MonkeyPatch, raw: dict, history_only: bool
+) -> None:
+    service = Service(
+        [[CALLBACK, {"EventId": 4, "EventType": "InvocationCompleted"}, {"EventId": 5, "EventType": "ExecutionFailed"}]]
+    )
+    result = run_validator(monkeypatch, service, raw, history_only=history_only)
+    assert result.passed and result.callbacks_sent == 0
+    assert service.requests == [] and service.reads == [ARN]
 
 
 @pytest.mark.parametrize("terminal", [False, True])

@@ -728,11 +728,7 @@ class PollingValidator:
             if final_status in _TERMINAL_STATUSES:
                 for cb_event in extract_callback_events(actual_events, handled_callback_ids):
                     action, _idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
-                    if (
-                        action is not None
-                        and action.after_invocation_completed
-                        and not _callback_invocation_completed(cb_event, actual_events)
-                    ):
+                    if action is not None and action.after_invocation_completed:
                         deferred_callback_ids.add(cb_event["CallbackStartedDetails"]["CallbackId"])
                 break
 
@@ -821,7 +817,7 @@ class PollingValidator:
                     )
 
         if deferred_callback_ids:
-            errors.append("Callback actions awaiting InvocationCompleted were not delivered")
+            errors.append("Callback actions gated on InvocationCompleted were not delivered")
 
         # --- Final assertion: match event history ---
         if expected_events:

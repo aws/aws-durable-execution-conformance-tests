@@ -99,7 +99,9 @@ The runner waits for an `InvocationCompleted` event in the same execution whose
 `EventId` is greater than the target `CallbackStarted` event's ID. Until then,
 neither the action nor the callback is consumed, and history-only validation
 cannot finish while that action is deferred. The existing polling timeout still
-applies. This option accepts only a boolean and defaults to `false`; missing or
+applies. If the execution becomes terminal before a matching gated action is
+sent, validation fails even if that snapshot contains the completion event.
+This option accepts only a boolean and defaults to `false`; missing or
 false preserves immediate delivery. `Delay` is an additional delay after the
 phase gate and does not itself prove that an invocation completed. Omitting
 `Payload` on a failure omits `Error` from the request. The service may still
