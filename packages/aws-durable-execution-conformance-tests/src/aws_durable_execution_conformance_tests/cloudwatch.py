@@ -10,6 +10,7 @@ and validating them against expected log patterns from YAML specs.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -132,6 +133,8 @@ class CloudWatchLogRetriever:
 
     EVENT_POLL_INTERVAL_SECONDS = 1.0
     EVENT_SETTLE_SECONDS = 10.0
+    # Preserve the former 10-second pre-wait plus 10-second polling window.
+    EVENT_MIN_OBSERVATION_SECONDS = 20.0
 
     def __init__(
         self,
@@ -140,6 +143,13 @@ class CloudWatchLogRetriever:
         event_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
         event_poll_interval_seconds: float | None = None,
     ) -> None:
+        if not math.isfinite(event_poll_timeout_seconds) or event_poll_timeout_seconds < 0:
+            raise ValueError("event_poll_timeout_seconds must be finite and non-negative")
+        interval = (
+            self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
+        )
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("event_poll_interval_seconds must be finite and positive")
         self._cfn_client = cloudformation_client
         self._logs_client = logs_client
         # Maximum time to keep polling FilterLogEvents for one execution's log
@@ -147,9 +157,7 @@ class CloudWatchLogRetriever:
         # completeness signal, so a just-emitted record can be absent from
         # responses for seconds after the execution finishes.
         self._event_poll_timeout_seconds = event_poll_timeout_seconds
-        self._event_poll_interval_seconds = (
-            self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
-        )
+        self._event_poll_interval_seconds = interval
 
     @staticmethod
     def log_group_for_function(function_name: str) -> str:
@@ -273,10 +281,13 @@ class CloudWatchLogRetriever:
         because a later response can omit previously visible records.
 
         When ``completion_check`` is supplied, polling may finish once it passes
-        and no new events have appeared for ``EVENT_SETTLE_SECONDS``. This quiet
-        window allows late duplicates and forbidden records to invalidate a
-        passing snapshot; it is a bounded ingestion heuristic, not proof of
-        completeness. Without a check, polling uses the full timeout.
+        after at least ``EVENT_MIN_OBSERVATION_SECONDS`` of polling and no new
+        events have appeared for ``EVENT_SETTLE_SECONDS``. This preserves the
+        former observation window while allowing late duplicates and forbidden
+        records to invalidate a passing snapshot. The configured timeout still
+        caps polling, even when shorter than the minimum observation period.
+        These windows are an ingestion heuristic, not proof of completeness.
+        Without a check, polling uses the full timeout.
 
         Args:
             log_group_name: The full log group name.
@@ -335,6 +346,7 @@ class CloudWatchLogRetriever:
                 return accumulated
             if (
                 completion_check is not None
+                and now - started_at >= self.EVENT_MIN_OBSERVATION_SECONDS
                 and now - last_new_event_at >= self.EVENT_SETTLE_SECONDS
                 and completion_check(accumulated)
             ):

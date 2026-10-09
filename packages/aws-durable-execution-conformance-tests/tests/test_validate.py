@@ -634,7 +634,7 @@ def _poll_expected_logs(monkeypatch, expected_logs, batches, timeout=120):
     return errors, now, query_times
 
 
-def test_expected_logs_passes_after_quiet_window_without_pre_wait(monkeypatch):
+def test_expected_logs_preserves_observation_window_without_pre_wait(monkeypatch):
     errors, elapsed, query_times = _poll_expected_logs(
         monkeypatch,
         [{"match": {"message": "done"}, "count": 1}],
@@ -642,8 +642,8 @@ def test_expected_logs_passes_after_quiet_window_without_pre_wait(monkeypatch):
     )
 
     assert errors == []
-    assert elapsed == 10
-    assert query_times == list(range(11))
+    assert elapsed == 20
+    assert query_times == list(range(21))
 
 
 def test_expected_logs_waits_for_delayed_required_record(monkeypatch):
@@ -677,7 +677,7 @@ def test_expected_logs_negative_assertion_observes_quiet_window(monkeypatch):
     )
 
     assert errors == []
-    assert elapsed == 10
+    assert elapsed == 20
 
 
 def test_expected_logs_new_unmatched_record_restarts_quiet_window(monkeypatch):
@@ -686,11 +686,11 @@ def test_expected_logs_new_unmatched_record_restarts_quiet_window(monkeypatch):
     errors, elapsed, _ = _poll_expected_logs(
         monkeypatch,
         [{"match": {"message": "done"}, "count": 1}],
-        [[done]] * 9 + [[done, noise]],
+        [[done]] * 15 + [[done, noise]],
     )
 
     assert errors == []
-    assert elapsed == 19
+    assert elapsed == 25
 
 
 @pytest.mark.parametrize(
@@ -726,17 +726,20 @@ def test_expected_logs_new_unmatched_record_restarts_quiet_window(monkeypatch):
     ],
     ids=["duplicate", "forbidden", "max-count", "order"],
 )
-def test_expected_logs_retains_late_violations_even_if_they_disappear(monkeypatch, expected_logs, initial, late, error):
+@pytest.mark.parametrize("arrival_second", [4, 15, 20])
+def test_expected_logs_retains_late_violations_even_if_they_disappear(
+    monkeypatch, expected_logs, initial, late, error, arrival_second
+):
     errors, elapsed, _ = _poll_expected_logs(
         monkeypatch,
         expected_logs,
-        [initial] * 4 + [[*initial, late], initial],
-        timeout=20,
+        [initial] * arrival_second + [[*initial, late], initial],
+        timeout=30,
     )
 
     assert len(errors) == 1
     assert error in errors[0]
-    assert elapsed == 20
+    assert elapsed == 30
 
 
 def test_expected_logs_combines_inconsistent_results_in_timestamp_order(monkeypatch):
@@ -754,4 +757,19 @@ def test_expected_logs_combines_inconsistent_results_in_timestamp_order(monkeypa
     )
 
     assert errors == []
-    assert elapsed == 11
+    assert elapsed == 20
+
+
+@pytest.mark.parametrize("timeout", [0.0, 5.5, 15.0])
+def test_expected_logs_explicit_timeout_caps_observation_and_quiet_windows(monkeypatch, timeout):
+    errors, elapsed, query_times = _poll_expected_logs(
+        monkeypatch,
+        [{"match": {"message": "done"}, "count": 1}],
+        [[{"eventId": "1", "message": "done"}]],
+        timeout=timeout,
+    )
+
+    assert errors == []
+    assert elapsed == timeout
+    assert query_times[0] == 0
+    assert query_times[-1] == timeout

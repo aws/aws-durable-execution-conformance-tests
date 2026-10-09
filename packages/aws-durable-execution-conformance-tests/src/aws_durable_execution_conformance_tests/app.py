@@ -216,7 +216,8 @@ def parse_args(
         default=DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
         metavar="SECONDS",
         help="Maximum polling budget in seconds for a requirement's ExpectedLogs. "
-        "Successful validation may finish early after 10 seconds with no new log events. "
+        "Successful validation may finish early after at least 20 seconds of observation "
+        "and 10 seconds with no new log events; a shorter timeout still caps polling. "
         "FilterLogEvents is eventually consistent, so a larger budget allows for log ingestion lag. "
         f"Defaults to {DEFAULT_LOG_POLL_TIMEOUT_SECONDS}.",
     )

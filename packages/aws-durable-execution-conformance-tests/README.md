@@ -143,10 +143,13 @@ accumulates events across all responses, deduplicating by CloudWatch event ID.
 A later response that omits a previously seen event does not remove it from
 validation, and distinct events with identical messages still count separately.
 
-Successful validation can finish early after all log expectations pass and no
-new execution events have appeared for 10 seconds. New events restart this quiet
-window, allowing late duplicates, forbidden records, and ordering violations to
-be detected. Missing or failing expectations continue until the polling timeout.
+Successful validation can finish early once all log expectations pass, polling
+has observed at least 20 seconds, and no new execution events have appeared for
+10 seconds. The 20-second minimum preserves the former 10-second pre-wait plus
+10-second polling window. New events restart the quiet window, allowing late
+duplicates, forbidden records, and ordering violations to be detected. Missing
+or failing expectations continue until the polling timeout. An explicitly shorter
+timeout still caps polling, including when it is shorter than these windows.
 CloudWatch provides no completeness signal, so the quiet window is an ingestion
 heuristic: records that become visible after polling stops cannot be checked.
 
@@ -154,6 +157,9 @@ Programmatic callers may override `log_poll_timeout_seconds` on
 `validate_description` or `event_poll_timeout_seconds` on
 `CloudWatchLogRetriever`; both default to the same 120-second limit. Direct
 retriever calls without a `completion_check` collect events for the full window.
+Timeouts must be finite and nonnegative; zero requests a single poll. An explicit
+`event_poll_interval_seconds` must be finite and positive. Invalid timing values
+raise `ValueError` when the retriever is constructed.
 
 ### Result statuses
 

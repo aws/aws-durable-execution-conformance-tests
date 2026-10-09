@@ -315,7 +315,7 @@ def test_poll_interval_override_is_honored(fake_clock: _Clock) -> None:
 
 def test_completion_check_uses_accumulated_events_after_settling(fake_clock: _Clock) -> None:
     event = {"eventId": "first", "message": "first"}
-    logs_client = _LogsClient([{"events": [event]}] + [{"events": []}] * 10)
+    logs_client = _LogsClient([{"events": [event]}] + [{"events": []}] * 20)
     retriever = CloudWatchLogRetriever(object(), logs_client)
 
     events = retriever.get_execution_log_events(
@@ -327,14 +327,14 @@ def test_completion_check_uses_accumulated_events_after_settling(fake_clock: _Cl
     )
 
     assert events == [event]
-    assert fake_clock.now == 10.0
-    assert len(logs_client.filter_log_events_calls) == 11
+    assert fake_clock.now == 20.0
+    assert len(logs_client.filter_log_events_calls) == 21
 
 
 def test_new_events_restart_settling_window(fake_clock: _Clock) -> None:
     first_event = {"eventId": "first", "message": "first"}
     second_event = {"eventId": "second", "message": "second"}
-    logs_client = _LogsClient([{"events": [first_event]}] * 3 + [{"events": [first_event, second_event]}] * 11)
+    logs_client = _LogsClient([{"events": [first_event]}] * 15 + [{"events": [first_event, second_event]}] * 11)
     retriever = CloudWatchLogRetriever(object(), logs_client)
 
     events = retriever.get_execution_log_events(
@@ -346,8 +346,8 @@ def test_new_events_restart_settling_window(fake_clock: _Clock) -> None:
     )
 
     assert events == [first_event, second_event]
-    assert fake_clock.now == 13.0
-    assert len(logs_client.filter_log_events_calls) == 14
+    assert fake_clock.now == 25.0
+    assert len(logs_client.filter_log_events_calls) == 26
 
 
 def test_raises_when_filter_log_events_fails() -> None:
