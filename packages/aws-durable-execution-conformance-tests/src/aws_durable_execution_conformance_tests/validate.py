@@ -31,6 +31,7 @@ from aws_durable_execution_conformance_tests.cloudwatch import (
     CloudWatchLogValidator,
 )
 from aws_durable_execution_conformance_tests.config import (
+    DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
     OUTPUT_DIR,
     POLL_INTERVAL_SECONDS,
     POLL_NO_PROGRESS_TIMEOUT_SECONDS,
@@ -837,6 +838,7 @@ def _validate_expected_logs(
     start_time_ms: int,
     aws_clients: AwsClients,
     context: PlaceholderContext | None = None,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
 ) -> list[str]:
     """Validate ExpectedLogs from a test description against CloudWatch Logs.
 
@@ -848,6 +850,7 @@ def _validate_expected_logs(
         start_time_ms: Epoch milliseconds marking the start of the invocation.
         context: Optional PlaceholderContext for substituting placeholders.
         aws_clients: Pre-created AWS clients.
+        log_poll_timeout_seconds: Maximum polling budget for log validation.
 
     Returns:
         A list of error strings. Empty list means all log expectations passed.
@@ -860,6 +863,7 @@ def _validate_expected_logs(
     log_retriever = CloudWatchLogRetriever(
         cloudformation_client=aws_clients["cloudformation"],
         logs_client=aws_clients["logs"],
+        event_poll_timeout_seconds=log_poll_timeout_seconds,
     )
 
     log_group: str = log_retriever.get_log_group_name(stack_name, function_name)
@@ -868,7 +872,8 @@ def _validate_expected_logs(
         log_group_name=log_group,
         execution_arn=execution_arn,
         start_time_ms=start_time_ms,
-        wait_seconds=10,
+        wait_seconds=0,
+        completion_check=lambda events: bool(log_validator.validate(expected_logs, events, context=context)),
     )
 
     log_result = log_validator.validate(expected_logs, log_events, context=context)
@@ -884,6 +889,7 @@ def validate_description(
     region: str,
     aws_clients: AwsClients,
     output_dir: str | None = None,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
 ) -> DescriptionResult:
     """Invoke a function for a given test description and assert the execution history."""
     if not Path(test_file).is_file():
@@ -917,6 +923,7 @@ def validate_description(
             output_dir=output_dir,
             region=region,
             aws_clients=aws_clients,
+            log_poll_timeout_seconds=log_poll_timeout_seconds,
         )
 
     # --- Substitute placeholders in Input ---
@@ -1036,6 +1043,7 @@ def validate_description(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(
@@ -1072,6 +1080,7 @@ def _validate_description_async(
     is_optional: bool = False,
     context: PlaceholderContext | None = None,
     output_dir: str | None = None,
+    log_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
 ) -> DescriptionResult:
     """Validate a test description using async invocation with polling.
 
@@ -1091,6 +1100,7 @@ def _validate_description_async(
         output_dir: Optional directory for execution history files.
         region: AWS region.
         aws_clients: Pre-created AWS clients.
+        log_poll_timeout_seconds: Maximum polling budget for log validation.
 
     Returns:
         DescriptionResult with pass/fail status.
@@ -1202,6 +1212,7 @@ def _validate_description_async(
         start_time_ms=invocation_start_ms,
         context=context,
         aws_clients=aws_clients,
+        log_poll_timeout_seconds=log_poll_timeout_seconds,
     )
     if log_errors:
         return DescriptionResult(

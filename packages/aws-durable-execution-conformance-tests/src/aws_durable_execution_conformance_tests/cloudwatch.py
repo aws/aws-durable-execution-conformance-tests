@@ -10,6 +10,7 @@ and validating them against expected log patterns from YAML specs.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -17,7 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from aws_durable_execution_conformance_tests.config import DEFAULT_LOG_POLL_TIMEOUT_SECONDS
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 
 # region Exceptions
@@ -26,10 +31,12 @@ if TYPE_CHECKING:
 class CloudWatchLogError(Exception):
     """Raised when CloudWatch log retrieval fails."""
 
-    def __init__(self, log_group: str, reason: str) -> None:
+    def __init__(self, log_group: str, reason: str, partial_events: list[dict] | None = None) -> None:
         super().__init__(f"CloudWatch log error for {log_group}: {reason}")
         self.log_group = log_group
         self.reason = reason
+        # Preserve records from successful pages if a later page fails.
+        self.partial_events = partial_events if partial_events is not None else []
 
 
 # endregion
@@ -127,11 +134,32 @@ class CloudWatchLogRetriever:
     DEFAULT_WAIT_SECONDS = 5
 
     EVENT_POLL_INTERVAL_SECONDS = 1.0
-    EVENT_POLL_TIMEOUT_SECONDS = 10.0
+    EVENT_SETTLE_SECONDS = 10.0
+    # Preserve the former 10-second pre-wait plus 10-second polling window.
+    EVENT_MIN_OBSERVATION_SECONDS = 20.0
 
-    def __init__(self, cloudformation_client: Any, logs_client: Any) -> None:
+    def __init__(
+        self,
+        cloudformation_client: Any,
+        logs_client: Any,
+        event_poll_timeout_seconds: float = DEFAULT_LOG_POLL_TIMEOUT_SECONDS,
+        event_poll_interval_seconds: float | None = None,
+    ) -> None:
+        if not math.isfinite(event_poll_timeout_seconds) or event_poll_timeout_seconds < 0:
+            raise ValueError("event_poll_timeout_seconds must be finite and non-negative")
+        interval = (
+            self.EVENT_POLL_INTERVAL_SECONDS if event_poll_interval_seconds is None else event_poll_interval_seconds
+        )
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("event_poll_interval_seconds must be finite and positive")
         self._cfn_client = cloudformation_client
         self._logs_client = logs_client
+        # Maximum time to keep polling FilterLogEvents for one execution's log
+        # events. FilterLogEvents is eventually consistent and exposes no
+        # completeness signal, so a just-emitted record can be absent from
+        # responses for seconds after the execution finishes.
+        self._event_poll_timeout_seconds = event_poll_timeout_seconds
+        self._event_poll_interval_seconds = interval
 
     @staticmethod
     def log_group_for_function(function_name: str) -> str:
@@ -231,6 +259,7 @@ class CloudWatchLogRetriever:
             raise CloudWatchLogError(
                 log_group=log_group_name,
                 reason=f"filter-log-events failed: {e}",
+                partial_events=all_events,
             ) from e
 
         return all_events
@@ -242,6 +271,7 @@ class CloudWatchLogRetriever:
         start_time_ms: int,
         end_time_ms: int | None = None,
         wait_seconds: int | None = None,
+        completion_check: Callable[[list[dict]], bool] | None = None,
     ) -> list[dict]:
         """Fetch log events associated with one durable execution.
 
@@ -250,7 +280,24 @@ class CloudWatchLogRetriever:
         field names keeps concurrent executions of the same function isolated
         without relying on Logs Insights indexing. The method polls through a
         bounded ingestion window because ``FilterLogEvents`` has no signal that
-        all matching records are available.
+        all matching records are available. Events are accumulated across polls
+        because a later response can omit previously visible records.
+
+        When ``completion_check`` is supplied, polling may finish once it passes
+        after at least ``EVENT_MIN_OBSERVATION_SECONDS`` of polling and no new
+        events have appeared for ``EVENT_SETTLE_SECONDS``. This preserves the
+        former observation window while allowing late duplicates and forbidden
+        records to invalidate a passing snapshot. The configured timeout still
+        caps polling, even when shorter than the minimum observation period.
+        These windows are an ingestion heuristic, not proof of completeness.
+        Without a check, polling uses the full timeout.
+
+        A not-yet-visible log group (``ResourceNotFoundException``) is retried
+        within the same deadline. Failed polls cannot complete validation, and
+        recovery starts a fresh quiet window. Records from successful pages are
+        retained even if a later page fails. If the group is still unavailable
+        at the deadline, the retrieval error is raised; other errors propagate
+        immediately.
 
         Args:
             log_group_name: The full log group name.
@@ -259,6 +306,7 @@ class CloudWatchLogRetriever:
             end_time_ms: End of the time range in epoch milliseconds.
                          Defaults to current time if not provided.
             wait_seconds: Seconds to wait before querying for log propagation.
+            completion_check: Optional predicate over all observed events.
 
         Returns:
             A list of log event dicts, each with at least a "message" key.
@@ -275,18 +323,61 @@ class CloudWatchLogRetriever:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-        deadline = time.monotonic() + self.EVENT_POLL_TIMEOUT_SECONDS
+        started_at = time.monotonic()
+        deadline = started_at + self._event_poll_timeout_seconds
+        quiet_since = started_at
+        recovering = False
+        observed: dict[tuple, dict] = {}
         while True:
-            events = self.get_log_events(
-                log_group_name=log_group_name,
-                start_time_ms=start_time_ms,
-                end_time_ms=end_time_ms,
-                filter_pattern=filter_pattern,
-                wait_seconds=0,
-            )
-            if time.monotonic() >= deadline:
-                return events
-            time.sleep(self.EVENT_POLL_INTERVAL_SECONDS)
+            poll_error: CloudWatchLogError | None = None
+            try:
+                events = self.get_log_events(
+                    log_group_name=log_group_name,
+                    start_time_ms=start_time_ms,
+                    end_time_ms=end_time_ms,
+                    filter_pattern=filter_pattern,
+                    wait_seconds=0,
+                )
+            except CloudWatchLogError as exc:
+                cause = exc.__cause__
+                if (
+                    not isinstance(cause, ClientError)
+                    or cause.response.get("Error", {}).get("Code") != "ResourceNotFoundException"
+                ):
+                    raise
+                poll_error = exc
+                events = exc.partial_events
+            previous_count = len(observed)
+            occurrences: dict[str, int] = {}
+            for event in events:
+                if event.get("eventId"):
+                    key = ("eventId", event.get("logStreamName"), event["eventId"])
+                else:
+                    # Non-AWS clients may omit eventId. Preserve the maximum
+                    # observed multiplicity of identical records across polls.
+                    fingerprint = json.dumps(event, sort_keys=True)
+                    occurrences[fingerprint] = occurrences.get(fingerprint, 0) + 1
+                    key = ("record", fingerprint, occurrences[fingerprint])
+                observed.setdefault(key, event)
+
+            now = time.monotonic()
+            if len(observed) != previous_count or recovering or poll_error is not None:
+                quiet_since = now
+            recovering = poll_error is not None
+            accumulated = list(observed.values())
+            if now >= deadline:
+                if poll_error is not None:
+                    raise poll_error
+                return accumulated
+            if (
+                poll_error is None
+                and completion_check is not None
+                and now - started_at >= self.EVENT_MIN_OBSERVATION_SECONDS
+                and now - quiet_since >= self.EVENT_SETTLE_SECONDS
+                and completion_check(accumulated)
+            ):
+                return accumulated
+            time.sleep(min(self._event_poll_interval_seconds, deadline - now))
 
 
 # endregion

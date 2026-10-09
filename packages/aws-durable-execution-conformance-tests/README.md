@@ -135,6 +135,40 @@ hatch run validate --template path/to/template.yaml \
                    --report console json junit github --report-file build/report
 ```
 
+### CloudWatch log polling
+
+For requirements with `ExpectedLogs`, `--log-poll-timeout SECONDS` sets the
+maximum polling window (default: 120 seconds). Polling starts immediately and
+accumulates events across all responses, deduplicating by CloudWatch event ID.
+A later response that omits a previously seen event does not remove it from
+validation, and distinct events with identical messages still count separately.
+
+A freshly deployed Lambda's log group may not yet be visible. Polling retries
+`ResourceNotFoundException` within the same timeout and starts a fresh quiet
+window when retrieval recovers. Records from successful pages remain accumulated
+even if a later page fails. If the log group is still unavailable at the deadline,
+validation raises the retrieval error instead of treating unavailable logs as an
+empty result. Other retrieval errors, including access-denied errors, propagate
+immediately.
+
+Successful validation can finish early once all log expectations pass, polling
+has observed at least 20 seconds, and no new execution events have appeared for
+10 seconds. The 20-second minimum preserves the former 10-second pre-wait plus
+10-second polling window. New events restart the quiet window, allowing late
+duplicates, forbidden records, and ordering violations to be detected. Missing
+or failing expectations continue until the polling timeout. An explicitly shorter
+timeout still caps polling, including when it is shorter than these windows.
+CloudWatch provides no completeness signal, so the quiet window is an ingestion
+heuristic: records that become visible after polling stops cannot be checked.
+
+Programmatic callers may override `log_poll_timeout_seconds` on
+`validate_description` or `event_poll_timeout_seconds` on
+`CloudWatchLogRetriever`; both default to the same 120-second limit. Direct
+retriever calls without a `completion_check` collect events for the full window.
+Timeouts must be finite and nonnegative; zero requests a single poll. An explicit
+`event_poll_interval_seconds` must be finite and positive. Invalid timing values
+raise `ValueError` when the retriever is constructed.
+
 ### Result statuses
 
 Every requirement resolves to one status:
