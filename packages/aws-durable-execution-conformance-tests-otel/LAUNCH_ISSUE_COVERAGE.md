@@ -86,6 +86,10 @@ of `TIMED_OUT` or `STOPPED`. An execution timeout leaving a wait `STARTED` (case
 15) is not evidence of an operation ending `TIMED_OUT` without an error.
 
 Case 25 also requires `exception_event_count: 0` on the failed callback leaf.
+Its complete matching trace must remain unchanged for five seconds, so an early
+passing observation cannot hide a later duplicate or exception event within that
+window. This bounds the observation period; it does not prove that no record can
+arrive after the window.
 OTLP JSON/protobuf normalization counts actual span events named `exception`.
 Dropped events make the count unknown, so the lossless-backend assertion fails
 instead of treating an incomplete event list as proof of absence. X-Ray and

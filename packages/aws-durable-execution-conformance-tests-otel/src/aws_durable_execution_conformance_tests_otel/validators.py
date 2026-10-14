@@ -708,7 +708,9 @@ def _parent_expectation_errors(
             for entries in spans_by_id.values()
             for candidate, serialized in entries
             if candidate.trace_id == span.trace_id
-            and _matches_span(expected_properties, serialized, feature_disparities)
+            and not _span_expectation_errors(
+                expected_properties, serialized, path=path, feature_disparities=feature_disparities
+            )
         }
         ordered_candidates = sorted(
             candidates,
@@ -830,7 +832,9 @@ def _link_expectation_errors(
                 candidates = {
                     (candidate["trace_id"], candidate["span_id"]): candidate
                     for candidate in spans
-                    if _matches_span(expected_properties, candidate, feature_disparities)
+                    if not _span_expectation_errors(
+                        expected_properties, candidate, path=link_path, feature_disparities=feature_disparities
+                    )
                 }
                 ordered_candidates = sorted(
                     candidates,

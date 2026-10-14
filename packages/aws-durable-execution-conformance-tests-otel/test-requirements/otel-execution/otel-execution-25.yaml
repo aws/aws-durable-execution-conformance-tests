@@ -58,6 +58,7 @@ ExpectedExecutionHistory:
 ExpectedResult:
   ExecutionStatus: FAILED
 TelemetryAssertions:
+  quiescence_seconds: 5
   minimum_spans: 7
   require_execution_correlation: true
   require_single_trace_per_execution: true

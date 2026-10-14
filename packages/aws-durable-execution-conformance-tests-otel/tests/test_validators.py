@@ -2259,6 +2259,34 @@ def test_exception_event_disparity_only_skips_unavailable_expectation(
     assert (errors == []) is should_pass
 
 
+@pytest.mark.parametrize("relation", ["parent", "links"])
+@pytest.mark.parametrize("exception_count", [None, 0, 1])
+@pytest.mark.parametrize("occurrence", [1, 2])
+def test_exception_event_disparity_preserves_expected_occurrence(
+    relation: str, exception_count: int | None, occurrence: int
+) -> None:
+    trace = _trace()
+    root, child = trace.spans
+    root = replace(root, exception_event_count=exception_count)
+    earlier = replace(
+        root,
+        span_id="4" * 16,
+        start_time=root.start_time - timedelta(seconds=20),
+        end_time=root.end_time - timedelta(seconds=20),
+    )
+    trace = replace(trace, spans=(earlier, root, child))
+    target = {"name": "root", "exception_event_count": 0, "$occurrence": occurrence}
+    expected = {relation: [target] if relation == "links" else target}
+    errors = validate_trace(
+        trace,
+        {"span_assertions": {"select": {"name": "child"}, "expect": expected}},
+        _query(),
+        feature_disparities=(BackendFeatureDisparity.EXCEPTION_EVENTS,),
+    )
+    should_pass = exception_count in (None, 0) and occurrence == 2
+    assert (errors == []) is should_pass
+
+
 def test_open_attributes_and_nested_serialized_link_matchers_remain_supported() -> None:
     trace = _trace()
     root, child = trace.spans

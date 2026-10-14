@@ -15,7 +15,7 @@ from aws_durable_execution_conformance_tests.validate import discover_test_files
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import Span, SpanLink, TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.polling import BackendFeatureDisparity
+from aws_durable_execution_conformance_tests_otel.polling import BackendFeatureDisparity, PollingBackend, PollingPolicy
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 TRACE_ID = "1" * 32
@@ -291,6 +291,65 @@ def test_case25_backend_event_gap_only_exempts_unobservable_events(view: str, ex
         feature_disparities=(BackendFeatureDisparity.EXCEPTION_EVENTS,),
     )
     assert bool(errors) is (exception_count is not None)
+
+
+class _DelayedCallbackBackend(PollingBackend):
+    name = "delayed-callback"
+
+    def __init__(self, initial: Trace, later: Trace) -> None:
+        self.elapsed = 0.0
+        self.lookups = 0
+        self.initial = initial
+        self.later = later
+        super().__init__(monotonic=lambda: self.elapsed, sleep=self._sleep)
+
+    def _sleep(self, seconds: float) -> None:
+        self.elapsed += seconds
+
+    def _lookup(self, query: TelemetryQuery) -> Trace:
+        del query
+        self.lookups += 1
+        return self.initial if self.lookups <= 2 else self.later
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("late_record", ["stable", "duplicate", "exception"])
+def test_case25_waits_for_stable_callback_evidence(view: str, late_record: str) -> None:
+    initial = _trace(view)
+    terminal = next(
+        span
+        for span in initial.spans
+        if span.attributes.get("durable.operation.id") == "callback"
+        and span.attributes.get("durable.operation.status") == "FAILED"
+    )
+    if late_record == "duplicate":
+        later = replace(initial, spans=(*initial.spans, terminal))
+    elif late_record == "exception":
+        later = replace(
+            initial,
+            spans=tuple(replace(span, exception_event_count=1) if span is terminal else span for span in initial.spans),
+        )
+    else:
+        later = initial
+    backend = _DelayedCallbackBackend(initial, later)
+    assertions = _assertions(view)
+    actual = backend.find_trace(
+        _query(),
+        PollingPolicy(
+            timeout_seconds=7,
+            interval_seconds=1,
+            max_attempts=8,
+            quiescence_seconds=assertions.get("quiescence_seconds", 0),
+        ),
+        accept=lambda trace: not validate_trace(trace, assertions, _query()),
+    )
+    errors = validate_trace(actual, assertions, _query())
+    if late_record == "stable":
+        assert errors == []
+        assert backend.elapsed == 5
+    else:
+        assert actual is later
+        assert errors
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
