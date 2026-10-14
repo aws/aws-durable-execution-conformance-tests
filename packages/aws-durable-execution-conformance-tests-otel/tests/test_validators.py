@@ -2357,3 +2357,46 @@ def test_serialized_links_preserve_container_and_item_matchers(links: object) ->
         )
         == []
     )
+
+
+@pytest.mark.parametrize("invalid", [[], {"$any_of": [{}, []]}, {"$any_of": ["*", None]}])
+@pytest.mark.parametrize("location", ["select", "parent-alternative", "inactive-count"])
+def test_attribute_containers_reject_invalid_inactive_branches(invalid: object, location: str) -> None:
+    assertion: dict = {"select": {"name": "child"}, "expect": {}}
+    if location == "select":
+        assertion["select"]["attributes"] = {"$any_of": ["*", invalid]}
+    elif location == "parent-alternative":
+        assertion["expect"]["parent"] = {"$any_of": [{"name": "root"}, {"attributes": invalid}]}
+    else:
+        assertion["count"] = {"$any_of": [1, 2]}
+        assertion["expect_by_occurrence"] = {1: [{}], 2: [{"attributes": invalid}, {}]}
+    errors = validate_trace(_trace(), {"span_assertions": assertion}, _query())
+    assert any("attributes" in error and "mapping" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        "*",
+        "${/custom.metadata/}",
+        {},
+        {
+            "$any_of": [
+                {"custom.metadata": {"labels": ["durable", "resumed"]}},
+                {"unused": [None, {"nested": {"$anyof": "literal", "$bogus": [1, 2]}}]},
+            ]
+        },
+    ],
+)
+def test_attribute_containers_preserve_whole_matchers_and_nested_metadata(attributes: object) -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "child", "attributes": attributes},
+                "expect": {"attributes": attributes},
+            }
+        },
+        _query(),
+    )
+    assert errors == []

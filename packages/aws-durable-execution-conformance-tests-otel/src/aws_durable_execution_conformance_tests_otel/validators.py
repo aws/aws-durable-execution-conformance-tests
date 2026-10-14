@@ -388,6 +388,28 @@ def _matcher_schema_errors(
     return []
 
 
+def _attributes_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Require the outer attribute mapping while leaving nested metadata open."""
+    if isinstance(expected, str):
+        errors = _matcher_schema_errors(expected, path=path)
+        if errors:
+            return errors
+        if expected == "*" or get_regex_pattern(expected):
+            return []
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping or wildcard/regex matcher"]
+    if set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _attributes_schema_errors(alternative, path=f"{path}.$any_of[{index}]")
+        ]
+    return _matcher_schema_errors(expected, path=path)
+
+
 def _serialized_links_schema_errors(expected: Any, *, path: str, item: bool = False) -> list[str]:
     """Check every raw link-list branch and each serialized ID-pair matcher."""
     if isinstance(expected, str):
@@ -422,7 +444,9 @@ def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> l
     """Direct selectors contain serialized span properties, never relation controls."""
     errors = _unknown_field_errors(expected, _SPAN_PROPERTIES, path=path)
     for key, value in expected.items():
-        if key == "links":
+        if key == "attributes":
+            errors.extend(_attributes_schema_errors(value, path=f"{path}.{key}"))
+        elif key == "links":
             # Direct selectors match serialized ID pairs, not resolved spans.
             errors.extend(_serialized_links_schema_errors(value, path=f"{path}.{key}"))
         elif key in _SPAN_PROPERTIES:
@@ -494,6 +518,8 @@ def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> lis
             errors.extend(_links_schema_errors(value, path=child))
         elif key in _SPAN_RELATION_KEYS:
             errors.extend(_relation_schema_errors(key, value, path=child))
+        elif key == "attributes":
+            errors.extend(_attributes_schema_errors(value, path=child))
         elif key in _SPAN_PROPERTIES:
             errors.extend(_matcher_schema_errors(value, path=child, scalar_only=key != "attributes"))
     return errors

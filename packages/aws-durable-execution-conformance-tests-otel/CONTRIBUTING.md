@@ -503,6 +503,11 @@ Serialized `links` selectors require a sequence of ID-pair mappings. Every
 branches. Wildcard and regex matchers remain supported for the sequence and its
 items; a bare ID-pair mapping cannot stand in for a link sequence.
 
+The outer `attributes` container requires a mapping or a whole-value wildcard,
+regex, or recursively valid `$any_of` matcher, including in inactive branches.
+Keys inside that mapping remain arbitrary, and their values may contain nested
+mappings and arrays.
+
 Scalar span properties and serialized link IDs accept scalar matchers (including
 wildcards and regexes) or recursively valid `$any_of` alternatives. Ordinary
 mappings or sequences are invalid for those scalar properties, including inside
