@@ -8,7 +8,7 @@ instrumentation hooks themselves.
 | Launch work item | Requirements | Regression detected |
 | --- | --- | --- |
 | 4 — Python status mapping | `otel-invocation-24`, `otel-execution-24` | A genuine invocation retry must report `RETRYING` and `UNSET`, followed by successful recovery. An ordinary step retry reports `PENDING` and does not test this path. |
-| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A real callback failure sent without error details must export the FAILED callback leaf as ERROR without an exception event. Service history must contain an untruncated, exactly empty error payload. |
+| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A handler catches the real failed child, checkpoints an observation, replays through two barriers and returns successfully while the FAILED callback leaf remains ERROR without an exception event. Service history retains its untruncated, exactly empty error payload. |
 | External-completion replay | `otel-invocation-26`, `otel-execution-26` | A root callback first completes before a checkpointed observation step, then is visited again on two later resumes without another terminal export. |
 | 5 — User-function context | `otel-invocation-22..23`, `otel-execution-22..23` | User code must receive valid context on the execution's trace, with the appropriate operation/attempt parent and restoration after nested work and resume. |
 | 6 — Completed-operation replay exports | `otel-execution-21` | A completed step before a normal wait/resume must not export its operation or user attempt again. The paired invocation-view case permits that view's distinct replay segments. |
@@ -71,9 +71,24 @@ present `Error` wrapper with `Payload: {}` and `Truncated: false`. The requireme
 checks that exact empty payload and its object type; it does not treat every
 empty error object as `None`, and it does not require the wrapper to be absent.
 The callback leaf must be `FAILED/ERROR`: explicit terminal failure status is
-independent of whether error details are available. The enclosing invocation and
-workflow still fail. Case 17 retains its strict `FAILED/ERROR` checks for supplied
-errors. SDKs must not fabricate exception details to obtain ERROR status.
+independent of whether error details are available. The handler catches the public
+failed-child/callback error, checkpoints `caught` in
+`otel-failed-callback-observed`, then crosses
+`otel-failed-callback-barrier-one` and `otel-failed-callback-barrier-two`. Their
+success results are `one` and `two`; the final execution returns `caught/one/two`
+and is `SUCCEEDED/OK`. The four Invocations are PENDING/OK, PENDING/OK, PENDING/OK
+and SUCCEEDED/OK. Case 17 retains the separate unhandled, supplied-error failure
+path. SDKs must not fabricate exception details to obtain ERROR status.
+
+The first callback failure is consumed and caught in invocation 2. Invocations 3 and 4
+replay the persisted failed child into the catch and reuse the completed marker;
+the marker body and failed submitter must not run again. The failed leaf remains
+one terminal record in the first resumed invocation, before the observation
+attempt, with strict identity, parent and link checks. These are cached failed-child
+replays: a completed child can restore its failure without revisiting the nested
+callback body. This does not claim a callback failure while invocation 1 remains
+active, or completion during End/forceFlush. SDK public tests separately establish
+any additional live-delivery or direct-callback replay coverage.
 
 The corrected operation-end contract maps explicit `FAILED`, `TIMED_OUT`, and
 `STOPPED` to `ERROR`, even without error metadata. Real error details may produce
@@ -121,9 +136,10 @@ fallbacks reject probe spans tagged with `conformance.callback`, and invocation
 replay checks the required link shape for each allowed segment count.
 
 The self-test workflow pins the Python companion fixture from SDK PR #758,
-including its correction for explicit terminal failure without error details.
-An older fixture exporting the case-25 leaf as UNSET is incompatible with this
-ERROR requirement. The fixture retains the #752/#756 runtime prerequisites and
+including the dedicated caught-failure/replay case25 handler and the correction
+for explicit terminal failure without error details. A fixture still routing25
+to the unhandled case17 handler, or exporting the failed leaf as UNSET, is
+incompatible with this successful-execution requirement. The fixture retains the #752/#756 runtime prerequisites and
 all 26 handlers. Manual dispatch can override that revision; the
 `failed+uncovered` coverage threshold is unchanged.
 

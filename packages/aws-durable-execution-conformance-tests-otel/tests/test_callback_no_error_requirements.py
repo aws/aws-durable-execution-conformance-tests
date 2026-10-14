@@ -3,8 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Requirement-oracle controls, not evidence of SDK/service scenario reachability."""
 
+import json
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -37,6 +40,13 @@ def _assertions(view: str, case: int = 25) -> dict:
         "FAILED_CALLBACK_CONTEXT": "context",
         "FAILED_CALLBACK": "callback",
         "CALLBACK_SUBMITTER": "submitter",
+        "FAILED_CALLBACK_OBSERVED": "observed",
+        "BARRIER_ONE_CONTEXT": "barrier-one-context",
+        "BARRIER_ONE_CALLBACK": "barrier-one-callback",
+        "BARRIER_ONE_SUBMITTER": "barrier-one-submitter",
+        "BARRIER_TWO_CONTEXT": "barrier-two-context",
+        "BARRIER_TWO_CALLBACK": "barrier-two-callback",
+        "BARRIER_TWO_SUBMITTER": "barrier-two-submitter",
     }.items():
         context.bind(key, value)
     return context.substitute(_requirement(view, case)["TelemetryAssertions"])
@@ -71,7 +81,7 @@ def _span(
     )
 
 
-def _trace(view: str, context_status: str = "ERROR", callback_status: str = "ERROR") -> Trace:
+def _unhandled_trace(view: str, context_status: str = "ERROR", callback_status: str = "ERROR") -> Trace:
     context = _operation("context", "CONTEXT", "WaitForCallback", "otel-failed-callback")
     callback = _operation("callback", "CALLBACK", "Callback", "otel-failed-callback create callback id")
     step = _operation("submitter", "STEP", "Step", "otel-failed-callback submitter")
@@ -209,13 +219,254 @@ def _trace(view: str, context_status: str = "ERROR", callback_status: str = "ERR
     return Trace(TRACE_ID, tuple(spans))
 
 
+def _trace(view: str, context_status: str = "ERROR", callback_status: str = "ERROR") -> Trace:
+    """Oracle fixture: first failure is caught, then two barriers force replay."""
+    initial = _unhandled_trace(view, context_status, callback_status)
+    spans = []
+    for span in initial.spans:
+        if span.name == "Workflow":
+            span = replace(
+                span,
+                end_time=START + timedelta(seconds=11),
+                status="OK",
+                attributes={**span.attributes, "durable.execution.status": "SUCCEEDED"},
+            )
+        elif span.name == "Invocation" and not span.attributes["durable.invocation.first"]:
+            span = replace(span, status="OK", attributes={**span.attributes, "durable.invocation.status": "PENDING"})
+        elif span.span_id == f"{5:016x}":
+            span = replace(span, end_time=START + timedelta(seconds=3.5))
+        elif span.span_id == f"{7:016x}":
+            span = replace(span, end_time=START + timedelta(seconds=3.4))
+        spans.append(span)
+    begin: float
+    for identifier, begin, end, status in [(11, 6, 8, "PENDING"), (12, 9, 11, "SUCCEEDED")]:
+        spans.append(
+            _span(
+                identifier,
+                "Invocation",
+                begin,
+                end,
+                None,
+                "OK",
+                {
+                    "durable.invocation.first": False,
+                    "durable.invocation.status": status,
+                },
+            )
+        )
+    marker = _operation("observed", "STEP", "Step", "otel-failed-callback-observed")
+    links = (1,) if view == "invocation" else (3,)
+    spans.extend(
+        [
+            _span(
+                20,
+                "otel-failed-callback-observed",
+                3.6,
+                3.9,
+                3 if view == "invocation" else 1,
+                "OK",
+                {**marker, "durable.operation.status": "SUCCEEDED", "durable.attempt.number": 1},
+                links,
+            ),
+            _span(
+                21,
+                "otel-failed-callback-observed attempt 1",
+                3.7,
+                3.8,
+                20,
+                "OK",
+                {**marker, "durable.attempt.number": 1, "durable.attempt.outcome": "SUCCEEDED"},
+                links,
+            ),
+        ]
+    )
+    for word, base, creating, completing, begin, finish in [
+        ("one", 30, 3, 11, 4.0, 6.0),
+        ("two", 40, 11, 12, 7.0, 9.0),
+    ]:
+        name = f"otel-failed-callback-barrier-{word}"
+        context = _operation(f"barrier-{word}-context", "CONTEXT", "WaitForCallback", name)
+        callback = _operation(f"barrier-{word}-callback", "CALLBACK", "Callback", name + " create callback id")
+        step = _operation(f"barrier-{word}-submitter", "STEP", "Step", name + " submitter")
+        if view == "invocation":
+            spans.extend(
+                [
+                    _span(
+                        base,
+                        name,
+                        begin + 0.1,
+                        begin + 0.9,
+                        creating,
+                        "UNSET",
+                        {**context, "durable.operation.status": "STARTED"},
+                        (1,),
+                    ),
+                    _span(
+                        base + 1,
+                        name,
+                        finish + 0.1,
+                        finish + 0.9,
+                        completing,
+                        "OK",
+                        {**context, "durable.operation.status": "SUCCEEDED"},
+                        (base, 1),
+                    ),
+                    _span(
+                        base + 2,
+                        name + " create callback id",
+                        begin + 0.2,
+                        begin + 0.8,
+                        base,
+                        "UNSET",
+                        {**callback, "durable.operation.status": "STARTED"},
+                        (1,),
+                    ),
+                    _span(
+                        base + 3,
+                        name + " create callback id",
+                        finish + 0.2,
+                        finish + 0.8,
+                        base + 1,
+                        "OK",
+                        {**callback, "durable.operation.status": "SUCCEEDED"},
+                        (base + 2, 1),
+                    ),
+                ]
+            )
+        else:
+            spans.extend(
+                [
+                    _span(
+                        base + 1,
+                        name,
+                        begin + 0.1,
+                        finish + 0.9,
+                        1,
+                        "OK",
+                        {**context, "durable.operation.status": "SUCCEEDED"},
+                        (completing,),
+                    ),
+                    _span(
+                        base + 3,
+                        name + " create callback id",
+                        begin + 0.2,
+                        finish + 0.8,
+                        base + 1,
+                        "OK",
+                        {**callback, "durable.operation.status": "SUCCEEDED"},
+                        (completing,),
+                    ),
+                ]
+            )
+        links = (1,) if view == "invocation" else (creating,)
+        spans.extend(
+            [
+                _span(
+                    base + 4,
+                    name + " submitter",
+                    begin + 0.3,
+                    begin + 0.6,
+                    base if view == "invocation" else base + 1,
+                    "OK",
+                    {**step, "durable.operation.status": "SUCCEEDED", "durable.attempt.number": 1},
+                    links,
+                ),
+                _span(
+                    base + 5,
+                    name + " submitter attempt 1",
+                    begin + 0.4,
+                    begin + 0.5,
+                    base + 4,
+                    "OK",
+                    {**step, "durable.attempt.number": 1, "durable.attempt.outcome": "SUCCEEDED"},
+                    links,
+                ),
+            ]
+        )
+    return replace(initial, spans=tuple(spans))
+
+
 def _query() -> TelemetryQuery:
-    return TelemetryQuery(EXECUTION_ARN, SERVICE, START, START + timedelta(seconds=5))
+    return TelemetryQuery(EXECUTION_ARN, SERVICE, START, START + timedelta(seconds=11))
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case25_requires_error_for_callback_without_error_details(view: str) -> None:
     assert validate_trace(_trace(view), _assertions(view), _query()) == []
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_requires_successful_workflow_despite_failed_callback(view: str) -> None:
+    trace = _trace(view)
+    spans = tuple(
+        replace(span, status="ERROR", attributes={**span.attributes, "durable.execution.status": "FAILED"})
+        if span.name == "Workflow"
+        else span
+        for span in trace.spans
+    )
+    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_caught_failure_does_not_fail_its_invocation(view: str) -> None:
+    trace = _trace(view)
+    spans = tuple(
+        replace(span, status="ERROR", attributes={**span.attributes, "durable.invocation.status": "FAILED"})
+        if span.span_id == f"{3:016x}"
+        else span
+        for span in trace.spans
+    )
+    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("corruption", ["missing-marker", "repeated-marker", "missing-final-invocation"])
+def test_case25_requires_observation_once_and_both_later_replays(view: str, corruption: str) -> None:
+    trace = _trace(view)
+    marker = next(span for span in trace.spans if span.span_id == f"{21:016x}")
+    if corruption == "missing-marker":
+        spans = tuple(span for span in trace.spans if span is not marker)
+    elif corruption == "repeated-marker":
+        spans = (*trace.spans, marker)
+    else:
+        spans = tuple(span for span in trace.spans if span.span_id != f"{12:016x}")
+    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_first_failed_leaf_cannot_be_delayed_until_later_replay(view: str) -> None:
+    trace = _trace(view)
+    spans = []
+    for span in trace.spans:
+        if span.span_id in {f"{5:016x}", f"{7:016x}"}:
+            span = replace(
+                span,
+                start_time=span.start_time + timedelta(seconds=3),
+                end_time=span.end_time + timedelta(seconds=3),
+                links=span.links if view == "invocation" else (SpanLink(TRACE_ID, f"{11:016x}"),),
+            )
+            if view == "invocation" and span.span_id == f"{5:016x}":
+                span = replace(span, parent_span_id=f"{11:016x}")
+        spans.append(span)
+    assert validate_trace(replace(trace, spans=tuple(spans)), _assertions(view), _query())
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_matches_independent_public_runner_history(view: str) -> None:
+    # Sanitized producer history, not derived from the requirement under test.
+    history = json.loads((Path(__file__).parent / "fixtures/caught_callback_failure_replay_history.json").read_text())
+    requirement = _requirement(view)
+    assert EventHistoryMatcher().match(requirement["ExpectedExecutionHistory"], history["Events"]).success
+    assert requirement["ExpectedResult"] == {"ExecutionStatus": "SUCCEEDED", "Result": "caught/one/two"}
+    assert [action["Operation"] for action in requirement["CallbackActions"]] == ["failure", "success", "success"]
+    assert all(action["AfterInvocationCompleted"] is True for action in requirement["CallbackActions"])
+    assert [action.get("Payload") for action in requirement["CallbackActions"]] == [None, "one", "two"]
+    for event_id in [6, 9, 10, 15, 22, 25, 26]:
+        incomplete = [event for event in history["Events"] if event["EventId"] != event_id]
+        assert not EventHistoryMatcher().match(requirement["ExpectedExecutionHistory"], incomplete).success
+    wrong_parent = deepcopy(history["Events"])
+    wrong_parent[6]["ParentId"] = "unrelated-context"
+    assert not EventHistoryMatcher().match(requirement["ExpectedExecutionHistory"], wrong_parent).success
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -249,8 +500,8 @@ def test_case25_requires_exact_failed_callback_leaf(view: str, corruption: str) 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case17_retains_strict_rich_error_mapping(view: str) -> None:
-    assert validate_trace(_trace(view, callback_status="ERROR"), _assertions(view, 17), _query()) == []
-    assert validate_trace(_trace(view, callback_status="UNSET"), _assertions(view, 17), _query())
+    assert validate_trace(_unhandled_trace(view, callback_status="ERROR"), _assertions(view, 17), _query()) == []
+    assert validate_trace(_unhandled_trace(view, callback_status="UNSET"), _assertions(view, 17), _query())
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -420,11 +671,11 @@ def test_case25_unnamed_failed_child_retains_strict_identity(view: str) -> None:
     requirement = _requirement(view)
     expected = next(event for event in requirement["ExpectedExecutionHistory"] if event["EventId"] == 7)
     assert "Name" not in expected
-    assert all(
-        event["Name"] == "otel-failed-callback"
-        for event in requirement["ExpectedExecutionHistory"]
-        if event["EventType"] in {"ContextStarted", "ContextFailed"}
-    )
+    failed_context_events = [
+        event for event in requirement["ExpectedExecutionHistory"] if event.get("Id") == "${FAILED_CALLBACK_CONTEXT}"
+    ]
+    assert len(failed_context_events) == 2
+    assert all(event["Name"] == "otel-failed-callback" for event in failed_context_events)
     actual = {
         "EventId": 7,
         "EventType": "CallbackFailed",

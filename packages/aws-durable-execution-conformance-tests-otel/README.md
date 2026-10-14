@@ -61,7 +61,9 @@ hosts per-language preset workflows.
 
 Case 25 separates durable outcome from error details. A callback failure with an
 exactly empty service error payload still requires an ERROR callback span in both
-views. Explicit FAILED, TIMED_OUT and STOPPED operation ends are failures even
+views, even when the handler catches the failed child, replays through two durable
+barriers, and returns `caught/one/two` successfully. Case 17 retains the unhandled
+failure path. Explicit FAILED, TIMED_OUT and STOPPED operation ends are failures even
 when details are absent; exception events require real error details. The cloud
 case covers FAILED, while the other terminal mappings require SDK unit coverage.
 Pending/retrying, successful operations and unrelated cancellation retain their

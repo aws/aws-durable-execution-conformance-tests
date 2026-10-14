@@ -1,0 +1,196 @@
+{
+  "Events": [
+    {
+      "EventType": "ExecutionStarted",
+      "EventId": 1,
+      "Id": "inv-12345678-1234-1234-1234-123456789012",
+      "Name": "execution-name"
+    },
+    {
+      "EventType": "ContextStarted",
+      "EventId": 2,
+      "SubType": "WaitForCallback",
+      "Id": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97",
+      "Name": "otel-failed-callback"
+    },
+    {
+      "EventType": "CallbackStarted",
+      "EventId": 3,
+      "SubType": "Callback",
+      "Id": "974bfc6321e227b0ff101342eaf19b336f002dc6cc99c18f0941a7755cc20fc4",
+      "Name": "otel-failed-callback create callback id",
+      "ParentId": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97"
+    },
+    {
+      "EventType": "StepStarted",
+      "EventId": 4,
+      "SubType": "Step",
+      "Id": "9d8bc609108ec7b3600d6cceec22d18553e3e1ec52a3568cb251464a3d39d24f",
+      "Name": "otel-failed-callback submitter",
+      "ParentId": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97"
+    },
+    {
+      "EventType": "StepSucceeded",
+      "EventId": 5,
+      "SubType": "Step",
+      "Id": "9d8bc609108ec7b3600d6cceec22d18553e3e1ec52a3568cb251464a3d39d24f",
+      "Name": "otel-failed-callback submitter",
+      "ParentId": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97"
+    },
+    {
+      "EventType": "InvocationCompleted",
+      "EventId": 6
+    },
+    {
+      "EventType": "CallbackFailed",
+      "EventId": 7,
+      "SubType": "Callback",
+      "Id": "974bfc6321e227b0ff101342eaf19b336f002dc6cc99c18f0941a7755cc20fc4",
+      "Name": "otel-failed-callback create callback id",
+      "ParentId": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97",
+      "CallbackFailedDetails": {
+        "Error": {
+          "Truncated": false,
+          "Payload": {}
+        }
+      }
+    },
+    {
+      "EventType": "ContextFailed",
+      "EventId": 8,
+      "SubType": "WaitForCallback",
+      "Id": "1ced8f5be2db23a6513eba4d819c73806424748a7bc6fa0d792cc1c7d1775a97",
+      "Name": "otel-failed-callback"
+    },
+    {
+      "EventType": "StepStarted",
+      "EventId": 9,
+      "SubType": "Step",
+      "Id": "c5faca15ac2f93578b39ef4b6bbb871bdedce4ddd584fd31f0bb66fade3947e6",
+      "Name": "otel-failed-callback-observed"
+    },
+    {
+      "EventType": "StepSucceeded",
+      "EventId": 10,
+      "SubType": "Step",
+      "Id": "c5faca15ac2f93578b39ef4b6bbb871bdedce4ddd584fd31f0bb66fade3947e6",
+      "Name": "otel-failed-callback-observed"
+    },
+    {
+      "EventType": "ContextStarted",
+      "EventId": 11,
+      "SubType": "WaitForCallback",
+      "Id": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99",
+      "Name": "otel-failed-callback-barrier-one"
+    },
+    {
+      "EventType": "CallbackStarted",
+      "EventId": 12,
+      "SubType": "Callback",
+      "Id": "4fcce65ec00309c63e7973cc7ba98d082f6db23ff491f8ae0d358d94a449573f",
+      "Name": "otel-failed-callback-barrier-one create callback id",
+      "ParentId": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99"
+    },
+    {
+      "EventType": "StepStarted",
+      "EventId": 13,
+      "SubType": "Step",
+      "Id": "5430c3612b2dbf51c497ea3272514f5540f0d18e8e5f4c6e5f52a8080385df6b",
+      "Name": "otel-failed-callback-barrier-one submitter",
+      "ParentId": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99"
+    },
+    {
+      "EventType": "StepSucceeded",
+      "EventId": 14,
+      "SubType": "Step",
+      "Id": "5430c3612b2dbf51c497ea3272514f5540f0d18e8e5f4c6e5f52a8080385df6b",
+      "Name": "otel-failed-callback-barrier-one submitter",
+      "ParentId": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99"
+    },
+    {
+      "EventType": "InvocationCompleted",
+      "EventId": 15
+    },
+    {
+      "EventType": "CallbackSucceeded",
+      "EventId": 16,
+      "SubType": "Callback",
+      "Id": "4fcce65ec00309c63e7973cc7ba98d082f6db23ff491f8ae0d358d94a449573f",
+      "Name": "otel-failed-callback-barrier-one create callback id",
+      "ParentId": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99"
+    },
+    {
+      "EventType": "ContextSucceeded",
+      "EventId": 17,
+      "SubType": "WaitForCallback",
+      "Id": "6f760b9e9eac89f07ab0223b0f4acb04d1e355d893a1b86a83f4d4b405adee99",
+      "Name": "otel-failed-callback-barrier-one"
+    },
+    {
+      "EventType": "ContextStarted",
+      "EventId": 18,
+      "SubType": "WaitForCallback",
+      "Id": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65",
+      "Name": "otel-failed-callback-barrier-two"
+    },
+    {
+      "EventType": "CallbackStarted",
+      "EventId": 19,
+      "SubType": "Callback",
+      "Id": "2fafa5ab7b31687eb14f13439133eb8713d150b283d859d2eb75545238bc0b24",
+      "Name": "otel-failed-callback-barrier-two create callback id",
+      "ParentId": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65"
+    },
+    {
+      "EventType": "StepStarted",
+      "EventId": 20,
+      "SubType": "Step",
+      "Id": "6ba2741cd3f4fde57d340c969d7b2bf99e37b933df1f92412bb3c4fa824dc384",
+      "Name": "otel-failed-callback-barrier-two submitter",
+      "ParentId": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65"
+    },
+    {
+      "EventType": "StepSucceeded",
+      "EventId": 21,
+      "SubType": "Step",
+      "Id": "6ba2741cd3f4fde57d340c969d7b2bf99e37b933df1f92412bb3c4fa824dc384",
+      "Name": "otel-failed-callback-barrier-two submitter",
+      "ParentId": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65"
+    },
+    {
+      "EventType": "InvocationCompleted",
+      "EventId": 22
+    },
+    {
+      "EventType": "CallbackSucceeded",
+      "EventId": 23,
+      "SubType": "Callback",
+      "Id": "2fafa5ab7b31687eb14f13439133eb8713d150b283d859d2eb75545238bc0b24",
+      "Name": "otel-failed-callback-barrier-two create callback id",
+      "ParentId": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65"
+    },
+    {
+      "EventType": "ContextSucceeded",
+      "EventId": 24,
+      "SubType": "WaitForCallback",
+      "Id": "e8e70dc170e14333627b32c20ac6051fb9b6bd369c036afbaca2d9cd7ac3de65",
+      "Name": "otel-failed-callback-barrier-two"
+    },
+    {
+      "EventType": "InvocationCompleted",
+      "EventId": 25
+    },
+    {
+      "EventType": "ExecutionSucceeded",
+      "EventId": 26,
+      "Id": "inv-12345678-1234-1234-1234-123456789012",
+      "Name": "execution-name",
+      "ExecutionSucceededDetails": {
+        "Result": {
+          "Truncated": false,
+          "Payload": "\"caught/one/two\""
+        }
+      }
+    }
+  ]
+}

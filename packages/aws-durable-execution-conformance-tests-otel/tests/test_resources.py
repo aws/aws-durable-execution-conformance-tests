@@ -717,6 +717,95 @@ def _assert_external_completion_catalog(assertions: dict, suite: str) -> None:
         assert "links" in item["expect"]
 
 
+def _assert_caught_callback_catalog(requirement: dict, suite: str) -> None:
+    assertions = requirement["TelemetryAssertions"]
+    assert requirement["Input"] == {"scenario": "caught-callback-failure-replay"}
+    assert requirement["ExpectedResult"] == {"ExecutionStatus": "SUCCEEDED", "Result": "caught/one/two"}
+    assert [event["EventId"] for event in requirement["ExpectedExecutionHistory"]] == list(range(1, 27))
+    assert assertions["quiescence_seconds"] == 5
+    assert assertions["minimum_invocations"] == 4
+    assert assertions["require_execution_correlation"] is True
+    assert assertions["require_single_trace_per_execution"] is True
+    assert assertions["require_unique_root_per_trace"] is True
+    assert assertions["require_parented_spans"] == [{"name": "Workflow"}, {"name": "Invocation"}]
+    if suite == "otel-invocation":
+        assert assertions["require_all_spans"] is True
+        assert assertions["span_assertion_scope"] == {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}}
+        assert assertions["exact_attribute_prefixes"] == ["durable."]
+    spans = assertions["span_assertions"]
+    (workflow,) = [span for span in spans if span["select"]["name"] == "Workflow"]
+    assert workflow["expect"]["parent"] == _WORKFLOW_PARENT
+    assert workflow["expect"]["status"] == "OK"
+    assert workflow["expect"]["attributes"]["durable.execution.status"] == "SUCCEEDED"
+    (invocations,) = [span for span in spans if span["select"]["name"] == "Invocation"]
+    assert invocations["count"] == 4
+    assert invocations["expect"]["status"] == "OK"
+    phases = invocations["expect_by_occurrence"]
+    assert [phase["attributes"]["durable.invocation.status"] for phase in phases] == [
+        "PENDING",
+        "PENDING",
+        "PENDING",
+        "SUCCEEDED",
+    ]
+    assert [phase["attributes"]["durable.invocation.first"] for phase in phases] == [True, False, False, False]
+    required_ids = {
+        "${FAILED_CALLBACK_CONTEXT}",
+        "${FAILED_CALLBACK}",
+        "${CALLBACK_SUBMITTER}",
+        "${FAILED_CALLBACK_OBSERVED}",
+        "${BARRIER_ONE_CONTEXT}",
+        "${BARRIER_ONE_CALLBACK}",
+        "${BARRIER_ONE_SUBMITTER}",
+        "${BARRIER_TWO_CONTEXT}",
+        "${BARRIER_TWO_CALLBACK}",
+        "${BARRIER_TWO_SUBMITTER}",
+    }
+    operations = [span for span in spans if "durable.operation.id" in span["expect"].get("attributes", {})]
+    assert {span["expect"]["attributes"]["durable.operation.id"] for span in operations} == required_ids
+    for span in operations:
+        expected = span["expect"]
+        assert expected["kind"] == "INTERNAL"
+        assert expected["service_name"] == "${SERVICE_NAME}"
+        attrs = expected["attributes"]
+        state = attrs.get("durable.operation.status", attrs.get("durable.attempt.outcome"))
+        if state is None:
+            # Execution-view logical steps retain their existing partial
+            # attribute contract; their OTel success status remains strict.
+            assert suite == "otel-execution" and attrs["durable.operation.type"] == "STEP"
+            assert expected["status"] == "OK"
+        else:
+            assert expected["status"] == {"STARTED": "UNSET", "FAILED": "ERROR", "SUCCEEDED": "OK"}[state]
+        assert expected["parent"]["kind"] == "INTERNAL"
+        if attrs["durable.operation.id"] == "${FAILED_CALLBACK}" and state == "FAILED":
+            assert expected["exception_event_count"] == 0
+            assert expected["before"]["attributes"]["durable.operation.id"] == "${FAILED_CALLBACK_OBSERVED}"
+        if suite == "otel-execution":
+            ordinal = {
+                "${FAILED_CALLBACK_CONTEXT}": 2,
+                "${FAILED_CALLBACK}": 2,
+                "${CALLBACK_SUBMITTER}": 1,
+                "${FAILED_CALLBACK_OBSERVED}": 2,
+                "${BARRIER_ONE_CONTEXT}": 3,
+                "${BARRIER_ONE_CALLBACK}": 3,
+                "${BARRIER_ONE_SUBMITTER}": 2,
+                "${BARRIER_TWO_CONTEXT}": 4,
+                "${BARRIER_TWO_CALLBACK}": 4,
+                "${BARRIER_TWO_SUBMITTER}": 3,
+            }[attrs["durable.operation.id"]]
+            assert expected["links"] == [
+                {
+                    "name": "Invocation",
+                    "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+                    "$occurrence": ordinal,
+                }
+            ]
+    telemetry = json.dumps(assertions)
+    assert '"*"' not in telemetry
+    assert set(re.findall(r"\$\{([A-Z0-9_]+)\}", telemetry)) <= set(
+        re.findall(r"\$\{([A-Z0-9_]+)\}", json.dumps(requirement["ExpectedExecutionHistory"]))
+    ) | {"EXECUTION_ARN", "SERVICE_NAME"}
+
+
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
     callback_submitter_span_names = {
@@ -730,6 +819,9 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
         assertions = requirement["TelemetryAssertions"]
         if case_number == 26:
             _assert_external_completion_catalog(assertions, "otel-invocation")
+            continue
+        if case_number == 25:
+            _assert_caught_callback_catalog(requirement, "otel-invocation")
             continue
 
         assert assertions["require_execution_correlation"] is True
@@ -979,6 +1071,9 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
         assertions = requirement["TelemetryAssertions"]
         if case_number == 26:
             _assert_external_completion_catalog(assertions, "otel-execution")
+            continue
+        if case_number == 25:
+            _assert_caught_callback_catalog(requirement, "otel-execution")
             continue
         span_assertions = assertions["span_assertions"]
         if case_number <= 20:
