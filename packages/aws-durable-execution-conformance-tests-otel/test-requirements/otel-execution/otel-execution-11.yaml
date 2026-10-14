@@ -318,7 +318,6 @@ TelemetryAssertions:
         durable.execution.arn: ${EXECUTION_ARN}
     - attributes:
         durable.execution.arn: ${TARGET_EXECUTION_ARN}
-  exact_attribute_prefixes: [durable.]
   quiescence_seconds: 5
   chained_invokes:
     - child_execution_arn: ${TARGET_EXECUTION_ARN}

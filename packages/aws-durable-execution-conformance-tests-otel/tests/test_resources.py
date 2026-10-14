@@ -814,7 +814,11 @@ def _assert_chained_invoke_catalog(requirement: dict, view: str) -> None:
     assert assertions["require_all_spans"] is True
     assert assertions["require_single_trace_per_execution"] is True
     assert assertions["require_unique_root_per_trace"] is True
-    assert assertions["exact_attribute_prefixes"] == ["durable."]
+    if view == "otel-invocation":
+        assert assertions["exact_attribute_prefixes"] == ["durable."]
+    else:
+        # Execution-view step/attempt metadata is open, as in the existing catalog.
+        assert "exact_attribute_prefixes" not in assertions
     assert assertions["quiescence_seconds"] == 5
     history = requirement["ExpectedExecutionHistory"]
     assert [event["EventId"] for event in history] == list(range(1, 14))
