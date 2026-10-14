@@ -76,6 +76,8 @@ class Span:
     attributes: Mapping[str, Any] = field(default_factory=dict)
     links: tuple[SpanLink, ...] = ()
     service_name: str | None = None
+    # None means the backend cannot provide a complete exception-event count.
+    exception_event_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ def span_to_dict(span: Span) -> dict[str, Any]:
         "end_time": span.end_time.isoformat(),
         "status": span.status,
         "service_name": span.service_name,
+        "exception_event_count": span.exception_event_count,
         "attributes": dict(span.attributes),
         "links": [{"trace_id": link.trace_id, "span_id": link.span_id} for link in span.links],
     }

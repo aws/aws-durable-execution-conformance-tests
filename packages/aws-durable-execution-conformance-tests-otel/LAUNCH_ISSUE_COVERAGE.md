@@ -8,7 +8,7 @@ instrumentation hooks themselves.
 | Launch work item | Requirements | Regression detected |
 | --- | --- | --- |
 | 4 — Python status mapping | `otel-invocation-24`, `otel-execution-24` | A genuine invocation retry must report `RETRYING` and `UNSET`, followed by successful recovery. An ordinary step retry reports `PENDING` and does not test this path. |
-| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A real callback failure sent without error details must export the FAILED callback leaf as UNSET. Service history must contain an untruncated, exactly empty error payload. |
+| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A real callback failure sent without error details must export the FAILED callback leaf as ERROR without an exception event. Service history must contain an untruncated, exactly empty error payload. |
 | External-completion replay | `otel-invocation-26`, `otel-execution-26` | A root callback first completes before a checkpointed observation step, then is visited again on two later resumes without another terminal export. |
 | 5 — User-function context | `otel-invocation-22..23`, `otel-execution-22..23` | User code must receive valid context on the execution's trace, with the appropriate operation/attempt parent and restoration after nested work and resume. |
 | 6 — Completed-operation replay exports | `otel-execution-21` | A completed step before a normal wait/resume must not export its operation or user attempt again. The paired invocation-view case permits that view's distinct replay segments. |
@@ -70,18 +70,29 @@ callback's creating invocation has completed. The service represents this as a
 present `Error` wrapper with `Payload: {}` and `Truncated: false`. The requirement
 checks that exact empty payload and its object type; it does not treat every
 empty error object as `None`, and it does not require the wrapper to be absent.
-The callback leaf must be `FAILED/UNSET`. The enclosing invocation and workflow
-still fail, and the wait-for-callback context may have an SDK-derived error.
-Case 17 retains its existing strict `FAILED/ERROR` checks for supplied errors.
-No normalized exception-event assertion is claimed.
+The callback leaf must be `FAILED/ERROR`: explicit terminal failure status is
+independent of whether error details are available. The enclosing invocation and
+workflow still fail. Case 17 retains its strict `FAILED/ERROR` checks for supplied
+errors. SDKs must not fabricate exception details to obtain ERROR status.
 
-The Python status contract also requires `UNSET` for no-error `CANCELLED`,
-`TIMED_OUT`, and `STOPPED` operation-end records. SDK unit truth-table controls
-must cover those states as well as `FAILED`, `SUCCEEDED/OK`, supplied-error
-`ERROR`, and invocation `RETRYING/UNSET`. Case 25 exercises the actual cloud
-`FAILED` path; this catalog does not claim cloud coverage of the other three
-no-error terminal states. An execution timeout leaving a wait `STARTED` (case
+The corrected operation-end contract maps explicit `FAILED`, `TIMED_OUT`, and
+`STOPPED` to `ERROR`, even without error metadata. Real error details may produce
+an exception event; their absence must not. Successful operations remain `OK`;
+pending operations and invocation `RETRYING/UNSET` retain their existing behavior.
+Unrelated cancellation is not assigned a new status by this change. SDK unit
+controls cover the terminal status mapping, details, success and retry behavior.
+Case 25 exercises the actual cloud `FAILED` path; it does not claim cloud coverage
+of `TIMED_OUT` or `STOPPED`. An execution timeout leaving a wait `STARTED` (case
 15) is not evidence of an operation ending `TIMED_OUT` without an error.
+
+Case 25 also requires `exception_event_count: 0` on the failed callback leaf.
+OTLP JSON/protobuf normalization counts actual span events named `exception`.
+Dropped events make the count unknown, so the lossless-backend assertion fails
+instead of treating an incomplete event list as proof of absence. X-Ray and
+Datadog adapters do not expose the complete OTLP event list; their explicit
+`exception-events` disparity skips only an unavailable event-count expectation.
+It never relaxes the required ERROR status. S3 is the reference for exception
+absence; a passing X-Ray report alone cannot establish it.
 
 Case 26 uses a direct root `createCallback` operation, not a callback hidden in
 a completed child context. Every replay visits that same operation. After its

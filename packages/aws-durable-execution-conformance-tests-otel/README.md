@@ -59,6 +59,15 @@ run is active and validates active executions on later runs, and callers can
 also dispatch it manually to launch or check a run. This repository no longer
 hosts per-language preset workflows.
 
+Case 25 separates durable outcome from error details. A callback failure with an
+exactly empty service error payload still requires an ERROR callback span in both
+views. Explicit FAILED, TIMED_OUT and STOPPED operation ends are failures even
+when details are absent; exception events require real error details. The cloud
+case covers FAILED, while the other terminal mappings require SDK unit coverage.
+Pending/retrying, successful operations and unrelated cancellation retain their
+existing contracts. See [launch coverage](LAUNCH_ISSUE_COVERAGE.md) for the S3
+exception-event assertion and backend observation limits.
+
 ## Run
 
 ```bash

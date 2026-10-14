@@ -47,6 +47,7 @@ class BackendFeatureDisparity(StrEnum):
     MILLISECOND_TIMESTAMPS = "millisecond-timestamps"
     SPAN_LINKS = "span-links"
     UNSET_STATUS = "unset-status"
+    EXCEPTION_EVENTS = "exception-events"
 
 
 @dataclass(frozen=True)

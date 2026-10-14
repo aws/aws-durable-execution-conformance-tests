@@ -41,6 +41,7 @@ _SPAN_PROPERTIES = frozenset(
         "end_time",
         "status",
         "service_name",
+        "exception_event_count",
         "attributes",
         "links",
     }
@@ -330,6 +331,12 @@ def _span_expectation_errors(
             errors.append(f"{child_path}: property is missing")
             continue
         if key == "status" and _matches_span_status(value, actual[key], feature_disparities):
+            continue
+        if (
+            key == "exception_event_count"
+            and actual[key] is None
+            and BackendFeatureDisparity.EXCEPTION_EVENTS in feature_disparities
+        ):
             continue
         errors.extend(_expectation_errors(value, actual[key], path=child_path))
     return errors

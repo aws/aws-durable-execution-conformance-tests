@@ -136,7 +136,7 @@ requirement remains independent of the deployed resource name.
 
 Both `select` and `expect` can use any canonical span property: `trace_id`,
 `span_id`, `parent_span_id`, `name`, `kind`, `start_time`, `end_time`, `status`,
-`service_name`, `attributes`, or `links`. Nested mappings support arbitrary
+`service_name`, `attributes`, `exception_event_count`, or `links`. Nested mappings support arbitrary
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions compare length, order, and nested values. Each `expect.links` item
 resolves the linked span within the trace and applies a partial span assertion,
@@ -224,6 +224,15 @@ Use `$allow_unresolved: true`, `$allow_outside: true`, and
 when the parent is returned, constrains it to a non-SDK infrastructure span.
 The parent may be the propagated remote context or a same-trace ambient
 infrastructure span.
+
+`expect.exception_event_count` checks the number of actual span events named
+`exception`. OTLP JSON/protobuf adapters supply a complete count only when no
+events were dropped; otherwise the value is unknown, not zero. Case 25 requires
+zero on the failed callback leaf, independently of its required ERROR status.
+Backends with the declared `exception-events` disparity skip an unavailable count
+in `expect`, but still enforce status and any count they actually expose. Direct
+selectors always match the observed value. X-Ray and Datadog do not establish
+exception-event absence; use the S3 collector for that evidence.
 
 ## Durable trace topology
 

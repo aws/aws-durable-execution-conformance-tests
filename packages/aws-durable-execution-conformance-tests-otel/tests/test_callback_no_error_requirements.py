@@ -64,13 +64,14 @@ def _span(
         kind="INTERNAL",
         parent_span_id=f"{parent:016x}" if parent else "f" * 16,
         status=status,
+        exception_event_count=0,
         service_name=SERVICE,
         attributes={"durable.execution.arn": EXECUTION_ARN, **attributes},
         links=tuple(SpanLink(TRACE_ID, f"{link:016x}") for link in links),
     )
 
 
-def _trace(view: str, context_status: str = "ERROR", callback_status: str = "UNSET") -> Trace:
+def _trace(view: str, context_status: str = "ERROR", callback_status: str = "ERROR") -> Trace:
     context = _operation("context", "CONTEXT", "WaitForCallback", "otel-failed-callback")
     callback = _operation("callback", "CALLBACK", "Callback", "otel-failed-callback create callback id")
     step = _operation("submitter", "STEP", "Step", "otel-failed-callback submitter")
@@ -213,13 +214,12 @@ def _query() -> TelemetryQuery:
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
-@pytest.mark.parametrize("context_status", ["UNSET", "ERROR"])
-def test_case25_targets_callback_without_normalizing_sdk_aggregate_errors(view: str, context_status: str) -> None:
-    assert validate_trace(_trace(view, context_status), _assertions(view), _query()) == []
+def test_case25_requires_error_for_callback_without_error_details(view: str) -> None:
+    assert validate_trace(_trace(view), _assertions(view), _query()) == []
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
-@pytest.mark.parametrize("callback_status", ["OK", "ERROR"])
+@pytest.mark.parametrize("callback_status", ["OK", "UNSET"])
 def test_case25_rejects_wrong_terminal_callback_status_on_lossless_backend(view: str, callback_status: str) -> None:
     errors = validate_trace(_trace(view, callback_status=callback_status), _assertions(view), _query())
     assert any("status" in error for error in errors)
@@ -250,21 +250,47 @@ def test_case25_requires_exact_failed_callback_leaf(view: str, corruption: str) 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case17_retains_strict_rich_error_mapping(view: str) -> None:
     assert validate_trace(_trace(view, callback_status="ERROR"), _assertions(view, 17), _query()) == []
-    assert validate_trace(_trace(view), _assertions(view, 17), _query())
+    assert validate_trace(_trace(view, callback_status="UNSET"), _assertions(view, 17), _query())
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
-def test_case25_records_xray_unset_normalization_limit(view: str) -> None:
-    # An X-Ray OK value cannot distinguish genuine OK from exporter-normalized UNSET.
-    assert (
-        validate_trace(
-            _trace(view, callback_status="OK"),
-            _assertions(view),
-            _query(),
-            feature_disparities=(BackendFeatureDisparity.UNSET_STATUS,),
-        )
-        == []
+@pytest.mark.parametrize("callback_status", ["OK", "UNSET"])
+def test_case25_error_status_cannot_be_bypassed_by_xray_unset_disparity(view: str, callback_status: str) -> None:
+    assert validate_trace(
+        _trace(view, callback_status=callback_status),
+        _assertions(view),
+        _query(),
+        feature_disparities=(BackendFeatureDisparity.UNSET_STATUS, BackendFeatureDisparity.EXCEPTION_EVENTS),
     )
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("exception_count", [1, None])
+def test_case25_rejects_exception_event_or_unobservable_event_absence(view: str, exception_count: int | None) -> None:
+    trace = _trace(view)
+    spans = tuple(
+        replace(span, exception_event_count=exception_count)
+        if span.attributes.get("durable.operation.id") == "callback"
+        and span.attributes.get("durable.operation.status") == "FAILED"
+        else span
+        for span in trace.spans
+    )
+    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    assert any("exception_event_count" in error for error in errors)
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("exception_count", [None, 1])
+def test_case25_backend_event_gap_only_exempts_unobservable_events(view: str, exception_count: int | None) -> None:
+    trace = _trace(view)
+    spans = tuple(replace(span, exception_event_count=exception_count) for span in trace.spans)
+    errors = validate_trace(
+        replace(trace, spans=spans),
+        _assertions(view),
+        _query(),
+        feature_disparities=(BackendFeatureDisparity.EXCEPTION_EVENTS,),
+    )
+    assert bool(errors) is (exception_count is not None)
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])

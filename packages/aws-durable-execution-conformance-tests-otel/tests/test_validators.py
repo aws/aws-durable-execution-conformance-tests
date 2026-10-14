@@ -2239,6 +2239,26 @@ def test_every_serialized_span_property_remains_supported() -> None:
     )
 
 
+@pytest.mark.parametrize("location", ["select", "expect"])
+@pytest.mark.parametrize("exception_count", [0, 1, None])
+def test_exception_event_disparity_only_skips_unavailable_expectation(
+    location: str, exception_count: int | None
+) -> None:
+    trace = _trace()
+    root, child = trace.spans
+    trace = replace(trace, spans=(root, replace(child, exception_event_count=exception_count)))
+    assertion: dict[str, dict[str, object]] = {"select": {"name": "child"}, "expect": {}}
+    assertion[location]["exception_event_count"] = 0
+    errors = validate_trace(
+        trace,
+        {"span_assertions": assertion},
+        _query(),
+        feature_disparities=(BackendFeatureDisparity.EXCEPTION_EVENTS,),
+    )
+    should_pass = exception_count == 0 or (exception_count is None and location == "expect")
+    assert (errors == []) is should_pass
+
+
 def test_open_attributes_and_nested_serialized_link_matchers_remain_supported() -> None:
     trace = _trace()
     root, child = trace.spans

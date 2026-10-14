@@ -1,6 +1,6 @@
 ---
-description: Invocation view keeps the failed callback leaf UNSET when failure supplies
-  no error details
+description: Invocation view marks the failed callback leaf ERROR without inventing
+  exception details
 Input:
   scenario: wait-for-callback-failure
 AsyncInvoke: true
@@ -225,7 +225,8 @@ TelemetryAssertions:
         attributes:
           durable.operation.status: FAILED
       expect:
-        status: UNSET
+        status: ERROR
+        exception_event_count: 0
         service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1
