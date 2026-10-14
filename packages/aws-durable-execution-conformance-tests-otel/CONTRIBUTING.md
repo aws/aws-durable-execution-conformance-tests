@@ -498,6 +498,11 @@ serialized `trace_id`/`span_id` pairs; `expect.links` instead resolves those lin
 to spans and accepts their canonical properties plus `count` and `$occurrence`.
 Attribute keys, nested attribute mappings, and valid value matchers remain open-ended.
 
+Serialized `links` selectors require a sequence of ID-pair mappings. Every
+`$any_of` alternative must preserve that container shape, including inactive
+branches. Wildcard and regex matchers remain supported for the sequence and its
+items; a bare ID-pair mapping cannot stand in for a link sequence.
+
 Scalar span properties and serialized link IDs accept scalar matchers (including
 wildcards and regexes) or recursively valid `$any_of` alternatives. Ordinary
 mappings or sequences are invalid for those scalar properties, including inside

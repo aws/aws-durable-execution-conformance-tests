@@ -19,11 +19,24 @@ input.
 pip install aws-durable-execution-conformance-tests-otel
 ```
 
-The package requires a compatible `>=1.0,<2.0` core runner and owns all OTel
+The package requires a compatible `>=1.1.0,<2.0.0` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
 validators, and requirement resources. Core `0.2.0` introduced the extension
-API used to discover these suites; this release of the package requires core
-`1.x` and cannot be installed against core `0.2.x` or earlier.
+API used to discover these suites. Core `1.1.0` adds the callback-delivery phase
+gate and history absence checks required by cases 25–26; core `1.0.x` and earlier
+cannot run this catalog. Package installation and extension discovery enforce
+the same minimum version.
+
+To validate an unreleased checkout, install both local packages together so the
+core requirement is satisfied by that checkout:
+
+```bash
+python -m pip install ./packages/aws-durable-execution-conformance-tests ./packages/aws-durable-execution-conformance-tests-otel
+```
+
+The workspace Hatch environments used by CI likewise declare both local
+packages. Built-wheel verification must install the matching core wheel with
+the OTel wheel; it does not require publishing the new core version first.
 
 The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each

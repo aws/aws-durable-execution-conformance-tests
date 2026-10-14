@@ -7,9 +7,15 @@ import json
 import re
 from copy import deepcopy
 from datetime import UTC, datetime
+from importlib.metadata import EntryPoint
+from pathlib import Path
 
 import pytest
 
+from aws_durable_execution_conformance_tests.extensions import (
+    ExtensionCompatibilityError,
+    load_extensions,
+)
 from aws_durable_execution_conformance_tests.validate import (
     discover_test_files,
     load_yaml_file,
@@ -31,6 +37,16 @@ _WORKFLOW_PARENT = {
     "$allow_outside": True,
     "$reject_sdk_span": True,
 }
+
+
+def test_rejects_core_release_without_callback_phase_and_absent_controls(tmp_path: Path) -> None:
+    entry_point = EntryPoint(
+        name="otel",
+        value="aws_durable_execution_conformance_tests_otel.extension:OtelExtension",
+        group="aws_durable_execution_conformance_tests.extensions",
+    )
+    with pytest.raises(ExtensionCompatibilityError):
+        load_extensions(tmp_path, entry_points=[entry_point], core_version="1.0.0")
 
 
 _VIEW_CASE_NUMBERS = range(1, 27)

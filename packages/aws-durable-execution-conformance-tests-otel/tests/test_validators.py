@@ -2309,3 +2309,51 @@ def test_scalar_matcher_schema_rejects_invalid_inactive_branches(invalid: object
         assertion["select"]["links"] = {"$any_of": ["*", [{"trace_id": invalid, "span_id": "*"}]]}
     errors = validate_trace(_trace(), {"span_assertions": assertion}, _query())
     assert any("scalar matcher" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"trace_id": "*", "span_id": "*"},
+        {"$any_of": [[], {"trace_id": "*", "span_id": "*"}]},
+        [[{"trace_id": "*", "span_id": "*"}]],
+        [None],
+    ],
+)
+@pytest.mark.parametrize("location", ["select", "parent-alternative", "inactive-linked-selector"])
+def test_serialized_link_shapes_reject_invalid_inactive_branches(invalid: object, location: str) -> None:
+    raw_links = {"$any_of": ["*", invalid]}
+    assertion: dict = {"select": {"name": "child"}, "expect": {}}
+    if location == "select":
+        assertion["select"]["links"] = raw_links
+    elif location == "parent-alternative":
+        assertion["expect"]["parent"] = {"$any_of": [{"name": "root"}, {"links": raw_links}]}
+    else:
+        assertion["count"] = {"$any_of": [1, 2]}
+        assertion["expect_by_occurrence"] = {1: [{}], 2: [{"links": [{"links": raw_links}]}, {}]}
+    errors = validate_trace(_trace(), {"span_assertions": assertion}, _query())
+    assert any("links" in error and ("sequence" in error or "mapping" in error) for error in errors)
+
+
+def test_bare_serialized_link_alternative_cannot_hide_behind_empty_links() -> None:
+    errors = validate_trace(
+        _trace(),
+        {
+            "span_assertions": {
+                "select": {"name": "root", "links": {"$any_of": [[], {"trace_id": "*", "span_id": "*"}]}},
+                "expect": {},
+            }
+        },
+        _query(),
+    )
+    assert any("select.links.$any_of[1]" in error and "sequence" in error for error in errors)
+
+
+@pytest.mark.parametrize("links", ["*", "${/trace_id/}", ["*"], [{"$any_of": ["*", {"trace_id": "*"}]}]])
+def test_serialized_links_preserve_container_and_item_matchers(links: object) -> None:
+    assert (
+        validate_trace(
+            _trace(), {"span_assertions": {"select": {"name": "child", "links": links}, "expect": {}}}, _query()
+        )
+        == []
+    )

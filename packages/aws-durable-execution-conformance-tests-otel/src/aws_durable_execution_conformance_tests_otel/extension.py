@@ -62,7 +62,7 @@ SUPPORT_MATRIX = frozenset(
 
 class OtelExtension:
     name = "otel"
-    requires_core = ">=1.0.0,<2.0.0"
+    requires_core = ">=1.1.0,<2.0.0"
 
     def requirement_suites(self) -> tuple[RequirementSuite, ...]:
         project_root = Path(__file__).resolve().parent.parent.parent

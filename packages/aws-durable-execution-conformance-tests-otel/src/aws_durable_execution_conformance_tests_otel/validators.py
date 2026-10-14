@@ -388,19 +388,49 @@ def _matcher_schema_errors(
     return []
 
 
+def _serialized_links_schema_errors(expected: Any, *, path: str, item: bool = False) -> list[str]:
+    """Check every raw link-list branch and each serialized ID-pair matcher."""
+    if isinstance(expected, str):
+        errors = _matcher_schema_errors(expected, path=path)
+        if errors:
+            return errors
+        if expected == "*" or get_regex_pattern(expected):
+            return []
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _serialized_links_schema_errors(alternative, path=f"{path}.$any_of[{index}]", item=item)
+        ]
+    if item:
+        if not isinstance(expected, Mapping):
+            return [f"{path} must be a serialized link mapping or wildcard/regex matcher"]
+        return _matcher_schema_errors(expected, path=path, allowed_keys=_SERIALIZED_LINK_PROPERTIES)
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence or wildcard/regex matcher"]
+    return [
+        error
+        for index, link in enumerate(expected)
+        for error in _serialized_links_schema_errors(link, path=f"{path}[{index}]", item=True)
+    ]
+
+
 def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
     """Direct selectors contain serialized span properties, never relation controls."""
     errors = _unknown_field_errors(expected, _SPAN_PROPERTIES, path=path)
     for key, value in expected.items():
-        if key in _SPAN_PROPERTIES:
+        if key == "links":
+            # Direct selectors match serialized ID pairs, not resolved spans.
+            errors.extend(_serialized_links_schema_errors(value, path=f"{path}.{key}"))
+        elif key in _SPAN_PROPERTIES:
             errors.extend(
                 _matcher_schema_errors(
                     value,
                     path=f"{path}.{key}",
-                    # In a direct selector links match the serialized ID pairs.
-                    # Only expect.links resolves those pairs to full linked spans.
-                    allowed_keys=_SERIALIZED_LINK_PROPERTIES if key == "links" else None,
-                    scalar_only=key not in {"attributes", "links"},
+                    scalar_only=key != "attributes",
                 )
             )
     return errors
