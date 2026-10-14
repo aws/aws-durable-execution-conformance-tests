@@ -76,6 +76,7 @@ The currently supported telemetry assertions are:
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
 | `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |
 | `span_assertions` | Select one span and assert arbitrary canonical properties or metadata. |
+| `chained_invokes` | Compare each child's actual service trace header with a uniquely selected caller invoke span and an explicit sampling decision. X-Ray additionally checks the full observed parent path. |
 
 `span_assertions` accepts one mapping or a list of mappings. Each `select`
 mapping matches exactly one span by default. Set `count` to an exact positive
@@ -224,6 +225,50 @@ Use `$allow_unresolved: true`, `$allow_outside: true`, and
 when the parent is returned, constrains it to a non-SDK infrastructure span.
 The parent may be the propagated remote context or a same-trace ambient
 infrastructure span.
+
+The chained target in case 11 is an explicit exception to `$reject_sdk_span`:
+its propagated remote parent can be the caller's SDK invoke span. Its exact
+service carrier and, with X-Ray, the full observed ancestry are checked instead.
+
+`chained_invokes` reads the child's `GetDurableExecution.TraceHeader.XAmznTraceId`
+through the runner's existing Lambda client. The child ARN must occur exactly
+once in actual `ChainedInvokeStarted` history. The carrier must contain valid,
+unambiguous `Root`, `Parent`, and `Sampled` fields; absence is a failure. The
+runner normalizes this service evidence separately from telemetry spans:
+
+```yaml
+chained_invokes:
+  - child_execution_arn: ${TARGET_EXECUTION_ARN}
+    parent:
+      name: otel-invoke
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+        durable.operation.id: ${INVOKE1}
+        durable.operation.status: STARTED
+    sampled: true
+```
+
+`parent` selects exactly one span, using the invocation view's first STARTED
+segment or the execution view's unique logical invoke. The service-reported Root must
+equal that span's trace ID, Parent must equal its span ID, and Sampled must equal
+the declared decision. Child Workflow and Invocation spans must use that same
+Root. An outgoing header or a shared trace ID alone cannot satisfy this check.
+
+X-Ray returns Lambda and service spans, so its backend advertises
+`provides_infrastructure_ancestry` and additionally requires the child's Workflow
+and Invocation parent chains to reach the selected invoke. Missing intermediates
+still fail that check. Collector exports can omit those infrastructure spans:
+their evidence is the exact service-reported carrier plus the SDK trace and
+ordinary SDK parent/link assertions. No intermediate span is manufactured and
+full backend ancestry is not claimed for such an export. Other backends opt into
+the full ancestry check only when they return that infrastructure. The generic
+`expect.descendant_of` assertion remains strict on every backend.
+
+The runner always saves case 11's normalized trace, observed service context, and
+whether full ancestry was checked, including a failing trace when available.
+Case 11 tests the sampled-positive boundary. Existing SDK sampling controls cover
+explicit zero and missing decisions; absence of exported telemetry is never
+accepted as evidence of correct unsampled propagation.
 
 `expect.exception_event_count` checks the number of actual span events named
 `exception`. OTLP JSON/protobuf adapters supply a complete count only when no
@@ -438,6 +483,29 @@ expect:
     attributes:
       durable.execution.arn: ${EXECUTION_ARN}
 ```
+
+`expect.descendant_of` selects exactly one ancestor and follows actual
+`parent_span_id` edges in the same trace. Intervening infrastructure spans are
+allowed, but every edge up to that ancestor must be observed. A shared trace ID,
+span link, missing intermediate span, parent cycle, or conflicting parent IDs in
+duplicate exports cannot establish ancestry. Repeated exports with the same
+parent ID do not create additional edges. This assertion does not compare clocks
+or require temporal containment. It has no `$linked`, `$allow_unresolved`, or
+timestamp-tolerance controls:
+
+```yaml
+expect:
+  descendant_of:
+    name: otel-invoke
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+      durable.operation.id: ${INVOKE1}
+      durable.operation.status: STARTED
+```
+
+The example selects the first invocation-view invoke segment. An execution-view
+requirement selects the single logical invoke span instead. Backend queries must
+return the required path; a partial response cannot qualify this assertion.
 
 `expect.parent.$any_of` accepts a non-empty list of complete parent expectations.
 Each alternative retains the usual parent-ID, cycle and timestamp checks. This

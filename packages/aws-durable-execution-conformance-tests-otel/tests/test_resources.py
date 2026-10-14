@@ -809,6 +809,71 @@ def _assert_caught_callback_catalog(requirement: dict, suite: str) -> None:
     ) | {"EXECUTION_ARN", "SERVICE_NAME"}
 
 
+def _assert_chained_invoke_catalog(requirement: dict, view: str) -> None:
+    assertions = requirement["TelemetryAssertions"]
+    assert assertions["require_all_spans"] is True
+    assert assertions["require_single_trace_per_execution"] is True
+    assert assertions["require_unique_root_per_trace"] is True
+    assert assertions["exact_attribute_prefixes"] == ["durable."]
+    assert assertions["quiescence_seconds"] == 5
+    history = requirement["ExpectedExecutionHistory"]
+    assert [event["EventId"] for event in history] == list(range(1, 14))
+    assert [event["EventId"] for event in history if event["EventType"] == "InvocationCompleted"] == [3, 9, 12]
+    assert [event["EventType"] for event in history if event["EventType"].startswith("ChainedInvoke")] == [
+        "ChainedInvokeStarted",
+        "ChainedInvokeSucceeded",
+    ]
+    assert requirement["CallbackActions"] == [
+        {
+            "CallbackName": "${/^otel-invoke-replay-barrier(?: create callback id|-callback)?$/}",
+            "Operation": "success",
+            "Payload": "resume",
+            "AfterInvocationCompleted": True,
+        }
+    ]
+    items = assertions["span_assertions"]
+    caller = next(
+        item for item in items if item["select"] == {"name": "Invocation", "attributes": _EXECUTION_ATTRIBUTES}
+    )
+    assert caller["count"] == 3
+    assert [item["attributes"]["durable.invocation.first"] for item in caller["expect_by_occurrence"]] == [
+        True,
+        False,
+        False,
+    ]
+    assert [item["attributes"]["durable.invocation.status"] for item in caller["expect_by_occurrence"]] == [
+        "PENDING",
+        "PENDING",
+        "SUCCEEDED",
+    ]
+    targets = [
+        item
+        for item in items
+        if item["select"].get("attributes", {}).get("durable.execution.arn") == "${TARGET_EXECUTION_ARN}"
+    ]
+    assert [item["select"]["name"] for item in targets] == ["Workflow", "Invocation"]
+    for target in targets:
+        assert target.get("count", 1) == 1
+        ancestor = target["expect"]["same_trace_as"]
+        assert assertions["chained_invokes"] == [
+            {"child_execution_arn": "${TARGET_EXECUTION_ARN}", "parent": ancestor, "sampled": True}
+        ]
+        assert ancestor["name"] == "otel-invoke"
+        assert ancestor["attributes"]["durable.operation.id"] == "${INVOKE1}"
+        assert ancestor["attributes"]["durable.execution.arn"] == "${EXECUTION_ARN}"
+        if view == "otel-invocation":
+            assert ancestor["attributes"]["durable.operation.status"] == "STARTED"
+    invokes = [item for item in items if item["select"]["name"] == "otel-invoke"]
+    assert len(invokes) == (2 if view == "otel-invocation" else 1)
+    assert all(item.get("count", 1) == 1 for item in invokes)
+    terminal = invokes[-1]["expect"]
+    if view == "otel-invocation":
+        assert terminal["parent"]["$occurrence"] == 2
+        assert terminal["links"][0]["$occurrence"] == 1
+    else:
+        assert terminal["links"][0]["$occurrence"] == 2
+
+
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
     callback_submitter_span_names = {
@@ -820,6 +885,9 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     for case_number in _VIEW_CASE_NUMBERS:
         requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 11:
+            _assert_chained_invoke_catalog(requirement, "otel-invocation")
+            continue
         if case_number == 26:
             _assert_external_completion_catalog(assertions, "otel-invocation")
             continue
@@ -1072,6 +1140,9 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             invocation_requirements[f"otel-invocation-{case_number}"],
         )
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 11:
+            _assert_chained_invoke_catalog(requirement, "otel-execution")
+            continue
         if case_number == 26:
             _assert_external_completion_catalog(assertions, "otel-execution")
             continue

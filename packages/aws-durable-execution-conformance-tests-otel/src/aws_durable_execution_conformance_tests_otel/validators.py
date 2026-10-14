@@ -27,7 +27,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable_execution_arn",
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
-_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as")
+_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as", "descendant_of")
 # These are serialized properties from span_to_dict, not provider payload fields
 # or the fields of a dataclass. Attribute mappings remain open-ended.
 _SPAN_PROPERTIES = frozenset(
@@ -470,6 +470,9 @@ def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> l
 def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
+    if relation == "descendant_of":
+        # Missing ancestry must never pass through link/backend or timestamp controls.
+        return _span_selector_schema_errors(expected, path=path)
     # Preserve the existing relation flags; same_trace_as still forbids link filtering.
     controls = {"$linked", "$millisecond_precision"}
     errors = [
@@ -860,6 +863,35 @@ def _link_expectation_errors(
     return errors
 
 
+def _descendant_errors(selected: Span, ancestor: Span, trace: Trace, *, path: str) -> list[str]:
+    """Follow observed parent IDs without inventing missing infrastructure edges."""
+    if selected.trace_id != ancestor.trace_id:
+        return [f"{path}: selected span and ancestor use different traces"]
+    if selected.span_id == ancestor.span_id:
+        return [f"{path}: a span cannot be its own ancestor"]
+    parents_by_id: dict[str, set[str | None]] = {}
+    for span in trace.spans:
+        if span.trace_id == selected.trace_id:
+            parents_by_id.setdefault(span.span_id, set()).add(span.parent_span_id)
+
+    visited: set[str] = set()
+    current_id: str | None = selected.span_id
+    reached = False
+    while current_id is not None:
+        if current_id in visited:
+            return [f"{path}: parent cycle at span {current_id}"]
+        visited.add(current_id)
+        reached = reached or current_id == ancestor.span_id
+        parent_ids = parents_by_id.get(current_id)
+        if parent_ids is None:
+            # Once the required ancestor was observed, its upstream path is optional.
+            return [] if reached else [f"{path}: unresolved parent {current_id} before the required ancestor"]
+        if len(parent_ids) != 1:
+            return [f"{path}: conflicting parents for span {current_id}"]
+        current_id = next(iter(parent_ids))
+    return [] if reached else [f"{path}: parent chain does not reach ancestor {ancestor.name!r} ({ancestor.span_id})"]
+
+
 def _span_relation_errors(
     relation: str,
     expected: Any,
@@ -897,6 +929,8 @@ def _span_relation_errors(
         return [f"{path} matched {len(matches)} spans; it must select exactly one"]
 
     related_span = matches[0]
+    if relation == "descendant_of":
+        return _descendant_errors(selected_span, related_span, trace, path=path)
     if relation == "same_trace_as":
         if selected_span.trace_id != related_span.trace_id:
             return [f"{path}: span {selected_span.name!r} uses a different trace than {related_span.name!r}"]
@@ -1204,16 +1238,82 @@ def _parented_span_errors(
     return errors
 
 
+def _chained_invoke_errors(
+    trace: Trace,
+    expected: Any,
+    query: TelemetryQuery,
+    *,
+    full_ancestry: bool,
+) -> list[str]:
+    if expected is None:
+        return []
+    if not _is_sequence(expected):
+        return ["chained_invokes must be a sequence of mappings"]
+    errors = []
+    for index, item in enumerate(expected):
+        path = f"chained_invokes[{index}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{path} must be a mapping")
+            continue
+        schema = _unknown_field_errors(item, {"child_execution_arn", "parent", "sampled"}, path=path)
+        child_arn = item.get("child_execution_arn")
+        parent = item.get("parent")
+        if not isinstance(child_arn, str) or not child_arn:
+            schema.append(f"{path}.child_execution_arn must be a non-empty string")
+        if not isinstance(item.get("sampled"), bool):
+            schema.append(f"{path}.sampled must be a boolean")
+        if not isinstance(parent, Mapping):
+            schema.append(f"{path}.parent must be a span selector")
+        else:
+            schema.extend(_span_selector_schema_errors(parent, path=f"{path}.parent"))
+        if schema:
+            errors.extend(schema)
+            continue
+        assert isinstance(parent, Mapping) and isinstance(child_arn, str)
+        parents = [span for span in trace.spans if _matches_span(parent, span_to_dict(span), ())]
+        if len(parents) != 1:
+            errors.append(f"{path}.parent must select exactly one span; found {len(parents)}")
+            continue
+        ancestor = parents[0]
+        carrier = query.execution_trace_contexts.get(child_arn)
+        if carrier is None:
+            errors.append(f"{path}: missing actual child GetDurableExecution trace context")
+            continue
+        if carrier.trace_id != ancestor.trace_id:
+            errors.append(f"{path}: child service Root differs from the selected invoke trace ID")
+        if carrier.parent_span_id != ancestor.span_id:
+            errors.append(f"{path}: child service Parent differs from the selected first invoke span ID")
+        if carrier.sampled is not item["sampled"]:
+            errors.append(f"{path}: child service Sampled differs from the expected decision")
+        roots = [
+            span
+            for span in trace.spans
+            if span.name in {"Workflow", "Invocation"} and span.attributes.get("durable.execution.arn") == child_arn
+        ]
+        if {span.name for span in roots} != {"Workflow", "Invocation"}:
+            errors.append(f"{path}: child Workflow and Invocation telemetry are required")
+        for root in roots:
+            if root.trace_id != carrier.trace_id:
+                errors.append(f"{path}: child {root.name} trace ID differs from its service Root")
+            if full_ancestry:
+                errors.extend(_descendant_errors(root, ancestor, trace, path=f"{path}.{root.name}.descendant_of"))
+    return errors
+
+
 def validate_trace(
     trace: Trace,
     assertions: Mapping[str, Any],
     query: TelemetryQuery,
     *,
     feature_disparities: Collection[BackendFeatureDisparity] = (),
+    full_trace_ancestry: bool = False,
 ) -> list[str]:
     """Validate stable integration invariants without prescribing span schemas."""
 
     errors: list[str] = []
+    errors.extend(
+        _chained_invoke_errors(trace, assertions.get("chained_invokes"), query, full_ancestry=full_trace_ancestry)
+    )
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")

@@ -91,6 +91,15 @@ class Trace:
 
 
 @dataclass(frozen=True)
+class ExecutionTraceContext:
+    """Trace context observed in the service's GetDurableExecution response."""
+
+    trace_id: str
+    parent_span_id: str
+    sampled: bool
+
+
+@dataclass(frozen=True)
 class TelemetryQuery:
     execution_arn: str
     service_name: str
@@ -98,6 +107,7 @@ class TelemetryQuery:
     ended_at: datetime
     trace_id: str | None = None
     execution_arns: tuple[str, ...] = ()
+    execution_trace_contexts: Mapping[str, ExecutionTraceContext] = field(default_factory=dict)
 
 
 def trace_to_dict(trace: Trace) -> dict[str, Any]:

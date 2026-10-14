@@ -227,7 +227,9 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
         _query: object,
         *,
         feature_disparities: object,
+        full_trace_ancestry: bool,
     ) -> list[str]:
+        assert full_trace_ancestry is False
         received.update(assertions)
         received_disparities.append(feature_disparities)
         return []

@@ -79,6 +79,8 @@ class PollingBackend(ABC):
 
     name: str
     feature_disparities: frozenset[BackendFeatureDisparity] = frozenset()
+    # Most exporters return SDK spans without Lambda/service ancestors.
+    provides_infrastructure_ancestry: bool = False
 
     def __init__(
         self,

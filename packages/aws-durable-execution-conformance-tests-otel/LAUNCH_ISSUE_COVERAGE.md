@@ -7,6 +7,7 @@ instrumentation hooks themselves.
 
 | Launch work item | Requirements | Regression detected |
 | --- | --- | --- |
+| Chained-invoke propagation | `otel-invocation-11`, `otel-execution-11` | The child service carrier must retain the first invoke span's Root/Parent and sampled-positive decision. X-Ray also requires the real child ancestry to reach that span; completed replay must not start another child. |
 | 4 — Python status mapping | `otel-invocation-24`, `otel-execution-24` | A genuine invocation retry must report `RETRYING` and `UNSET`, followed by successful recovery. An ordinary step retry reports `PENDING` and does not test this path. |
 | 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A handler catches the real failed child, checkpoints an observation, replays through two barriers and returns successfully while the FAILED callback leaf remains ERROR without an exception event. Service history retains its untruncated, exactly empty error payload. |
 | External-completion replay | `otel-invocation-26`, `otel-execution-26` | A root callback first completes before a checkpointed observation step, then is visited again on two later resumes without another terminal export. |
@@ -16,6 +17,25 @@ instrumentation hooks themselves.
 The status case deliberately does not reject duplicate operation delivery after
 an invocation failure. That is expected recovery behavior, separate from a normal
 successful suspension and resume.
+
+Case 11 keeps the existing public invoke and echo target, then pauses the caller
+at `otel-invoke-replay-barrier`. After the runner completes that callback with
+`resume`, the caller replays the successful invoke and returns its stored result.
+The exact history and SDK span counts require one child execution and three caller
+invocations: PENDING, PENDING, SUCCEEDED. The terminal invoke belongs to caller
+invocation 2; invocation 3 must not start another child or export another terminal
+invoke. Five seconds of unchanged telemetry bound the duplicate observation.
+
+The target ARN comes from actual `ChainedInvokeStarted` history. A read-only
+`GetDurableExecution` call supplies the child's service-reported trace header. Its Root
+must equal the caller invoke's trace ID, Parent must identify the first invoke
+span, and Sampled must be 1. Target Workflow and Invocation spans must be on that
+trace. S3 proves this carrier boundary and the normal SDK span structure; it does
+not supply missing Lambda/service parent spans. X-Ray must additionally expose a
+complete parent path from both target roots to the same first invoke. A complete
+path ending elsewhere is a failure, even if every span shares a Root. No
+cross-execution clock-ordering assertion is added by this propagation check.
+These assertions keep the catalog at 26 cases and do not change cases 25 or 26.
 
 Use the S3 collector to verify duplicate export counts and `UNSET` status. It
 retains repeated OTLP span records, including repeated trace/span IDs. X-Ray can
