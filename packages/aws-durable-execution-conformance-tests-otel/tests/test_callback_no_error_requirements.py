@@ -451,6 +451,24 @@ def test_case25_first_failed_leaf_cannot_be_delayed_until_later_replay(view: str
     assert validate_trace(replace(trace, spans=tuple(spans)), _assertions(view), _query())
 
 
+def test_case25_execution_does_not_order_backend_end_against_observation_clock() -> None:
+    trace = _trace("execution")
+    spans = tuple(
+        replace(span, end_time=START + timedelta(seconds=4.3 if span.span_id == f"{5:016x}" else 4.2))
+        if span.span_id in {f"{5:016x}", f"{7:016x}"}
+        else span
+        for span in trace.spans
+    )
+    # The logical failure is linked to invocation2. Its backend end can be
+    # ahead of the observation attempt's SDK clock without changing that fact.
+    assert validate_trace(replace(trace, spans=spans), _assertions("execution"), _query()) == []
+    wrong_phase = tuple(
+        replace(span, links=(SpanLink(TRACE_ID, f"{11:016x}"),)) if span.span_id in {f"{5:016x}", f"{7:016x}"} else span
+        for span in spans
+    )
+    assert validate_trace(replace(trace, spans=wrong_phase), _assertions("execution"), _query())
+
+
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case25_matches_independent_public_runner_history(view: str) -> None:
     # Sanitized producer history, not derived from the requirement under test.

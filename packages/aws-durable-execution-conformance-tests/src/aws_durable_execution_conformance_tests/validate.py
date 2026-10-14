@@ -726,8 +726,11 @@ class PollingValidator:
             # Check if execution reached a terminal state (before
             # no-progress check so quick completions exit cleanly)
             if final_status in _TERMINAL_STATUSES:
+                terminal_action_indices = set(used_action_indices)
                 for cb_event in extract_callback_events(actual_events, handled_callback_ids):
-                    action, _idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
+                    action, idx = find_matching_action(cb_event, actions, terminal_action_indices, self._context)
+                    if idx is not None:
+                        terminal_action_indices.add(idx)
                     if action is not None and action.after_invocation_completed:
                         deferred_callback_ids.add(cb_event["CallbackStartedDetails"]["CallbackId"])
                 break

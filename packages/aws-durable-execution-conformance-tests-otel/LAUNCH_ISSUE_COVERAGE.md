@@ -83,8 +83,12 @@ path. SDKs must not fabricate exception details to obtain ERROR status.
 The first callback failure is consumed and caught in invocation 2. Invocations 3 and 4
 replay the persisted failed child into the catch and reuse the completed marker;
 the marker body and failed submitter must not run again. The failed leaf remains
-one terminal record in the first resumed invocation, before the observation
-attempt, with strict identity, parent and link checks. These are cached failed-child
+one terminal record associated with the first resumed invocation, with strict
+identity, parent and link checks. Invocation-view local segments precede the
+observation attempt. Execution-view backend end timestamps are not calibrated to
+the SDK clock, so that view does not compare the failed operation's end with the
+observation attempt's start; service-history phases and invocation links establish
+the association. These are cached failed-child
 replays: a completed child can restore its failure without revisiting the nested
 callback body. This does not claim a callback failure while invocation 1 remains
 active, or completion during End/forceFlush. SDK public tests separately establish

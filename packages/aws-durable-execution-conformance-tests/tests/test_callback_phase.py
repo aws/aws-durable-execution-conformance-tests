@@ -133,6 +133,29 @@ def test_terminal_ordinary_callback_preserves_existing_completion_behavior(
     assert service.requests == [] and service.reads == [ARN]
 
 
+@pytest.mark.parametrize("history_only", [False, True])
+@pytest.mark.parametrize("gates", [(False, True), (True, False), (False, False)])
+def test_terminal_same_name_callbacks_classify_each_action_once(
+    monkeypatch: pytest.MonkeyPatch, history_only: bool, gates: tuple[bool, bool]
+) -> None:
+    other = {**CALLBACK, "EventId": 4, "CallbackStartedDetails": {"CallbackId": "second-capability"}}
+    service = Service([[CALLBACK, other, {"EventId": 6, "EventType": "ExecutionFailed"}]])
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    actions = [
+        CallbackAction.from_dict({"CallbackName": "target", "Operation": "failure", "AfterInvocationCompleted": gated})
+        for gated in gates
+    ]
+    result = validate.PollingValidator(service).validate(
+        ARN, [{"EventId": 3}, {"EventId": 4}], None if history_only else {"ExecutionStatus": "FAILED"}, actions
+    )
+    assert result.passed is (not any(gates))
+    assert result.callbacks_sent == 0 and service.requests == []
+    if any(gates):
+        assert "Callback actions gated on InvocationCompleted were not delivered" in result.errors
+
+
 @pytest.mark.parametrize("terminal", [False, True])
 def test_unmatched_phase_action_preserves_unused_action_behavior(
     monkeypatch: pytest.MonkeyPatch, terminal: bool

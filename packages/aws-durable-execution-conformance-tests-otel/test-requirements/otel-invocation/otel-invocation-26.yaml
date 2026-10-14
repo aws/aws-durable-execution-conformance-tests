@@ -25,6 +25,8 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${TARGET_CALLBACK}
     Name: otel-external-target
+    $absent:
+      - [ParentId]
   - EventId: 3
     EventType: InvocationCompleted
   - EventId: 4
@@ -32,6 +34,8 @@ ExpectedExecutionHistory:
     SubType: Callback
     Id: ${TARGET_CALLBACK}
     Name: otel-external-target
+    $absent:
+      - [ParentId]
   - EventId: 5
     EventType: StepStarted
     SubType: Step

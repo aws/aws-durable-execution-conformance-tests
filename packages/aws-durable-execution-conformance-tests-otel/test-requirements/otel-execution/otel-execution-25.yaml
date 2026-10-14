@@ -236,10 +236,6 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
             durable.execution.status: SUCCEEDED
-        before:
-          name: otel-failed-callback-observed attempt 1
-          attributes:
-            durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
         status: ERROR
     - select:
         name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
@@ -268,10 +264,6 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
-        before:
-          name: otel-failed-callback-observed attempt 1
-          attributes:
-            durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
     - select:
         name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}'
         status: OK

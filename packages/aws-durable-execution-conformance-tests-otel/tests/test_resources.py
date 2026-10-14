@@ -778,7 +778,10 @@ def _assert_caught_callback_catalog(requirement: dict, suite: str) -> None:
         assert expected["parent"]["kind"] == "INTERNAL"
         if attrs["durable.operation.id"] == "${FAILED_CALLBACK}" and state == "FAILED":
             assert expected["exception_event_count"] == 0
-            assert expected["before"]["attributes"]["durable.operation.id"] == "${FAILED_CALLBACK_OBSERVED}"
+            if suite == "otel-invocation":
+                assert expected["before"]["attributes"]["durable.operation.id"] == "${FAILED_CALLBACK_OBSERVED}"
+            else:
+                assert "before" not in expected
         if suite == "otel-execution":
             ordinal = {
                 "${FAILED_CALLBACK_CONTEXT}": 2,

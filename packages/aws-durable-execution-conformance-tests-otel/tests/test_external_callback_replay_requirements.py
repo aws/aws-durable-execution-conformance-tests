@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from aws_durable_execution_conformance_tests.history import EventHistoryMatcher
 from aws_durable_execution_conformance_tests.validate import discover_test_files, load_yaml_file
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
@@ -24,6 +25,21 @@ SYMBOLS = ["TARGET", "BARRIER_ONE", "BARRIER_TWO"]
 def requirement(view: str) -> dict:
     suite = next(s for s in OtelExtension().requirement_suites() if s.name == f"otel-{view}")
     return load_yaml_file(discover_test_files(suite.root, suite="all")[f"otel-{view}-26"])
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("event_type,event_id", [("CallbackStarted", 2), ("CallbackSucceeded", 4)])
+def test_case26_history_rejects_nested_target_parent(view: str, event_type: str, event_id: int) -> None:
+    expected = next(event for event in requirement(view)["ExpectedExecutionHistory"] if event["EventId"] == event_id)
+    actual = {
+        "EventId": event_id,
+        "EventType": event_type,
+        "SubType": "Callback",
+        "Id": "root-target",
+        "Name": "otel-external-target",
+    }
+    assert EventHistoryMatcher().match([expected], [actual]).success
+    assert not EventHistoryMatcher().match([expected], [{**actual, "ParentId": "unexpected-child-context"}]).success
 
 
 def assertions(view: str) -> dict:
