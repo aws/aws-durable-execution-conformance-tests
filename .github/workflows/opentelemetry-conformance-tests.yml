@@ -83,9 +83,9 @@ jobs:
       language: py
       resource_prefix: py-self
       sdk_repository: aws/aws-durable-execution-sdk-python
-      # Reference fixture implementing cases 1–26, including caught failure/replay.
-      # Overridable on manual dispatch.
-      sdk_ref: ${{ inputs.sdk_ref || '2d4ba990e6f197ed8e52f2bf2dd079d7428fcbaa' }}
+      # TEMP WIRE DIAGNOSTIC: NEVER MERGE or adopt this observer reference.
+      # Restore 2d4ba990e6f197ed8e52f2bf2dd079d7428fcbaa after capture.
+      sdk_ref: ${{ inputs.sdk_ref || '1bf37b4ed5c7cc5391d08d3bf9cd61e7a320f9d9' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel
