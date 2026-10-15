@@ -5,7 +5,7 @@
 
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,6 +13,8 @@ from unittest.mock import Mock
 import pytest
 
 from aws_durable_execution_conformance_tests.extensions import ValidationContext
+from aws_durable_execution_conformance_tests.validate import load_yaml_file
+from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.chained_invoke import (
     execution_trace_context,
     load_execution_trace_contexts,
@@ -153,6 +155,69 @@ def test_service_carrier_qualifies_partial_sdk_export_but_not_full_backend_ances
         replace(trace, spans=(*trace.spans, disconnected)), ASSERTIONS, query, full_trace_ancestry=True
     )
     assert len(errors) == 2 and all("does not reach ancestor" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
+@pytest.mark.parametrize("parent_kind", ["first", "platform", "unresolved", "replay", "other-invoke", "invocation"])
+def test_catalog_target_parent_keeps_sdk_identity_even_with_correct_service_carrier(
+    view: str, parent_kind: str
+) -> None:
+    suite = next(suite for suite in OtelExtension().requirement_suites() if suite.name == f"otel-{view}")
+    requirement = load_yaml_file(str(suite.root / f"otel-{view}-11.yaml"))
+    context = PlaceholderContext()
+    for name, value in {"EXECUTION_ARN": "arn:caller", "TARGET_EXECUTION_ARN": CHILD, "INVOKE1": "invoke-1"}.items():
+        context.bind(name, value)
+    catalog = context.substitute(requirement["TelemetryAssertions"])
+    target = next(
+        item
+        for item in catalog["span_assertions"]
+        if item["select"].get("name") == "Workflow"
+        and item["select"].get("attributes", {}).get("durable.execution.arn") == CHILD
+    )
+    assertions = {
+        "allowed_execution_arns": catalog["allowed_execution_arns"],
+        "chained_invokes": catalog["chained_invokes"],
+        "span_assertions": {
+            "select": {"name": "Workflow", "attributes": {"durable.execution.arn": CHILD}},
+            "expect": {"parent": target["expect"]["parent"], "same_trace_as": target["expect"]["same_trace_as"]},
+        },
+    }
+    trace, query = _fixture()
+    first = replace(
+        trace.spans[0],
+        attributes={
+            "durable.execution.arn": "arn:caller",
+            "durable.operation.id": "invoke-1",
+            "durable.operation.status": "STARTED" if view == "invocation" else "SUCCEEDED",
+        },
+    )
+    other = replace(first, span_id="5" * 16)
+    if parent_kind == "platform":
+        other = replace(other, name="Lambda", attributes={})
+    elif parent_kind == "replay":
+        other = replace(other, attributes={**first.attributes, "durable.operation.status": "SUCCEEDED"})
+    elif parent_kind == "other-invoke":
+        other = replace(other, attributes={**first.attributes, "durable.operation.id": "invoke-other"})
+    elif parent_kind == "invocation":
+        other = replace(other, name="Invocation", attributes={"durable.execution.arn": "arn:caller"})
+    # A logical execution-view invoke must remain unique; replay duplicates are
+    # already rejected by the service-parent selector's exact-one requirement.
+    child = replace(
+        trace.spans[1],
+        parent_span_id=first.span_id if parent_kind == "first" else other.span_id,
+        start_time=first.end_time + timedelta(seconds=2),
+        end_time=first.end_time + timedelta(seconds=3),
+    )
+    spans: tuple[Span, ...] = (first, child, trace.spans[2])
+    if parent_kind not in {"first", "unresolved"}:
+        spans += (other,)
+    errors = validate_trace(replace(trace, spans=spans), assertions, query)
+    if parent_kind in {"first", "platform", "unresolved"}:
+        assert errors == [], errors
+    else:
+        assert errors, "A correct service carrier must not hide incorrect resolved SDK parentage"
+        if not (view == "execution" and parent_kind == "replay"):
+            assert any("parent" in error for error in errors), errors
 
 
 @pytest.mark.parametrize("full_ancestry", [False, True])

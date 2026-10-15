@@ -695,6 +695,7 @@ class PollingValidator:
         actions: list[CallbackAction] = callback_actions or []
         handled_callback_ids: set[str] = set()
         used_action_indices: set[int] = set()
+        pending_action_indices: dict[str, int] = {}
         deferred_callback_ids: set[str] = set()
         callbacks_sent: int = 0
         last_event_count: int = 0
@@ -704,6 +705,7 @@ class PollingValidator:
         final_status: str | None = None
         actual_events: list[dict[str, Any]] = []
         history_only_mode: bool = expected_result is None
+        action: CallbackAction | None
 
         while True:
             time.sleep(self._config.poll_interval_seconds)
@@ -726,9 +728,14 @@ class PollingValidator:
             # Check if execution reached a terminal state (before
             # no-progress check so quick completions exit cleanly)
             if final_status in _TERMINAL_STATUSES:
-                terminal_action_indices = set(used_action_indices)
+                terminal_action_indices = used_action_indices | set(pending_action_indices.values())
                 for cb_event in extract_callback_events(actual_events, handled_callback_ids):
-                    action, idx = find_matching_action(cb_event, actions, terminal_action_indices, self._context)
+                    callback_id = cb_event["CallbackStartedDetails"]["CallbackId"]
+                    idx = pending_action_indices.get(callback_id)
+                    if idx is not None:
+                        action = actions[idx]
+                    else:
+                        action, idx = find_matching_action(cb_event, actions, terminal_action_indices, self._context)
                     if idx is not None:
                         terminal_action_indices.add(idx)
                     if action is not None and action.after_invocation_completed:
@@ -751,13 +758,17 @@ class PollingValidator:
             new_callbacks: list[dict[str, Any]] = extract_callback_events(actual_events, handled_callback_ids)
             for cb_event in new_callbacks:
                 details: dict[str, Any] = cb_event.get("CallbackStartedDetails", {})
-                callback_id: str = details.get("CallbackId", "")
+                callback_id = details.get("CallbackId", "")
 
-                action, idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
+                idx = pending_action_indices.get(callback_id)
+                if idx is not None:
+                    action = actions[idx]
+                else:
+                    action, idx = find_matching_action(
+                        cb_event, actions, used_action_indices | set(pending_action_indices.values()), self._context
+                    )
                 if action is None:
-                    # Another callback may have consumed the eligible action
-                    # while this callback waited. Preserve ordinary matching
-                    # behavior rather than retaining a stale phase requirement.
+                    # An unmatched callback has no pending phase requirement.
                     deferred_callback_ids.discard(callback_id)
                     if not actions:
                         # No actions configured — timeout test, expected behaviour
@@ -772,14 +783,16 @@ class PollingValidator:
                     continue
 
                 if action.after_invocation_completed and not _callback_invocation_completed(cb_event, actual_events):
-                    # This history belongs to execution_arn. Keep both the
-                    # action and callback available for the next poll.
-                    # Do not reserve an action index: multiple matching
-                    # callbacks still use the existing delivery-time rules.
+                    # Retain this allocation across polls so another callback
+                    # can use the next action, including an immediate response
+                    # needed to let this invocation finish.
+                    if idx is not None:
+                        pending_action_indices[callback_id] = idx
                     deferred_callback_ids.add(callback_id)
                     continue
 
                 deferred_callback_ids.discard(callback_id)
+                pending_action_indices.pop(callback_id, None)
                 if idx is not None:
                     used_action_indices.add(idx)
 

@@ -101,8 +101,15 @@ TelemetryAssertions:
           durable.execution.arn: ${TARGET_EXECUTION_ARN}
       expect:
         parent:
-          $allow_unresolved: true
-          $allow_outside: true
+          $any_of:
+            - name: otel-invoke
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.operation.id: ${INVOKE1}
+              $allow_outside: true
+            - $allow_unresolved: true
+              $allow_outside: true
+              $reject_sdk_span: true
         status: OK
         service_name: ${SERVICE_NAME}
         links: []

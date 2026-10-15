@@ -218,6 +218,54 @@ def test_multiple_matching_callbacks_use_delivery_time_action_indices(monkeypatc
 
 
 @pytest.mark.parametrize("history_only", [False, True])
+@pytest.mark.parametrize("gates", [(True, False), (False, True)])
+def test_mixed_phase_actions_deliver_immediate_callback_before_completion(
+    monkeypatch: pytest.MonkeyPatch, history_only: bool, gates: tuple[bool, bool]
+) -> None:
+    other = {**CALLBACK, "EventId": 4, "CallbackStartedDetails": {"CallbackId": "second-capability"}}
+    ids = ["target-capability", "second-capability"]
+    immediate_id = ids[gates.index(False)]
+    gated_id = ids[gates.index(True)]
+
+    class DependentService(Service):
+        def history(self, arn: str, client: Any) -> dict[str, Any]:
+            assert client is self
+            self.reads.append(arn)
+            events = [CALLBACK, other]
+            # The invocation can finish only after its immediate callback arrives.
+            if any(request["CallbackId"] == immediate_id for _, request in self.requests):
+                events.append({"EventId": 6, "EventType": "InvocationCompleted"})
+            if len(self.requests) == 2:
+                events.append({"EventId": 10, "EventType": "ExecutionFailed"})
+            return {"Events": events}
+
+    service = DependentService([])
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    actions = [
+        CallbackAction.from_dict(
+            {
+                "CallbackName": "target",
+                "Operation": "failure",
+                "Payload": {"ErrorMessage": "gated" if gated else "immediate"},
+                "AfterInvocationCompleted": gated,
+            }
+        )
+        for gated in gates
+    ]
+    result = validate.PollingValidator(
+        service, validate.AsyncValidationConfig(poll_interval_seconds=0, no_progress_timeout_seconds=2)
+    ).validate(ARN, [{"EventId": 3}, {"EventId": 4}], None if history_only else {"ExecutionStatus": "FAILED"}, actions)
+    assert result.passed, result.errors
+    assert result.callbacks_sent == 2
+    assert service.requests == [
+        (1, {"CallbackId": immediate_id, "Error": {"ErrorMessage": "immediate"}}),
+        (2, {"CallbackId": gated_id, "Error": {"ErrorMessage": "gated"}}),
+    ]
+
+
+@pytest.mark.parametrize("history_only", [False, True])
 def test_one_action_two_matching_callbacks_preserve_delivery_time_rules(
     monkeypatch: pytest.MonkeyPatch, history_only: bool
 ) -> None:
@@ -243,6 +291,34 @@ def test_one_action_two_matching_callbacks_preserve_delivery_time_rules(
     # Preserve the existing unmatched-callback outcome; only delivery timing changes.
     assert gated.passed == ordinary.passed
     assert gated.errors == ordinary.errors
+
+
+def test_deferred_heartbeat_releases_allocation_for_followup_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = [CALLBACK, {"EventId": 6, "EventType": "InvocationCompleted"}]
+    service = Service([[CALLBACK], completed])
+    heartbeats: list[tuple[int, dict[str, Any]]] = []
+
+    def heartbeat(**kwargs: Any) -> dict:
+        heartbeats.append((len(service.reads), kwargs))
+        return {}
+
+    monkeypatch.setattr(service, "send_durable_execution_callback_heartbeat", heartbeat, raising=False)
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    result = validate.PollingValidator(service).validate(
+        ARN,
+        [{"EventId": 3}, {"EventId": 6}, {"EventId": 10}],
+        {"ExecutionStatus": "FAILED"},
+        [
+            CallbackAction("target", "heartbeat", after_invocation_completed=True),
+            CallbackAction("target", "failure"),
+        ],
+    )
+    assert result.passed, result.errors
+    assert result.callbacks_sent == 2
+    assert heartbeats == [(2, {"CallbackId": "target-capability"})]
+    assert service.requests == [(3, {"CallbackId": "target-capability"})]
 
 
 @pytest.mark.parametrize("operation", ["success", "failure", "heartbeat"])
