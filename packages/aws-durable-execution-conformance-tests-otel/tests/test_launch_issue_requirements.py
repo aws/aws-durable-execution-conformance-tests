@@ -13,6 +13,7 @@ from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.backends.collector import _merge_trace_files
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import Span, SpanLink, TelemetryQuery, Trace
+from aws_durable_execution_conformance_tests_otel.polling import PollingBackend, PollingPolicy
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 TRACE_ID = "1" * 32
@@ -303,6 +304,59 @@ def test_handler_restore_rejects_a_stale_user_span_as_ambient_parent(view: str) 
     trace = Trace(TRACE_ID, (workflow, invocation, stale_user, restored))
     errors = validate_trace(trace, {"span_assertions": [assertion]}, _query())
     assert any("forbidden span selector" in error for error in errors)
+
+
+@pytest.mark.parametrize("view", ["execution", "invocation"])
+@pytest.mark.parametrize("late_forbidden_parent", [False, True])
+def test_context_polling_observes_forbidden_parent_after_initial_passing_snapshot(
+    view: str, late_forbidden_parent: bool
+) -> None:
+    assertions = _bound_assertions(f"otel-{view}", 22)
+    handler = next(
+        a for a in assertions["span_assertions"] if a["select"]["name"] == "conformance.handler-after-resume"
+    )
+    focused = {"span_assertions": [handler]}
+    workflow = _span(1, "Workflow", 0, 5, None, {})
+    invocation = _span(2, "Invocation", 3, 5, None, {"durable.invocation.first": False})
+    stale_user = _span(3, "conformance.stale-scope", 3, 5, 2, {"conformance.callback": "stale-scope"})
+    restored = replace(
+        _span(4, "conformance.handler-after-resume", 4, 4, 3, {"conformance.callback": "handler-after-resume"}),
+        status="UNSET",
+    )
+    partial = Trace(TRACE_ID, (workflow, invocation, restored))
+    complete = replace(partial, spans=(*partial.spans, stale_user))
+    assert validate_trace(partial, focused, _query()) == []
+    assert any("forbidden span selector" in error for error in validate_trace(complete, focused, _query()))
+
+    class IngestionBackend(PollingBackend):
+        name = "context-ingestion"
+
+        def __init__(self) -> None:
+            self.now = 0.0
+            self.lookups = 0
+            super().__init__(monotonic=lambda: self.now, sleep=self.advance)
+
+        def advance(self, seconds: float) -> None:
+            self.now += seconds
+
+        def _lookup(self, _query: TelemetryQuery) -> Trace | None:
+            self.lookups += 1
+            return complete if late_forbidden_parent and self.lookups > 1 else partial
+
+    backend = IngestionBackend()
+    quiescence = assertions.get("quiescence_seconds", 0)
+    observed = backend.find_trace(
+        _query(),
+        PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=8, quiescence_seconds=quiescence),
+        accept=lambda trace: not validate_trace(trace, focused, _query()),
+    )
+    errors = validate_trace(observed, focused, _query())
+    if late_forbidden_parent:
+        assert any("forbidden span selector" in error for error in errors), errors
+        assert backend.lookups > 1
+    else:
+        assert errors == []
+        assert backend.now == quiescence
 
 
 def test_invocation_replay_permitted_counts_require_distinct_linked_segments() -> None:

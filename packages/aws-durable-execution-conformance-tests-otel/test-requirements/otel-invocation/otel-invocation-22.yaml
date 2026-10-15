@@ -9,6 +9,7 @@ ExpectedResult:
   ExecutionStatus: SUCCEEDED
   Result: context-complete
 TelemetryAssertions:
+  quiescence_seconds: 5
   minimum_spans: 20
   minimum_invocations: 2
   require_execution_correlation: true
