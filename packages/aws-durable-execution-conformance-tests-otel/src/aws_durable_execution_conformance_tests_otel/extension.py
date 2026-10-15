@@ -65,12 +65,12 @@ SUPPORT_MATRIX = frozenset(
 
 
 def _trace_evidence(
-    trace: Trace, contexts: Mapping[str, ExecutionTraceContext], full_trace_ancestry: bool
+    trace: Trace | None, contexts: Mapping[str, ExecutionTraceContext], full_trace_ancestry: bool
 ) -> dict[str, Any]:
-    payload = trace_to_dict(trace)
+    payload: dict[str, Any] = trace_to_dict(trace) if trace is not None else {"trace_unavailable": True}
     if contexts:
         payload["execution_trace_contexts"] = {arn: asdict(carrier) for arn, carrier in contexts.items()}
-        payload["full_trace_ancestry_checked"] = full_trace_ancestry
+        payload["full_trace_ancestry_checked"] = full_trace_ancestry and trace is not None
     return payload
 
 
@@ -277,12 +277,14 @@ class OtelExtension:
                     max_attempts=int(options["otel_poll_attempts"]),
                     quiescence_seconds=assertions.get("quiescence_seconds", 0.0),
                 ),
-                accept=lambda candidate: not validate_trace(
-                    candidate,
-                    assertions,
-                    query,
-                    feature_disparities=backend.feature_disparities,
-                    full_trace_ancestry=full_trace_ancestry,
+                accept=lambda candidate: (
+                    not validate_trace(
+                        candidate,
+                        assertions,
+                        query,
+                        feature_disparities=backend.feature_disparities,
+                        full_trace_ancestry=full_trace_ancestry,
+                    )
                 ),
             )
             errors = validate_trace(
@@ -296,7 +298,7 @@ class OtelExtension:
                 self._write_artifact(context, _trace_evidence(trace, execution_trace_contexts, full_trace_ancestry))
             return [f"OpenTelemetry: {error}" for error in errors]
         except TelemetryTimeout as exc:
-            if exc.latest_trace is not None:
+            if exc.latest_trace is not None or execution_trace_contexts:
                 self._write_artifact(
                     context, _trace_evidence(exc.latest_trace, execution_trace_contexts, full_trace_ancestry)
                 )

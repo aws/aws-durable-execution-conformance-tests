@@ -266,6 +266,9 @@ the full ancestry check only when they return that infrastructure. The generic
 
 The runner always saves case 11's normalized trace, observed service context, and
 whether full ancestry was checked, including a failing trace when available.
+If no correlated trace is returned, the failure artifact still preserves the
+observed service context with `trace_unavailable: true`. It contains no fabricated
+trace ID or spans and records that full ancestry was not checked.
 Case 11 tests the sampled-positive boundary. Existing SDK sampling controls cover
 explicit zero and missing decisions; absence of exported telemetry is never
 accepted as evidence of correct unsampled propagation.

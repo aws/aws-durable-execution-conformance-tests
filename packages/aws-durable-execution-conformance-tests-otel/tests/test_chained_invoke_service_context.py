@@ -157,8 +157,9 @@ def test_service_carrier_qualifies_partial_sdk_export_but_not_full_backend_ances
 
 @pytest.mark.parametrize("full_ancestry", [False, True])
 @pytest.mark.parametrize("wrong_parent", [False, True])
+@pytest.mark.parametrize("has_trace", [False, True])
 def test_extension_reads_and_preserves_actual_service_evidence_on_pass_and_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full_ancestry: bool, wrong_parent: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full_ancestry: bool, wrong_parent: bool, has_trace: bool
 ) -> None:
     trace, _ = _fixture()
     if full_ancestry:
@@ -171,8 +172,8 @@ def test_extension_reads_and_preserves_actual_service_evidence_on_pass_and_failu
         name = "test"
         provides_infrastructure_ancestry = full_ancestry
 
-        def _lookup(self, _query: TelemetryQuery) -> Trace:
-            return trace
+        def _lookup(self, _query: TelemetryQuery) -> Trace | None:
+            return trace if has_trace else None
 
     backend = Backend(monotonic=lambda: 0, sleep=lambda _delay: None)
     monkeypatch.setattr(
@@ -209,13 +210,18 @@ def test_extension_reads_and_preserves_actual_service_evidence_on_pass_and_failu
         aws_clients={"lambda": client},
     )
     errors = OtelExtension().validate_telemetry(context)
-    assert bool(errors) is wrong_parent, errors
+    assert bool(errors) is (wrong_parent or not has_trace), errors
     client.get_durable_execution.assert_called_once_with(DurableExecutionArn=CHILD)
     evidence = json.loads((tmp_path / "otel-invocation-11-otel.json").read_text())
-    assert evidence["full_trace_ancestry_checked"] is full_ancestry
+    assert evidence["full_trace_ancestry_checked"] is (full_ancestry and has_trace)
     assert evidence["execution_trace_contexts"][CHILD] == {
         "trace_id": "1" * 32,
         "parent_span_id": ("5" if wrong_parent else "2") * 16,
         "sampled": True,
     }
-    assert len(evidence["spans"]) == len(trace.spans)
+    if has_trace:
+        assert len(evidence["spans"]) == len(trace.spans)
+    else:
+        assert evidence["trace_unavailable"] is True
+        assert "trace_id" not in evidence
+        assert "spans" not in evidence
