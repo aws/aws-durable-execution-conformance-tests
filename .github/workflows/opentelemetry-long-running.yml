@@ -221,6 +221,9 @@ jobs:
       - name: Check long-running conformance executions
         if: steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'
         id: check
+        env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
         run: |
           set +e
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running check \
@@ -368,6 +371,8 @@ jobs:
           steps.check.outputs.rollover_ready == 'true'
         id: launch
         env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           rm -f "$STATE_FILE"
@@ -387,6 +392,8 @@ jobs:
       - name: Run short long-running conformance executions
         if: env.PHASE == 'short'
         env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run python -m aws_durable_execution_conformance_tests_otel.long_running run \

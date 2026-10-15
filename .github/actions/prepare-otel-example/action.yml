@@ -85,13 +85,14 @@ runs:
         PYTHONPATH: ""
       run: |
         # Ignore the CodeBuild image's global pip target and shared PYTHONPATH.
-        echo "PIP_CONFIG_FILE=/dev/null" >> "$GITHUB_ENV"
-        echo "PYTHONPATH=" >> "$GITHUB_ENV"
         # setup-sam's existing pip installer needs pip in the activated venv.
         uv pip install pip hatch==1.16.5
 
     - name: Set up SAM CLI
       if: inputs.prepare-example == 'true'
+      env:
+        PIP_CONFIG_FILE: /dev/null
+        PYTHONPATH: ""
       uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
 
     - name: Run language setup and preparation

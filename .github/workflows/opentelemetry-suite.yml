@@ -232,6 +232,8 @@ jobs:
 
       - name: Run conformance tests
         env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
           hatch run validate \
@@ -376,6 +378,9 @@ jobs:
           sdk-repository: ${{ inputs.sdk_repository }}
 
       - name: Test collector contract
+        env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
         run: hatch run test:all packages/aws-durable-execution-conformance-tests-otel/tests/test_collector.py
 
       - name: Build S3 collector Lambda layer
@@ -485,6 +490,8 @@ jobs:
 
       - name: Run S3 collector conformance tests
         env:
+          PIP_CONFIG_FILE: /dev/null
+          PYTHONPATH: ""
           LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
           COLLECTOR_OTLP_ENDPOINT: ${{ inputs.collector_otlp_endpoint }}
         run: |

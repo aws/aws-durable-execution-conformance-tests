@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contract tests for the reusable OpenTelemetry workflows."""
 
+import json
 import os
 import runpy
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -310,6 +313,96 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
         "clean": False,
     }
     assert long_running_steps["Prepare next conformance example"]["uses"] == expected_action
+
+
+def test_prepare_tool_overrides_do_not_leak_into_caller_hooks(tmp_path: Path) -> None:
+    steps = {step["name"]: step for step in _load(PREPARE_ACTION)["runs"]["steps"]}
+    caller_modules = tmp_path / "caller-modules"
+    caller_modules.mkdir()
+    (caller_modules / "caller_marker.py").write_text('VALUE = "caller module"\n')
+    caller_config = tmp_path / "caller-pip.conf"
+    caller_config.write_text("[global]\nindex-url = https://packages.example.invalid/simple\n")
+    github_env = tmp_path / "github-env"
+    github_env.touch()
+    install_probe = tmp_path / "install-probe.json"
+    uv = tmp_path / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        + shlex.join(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import json,os,pathlib;pathlib.Path(os.environ['INSTALL_PROBE']).write_text(json.dumps({k:os.environ.get(k) for k in ('PIP_CONFIG_FILE','PYTHONPATH')}))",
+            ]
+        )
+        + "\n"
+    )
+    uv.chmod(0o755)
+    inherited = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "PIP_CONFIG_FILE": str(caller_config),
+        "PYTHONPATH": str(caller_modules),
+        "GITHUB_ENV": str(github_env),
+        "INSTALL_PROBE": str(install_probe),
+    }
+    install = steps["Install Hatch"]
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", install["run"]],
+        env={**inherited, **install["env"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(install_probe.read_text()) == {"PIP_CONFIG_FILE": "/dev/null", "PYTHONPATH": ""}
+    # Apply the actual step's GITHUB_ENV output as the Actions runner does.
+    for line in github_env.read_text().splitlines():
+        key, value = line.split("=", 1)
+        inherited[key] = value
+    probe = tmp_path / "caller-probe.py"
+    probe.write_text(
+        "import os,sys\nfrom caller_marker import VALUE\n"
+        f"assert os.environ['PIP_CONFIG_FILE'] == {str(caller_config)!r}\n"
+        f"assert os.environ['PYTHONPATH'] == {str(caller_modules)!r}\n"
+        "assert VALUE == 'caller module'\nprint(sys.argv[1])\n"
+    )
+    command = shlex.join([sys.executable, str(probe)])
+    hooks = steps["Run language setup and preparation"]
+    hooks_env = {
+        **inherited,
+        **hooks.get("env", {}),
+        "SETUP_COMMAND": command + " setup",
+        "CONTRACT_TEST_COMMAND": command + " contract",
+        "PREPARE_COMMAND": command + " prepare",
+    }
+    completed = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", hooks["run"]], env=hooks_env, capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["setup", "contract", "prepare"]
+    later = subprocess.run(
+        [sys.executable, str(probe), "later"], env=inherited, capture_output=True, text=True, check=False
+    )
+    assert later.returncode == 0, later.stderr
+    assert later.stdout.strip() == "later"
+
+
+def test_sam_and_owned_hatch_steps_keep_isolation_local() -> None:
+    isolation = {"PIP_CONFIG_FILE": "/dev/null", "PYTHONPATH": ""}
+    sam = next(step for step in _load(PREPARE_ACTION)["runs"]["steps"] if step["name"] == "Set up SAM CLI")
+    assert sam.get("env") == isolation
+    owned_steps = []
+    for path in (SUITE_WORKFLOW, LONG_RUNNING_WORKFLOW):
+        workflow = _load(path)
+        assert not isolation.keys() & workflow.get("env", {}).keys()
+        for job in workflow["jobs"].values():
+            assert not isolation.keys() & job.get("env", {}).keys()
+            for step in job["steps"]:
+                if "hatch run " in step.get("run", ""):
+                    owned_steps.append((path.name, step["name"]))
+                    assert all(step.get("env", {}).get(key) == value for key, value in isolation.items())
+    assert len(owned_steps) == 6
 
 
 def test_adot_and_s3_resources_remain_stable() -> None:
