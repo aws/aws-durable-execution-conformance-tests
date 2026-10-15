@@ -175,17 +175,17 @@ def test_resource_prefix_validation_matches_lambda_name_limit(
         assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
 
 
-@pytest.mark.parametrize("case_count", ["20", "26"])
+@pytest.mark.parametrize("case_count", ["20", "24", "26"])
 def test_resolver_accepts_supported_catalog_counts(case_count: str) -> None:
     result = _run_resolver_validation("py", case_count=case_count)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "24", "27", "20; exit 0"])
+@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "23", "25", "27", "20; exit 0"])
 def test_resolver_rejects_unsupported_catalog_counts(case_count: str) -> None:
     result = _run_resolver_validation("py", case_count=case_count)
     assert result.returncode != 0
-    assert "case_count must be one of: 20, 26" in result.stdout
+    assert "case_count must be one of: 20, 24, 26" in result.stdout
 
 
 def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_refs() -> None:
@@ -313,6 +313,81 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
         "clean": False,
     }
     assert long_running_steps["Prepare next conformance example"]["uses"] == expected_action
+
+
+def test_setup_go_uses_verified_immutable_checkout_with_unchanged_inputs() -> None:
+    steps = _load(SUITE_WORKFLOW)["jobs"]["s3_collector"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+    checkout = by_name["Check out pinned setup-go action"]
+    verify = by_name["Verify pinned setup-go action"]
+    setup = by_name["Set up Go"]
+    assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    assert checkout["with"] == {
+        "repository": "actions/setup-go",
+        "ref": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+        "path": ".build/setup-go",
+        "fetch-depth": 1,
+        "persist-credentials": False,
+    }
+    assert verify["working-directory"] == checkout["with"]["path"]
+    assert verify["env"] == {
+        "SETUP_GO_COMMIT": checkout["with"]["ref"],
+        "SETUP_GO_TREE": "c5a9f59184ebebf27a466db31500c90156089f62",
+        "SETUP_GO_MANIFEST": "74a4e7e9f0b1eb0faee6d30576af05c489c39a3b",
+    }
+    assert setup["uses"] == "./.build/setup-go"
+    assert steps.index(checkout) < steps.index(verify) < steps.index(setup)
+    assert all("if" not in step and not step.get("continue-on-error", False) for step in (checkout, verify, setup))
+    assert setup["with"] == {
+        "go-version-file": "${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.mod",
+        "cache-dependency-path": "${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.sum\n${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/lambdacomponents/go.sum\n",
+    }
+
+
+@pytest.mark.parametrize("mismatch", [None, "commit", "tree", "manifest", "bundle"])
+def test_setup_go_verification_rejects_mismatched_checkout(tmp_path: Path, mismatch: str | None) -> None:
+    verify = next(
+        step
+        for step in _load(SUITE_WORKFLOW)["jobs"]["s3_collector"]["steps"]
+        if step["name"] == "Verify pinned setup-go action"
+    )
+    checkout = tmp_path / "action checkout"
+    checkout.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(checkout), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Workflow test")
+    git("config", "user.email", "workflow-test@example.invalid")
+    (checkout / "action.yml").write_text("name: fixture\nruns:\n  using: node24\n  main: dist/setup/index.js\n")
+    bundle = checkout / "dist" / "setup" / "index.js"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("// immutable test fixture\n")
+    git("add", ".")
+    git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    observed = {
+        "SETUP_GO_COMMIT": git("rev-parse", "HEAD"),
+        "SETUP_GO_TREE": git("rev-parse", "HEAD^{tree}"),
+        "SETUP_GO_MANIFEST": git("hash-object", "action.yml"),
+    }
+    if mismatch in ("commit", "tree"):
+        observed[f"SETUP_GO_{mismatch.upper()}"] = "0" * 40
+    elif mismatch == "manifest":
+        (checkout / "action.yml").write_text("name: changed\n")
+    elif mismatch == "bundle":
+        bundle.write_text("// changed executable contents\n")
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", verify["run"]],
+        cwd=checkout,
+        env={**os.environ, **observed},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (mismatch is None), result.stdout + result.stderr
 
 
 def test_prepare_tool_overrides_do_not_leak_into_caller_hooks(tmp_path: Path) -> None:

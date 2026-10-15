@@ -31,7 +31,7 @@ on:
         default: ""
         type: string
       case_count:
-        description: Suite size for diagnostics; 20 for pinned legacy catalogs or 26
+        description: Suite size for diagnostics; 20 or 24 for pinned legacy catalogs, or 26
         required: false
         default: 26
         type: number
