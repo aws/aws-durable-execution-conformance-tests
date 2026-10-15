@@ -138,6 +138,7 @@ class AsyncValidationResult:
         callbacks_sent: Number of callbacks successfully sent.
         final_status: The execution status when polling stopped.
         event_count: Total number of events observed.
+        execution_history: Last service history snapshot observed during polling.
     """
 
     passed: bool
@@ -146,6 +147,7 @@ class AsyncValidationResult:
     callbacks_sent: int = 0
     final_status: str | None = None
     event_count: int = 0
+    execution_history: dict[str, Any] = field(default_factory=dict)
 
 
 # endregion
@@ -704,6 +706,7 @@ class PollingValidator:
         callback_delivery_failed = False
         final_status: str | None = None
         actual_events: list[dict[str, Any]] = []
+        last_history: dict[str, Any] = {}
         history_only_mode: bool = expected_result is None
         action: CallbackAction | None
 
@@ -718,9 +721,13 @@ class PollingValidator:
                     errors=errors,
                     callbacks_sent=callbacks_sent,
                     final_status=final_status,
+                    execution_history=last_history,
                 )
 
-            actual_events = history.get("Events", history.get("events", []))
+            last_history = history
+            # Name inheritance is a matching aid, not part of the service
+            # response retained for artifacts and extension validation.
+            actual_events = [dict(event) for event in history.get("Events", history.get("events", []))]
             inherit_wait_for_callback_event_names(actual_events)
             current_event_count: int = len(actual_events)
             final_status = get_execution_status(history)
@@ -830,6 +837,7 @@ class PollingValidator:
                         callbacks_sent=callbacks_sent,
                         final_status=final_status,
                         event_count=len(actual_events),
+                        execution_history=last_history,
                     )
 
         if deferred_callback_ids:
@@ -848,6 +856,7 @@ class PollingValidator:
                     callbacks_sent=callbacks_sent,
                     final_status=final_status,
                     event_count=len(actual_events),
+                    execution_history=last_history,
                 )
             placeholders: dict[str, Any] = match_result.resolved_placeholders
         else:
@@ -870,6 +879,7 @@ class PollingValidator:
             callbacks_sent=callbacks_sent,
             final_status=final_status,
             event_count=len(actual_events),
+            execution_history=last_history,
         )
 
 
@@ -1237,8 +1247,9 @@ def _validate_description_async(
         callback_actions=callback_actions,
     )
 
-    # --- Save final history ---
-    final_history: dict | None = get_execution_history(execution_arn, aws_clients["lambda"])
+    # Retain the same snapshot that was matched; a separate refetch could fail
+    # or return a different history after polling has already passed.
+    final_history = async_result.execution_history
     if final_history:
         save_execution_history(description_id, final_history, output_dir=output_dir)
 
@@ -1283,7 +1294,7 @@ def _validate_description_async(
         execution_arn=execution_arn,
         invocation_started_at_ms=invocation_start_ms,
         invocation_finished_at_ms=int(time.time() * 1000),
-        execution_history=final_history or {},
+        execution_history=final_history,
     )
 
 
