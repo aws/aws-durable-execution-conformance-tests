@@ -21,7 +21,7 @@ from aws_durable_execution_conformance_tests_otel.chained_invoke import (
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import ExecutionTraceContext, Span, TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.polling import PollingBackend
+from aws_durable_execution_conformance_tests_otel.polling import BackendError, PollingBackend, RetryableBackendError
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 ROOT = "1-11111111-111111111111111111111111"
@@ -290,3 +290,64 @@ def test_extension_reads_and_preserves_actual_service_evidence_on_pass_and_failu
         assert evidence["trace_unavailable"] is True
         assert "trace_id" not in evidence
         assert "spans" not in evidence
+
+
+@pytest.mark.parametrize("error_type", [BackendError, RetryableBackendError])
+@pytest.mark.parametrize("has_service_context", [False, True])
+def test_extension_preserves_service_context_after_backend_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error_type: type[BackendError], has_service_context: bool
+) -> None:
+    class FailingBackend(PollingBackend):
+        name = "failing"
+        provides_infrastructure_ancestry = True
+
+        def _lookup(self, _query: TelemetryQuery) -> Trace | None:
+            raise error_type("backend lookup failed")
+
+    backend = FailingBackend(monotonic=lambda: 0, sleep=lambda _delay: None)
+    monkeypatch.setattr(
+        OtelExtension,
+        "_backends",
+        staticmethod(lambda: {"failing": SimpleNamespace(create=lambda *_args, **_kwargs: backend)}),
+    )
+    client = Mock()
+    client.get_durable_execution.return_value = {"TraceHeader": {"XAmznTraceId": HEADER}}
+    context = ValidationContext(
+        description_id="otel-invocation-11",
+        function_name="caller",
+        execution_arn="arn:caller",
+        invocation_started_at_ms=1,
+        invocation_finished_at_ms=2,
+        region="us-west-2",
+        language="python",
+        requirement={"TelemetryAssertions": ASSERTIONS if has_service_context else {}},
+        execution_history={
+            "Events": [
+                {"EventType": "ChainedInvokeStarted", "ChainedInvokeStartedDetails": {"DurableExecutionArn": CHILD}}
+            ]
+        },
+        output_dir=tmp_path,
+        options={
+            "otel_backend": "failing",
+            "otel_service_name": "service",
+            "otel_poll_timeout": 1,
+            "otel_poll_interval": 0,
+            "otel_poll_attempts": 1,
+            "otel_write_trace_artifact": False,
+        },
+        aws_clients={"lambda": client},
+    )
+    assert OtelExtension().validate_telemetry(context) == [
+        "OpenTelemetry backend validation failed: backend lookup failed"
+    ]
+    artifact = tmp_path / "otel-invocation-11-otel.json"
+    if has_service_context:
+        client.get_durable_execution.assert_called_once_with(DurableExecutionArn=CHILD)
+        assert json.loads(artifact.read_text()) == {
+            "trace_unavailable": True,
+            "execution_trace_contexts": {CHILD: {"trace_id": "1" * 32, "parent_span_id": "2" * 16, "sampled": True}},
+            "full_trace_ancestry_checked": False,
+        }
+    else:
+        client.get_durable_execution.assert_not_called()
+        assert not artifact.exists()

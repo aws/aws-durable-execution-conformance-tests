@@ -297,13 +297,14 @@ class OtelExtension:
             if errors or execution_trace_contexts or bool(options.get("otel_write_trace_artifact")):
                 self._write_artifact(context, _trace_evidence(trace, execution_trace_contexts, full_trace_ancestry))
             return [f"OpenTelemetry: {error}" for error in errors]
-        except TelemetryTimeout as exc:
-            if exc.latest_trace is not None or execution_trace_contexts:
+        except BackendError as exc:
+            latest_trace = exc.latest_trace if isinstance(exc, TelemetryTimeout) else None
+            if latest_trace is not None or execution_trace_contexts:
                 self._write_artifact(
-                    context, _trace_evidence(exc.latest_trace, execution_trace_contexts, full_trace_ancestry)
+                    context, _trace_evidence(latest_trace, execution_trace_contexts, full_trace_ancestry)
                 )
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
-        except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:
+        except (PluginDiscoveryError, KeyError, ValueError) as exc:
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
 
     def _exporter_options(self, args: argparse.Namespace) -> ExporterOptions:
