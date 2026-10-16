@@ -235,7 +235,7 @@ def _select_span_matches(
         if (
             BackendFeatureDisparity.UNSET_STATUS not in feature_disparities
             or len(matches) <= expected_count
-            or selector.get("status") not in {"UNSET", "OK"}
+            or selector.get("status") not in ("UNSET", "OK")
         ):
             return matches
         ordered = sorted(
@@ -1243,12 +1243,14 @@ def _chained_invoke_errors(
     expected: Any,
     query: TelemetryQuery,
     *,
+    feature_disparities: Collection[BackendFeatureDisparity],
     full_ancestry: bool,
 ) -> list[str]:
     if expected is None:
         return []
     if not _is_sequence(expected):
         return ["chained_invokes must be a sequence of mappings"]
+    serialized_spans = [span_to_dict(span) for span in trace.spans]
     errors = []
     for index, item in enumerate(expected):
         path = f"chained_invokes[{index}]"
@@ -1270,11 +1272,11 @@ def _chained_invoke_errors(
             errors.extend(schema)
             continue
         assert isinstance(parent, Mapping) and isinstance(child_arn, str)
-        parents = [span for span in trace.spans if _matches_span(parent, span_to_dict(span), ())]
+        parents = _select_span_matches(parent, serialized_spans, (), 1, feature_disparities)
         if len(parents) != 1:
             errors.append(f"{path}.parent must select exactly one span; found {len(parents)}")
             continue
-        ancestor = parents[0]
+        ancestor = trace.spans[parents[0][0]]
         carrier = query.execution_trace_contexts.get(child_arn)
         if carrier is None:
             errors.append(f"{path}: missing actual child GetDurableExecution trace context")
@@ -1312,7 +1314,13 @@ def validate_trace(
 
     errors: list[str] = []
     errors.extend(
-        _chained_invoke_errors(trace, assertions.get("chained_invokes"), query, full_ancestry=full_trace_ancestry)
+        _chained_invoke_errors(
+            trace,
+            assertions.get("chained_invokes"),
+            query,
+            feature_disparities=feature_disparities,
+            full_ancestry=full_trace_ancestry,
+        )
     )
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:

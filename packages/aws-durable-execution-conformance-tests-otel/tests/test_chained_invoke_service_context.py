@@ -21,7 +21,12 @@ from aws_durable_execution_conformance_tests_otel.chained_invoke import (
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import ExecutionTraceContext, Span, TelemetryQuery, Trace
-from aws_durable_execution_conformance_tests_otel.polling import BackendError, PollingBackend, RetryableBackendError
+from aws_durable_execution_conformance_tests_otel.polling import (
+    BackendError,
+    BackendFeatureDisparity,
+    PollingBackend,
+    RetryableBackendError,
+)
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 ROOT = "1-11111111-111111111111111111111111"
@@ -136,6 +141,133 @@ def test_received_parent_must_be_first_segment_even_when_replay_span_has_same_tr
         replace(query, execution_trace_contexts={CHILD: carrier}),
     )
     assert any("Parent differs from the selected first invoke" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("normalized", [False, True])
+def test_chained_parent_status_selects_first_segment_with_declared_disparity(normalized: bool) -> None:
+    trace, query = _fixture()
+    first = replace(trace.spans[0], status="OK" if normalized else "UNSET")
+    replay = replace(
+        first,
+        span_id="5" * 16,
+        status="OK",
+        start_time=first.start_time + timedelta(seconds=1),
+        end_time=first.end_time + timedelta(seconds=1),
+        attributes={**first.attributes, "durable.operation.status": "SUCCEEDED"},
+    )
+    trace = replace(trace, spans=(replay, first, *trace.spans[1:]))
+    assertions = {
+        **ASSERTIONS,
+        "chained_invokes": [
+            {"child_execution_arn": CHILD, "parent": {"name": "otel-invoke", "status": "UNSET"}, "sampled": True}
+        ],
+    }
+    disparities = (BackendFeatureDisparity.UNSET_STATUS,)
+    if normalized:
+        assert validate_trace(trace, assertions, query) == [
+            "chained_invokes[0].parent must select exactly one span; found 0"
+        ]
+    assert validate_trace(trace, assertions, query, feature_disparities=disparities) == []
+    wrong_carrier = replace(query.execution_trace_contexts[CHILD], parent_span_id=replay.span_id)
+    errors = validate_trace(
+        trace,
+        assertions,
+        replace(query, execution_trace_contexts={CHILD: wrong_carrier}),
+        feature_disparities=disparities,
+    )
+    assert errors == ["chained_invokes[0]: child service Parent differs from the selected first invoke span ID"]
+
+
+def test_chained_parent_prefers_exact_status_over_an_earlier_fallback_match() -> None:
+    trace, query = _fixture()
+    fallback = replace(
+        trace.spans[0],
+        span_id="5" * 16,
+        status="OK",
+        start_time=trace.spans[0].start_time - timedelta(seconds=1),
+        end_time=trace.spans[0].end_time - timedelta(seconds=1),
+    )
+    assertions = {
+        **ASSERTIONS,
+        "chained_invokes": [
+            {"child_execution_arn": CHILD, "parent": {"name": "otel-invoke", "status": "UNSET"}, "sampled": True}
+        ],
+    }
+    assert (
+        validate_trace(
+            replace(trace, spans=(fallback, *trace.spans)),
+            assertions,
+            query,
+            feature_disparities=(BackendFeatureDisparity.UNSET_STATUS,),
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("status", ["*", "${/.*/}", {"$any_of": ["UNSET", "OK"]}])
+def test_chained_parent_keeps_ambiguous_status_matchers_strict(status: object) -> None:
+    trace, query = _fixture()
+    replay = replace(trace.spans[0], span_id="5" * 16, status="OK")
+    assertions = {
+        **ASSERTIONS,
+        "chained_invokes": [
+            {"child_execution_arn": CHILD, "parent": {"name": "otel-invoke", "status": status}, "sampled": True}
+        ],
+    }
+    assert validate_trace(
+        replace(trace, spans=(*trace.spans, replay)),
+        assertions,
+        query,
+        feature_disparities=(BackendFeatureDisparity.UNSET_STATUS,),
+    ) == ["chained_invokes[0].parent must select exactly one span; found 2"]
+
+
+@pytest.mark.parametrize("field", ["Root", "Sampled", "missing"])
+def test_chained_parent_status_disparity_keeps_actual_service_context_strict(field: str) -> None:
+    trace, query = _fixture()
+    trace = replace(trace, spans=(replace(trace.spans[0], status="OK"), *trace.spans[1:]))
+    assertions = {
+        **ASSERTIONS,
+        "chained_invokes": [
+            {"child_execution_arn": CHILD, "parent": {**PARENT_SELECTOR, "status": "UNSET"}, "sampled": True}
+        ],
+    }
+    carrier = query.execution_trace_contexts[CHILD]
+    if field == "Root":
+        carrier = replace(carrier, trace_id="9" * 32)
+    elif field == "Sampled":
+        carrier = replace(carrier, sampled=False)
+    errors = validate_trace(
+        trace,
+        assertions,
+        replace(query, execution_trace_contexts={} if field == "missing" else {CHILD: carrier}),
+        feature_disparities=(BackendFeatureDisparity.UNSET_STATUS,),
+    )
+    assert any(field in error for error in errors), errors
+    assert not any("must select exactly one" in error for error in errors), errors
+
+
+def test_chained_parent_status_disparity_keeps_full_backend_ancestry_strict() -> None:
+    trace, query = _fixture()
+    first = replace(trace.spans[0], status="OK")
+    infrastructure = replace(first, span_id="f" * 16, name="Lambda", parent_span_id=first.span_id, attributes={})
+    assertions = {
+        **ASSERTIONS,
+        "chained_invokes": [
+            {"child_execution_arn": CHILD, "parent": {**PARENT_SELECTOR, "status": "UNSET"}, "sampled": True}
+        ],
+    }
+    trace = replace(trace, spans=(first, *trace.spans[1:], infrastructure))
+    disparities = (BackendFeatureDisparity.UNSET_STATUS,)
+    assert validate_trace(trace, assertions, query, feature_disparities=disparities, full_trace_ancestry=True) == []
+    errors = validate_trace(
+        replace(trace, spans=(*trace.spans[:-1], replace(infrastructure, parent_span_id=None))),
+        assertions,
+        query,
+        feature_disparities=disparities,
+        full_trace_ancestry=True,
+    )
+    assert len(errors) == 2 and all("does not reach ancestor" in error for error in errors), errors
 
 
 def test_service_carrier_qualifies_partial_sdk_export_but_not_full_backend_ancestry() -> None:
