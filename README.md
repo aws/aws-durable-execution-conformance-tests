@@ -33,7 +33,7 @@ the same CLI:
 pip install aws-durable-execution-conformance-tests-otel
 ```
 
-The OTel `0.2.x` line requires core `>=1.0,<2.0`.
+The OTel package requires core `>=1.1.0,<2.0.0`.
 
 ## Development
 
