@@ -16,10 +16,10 @@ handler: |
   where fn-start is the SDK's per-attempt / user-function start hook fired for
   the CONTEXT-type branch functions, and `isReplayingChildren` is the info's
   own children-replay indicator (true when the context function re-runs so its
-  checkpointed child operations replay). subType tokens vary in casing/style
-  per SDK and are asserted case-insensitively. Attempt-end hooks are NOT
-  probed here: end-hook semantics for a suspending context run are
-  SDK-divergent and out of scope. Every record also carries a
+  checkpointed child operations replay). subType token casing/style is
+  implementation-specific; tokens are asserted case-insensitively. Attempt-end
+  hooks are NOT probed here: end-hook semantics for a suspending context run
+  are implementation-specific and out of scope. Every record also carries a
   `durableExecutionArn` field (ARN captured at invocation-start, unasserted)
   so the runner's CloudWatch filter can scope logs to the execution.
 invocations: |
@@ -85,8 +85,8 @@ ExpectedLogs:
     count: 1
   # Each branch function runs live at least once (branch-a in invocation 1,
   # branch-b in the replay invocation) with children-replay=false. At-least:
-  # some SDKs also re-run a COMPLETED childless branch function during replay,
-  # legitimately reporting false again.
+  # an implementation may also re-run a COMPLETED childless branch function
+  # during replay, legitimately reporting false again.
   - match:
       plugin: CONFPLUGIN
       hook: fn-start
