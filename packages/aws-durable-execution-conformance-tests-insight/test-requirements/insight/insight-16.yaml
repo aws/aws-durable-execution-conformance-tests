@@ -1,0 +1,92 @@
+---
+# insight-16: truncation Phase 2 — whole operations dropped oldest-first
+description: With a much smaller maxRecordSizeBytes the size limiter progresses past Phase 1 into Phase 2, dropping whole operations oldest-first; the oldest op is gone, the newest is retained and not truncated, and droppedOperations counts the removed operations
+handler: |
+  Handler `insight_truncation_operations` runs three named steps `bulk-1`, `bulk-2`,
+  `bulk-3` (in that order). Their results are NOT opted into the record, so no
+  per-operation result can be dropped in Phase 1; the sink exporter is injected with a
+  `maxRecordSizeBytes` small enough that the base record plus the three operation
+  entries still exceeds the limit, forcing the SDK's size limiter to drop whole
+  operations oldest-first (Phase 2) until the record fits. Nothing is fabricated — the
+  real limiter reacts to a real oversized record.
+invocations: |
+  - Single invocation: all three steps succeed and the execution reaches terminal
+    SUCCEEDED. The record still exceeds maxRecordSizeBytes after Phase 1 (no results to
+    drop), so the limiter drops whole operations starting with the oldest (`bulk-1`)
+    until it fits, setting truncated true and droppedOperations >= 1. `bulk-3` (newest)
+    is retained and, having had no result to drop, is not itself truncated.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: done
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: bulk-1
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: bulk-1
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    Name: bulk-2
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${ID2}
+    Name: bulk-2
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 6
+    Id: ${ID3}
+    Name: bulk-3
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 7
+    Id: ${ID3}
+    Name: bulk-3
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+        truncated: true
+        droppedOperations: '/^[1-9][0-9]*$/'
+      absent: [error, droppedInput, droppedOutput]
+      operations:
+        - select: {name: bulk-1}
+          count: 0
+        - select: {name: bulk-3}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+          absent: [parentId, result, error, truncated]

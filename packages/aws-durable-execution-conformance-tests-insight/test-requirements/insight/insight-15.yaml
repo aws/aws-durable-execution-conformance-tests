@@ -1,0 +1,205 @@
+---
+# insight-15: subtype coverage — step / wait / callback / child-context type+subType pairs
+description: With operationDetail full-tree, an execution exercising a step, a wait, a wait-for-callback, and a child context surfaces each operation with its correct type and subType pair
+async: true
+handler: |
+  Handler `insight_subtype_coverage` installs workflowInsight({ operationDetail:
+  "full-tree" }) with the sink exporter from env. Using only real SDK APIs it runs, in
+  one execution: `context.step("cover-step", ...)` (STEP/Step), `context.wait(
+  "cover-wait", { seconds: 1 })` (WAIT/Wait), `context.waitForCallback(
+  "cover-callback", ...)` completed by the conformance harness (CALLBACK/
+  WaitForCallback), and `context.runInChildContext("cover-child", ...)` (CONTEXT/
+  RunInChildContext) whose body runs a nested `context.step("cover-child-step", ...)`.
+  The wait and callback suspend the execution; childOperationsDepth is set so the
+  preserved child survives resume in full-tree mode.
+invocations: |
+  - Invocation 1: the `cover-step` step succeeds, then the `cover-wait` wait starts and
+    the execution suspends.
+  - Replay 1: the wait timer fires; `cover-wait` succeeds; the `cover-callback`
+    wait-for-callback starts and the execution suspends awaiting the token.
+  - Replay 2: the harness delivers the callback token; `cover-callback` succeeds; the
+    `cover-child` child context runs its nested `cover-child-step` and the execution
+    reaches terminal SUCCEEDED. Under full-tree the terminal record carries all four
+    named operations with their type/subType pairs.
+AsyncInvoke: true
+Variables:
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: '*'
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 1
+# History mirrors two validated core references. The wait segment follows
+# wait/2-1 (WaitStarted -> InvocationCompleted -> WaitSucceeded). The
+# wait-for-callback segment follows wait_for_callback/7-1: the SDK implements
+# context.waitForCallback(name, ...) as a NAMED runInChildContext with
+# SubType WaitForCallback, so the outer op is ContextStarted/ContextSucceeded
+# (SubType WaitForCallback, carrying Name), with an inner UNNAMED CallbackStarted/
+# CallbackSucceeded (SubType Callback, ParentId = outer) and an UNNAMED submitter
+# StepStarted/StepSucceeded (ParentId = outer). The child segment follows
+# child/3-1 (ContextStarted/ContextSucceeded SubType RunInChildContext with a
+# nested STEP/Step whose ParentId is the context Id). Per 7-1 the resuming
+# invocation ends InvocationCompleted -> ExecutionSucceeded.
+# Exact suspend/resume boundaries and terminal sequence confirmed at live validation.
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID_STEP}
+    Name: cover-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID_STEP}
+    Name: cover-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 4
+    Id: ${ID_WAIT}
+    Name: cover-wait
+    EventTimestamp: '*'
+    WaitStartedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 6
+    Id: ${ID_WAIT}
+    EventTimestamp: '*'
+    WaitSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: WaitForCallback
+    EventId: 7
+    Id: ${ID_WFC}
+    Name: cover-callback
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 8
+    Id: ${ID_CB}
+    ParentId: ${ID_WFC}
+    EventTimestamp: '*'
+    CallbackStartedDetails: '*'
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 9
+    Id: ${ID_SUB}
+    ParentId: ${ID_WFC}
+    EventTimestamp: '*'
+    StepStartedDetails: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 10
+    Id: ${ID_SUB}
+    ParentId: ${ID_WFC}
+    EventTimestamp: '*'
+    StepSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 11
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 12
+    Id: ${ID_CB}
+    ParentId: ${ID_WFC}
+    EventTimestamp: '*'
+    CallbackSucceededDetails: '*'
+  - EventType: ContextSucceeded
+    SubType: WaitForCallback
+    EventId: 13
+    Id: ${ID_WFC}
+    Name: cover-callback
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 14
+    Id: ${ID_CHILD}
+    Name: cover-child
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 15
+    Id: ${ID_CSTEP}
+    ParentId: ${ID_CHILD}
+    Name: cover-child-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 16
+    Id: ${ID_CSTEP}
+    ParentId: ${ID_CHILD}
+    Name: cover-child-step
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 17
+    Id: ${ID_CHILD}
+    Name: cover-child
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 18
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+  - EventType: ExecutionSucceeded
+    EventId: 19
+    EventTimestamp: '*'
+    ExecutionSucceededDetails: '*'
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: cover-step}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: cover-wait}
+          count: 1
+          expect:
+            id: ${OP2}
+            type: WAIT
+            subType: Wait
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: cover-callback}
+          count: 1
+          expect:
+            id: ${OP3}
+            type: CONTEXT
+            subType: WaitForCallback
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]
+        - select: {name: cover-child}
+          count: 1
+          expect:
+            id: ${OP4}
+            type: CONTEXT
+            subType: RunInChildContext
+            status: SUCCEEDED
+          absent: [parentId, result, error, truncated]

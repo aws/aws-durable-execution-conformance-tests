@@ -1,0 +1,57 @@
+---
+# insight-11: operation result opt-in — result present, equals checkpointed value
+description: A content.operations.overrides entry with an identity result transform opts the compute operation's result into the record; the value equals the checkpointed JSON result 42
+handler: |
+  Handler `insight_operation_result_opt_in` installs workflowInsight({ content: {
+  operations: { overrides: [{ operationName: "compute", result: (r) => r }] } } })
+  with the sink exporter from env. The override supplies an identity result transform
+  to opt the result in as-is (no reshaping — the SDK's own default JSON serialization
+  is used). It runs `context.step("compute", ...)` that returns 42.
+invocations: |
+  - Single invocation: `compute` succeeds and returns 42; the SDK checkpoints it as
+    JSON. The plugin JSON-parses the checkpointed result and, via the opted-in
+    identity transform, includes it on the operation record.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 42
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: compute
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: compute
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: compute}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+            result: 42
+          absent: [parentId, error, truncated]

@@ -1,0 +1,36 @@
+---
+# insight-8: sampling excluded — no record emitted
+description: With samplingRate 0 the execution is sampled out entirely and emits no WorkflowInsight record (record_count 0)
+handler: |
+  Handler `insight_sampling_excluded` installs workflowInsight({ samplingRate: 0 })
+  with the sink exporter from env. It runs a single `context.step("greet", ...)` that
+  succeeds. samplingRate 0 means every execution is sampled out.
+invocations: |
+  - Single invocation: the step succeeds and the execution reaches terminal
+    SUCCEEDED, but because the per-execution sampling decision is out (rate 0) the
+    plugin never schedules or exports a record.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  record_count: 0

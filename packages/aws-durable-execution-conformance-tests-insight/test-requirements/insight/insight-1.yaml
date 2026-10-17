@@ -1,0 +1,56 @@
+---
+# insight-1: Basic success — one terminal record with a single top-level STEP op
+description: Basic success emits exactly one terminal WorkflowInsight record with a single successful top-level step named greet, echoing input and output, no error or truncation
+handler: |
+  Handler `insight_basic_success` installs workflowInsight({}) with default config
+  (emitMode on-complete, operationDetail top-level, full content) and the sink
+  exporter injected from env. It runs a single `context.step("greet", ...)` that
+  returns the greeting and returns that value.
+invocations: |
+  - Single invocation: the step `greet` succeeds on its first attempt, the execution
+    reaches terminal SUCCEEDED, and the plugin emits exactly one record on complete.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        functionName: '*'
+        input: World
+        output: Hello, World!
+      absent: [error, truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: greet}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: SUCCEEDED
+            attempt: 1
+          absent: [parentId, result, error, truncated]

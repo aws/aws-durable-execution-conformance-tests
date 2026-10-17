@@ -1,0 +1,59 @@
+---
+# insight-10: operation errors excluded — record error kept, op error absent
+description: With content.operations.includeErrors false the execution-level error is still recorded (non-empty error.name), but per-operation error detail is omitted from the failed step
+handler: |
+  Handler `insight_errors_excluded` installs workflowInsight({ content: {
+  operations: { includeErrors: false } } }) with the sink exporter from env. It runs
+  a single `context.step("failing-step", ...)` that throws a typed `InsightTestError` (each SDK surfaces its own wrapper/class name);
+  the error propagates and the execution terminates FAILED.
+invocations: |
+  - Single invocation: the step throws, the execution reaches terminal FAILED. The
+    record keeps the top-level execution error (includeErrors gates only operation
+    errors), but the operation's own error field is omitted.
+Input: World
+ExpectedResult:
+  ExecutionStatus: FAILED
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: failing-step
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: failing-step
+    EventTimestamp: '*'
+    StepFailedDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 5
+    EventTimestamp: '*'
+    ExecutionFailedDetails: '*'
+InsightAssertions:
+  requires: [OPERATIONS_ARRAY]
+  record_count: 1
+  records:
+    - expect:
+        recordType: WorkflowInsight
+        schemaVersion: '1.0'
+        status: FAILED
+        functionName: '*'
+        error:
+          name: '/.+/'
+      absent: [truncated, droppedOperations, droppedInput, droppedOutput]
+      operations:
+        - select: {name: failing-step}
+          count: 1
+          expect:
+            id: ${OP1}
+            type: STEP
+            subType: Step
+            status: FAILED
+          absent: [parentId, result, error, truncated]

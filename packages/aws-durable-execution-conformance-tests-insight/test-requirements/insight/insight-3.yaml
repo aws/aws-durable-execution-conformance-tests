@@ -1,0 +1,35 @@
+---
+# insight-3: on-failure + success — no record emitted
+description: With emitMode on-failure, a successful execution emits no WorkflowInsight record at all (record_count 0)
+handler: |
+  Handler `insight_on_failure_success` installs workflowInsight({ emitMode:
+  "on-failure" }) with the sink exporter from env. It runs a single
+  `context.step("greet", ...)` that succeeds and returns the greeting.
+invocations: |
+  - Single invocation: the step succeeds and the execution reaches terminal
+    SUCCEEDED. Because emitMode is on-failure, the plugin emits nothing.
+Input: World
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: Hello, World!
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: greet
+    EventTimestamp: '*'
+    StepSucceededDetails: {}
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+InsightAssertions:
+  record_count: 0
