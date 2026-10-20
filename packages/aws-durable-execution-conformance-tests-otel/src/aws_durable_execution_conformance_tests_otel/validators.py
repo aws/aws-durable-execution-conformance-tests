@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -20,6 +21,14 @@ from aws_durable_execution_conformance_tests_otel.model import (
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
 )
+
+
+@dataclass
+class TraceValidationDetails:
+    """Checks actually performed on the most recently validated trace."""
+
+    full_trace_ancestry_checked: bool = False
+
 
 _EXECUTION_ATTRIBUTE_KEYS = (
     "aws.lambda.durable_execution.arn",
@@ -1245,13 +1254,14 @@ def _chained_invoke_errors(
     *,
     feature_disparities: Collection[BackendFeatureDisparity],
     full_ancestry: bool,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     if expected is None:
-        return []
+        return [], False
     if not _is_sequence(expected):
-        return ["chained_invokes must be a sequence of mappings"]
+        return ["chained_invokes must be a sequence of mappings"], False
     serialized_spans = [span_to_dict(span) for span in trace.spans]
     errors = []
+    checked_children = 0
     for index, item in enumerate(expected):
         path = f"chained_invokes[{index}]"
         if not isinstance(item, Mapping):
@@ -1299,7 +1309,9 @@ def _chained_invoke_errors(
                 errors.append(f"{path}: child {root.name} trace ID differs from its service Root")
             if full_ancestry:
                 errors.extend(_descendant_errors(root, ancestor, trace, path=f"{path}.{root.name}.descendant_of"))
-    return errors
+        if full_ancestry and {span.name for span in roots} == {"Workflow", "Invocation"}:
+            checked_children += 1
+    return errors, bool(expected) and checked_children == len(expected)
 
 
 def validate_trace(
@@ -1309,19 +1321,19 @@ def validate_trace(
     *,
     feature_disparities: Collection[BackendFeatureDisparity] = (),
     full_trace_ancestry: bool = False,
+    details: TraceValidationDetails | None = None,
 ) -> list[str]:
     """Validate stable integration invariants without prescribing span schemas."""
 
-    errors: list[str] = []
-    errors.extend(
-        _chained_invoke_errors(
-            trace,
-            assertions.get("chained_invokes"),
-            query,
-            feature_disparities=feature_disparities,
-            full_ancestry=full_trace_ancestry,
-        )
+    errors, ancestry_checked = _chained_invoke_errors(
+        trace,
+        assertions.get("chained_invokes"),
+        query,
+        feature_disparities=feature_disparities,
+        full_ancestry=full_trace_ancestry,
     )
+    if details is not None:
+        details.full_trace_ancestry_checked = ancestry_checked
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")

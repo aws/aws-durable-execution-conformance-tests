@@ -44,7 +44,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     PollingPolicy,
 )
 from aws_durable_execution_conformance_tests_otel.redaction import redact
-from aws_durable_execution_conformance_tests_otel.validators import validate_trace
+from aws_durable_execution_conformance_tests_otel.validators import TraceValidationDetails, validate_trace
 
 DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
 
@@ -64,12 +64,12 @@ SUPPORT_MATRIX = frozenset(
 
 
 def _trace_evidence(
-    trace: Trace | None, contexts: Mapping[str, ExecutionTraceContext], full_trace_ancestry: bool
+    trace: Trace | None, contexts: Mapping[str, ExecutionTraceContext], full_trace_ancestry_checked: bool
 ) -> dict[str, Any]:
     payload: dict[str, Any] = trace_to_dict(trace) if trace is not None else {"trace_unavailable": True}
     if contexts:
         payload["execution_trace_contexts"] = {arn: asdict(carrier) for arn, carrier in contexts.items()}
-        payload["full_trace_ancestry_checked"] = full_trace_ancestry and trace is not None
+        payload["full_trace_ancestry_checked"] = full_trace_ancestry_checked and trace is not None
     return payload
 
 
@@ -204,6 +204,7 @@ class OtelExtension:
         options = context.options
         execution_trace_contexts: dict[str, ExecutionTraceContext] = {}
         full_trace_ancestry = False
+        details = TraceValidationDetails()
         try:
             factories = self._backends()
             backend_name = str(options["otel_backend"])
@@ -283,6 +284,7 @@ class OtelExtension:
                         query,
                         feature_disparities=backend.feature_disparities,
                         full_trace_ancestry=full_trace_ancestry,
+                        details=details,
                     )
                 ),
             )
@@ -292,15 +294,19 @@ class OtelExtension:
                 query,
                 feature_disparities=backend.feature_disparities,
                 full_trace_ancestry=full_trace_ancestry,
+                details=details,
             )
             if errors or execution_trace_contexts or bool(options.get("otel_write_trace_artifact")):
-                self._write_artifact(context, _trace_evidence(trace, execution_trace_contexts, full_trace_ancestry))
+                self._write_artifact(
+                    context, _trace_evidence(trace, execution_trace_contexts, details.full_trace_ancestry_checked)
+                )
             return [f"OpenTelemetry: {error}" for error in errors]
         except BackendError as exc:
             latest_trace = exc.latest_trace
             if latest_trace is not None or execution_trace_contexts:
                 self._write_artifact(
-                    context, _trace_evidence(latest_trace, execution_trace_contexts, full_trace_ancestry)
+                    context,
+                    _trace_evidence(latest_trace, execution_trace_contexts, details.full_trace_ancestry_checked),
                 )
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
         except (PluginDiscoveryError, KeyError, ValueError) as exc:

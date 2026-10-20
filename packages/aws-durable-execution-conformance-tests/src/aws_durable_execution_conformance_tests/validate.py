@@ -679,8 +679,8 @@ class PollingValidator:
         """Poll execution history, handle callbacks, and assert results.
 
         When expected_result is None, polling stops as soon as the expected
-        event history is fully matched — without waiting for the execution
-        to reach a terminal state. When expected_result is provided, polling
+        event history is fully matched and matching callback follow-ups have
+        been delivered, without waiting for a terminal state. When expected_result is provided, polling
         continues until a terminal status is reached.
 
         Args:
@@ -827,6 +827,16 @@ class PollingValidator:
             # In history-only mode, stop polling once all expected
             # events are matched rather than waiting for terminal status.
             if history_only_mode and expected_events and not deferred_callback_ids:
+                # A heartbeat leaves its callback open for a matching follow-up.
+                # Deliver that action before accepting an already matched history.
+                if any(
+                    find_matching_action(
+                        callback, actions, used_action_indices | set(pending_action_indices.values()), self._context
+                    )[0]
+                    is not None
+                    for callback in extract_callback_events(actual_events, handled_callback_ids)
+                ):
+                    continue
                 matcher = EventHistoryMatcher(context=self._context)
                 match_result = matcher.match(expected_events, actual_events)
                 if match_result.success:

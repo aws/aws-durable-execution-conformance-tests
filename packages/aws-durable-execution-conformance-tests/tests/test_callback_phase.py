@@ -293,7 +293,10 @@ def test_one_action_two_matching_callbacks_preserve_delivery_time_rules(
     assert gated.errors == ordinary.errors
 
 
-def test_deferred_heartbeat_releases_allocation_for_followup_action(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("history_only", [False, True])
+def test_deferred_heartbeat_releases_allocation_for_followup_action(
+    monkeypatch: pytest.MonkeyPatch, history_only: bool
+) -> None:
     completed = [CALLBACK, {"EventId": 6, "EventType": "InvocationCompleted"}]
     service = Service([[CALLBACK], completed])
     heartbeats: list[tuple[int, dict[str, Any]]] = []
@@ -308,8 +311,8 @@ def test_deferred_heartbeat_releases_allocation_for_followup_action(monkeypatch:
     monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
     result = validate.PollingValidator(service).validate(
         ARN,
-        [{"EventId": 3}, {"EventId": 6}, {"EventId": 10}],
-        {"ExecutionStatus": "FAILED"},
+        [{"EventId": 3}, {"EventId": 6}] if history_only else [{"EventId": 3}, {"EventId": 6}, {"EventId": 10}],
+        None if history_only else {"ExecutionStatus": "FAILED"},
         [
             CallbackAction("target", "heartbeat", after_invocation_completed=True),
             CallbackAction("target", "failure"),
@@ -319,6 +322,31 @@ def test_deferred_heartbeat_releases_allocation_for_followup_action(monkeypatch:
     assert result.callbacks_sent == 2
     assert heartbeats == [(2, {"CallbackId": "target-capability"})]
     assert service.requests == [(3, {"CallbackId": "target-capability"})]
+
+
+@pytest.mark.parametrize("unmatched_action", [False, True])
+def test_history_only_heartbeat_without_matching_followup_can_finish(
+    monkeypatch: pytest.MonkeyPatch, unmatched_action: bool
+) -> None:
+    completed = [CALLBACK, {"EventId": 6, "EventType": "InvocationCompleted"}]
+    service = Service([[CALLBACK], completed])
+    heartbeats: list[dict[str, Any]] = []
+
+    def heartbeat(**kwargs: Any) -> dict:
+        heartbeats.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(service, "send_durable_execution_callback_heartbeat", heartbeat, raising=False)
+    monkeypatch.setattr(validate, "get_execution_history", service.history)
+    ticks = count()
+    monkeypatch.setattr(validate, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None))
+    actions = [CallbackAction("target", "heartbeat", after_invocation_completed=True)]
+    if unmatched_action:
+        actions.append(CallbackAction("other", "failure"))
+    result = validate.PollingValidator(service).validate(ARN, [{"EventId": 3}, {"EventId": 6}], None, actions)
+    assert result.passed and result.callbacks_sent == 1
+    assert heartbeats == [{"CallbackId": "target-capability"}]
+    assert len(service.reads) == 2
 
 
 @pytest.mark.parametrize("operation", ["success", "failure", "heartbeat"])

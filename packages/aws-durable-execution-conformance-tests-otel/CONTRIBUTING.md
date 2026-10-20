@@ -269,6 +269,10 @@ whether full ancestry was checked, including a failing trace when available.
 If no correlated trace is returned, the failure artifact still preserves the
 observed service context with `trace_unavailable: true`. It contains no fabricated
 trace ID or spans and records that full ancestry was not checked.
+Backend support alone does not set `full_trace_ancestry_checked`: every requested
+child must have both its Workflow and Invocation parent chains checked. Ambiguous
+caller selection or missing child roots leaves this flag false. A true flag
+records that the checks ran, not that they passed.
 Case 11 tests the sampled-positive boundary. Existing SDK sampling controls cover
 explicit zero and missing decisions; absence of exported telemetry is never
 accepted as evidence of correct unsampled propagation.

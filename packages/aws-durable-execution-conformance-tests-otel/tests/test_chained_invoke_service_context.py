@@ -424,6 +424,85 @@ def test_extension_reads_and_preserves_actual_service_evidence_on_pass_and_failu
         assert "spans" not in evidence
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "complete",
+        "ambiguous-parent",
+        "missing-Workflow",
+        "missing-Invocation",
+        "missing-both",
+        "ambiguous-after-complete",
+    ],
+)
+def test_artifact_reports_only_ancestry_checks_that_ran(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
+) -> None:
+    trace, _ = _fixture()
+    infrastructure = replace(trace.spans[0], span_id="f" * 16, name="Lambda", parent_span_id="2" * 16, attributes={})
+    complete = replace(trace, spans=(*trace.spans, infrastructure))
+    trace = complete
+    if shape.startswith("ambiguous"):
+        trace = replace(trace, spans=(*trace.spans, replace(trace.spans[0], span_id="6" * 16)))
+    elif shape.startswith("missing"):
+        missing = {"Workflow", "Invocation"} if shape == "missing-both" else {shape.removeprefix("missing-")}
+        trace = replace(trace, spans=tuple(span for span in trace.spans if span.name not in missing))
+
+    class Backend(PollingBackend):
+        name = "test"
+        provides_infrastructure_ancestry = True
+        attempts = 0
+
+        def _lookup(self, _query: TelemetryQuery) -> Trace | None:
+            self.attempts += 1
+            return complete if shape == "ambiguous-after-complete" and self.attempts == 1 else trace
+
+    backend = Backend(monotonic=lambda: 0, sleep=lambda _delay: None)
+    monkeypatch.setattr(
+        OtelExtension,
+        "_backends",
+        staticmethod(lambda: {"test": SimpleNamespace(create=lambda *_args, **_kwargs: backend)}),
+    )
+    client = Mock()
+    client.get_durable_execution.return_value = {"TraceHeader": {"XAmznTraceId": HEADER}}
+    context = ValidationContext(
+        description_id="otel-invocation-11",
+        function_name="caller",
+        execution_arn="arn:caller",
+        invocation_started_at_ms=1,
+        invocation_finished_at_ms=2,
+        region="us-west-2",
+        language="python",
+        requirement={
+            "TelemetryAssertions": {**ASSERTIONS, "quiescence_seconds": 1 if shape == "ambiguous-after-complete" else 0}
+        },
+        execution_history={
+            "Events": [
+                {"EventType": "ChainedInvokeStarted", "ChainedInvokeStartedDetails": {"DurableExecutionArn": CHILD}}
+            ]
+        },
+        output_dir=tmp_path,
+        options={
+            "otel_backend": "test",
+            "otel_service_name": "service",
+            "otel_poll_timeout": 1,
+            "otel_poll_interval": 0,
+            "otel_poll_attempts": 2 if shape == "ambiguous-after-complete" else 1,
+        },
+        aws_clients={"lambda": client},
+    )
+    errors = OtelExtension().validate_telemetry(context)
+    if shape == "complete":
+        assert errors == []
+    elif shape.startswith("ambiguous"):
+        assert any("parent must select exactly one span; found 2" in error for error in errors)
+    else:
+        assert any("child Workflow and Invocation telemetry are required" in error for error in errors)
+    evidence = json.loads((tmp_path / "otel-invocation-11-otel.json").read_text())
+    assert evidence["full_trace_ancestry_checked"] is (shape == "complete")
+    assert len(evidence["spans"]) == len(trace.spans)
+
+
 @pytest.mark.parametrize("error_type", [BackendError, RetryableBackendError])
 @pytest.mark.parametrize("has_service_context", [False, True])
 def test_extension_preserves_service_context_after_backend_lookup_failure(
