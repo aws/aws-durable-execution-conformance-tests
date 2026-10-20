@@ -327,13 +327,14 @@ def test_telemetry_assertions_resolve_history_and_execution_variables(
 
 
 @pytest.mark.parametrize("has_trace", [False, True])
-def test_quiescence_timeout_keeps_failure_and_writes_latest_trace(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, has_trace: bool
+@pytest.mark.parametrize("failure", ["timeout", "backend"])
+def test_backend_failure_keeps_failure_and_writes_latest_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, has_trace: bool, failure: str
 ) -> None:
     from datetime import UTC, datetime
 
     from aws_durable_execution_conformance_tests_otel.model import Span
-    from aws_durable_execution_conformance_tests_otel.polling import PollingBackend
+    from aws_durable_execution_conformance_tests_otel.polling import BackendError, PollingBackend
 
     now = datetime.now(UTC)
     observed = Span(
@@ -350,8 +351,12 @@ def test_quiescence_timeout_keeps_failure_and_writes_latest_trace(
 
     class Backend(PollingBackend):
         name = "test"
+        attempts = 0
 
         def _lookup(self, _query: TelemetryQuery) -> Trace | None:
+            self.attempts += 1
+            if failure == "backend" and self.attempts == 2:
+                raise BackendError("backend lookup failed")
             return latest if has_trace else None
 
     backend = Backend(monotonic=lambda: 0.0, sleep=lambda _delay: None)
@@ -369,18 +374,27 @@ def test_quiescence_timeout_keeps_failure_and_writes_latest_trace(
         execution_history={},
         output_dir=tmp_path,
         placeholders={},
-        options={**vars(_args("adot", "xray")), "otel_poll_attempts": 1, "otel_write_trace_artifact": False},
+        options={
+            **vars(_args("adot", "xray")),
+            "otel_poll_attempts": 2 if failure == "backend" else 1,
+            "otel_write_trace_artifact": failure == "backend",
+        },
         aws_clients={},
     )
     errors = OtelExtension().validate_telemetry(context)
     assert len(errors) == 1 and "backend validation failed" in errors[0]
+    if failure == "backend":
+        assert errors == ["OpenTelemetry backend validation failed: backend lookup failed"]
+        assert backend.attempts == 2
     artifact = tmp_path / "otel-quiescence-otel.json"
     if has_trace:
-        assert "did not remain valid and unchanged" in errors[0]
+        if failure == "timeout":
+            assert "did not remain valid and unchanged" in errors[0]
         saved = json.loads(artifact.read_text())
         assert saved["trace_id"] == latest.trace_id
         assert len(saved["spans"]) == 2
         assert saved["spans"][0] == saved["spans"][1]
     else:
-        assert "No correlated trace" in errors[0]
+        if failure == "timeout":
+            assert "No correlated trace" in errors[0]
         assert not artifact.exists()

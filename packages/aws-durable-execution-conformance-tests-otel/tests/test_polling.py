@@ -157,6 +157,25 @@ def test_polling_does_not_retry_non_retryable_errors() -> None:
     assert backend.sleeps == []
 
 
+@pytest.mark.parametrize("acceptable", [False, True])
+def test_polling_keeps_observed_trace_when_a_later_lookup_fails(acceptable: bool) -> None:
+    observed = Trace(trace_id="1" * 32, spans=())
+    error = BackendError("authentication failed")
+    backend = _Backend([observed, error])
+
+    with pytest.raises(BackendError, match="authentication failed") as raised:
+        backend.find_trace(
+            _query(),
+            PollingPolicy(timeout_seconds=10, interval_seconds=1, max_attempts=3, quiescence_seconds=2),
+            accept=lambda _trace: acceptable,
+        )
+
+    assert raised.value is error
+    assert error.latest_trace is observed
+    assert backend.attempts == 2
+    assert backend.sleeps == [1]
+
+
 def test_polling_preserves_exhausted_retryable_error() -> None:
     rate_limit = RetryableBackendError("HTTP 429 Too Many Requests")
     backend = _Backend([rate_limit, rate_limit])
@@ -323,8 +342,9 @@ def test_quiescence_restarts_when_an_acceptable_trace_gains_data() -> None:
     assert backend.attempts == 4
 
 
-def test_timeout_preserves_runtime_error_argument_compatibility() -> None:
-    assert TelemetryTimeout().args == ()
-    error = TelemetryTimeout("expired", 2)
+@pytest.mark.parametrize("error_type", [BackendError, TelemetryTimeout])
+def test_backend_error_preserves_runtime_error_argument_compatibility(error_type: type[BackendError]) -> None:
+    assert error_type().args == ()
+    error = error_type("expired", 2)
     assert error.args == ("expired", 2)
     assert error.latest_trace is None

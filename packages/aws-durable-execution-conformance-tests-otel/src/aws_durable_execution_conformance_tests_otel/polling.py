@@ -19,6 +19,10 @@ from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, T
 class BackendError(RuntimeError):
     """Provider-neutral telemetry backend failure."""
 
+    def __init__(self, *args: object, latest_trace: Trace | None = None) -> None:
+        super().__init__(*args)
+        self.latest_trace = latest_trace
+
 
 class RetryableBackendError(BackendError):
     """Transient backend failure that may include a server-requested delay."""
@@ -35,10 +39,6 @@ class RetryableBackendError(BackendError):
 
 class TelemetryTimeout(BackendError):
     """Polling failed to find or stabilize a trace within its budget."""
-
-    def __init__(self, *args: object, latest_trace: Trace | None = None) -> None:
-        super().__init__(*args)
-        self.latest_trace = latest_trace
 
 
 class BackendFeatureDisparity(StrEnum):
@@ -116,6 +116,9 @@ class PollingBackend(ABC):
                 stable_signature = None
                 if exc.retry_after_seconds is not None:
                     delay_seconds = max(delay_seconds, exc.retry_after_seconds)
+            except BackendError as exc:
+                exc.latest_trace = latest_trace
+                raise
             else:
                 latest_retryable_error = None
                 if trace is not None:

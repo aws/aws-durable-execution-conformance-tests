@@ -42,7 +42,6 @@ from aws_durable_execution_conformance_tests_otel.model import (
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     PollingPolicy,
-    TelemetryTimeout,
 )
 from aws_durable_execution_conformance_tests_otel.redaction import redact
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
@@ -298,7 +297,7 @@ class OtelExtension:
                 self._write_artifact(context, _trace_evidence(trace, execution_trace_contexts, full_trace_ancestry))
             return [f"OpenTelemetry: {error}" for error in errors]
         except BackendError as exc:
-            latest_trace = exc.latest_trace if isinstance(exc, TelemetryTimeout) else None
+            latest_trace = exc.latest_trace
             if latest_trace is not None or execution_trace_contexts:
                 self._write_artifact(
                     context, _trace_evidence(latest_trace, execution_trace_contexts, full_trace_ancestry)
