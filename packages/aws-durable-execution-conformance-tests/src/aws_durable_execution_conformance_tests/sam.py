@@ -57,11 +57,15 @@ def delete_stack(stack_name: str, region: str | None = None) -> bool:
 class SamCliError(Exception):
     """Raised when a SAM CLI command exits with a non-zero exit code."""
 
-    def __init__(self, command: str, exit_code: int, stderr: str):
-        super().__init__(f"SAM CLI command failed (exit code {exit_code}): {stderr}")
+    def __init__(self, command: str, exit_code: int, stderr: str, *, stdout: str = ""):
+        message = f"SAM CLI command failed (exit code {exit_code}): {stderr}"
+        if stdout:
+            message += f"\nSAM CLI stdout:\n{stdout}"
+        super().__init__(message)
         self.command = command
         self.exit_code = exit_code
         self.stderr = stderr
+        self.stdout = stdout
 
 
 class BuildRequiredError(Exception):
@@ -570,6 +574,7 @@ class Deployer:
                 command=command_str,
                 exit_code=result.returncode,
                 stderr=stderr,
+                stdout=stdout,
             )
 
         return DeployResult(
