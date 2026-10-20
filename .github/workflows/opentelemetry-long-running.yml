@@ -413,7 +413,7 @@ jobs:
           steps.state.outputs.phase == 'launch' ||
           steps.check.outputs.rollover_ready == 'true'
         id: persist
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.STATE_ARTIFACT }}
           path: ${{ env.STATE_FILE }}
@@ -421,7 +421,7 @@ jobs:
 
       - name: Persist updated callback state
         if: steps.check.outputs.state_changed == 'true' && steps.check.outputs.rollover_ready != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.STATE_ARTIFACT }}
           path: ${{ env.STATE_FILE }}
@@ -431,7 +431,7 @@ jobs:
         if: >-
           always() && (env.PHASE == 'short' ||
           (steps.state.outputs.phase == 'check' && steps.state.outputs.active == 'true'))
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ inputs.language }}-otel-long-running-${{ inputs.view }}-results-${{ github.run_id }}
           path: |
