@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = (
     ROOT / "packages/aws-durable-execution-conformance-tests",
     ROOT / "packages/aws-durable-execution-conformance-tests-otel",
+    ROOT / "packages/aws-durable-execution-conformance-tests-telemetry",
 )
 
 

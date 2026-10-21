@@ -1,4 +1,4 @@
-"""Load the OTel extension and requirement resources from built wheels only."""
+"""Load the OTel and Telemetry extensions and requirement resources from built wheels only."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST_DIRS = (
     ROOT / "packages/aws-durable-execution-conformance-tests/dist",
     ROOT / "packages/aws-durable-execution-conformance-tests-otel/dist",
+    ROOT / "packages/aws-durable-execution-conformance-tests-telemetry/dist",
 )
 
 
@@ -43,22 +44,24 @@ def main() -> None:
             entry_points=entry_points,
         )
         requirements = registry.discover_requirements(
-            ["otel-invocation", "otel-execution", "otel-long-running"],
+            ["otel-invocation", "otel-execution", "otel-long-running", "telemetry"],
         )
 
         assert {
             "otel-invocation",
             "otel-execution",
             "otel-long-running",
+            "telemetry",
         } <= registry.suites.keys()
         assert set(requirements) == {
             *(f"otel-invocation-{case_number}" for case_number in range(1, 21)),
             *(f"otel-execution-{case_number}" for case_number in range(1, 21)),
             *(f"otel-long-running-{case_number}" for case_number in range(1, 5)),
+            "telemetry-1",
         }
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 
-    print("Verified wheel-only extension discovery and OTel requirement loading.")
+    print("Verified wheel-only extension discovery and OTel and Telemetry requirement loading.")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Verify both package archives contain their metadata and runtime resources."""
+"""Verify every package archive contains its metadata and runtime resources."""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ PACKAGES = {
         ROOT / "packages/aws-durable-execution-conformance-tests-otel/dist",
         "aws_durable_execution_conformance_tests_otel/test_requirements/otel-invocation/otel-invocation-1.yaml",
         "test-requirements/otel-invocation/otel-invocation-1.yaml",
+    ),
+    "aws-durable-execution-conformance-tests-telemetry": (
+        ROOT / "packages/aws-durable-execution-conformance-tests-telemetry/dist",
+        "aws_durable_execution_conformance_tests_telemetry/test_requirements/telemetry/telemetry-1.yaml",
+        "test-requirements/telemetry/telemetry-1.yaml",
     ),
 }
 
@@ -61,7 +66,7 @@ def main() -> None:
     if errors:
         print("\n".join(errors), file=sys.stderr)
         raise SystemExit(1)
-    print("Verified core and OpenTelemetry wheel/sdist metadata and resources.")
+    print("Verified core, OpenTelemetry, and Durable Execution Telemetry wheel/sdist metadata and resources.")
 
 
 if __name__ == "__main__":
