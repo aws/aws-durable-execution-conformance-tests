@@ -85,9 +85,7 @@ jobs:
       sdk_repository: aws/aws-durable-execution-sdk-python
       # Reference fixture implementing cases 1–26, including caught failure/replay.
       # Overridable on manual dispatch.
-      # TEMPORARY DIAGNOSTIC: NEVER MERGE or adopt this observer reference.
-      # Restore the exact normal workflow and SDK 3e8f9466c19d6ca3bd6bf5b8d6af76617ac643b7 after one run.
-      sdk_ref: ${{ inputs.sdk_ref || '0b5110a9fd9768adebff306bcdaa26b7ddb5abe8' }}
+      sdk_ref: ${{ inputs.sdk_ref || '3e8f9466c19d6ca3bd6bf5b8d6af76617ac643b7' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel
