@@ -37,6 +37,10 @@ TelemetryAssertions:
     - record:
         schemaVersion: '1.0'
         status: SUCCEEDED
+        emittedAt: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        startTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        endTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        durationMs: '*'
         input:
           value: 41
         output:
@@ -46,6 +50,11 @@ TelemetryAssertions:
       operations_by_name:
         increment:
           type: STEP
+          subType: Step
           status: SUCCEEDED
           count: 1
           failedCount: 0
+          maxAttempt: 1
+          minDurationMs: '*'
+          maxDurationMs: '*'
+          totalDurationMs: '*'

@@ -84,8 +84,8 @@ def test_valid_record_passes() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("input", {"value": 40}, "input: expected {'value': 41}, got {'value': 40}"),
-        ("output", {"value": 43}, "output: expected {'value': 42}, got {'value': 43}"),
+        ("input", {"value": 40}, "input.value: expected 41, got 40"),
+        ("output", {"value": 43}, "output.value: expected 42, got 43"),
         ("status", "FAILED", "status: expected 'SUCCEEDED', got 'FAILED'"),
         ("schemaVersion", "2.0", "schemaVersion: expected '1.0', got '2.0'"),
     ],
@@ -287,3 +287,174 @@ def test_validate_records_rejects_non_list_and_non_mapping_entry() -> None:
     assert validate_records([_telemetry(_record())], ["bad"], EXPECTED) == [
         "record[0]: TelemetryAssertions.records[0]: expected a mapping"
     ]
+
+
+# ---------------------------------------------------------------------------
+# Expected-value rules: '*', ${/regex/}, nested mappings and sequences
+# ---------------------------------------------------------------------------
+
+
+def _assertions_with_record(record_assertions: dict[str, Any]) -> dict[str, Any]:
+    assertions = deepcopy(ASSERTIONS)
+    assertions["record"] = record_assertions
+    return assertions
+
+
+@pytest.mark.parametrize("value", ["2026-10-19T20:00:00.000Z", 0, False, None, {}, []])
+def test_wildcard_accepts_any_present_value(value: Any) -> None:
+    record = _record()
+    record["emittedAt"] = value
+    assert validate_record(record, _assertions_with_record({"emittedAt": "*"}), EXPECTED) == []
+
+
+def test_wildcard_rejects_missing_field() -> None:
+    record = _record()
+    del record["durationMs"]
+    assert validate_record(record, _assertions_with_record({"durationMs": "*"}), EXPECTED) == [
+        "durationMs: expected '*', got <missing>"
+    ]
+
+
+ISO_8601 = "${/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$/}"
+
+
+def test_regex_matches_iso_timestamp() -> None:
+    assert validate_record(_record(), _assertions_with_record({"startTime": ISO_8601}), EXPECTED) == []
+
+
+@pytest.mark.parametrize("value", ["2026-10-19 20:00:00", 1760904000000, ""])
+def test_regex_rejects_non_matching_value(value: Any) -> None:
+    record = _record()
+    record["startTime"] = value
+    errors = validate_record(record, _assertions_with_record({"startTime": ISO_8601}), EXPECTED)
+    assert errors == [f"startTime: value {value!r} does not match regex pattern {ISO_8601[3:-2]!r}"]
+
+
+def test_regex_rejects_missing_field() -> None:
+    record = _record()
+    del record["endTime"]
+    assert validate_record(record, _assertions_with_record({"endTime": ISO_8601}), EXPECTED) == [
+        f"endTime: expected {ISO_8601!r}, got <missing>"
+    ]
+
+
+def test_wildcard_inside_nested_mapping() -> None:
+    record = _record()
+    record["output"] = {"value": 42, "generated": "anything"}
+    assertions = _assertions_with_record({"output": {"value": 42, "generated": "*"}})
+    assert validate_record(record, assertions, EXPECTED) == []
+    del record["output"]["generated"]
+    assert validate_record(record, assertions, EXPECTED) == ["output.generated: expected '*', got <missing>"]
+
+
+def test_nested_mapping_reports_each_leaf() -> None:
+    record = _record()
+    record["output"] = {"value": 43}
+    assert validate_record(record, _assertions_with_record({"output": {"value": 42}}), EXPECTED) == [
+        "output.value: expected 42, got 43"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "message"),
+    [
+        ({"value": 1}, {"value": True}, "output.value: expected 1, got True"),
+        ({"value": True}, {"value": 1}, "output.value: expected True, got 1"),
+        ({"value": 0}, {"value": False}, "output.value: expected 0, got False"),
+    ],
+)
+def test_nested_boolean_is_not_equal_to_integer(expected: Any, actual: Any, message: str) -> None:
+    record = _record()
+    record["output"] = actual
+    assert validate_record(record, _assertions_with_record({"output": expected}), EXPECTED) == [message]
+
+
+def test_mapping_expected_but_scalar_actual() -> None:
+    record = _record()
+    record["output"] = "42"
+    assert validate_record(record, _assertions_with_record({"output": {"value": 42}}), EXPECTED) == [
+        "output: expected mapping, got '42'"
+    ]
+
+
+def test_sequence_matches_pairwise_with_rules() -> None:
+    record = _record()
+    record["output"] = {"items": [1, "x", {"id": "abc"}]}
+    assertions = _assertions_with_record({"output": {"items": [1, "*", {"id": "${/^a/}"}]}})
+    assert validate_record(record, assertions, EXPECTED) == []
+    record["output"]["items"][2]["id"] = "zzz"
+    assert validate_record(record, assertions, EXPECTED) == [
+        "output.items[2].id: value 'zzz' does not match regex pattern '^a'"
+    ]
+
+
+def test_sequence_length_mismatch_is_one_error() -> None:
+    record = _record()
+    record["output"] = {"items": [1, 2]}
+    assert validate_record(record, _assertions_with_record({"output": {"items": [1]}}), EXPECTED) == [
+        "output.items: expected 1 item(s), got 2"
+    ]
+
+
+def test_sequence_expected_but_scalar_actual() -> None:
+    record = _record()
+    record["output"] = {"items": "1"}
+    assert validate_record(record, _assertions_with_record({"output": {"items": [1]}}), EXPECTED) == [
+        "output.items: expected sequence, got '1'"
+    ]
+
+
+def test_operation_summary_checks_every_listed_key() -> None:
+    assertions = deepcopy(ASSERTIONS)
+    assertions["operations_by_name"]["increment"].update(
+        {"subType": "Step", "maxAttempt": 1, "minDurationMs": "*", "maxDurationMs": "*", "totalDurationMs": "*"}
+    )
+    assert validate_record(_record(), assertions, EXPECTED) == []
+
+    record = _record()
+    record["operationsByName"]["increment"]["maxAttempt"] = 2
+    del record["operationsByName"]["increment"]["minDurationMs"]
+    assert validate_record(record, assertions, EXPECTED) == [
+        "operationsByName.increment.maxAttempt: expected 1, got 2",
+        "operationsByName.increment.minDurationMs: expected '*', got <missing>",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The shipped telemetry-1 requirement against a complete success record
+# ---------------------------------------------------------------------------
+
+
+def _telemetry_1_entry() -> dict[str, Any]:
+    from aws_durable_execution_conformance_tests.validate import discover_test_files, load_yaml_file
+    from aws_durable_execution_conformance_tests_telemetry.extension import TelemetryExtension
+
+    (suite,) = TelemetryExtension().requirement_suites()
+    requirement = load_yaml_file(discover_test_files(suite.root)["telemetry-1"])
+    (entry,) = requirement["TelemetryAssertions"]["records"]
+    return entry
+
+
+def test_telemetry_1_accepts_complete_success_record() -> None:
+    assert validate_record(_record(), _telemetry_1_entry(), EXPECTED) == []
+
+
+def _telemetry_1_asserted_paths() -> list[tuple[str, ...]]:
+    entry = _telemetry_1_entry()
+    paths: list[tuple[str, ...]] = [(key,) for key in entry["record"]]
+    for name, summary in entry["operations_by_name"].items():
+        paths.extend(("operationsByName", name, key) for key in summary)
+    return paths
+
+
+@pytest.mark.parametrize("path", _telemetry_1_asserted_paths(), ids=".".join)
+def test_telemetry_1_rejects_record_missing_each_asserted_field(path: tuple[str, ...]) -> None:
+    record = _record()
+    parent: dict[str, Any] = record
+    for key in path[:-1]:
+        parent = parent[key]
+    del parent[path[-1]]
+    errors = validate_record(record, _telemetry_1_entry(), EXPECTED)
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{'.'.join(path)}: expected ")
+    assert errors[0].endswith(", got <missing>")

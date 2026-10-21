@@ -46,5 +46,6 @@ def test_telemetry_assertions_expect_one_record_with_three_sections() -> None:
     entry = assertions["records"][0]
     assert set(entry) == {"record", "forbid_fields", "operations_by_name"}
     assert entry["record"]["schemaVersion"] == "1.0"
+    assert {"emittedAt", "startTime", "endTime", "durationMs"} <= set(entry["record"])
     assert entry["forbid_fields"] == ["error"]
     assert set(entry["operations_by_name"]) == {"increment"}

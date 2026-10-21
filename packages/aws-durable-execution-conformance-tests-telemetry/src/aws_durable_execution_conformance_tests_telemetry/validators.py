@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from aws_durable_execution_conformance_tests.history import get_regex_pattern
 from aws_durable_execution_conformance_tests_telemetry.model import (
     ExpectedExecution,
     TelemetryRecord,
@@ -25,9 +26,6 @@ _ARN_FIELDS = (
     ("accountId", "account_id"),
 )
 
-# Per-operation summary fields compared for equality when listed in the YAML.
-_OPERATION_FIELDS = ("type", "status", "count", "failedCount")
-
 
 def validate_record(
     data: Mapping[str, Any],
@@ -36,9 +34,11 @@ def validate_record(
 ) -> list[str]:
     """Check one record against one entry of ``TelemetryAssertions.records``.
 
-    Every check runs against this record alone. Unknown top-level and
-    per-operation keys are ignored, so additive schema changes do not fail
-    the check. Error strings use the form ``<json path>: expected <x>, got <y>``.
+    Every check runs against this record alone. Expected values follow the
+    rules of the core history matcher, see :func:`_expectation_errors`.
+    Unknown top-level and per-operation keys are ignored, so additive schema
+    changes do not fail the check. Error strings use the form
+    ``<json path>: expected <x>, got <y>``.
     """
     errors: list[str] = []
 
@@ -47,10 +47,10 @@ def validate_record(
         errors.append("TelemetryAssertions.record: expected a mapping")
     else:
         for key, expected_value in record_assertions.items():
-            _check_equal(errors, key, expected_value, data.get(key, _MISSING))
+            errors.extend(_expectation_errors(expected_value, data.get(key, _MISSING), path=key))
 
     for key, attribute in _ARN_FIELDS:
-        _check_equal(errors, key, getattr(expected, attribute), data.get(key, _MISSING))
+        errors.extend(_expectation_errors(getattr(expected, attribute), data.get(key, _MISSING), path=key))
 
     forbid_fields = assertions.get("forbid_fields", ())
     if isinstance(forbid_fields, str):
@@ -120,19 +120,58 @@ def _validate_operations(actual: Any, expected_operations: Any) -> list[str]:
         if not isinstance(summary, Mapping):
             errors.append(f"{path}: expected mapping, got {summary!r}")
             continue
-        for field in _OPERATION_FIELDS:
-            if field in expected_summary:
-                _check_equal(errors, f"{path}.{field}", expected_summary[field], summary.get(field, _MISSING))
+        for field, expected_value in expected_summary.items():
+            errors.extend(_expectation_errors(expected_value, summary.get(field, _MISSING), path=f"{path}.{field}"))
         if "error" in summary:
             errors.append(f"{path}.error: expected absent, got {summary['error']!r}")
     return errors
 
 
-def _check_equal(errors: list[str], path: str, expected: Any, actual: Any) -> None:
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
+    """Compare one expected value against one actual value, recursively.
+
+    The rules are those of the core history matcher and the OTel suite:
+
+    - ``'*'``: the field must be present; any value is accepted.
+    - ``${/regex/}``: ``str(actual)`` must match the pattern.
+    - mapping: ``actual`` must be a mapping; every expected key must be
+      present and is compared recursively. Extra actual keys are ignored.
+    - sequence: ``actual`` must be a sequence of the same length; items are
+      compared pairwise.
+    - anything else: equality, with booleans compared only to booleans.
+    """
     if actual is _MISSING:
-        errors.append(f"{path}: expected {expected!r}, got <missing>")
-    elif not _equal(expected, actual):
-        errors.append(f"{path}: expected {expected!r}, got {actual!r}")
+        return [f"{path}: expected {expected!r}, got <missing>"]
+    if expected == "*":
+        return []
+    pattern = get_regex_pattern(expected)
+    if pattern is not None:
+        if pattern.search(str(actual)):
+            return []
+        return [f"{path}: value {actual!r} does not match regex pattern {pattern.pattern!r}"]
+    if isinstance(expected, Mapping):
+        if not isinstance(actual, Mapping):
+            return [f"{path}: expected mapping, got {actual!r}"]
+        errors: list[str] = []
+        for key, expected_value in expected.items():
+            errors.extend(_expectation_errors(expected_value, actual.get(key, _MISSING), path=f"{path}.{key}"))
+        return errors
+    if _is_sequence(expected):
+        if not _is_sequence(actual):
+            return [f"{path}: expected sequence, got {actual!r}"]
+        if len(expected) != len(actual):
+            return [f"{path}: expected {len(expected)} item(s), got {len(actual)}"]
+        errors = []
+        for index, (expected_item, actual_item) in enumerate(zip(expected, actual, strict=True)):
+            errors.extend(_expectation_errors(expected_item, actual_item, path=f"{path}[{index}]"))
+        return errors
+    if not _equal(expected, actual):
+        return [f"{path}: expected {expected!r}, got {actual!r}"]
+    return []
 
 
 def _equal(expected: Any, actual: Any) -> bool:

@@ -86,14 +86,24 @@ defined yet.
 
 For each `(record, entry)` pair the validator checks, on that record alone:
 
-- every key under `entry.record` by equality (`schemaVersion`, `status`,
-  `input`, `output`, ...);
+- every key under `entry.record` (`schemaVersion`, `status`, `emittedAt`,
+  `input`, `output`, ...) against its expected value;
 - `executionArn`, `functionName`, `functionQualifier`, `region`, `accountId`
   derived from the execution ARN;
 - every key under `entry.forbid_fields` is absent;
 - `operationsByName` has exactly the names under `entry.operations_by_name`,
-  and each listed operation has the expected `type`, `status`, `count`,
-  `failedCount` and no `error`.
+  every key listed under an operation against its expected value, and no
+  `error` on the operation.
+
+Expected values follow the rules of the core execution-history matcher:
+
+| Expected value | Rule |
+| --- | --- |
+| `'*'` | The field must be present. Any value passes. Use it for values that differ per run, such as `durationMs`. |
+| `'${/regex/}'` | `str(actual)` must match the regex. Use it for formats, such as ISO-8601 timestamps. |
+| mapping | `actual` must be a mapping. Every listed key is checked recursively. Extra keys in `actual` are ignored. |
+| list | `actual` must be a list of the same length. Items are checked pairwise. |
+| anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. |
 
 `recordType` is not asserted because only `DurableExecutionTelemetry` records
 are parsed. Unknown fields are ignored. Every error is prefixed `record[i]:`;
