@@ -88,8 +88,8 @@ For each `(record, entry)` pair the validator checks, on that record alone:
 
 - every key under `entry.record` (`schemaVersion`, `status`, `emittedAt`,
   `input`, `output`, ...) against its expected value;
-- `executionArn`, `functionName`, `functionQualifier`, `region`, `accountId`
-  derived from the execution ARN;
+- `executionArn`, `executionName`, `functionName`, `functionQualifier`,
+  `region`, `accountId` derived from the execution ARN;
 - every key under `entry.forbid_fields` is absent;
 - `operationsByName` has exactly the names under `entry.operations_by_name`,
   every key listed under an operation against its expected value, and no

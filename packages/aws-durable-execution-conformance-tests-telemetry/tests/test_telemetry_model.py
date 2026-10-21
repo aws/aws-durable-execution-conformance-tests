@@ -28,12 +28,18 @@ def test_parse_execution_arn_yields_identity_fields() -> None:
         qualifier="$LATEST",
         region="us-west-2",
         account_id="123456789012",
+        execution_name="8f1c2d3e-0000-4000-8000-000000000001",
     )
 
 
 def test_parse_execution_arn_accepts_numeric_qualifier() -> None:
     arn = "arn:aws:lambda:eu-west-1:123456789012:function:fn:7/durable-execution/e/i"
     assert parse_execution_arn(arn).qualifier == "7"
+
+
+def test_parse_execution_arn_accepts_user_supplied_execution_name() -> None:
+    arn = "arn:aws:lambda:eu-west-1:123456789012:function:fn:$LATEST/durable-execution/order-42/i"
+    assert parse_execution_arn(arn).execution_name == "order-42"
 
 
 @pytest.mark.parametrize(
@@ -44,6 +50,9 @@ def test_parse_execution_arn_accepts_numeric_qualifier() -> None:
         "arn:aws:lambda:us-west-2::function:fn:$LATEST/durable-execution/e/i",
         "arn:aws:lambda:us-west-2:123456789012:function::$LATEST/durable-execution/e/i",
         "arn:aws:lambda:us-west-2:123456789012:function:fn:/durable-execution/e/i",
+        "arn:aws:lambda:us-west-2:123456789012:function:fn:$LATEST/durable-execution//i",
+        "arn:aws:lambda:us-west-2:123456789012:function:fn:$LATEST/durable-execution",
+        "arn:aws:lambda:us-west-2:123456789012:function:fn:$LATEST/other/e/i",
         "not-an-arn",
     ],
 )

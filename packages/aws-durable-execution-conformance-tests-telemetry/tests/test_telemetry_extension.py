@@ -42,6 +42,7 @@ def _record() -> dict[str, Any]:
         "schemaVersion": "1.0",
         "emittedAt": "2026-10-19T20:00:00.000Z",
         "executionArn": ARN,
+        "executionName": "8f1c2d3e-0000-4000-8000-000000000001",
         "functionName": "conformance-tests-abc-telemetry-1",
         "functionQualifier": "$LATEST",
         "region": "us-west-2",

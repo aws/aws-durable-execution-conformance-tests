@@ -20,6 +20,7 @@ _MISSING = object()
 # from the requirement YAML.
 _ARN_FIELDS = (
     ("executionArn", "execution_arn"),
+    ("executionName", "execution_name"),
     ("functionName", "function_name"),
     ("functionQualifier", "qualifier"),
     ("region", "region"),

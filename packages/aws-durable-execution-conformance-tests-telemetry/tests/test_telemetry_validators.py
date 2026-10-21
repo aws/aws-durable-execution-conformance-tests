@@ -15,6 +15,7 @@ from aws_durable_execution_conformance_tests_telemetry.model import (
     TelemetryRecord,
 )
 from aws_durable_execution_conformance_tests_telemetry.validators import (
+    _ARN_FIELDS,
     validate_record,
     validate_records,
 )
@@ -29,6 +30,7 @@ EXPECTED = ExpectedExecution(
     qualifier="$LATEST",
     region="us-west-2",
     account_id="123456789012",
+    execution_name="8f1c2d3e-0000-4000-8000-000000000001",
 )
 ASSERTIONS: dict[str, Any] = {
     "record": {
@@ -108,6 +110,7 @@ def test_missing_record_field_reports_missing() -> None:
     ("field", "value"),
     [
         ("executionArn", "arn:aws:lambda:us-west-2:123456789012:function:x:$LATEST/durable-execution/e/i"),
+        ("executionName", "other-execution"),
         ("functionName", "other-function"),
         ("functionQualifier", "1"),
         ("region", "us-east-1"),
@@ -442,6 +445,7 @@ def test_telemetry_1_accepts_complete_success_record() -> None:
 def _telemetry_1_asserted_paths() -> list[tuple[str, ...]]:
     entry = _telemetry_1_entry()
     paths: list[tuple[str, ...]] = [(key,) for key in entry["record"]]
+    paths.extend((key,) for key, _attribute in _ARN_FIELDS)
     for name, summary in entry["operations_by_name"].items():
         paths.extend(("operationsByName", name, key) for key in summary)
     return paths

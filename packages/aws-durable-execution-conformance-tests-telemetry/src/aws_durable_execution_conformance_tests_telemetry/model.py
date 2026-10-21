@@ -22,6 +22,7 @@ class ExpectedExecution:
     qualifier: str
     region: str
     account_id: str
+    execution_name: str
 
 
 def parse_execution_arn(arn: str) -> ExpectedExecution:
@@ -33,8 +34,10 @@ def parse_execution_arn(arn: str) -> ExpectedExecution:
     conformance check exercises the plugin's output rather than mirroring it.
 
     Raises:
-        ValueError: When the ARN has fewer than eight colon-separated parts or
-            any of region, account, function name, or qualifier is empty.
+        ValueError: When the ARN has fewer than eight colon-separated parts,
+            the resource path is not ``<qualifier>/durable-execution/<execution>/...``,
+            or any of region, account, function name, qualifier, or execution
+            name is empty.
     """
     parts = arn.split(":")
     if len(parts) < 8:
@@ -42,12 +45,17 @@ def parse_execution_arn(arn: str) -> ExpectedExecution:
     region = parts[3]
     account_id = parts[4]
     function_name = parts[6]
-    qualifier = parts[7].split("/", 1)[0]
+    resource = parts[7].split("/")
+    if len(resource) < 3 or resource[1] != "durable-execution":
+        raise ValueError(f"Execution ARN resource must be <qualifier>/durable-execution/<execution>/...: {arn!r}")
+    qualifier = resource[0]
+    execution_name = resource[2]
     for label, value in (
         ("region", region),
         ("account", account_id),
         ("function name", function_name),
         ("qualifier", qualifier),
+        ("execution name", execution_name),
     ):
         if not value:
             raise ValueError(f"Execution ARN has an empty {label}: {arn!r}")
@@ -57,6 +65,7 @@ def parse_execution_arn(arn: str) -> ExpectedExecution:
         qualifier=qualifier,
         region=region,
         account_id=account_id,
+        execution_name=execution_name,
     )
 
 
