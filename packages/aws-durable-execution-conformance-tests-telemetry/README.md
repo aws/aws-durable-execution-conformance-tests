@@ -60,23 +60,48 @@ The function's execution role must allow `logs:CreateLogStream` and
 
 ## What is asserted
 
+`TelemetryAssertions.records` is an ordered list. Entry `i` describes the
+`i`-th record the plugin emitted for the execution:
+
+```yaml
+TelemetryAssertions:
+  records:
+    - record:
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        input: {value: 41}
+        output: {value: 42}
+      forbid_fields: [error]
+      operations_by_name:
+        increment: {type: STEP, status: SUCCEEDED, count: 1, failedCount: 0}
+```
+
+The number of fetched records must equal the list length. When the counts
+differ, that is the only error reported. An empty list passes when no record
+was emitted.
+
+Fetched records are matched to entries in the order the retriever returned
+them. Every current requirement expects one record, so no ordering rule is
+defined yet.
+
+For each `(record, entry)` pair the validator checks, on that record alone:
+
+- every key under `entry.record` by equality (`schemaVersion`, `status`,
+  `input`, `output`, ...);
+- `executionArn`, `functionName`, `functionQualifier`, `region`, `accountId`
+  derived from the execution ARN;
+- every key under `entry.forbid_fields` is absent;
+- `operationsByName` has exactly the names under `entry.operations_by_name`,
+  and each listed operation has the expected `type`, `status`, `count`,
+  `failedCount` and no `error`.
+
+`recordType` is not asserted because only `DurableExecutionTelemetry` records
+are parsed. Unknown fields are ignored. Every error is prefixed `record[i]:`;
+`i` is the index into the `records` list in the artifact.
+
 The CloudWatch Logs exporter replaces the `operations` array with an
 `operationsByName` map. That map has no operation IDs, so the suite does not
-compare operation IDs against the execution history. For each retrieved record
-the validator checks, on that record alone:
-
-- `recordType`, `schemaVersion`, `status`, `executionArn`, `input`, `output`
-  from the requirement YAML;
-- `functionName`, `functionQualifier`, `region`, `accountId` derived from the
-  execution ARN;
-- no top-level `error`;
-- `operationsByName` has exactly the listed operation names, and each listed
-  operation has the expected `type`, `status`, `count`, `failedCount` and no
-  `error`.
-
-Unknown fields are ignored. The first record that passes every check makes the
-case pass. When no record passes, the errors of the record with the fewest
-failures are reported.
+compare operation IDs against the execution history.
 
 ## Retrieval
 

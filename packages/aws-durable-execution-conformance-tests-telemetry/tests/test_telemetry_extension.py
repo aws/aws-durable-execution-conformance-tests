@@ -21,28 +21,26 @@ ARN = (
     "arn:aws:lambda:us-west-2:123456789012:function:conformance-tests-abc-telemetry-1:$LATEST"
     "/durable-execution/8f1c2d3e-0000-4000-8000-000000000001/inv-1"
 )
-REQUIREMENT: dict[str, Any] = {
-    "TelemetryAssertions": {
-        "record": {
-            "recordType": "DurableExecutionTelemetry",
-            "schemaVersion": "1.0",
-            "status": "SUCCEEDED",
-            "executionArn": "${EXECUTION_ARN}",
-            "input": {"value": 41},
-            "output": {"value": 42},
-        },
-        "forbid_fields": ["error"],
-        "operations_by_name": {
-            "increment": {"type": "STEP", "status": "SUCCEEDED", "count": 1, "failedCount": 0},
-        },
+SUCCEEDED_ENTRY: dict[str, Any] = {
+    "record": {
+        "schemaVersion": "1.0",
+        "status": "SUCCEEDED",
+        "input": {"value": 41},
+        "output": {"value": 42},
+    },
+    "forbid_fields": ["error"],
+    "operations_by_name": {
+        "increment": {"type": "STEP", "status": "SUCCEEDED", "count": 1, "failedCount": 0},
     },
 }
+REQUIREMENT: dict[str, Any] = {"TelemetryAssertions": {"records": [SUCCEEDED_ENTRY]}}
 
 
 def _record() -> dict[str, Any]:
     return {
         "recordType": "DurableExecutionTelemetry",
         "schemaVersion": "1.0",
+        "emittedAt": "2026-10-19T20:00:00.000Z",
         "executionArn": ARN,
         "functionName": "conformance-tests-abc-telemetry-1",
         "functionQualifier": "$LATEST",
@@ -157,18 +155,6 @@ def test_validate_configuration_rejects_empty_log_group() -> None:
         TelemetryExtension().validate_configuration(_args(telemetry_log_group="  "))
 
 
-def test_add_arguments_has_no_write_artifact_flag() -> None:
-    # The artifact location comes from the core --history-dir option, like
-    # every other suite. A suite-specific toggle must not come back.
-    args = _args()
-    assert "telemetry_write_artifact" not in vars(args)
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--name", default="abc")
-    TelemetryExtension().add_arguments(parser)
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--telemetry-write-artifact"])
-
-
 def test_validate_telemetry_passes_and_writes_artifact(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:
     retriever.events = [_event(_record())]
     errors = TelemetryExtension().validate_telemetry(_context(tmp_path))
@@ -193,16 +179,18 @@ def test_validate_telemetry_uses_log_group_override(tmp_path: Path, retriever: t
     assert retriever.calls[0]["log_group_name"] == "/custom/group"
 
 
-def test_validate_telemetry_no_records(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:
-    retriever.events = [{"timestamp": 1, "message": "not json"}]
+@pytest.mark.parametrize("events", [[], [{"timestamp": 1, "message": "not json"}]])
+def test_validate_telemetry_no_records(
+    tmp_path: Path, retriever: type[_FakeRetriever], events: list[dict[str, Any]]
+) -> None:
+    retriever.events = events
     errors = TelemetryExtension().validate_telemetry(_context(tmp_path))
-    assert errors == [
-        f"Durable Execution Telemetry: no DurableExecutionTelemetry record for {ARN} in "
-        "/durable-execution-conformance/conformance-tests-abc/durable-execution-telemetry within the retrieval window "
-        "(1 raw events, 1 malformed)"
-    ]
+    assert errors == ["Durable Execution Telemetry: records: expected 1 record(s), got 0"]
     artifact = _artifact(tmp_path)
-    assert artifact["malformed"] == ["not json"]
+    assert artifact["execution_arn"] == ARN
+    assert artifact["log_group"] == "/durable-execution-conformance/conformance-tests-abc/durable-execution-telemetry"
+    assert artifact["events"] == events
+    assert artifact["malformed"] == [event["message"] for event in events]
     assert artifact["records"] == []
     assert artifact["errors"] == errors
 
@@ -220,23 +208,10 @@ def test_validate_telemetry_assertion_failure(tmp_path: Path, retriever: type[_F
     bad["status"] = "FAILED"
     retriever.events = [_event(bad)]
     errors = TelemetryExtension().validate_telemetry(_context(tmp_path))
-    assert errors == [
-        "Durable Execution Telemetry: status: expected 'SUCCEEDED', got 'FAILED'",
-        "Durable Execution Telemetry: 1 record(s) retrieved, none satisfied every assertion",
-    ]
+    assert errors == ["Durable Execution Telemetry: record[0]: status: expected 'SUCCEEDED', got 'FAILED'"]
     artifact = _artifact(tmp_path)
     assert artifact["errors"] == errors
     assert artifact["log_group"] == "/durable-execution-conformance/conformance-tests-abc/durable-execution-telemetry"
-
-
-def test_validate_telemetry_accepts_complete_record_among_partials(
-    tmp_path: Path, retriever: type[_FakeRetriever]
-) -> None:
-    running = _record()
-    running["status"] = "RUNNING"
-    del running["output"]
-    retriever.events = [_event(running, 1), _event(_record(), 2)]
-    assert TelemetryExtension().validate_telemetry(_context(tmp_path)) == []
 
 
 def test_validate_telemetry_region_mismatch(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:

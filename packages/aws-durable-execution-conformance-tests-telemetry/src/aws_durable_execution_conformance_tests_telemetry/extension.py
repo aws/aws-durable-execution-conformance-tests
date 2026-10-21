@@ -26,7 +26,7 @@ from aws_durable_execution_conformance_tests_telemetry.retrieval import (
     fetch_records,
 )
 from aws_durable_execution_conformance_tests_telemetry.validators import (
-    select_passing_record,
+    validate_records,
 )
 
 SUITE_NAME = "telemetry"
@@ -131,21 +131,8 @@ class TelemetryExtension:
         except TelemetryAccessError as exc:
             return [f"{ERROR_PREFIX}access failure: {exc}"]
 
-        if not fetched.records:
-            errors = [
-                f"{ERROR_PREFIX}no DurableExecutionTelemetry record for {context.execution_arn} in {log_group} "
-                f"within the retrieval window ({len(fetched.events)} raw events, {len(fetched.malformed)} malformed)"
-            ]
-            self._write_artifact(context, _artifact(context, log_group, fetched, errors))
-            return errors
-
-        passing, candidate_errors = select_passing_record(fetched.records, assertions, expected)
-        if passing is not None and not candidate_errors:
-            self._write_artifact(context, _artifact(context, log_group, fetched, []))
-            return []
-
-        errors = [f"{ERROR_PREFIX}{error}" for error in candidate_errors]
-        errors.append(f"{ERROR_PREFIX}{len(fetched.records)} record(s) retrieved, none satisfied every assertion")
+        expected_records = assertions.get("records")
+        errors = [f"{ERROR_PREFIX}{error}" for error in validate_records(fetched.records, expected_records, expected)]
         self._write_artifact(context, _artifact(context, log_group, fetched, errors))
         return errors
 

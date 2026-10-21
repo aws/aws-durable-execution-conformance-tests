@@ -18,6 +18,7 @@ _MISSING = object()
 # Record fields whose expected value comes from the execution ARN rather than
 # from the requirement YAML.
 _ARN_FIELDS = (
+    ("executionArn", "execution_arn"),
     ("functionName", "function_name"),
     ("functionQualifier", "qualifier"),
     ("region", "region"),
@@ -33,7 +34,7 @@ def validate_record(
     assertions: Mapping[str, Any],
     expected: ExpectedExecution,
 ) -> list[str]:
-    """Check one record against the requirement's ``TelemetryAssertions``.
+    """Check one record against one entry of ``TelemetryAssertions.records``.
 
     Every check runs against this record alone. Unknown top-level and
     per-operation keys are ignored, so additive schema changes do not fail
@@ -65,44 +66,34 @@ def validate_record(
     return errors
 
 
-def select_passing_record(
+def validate_records(
     records: Sequence[TelemetryRecord],
-    assertions: Mapping[str, Any],
+    expected_records: Any,
     expected: ExpectedExecution,
-) -> tuple[TelemetryRecord | None, list[str]]:
-    """Evaluate each record independently.
+) -> list[str]:
+    """Match fetched records positionally against ``TelemetryAssertions.records``.
 
-    Returns ``(record, [])`` for the first record with no errors. Otherwise
-    returns the best candidate and its errors. The best candidate has the
-    fewest errors; a tie goes to the latest event timestamp. With no records
-    the result is ``(None, [])``.
+    Entry ``i`` of ``expected_records`` is compared to the ``i``-th fetched
+    record, in retriever order. The counts must match; when they differ the
+    count error is the only error, because positional matching is meaningless.
+    Otherwise every record is checked with :func:`validate_record` and each
+    error is prefixed ``record[i]:``. An empty list with no fetched records
+    passes.
     """
-    best: TelemetryRecord | None = None
-    best_errors: list[str] = []
-    for record in records:
-        errors = validate_record(record.data, assertions, expected)
-        if not errors:
-            return record, []
-        if best is None or _is_better(record, errors, best, best_errors):
-            best = record
-            best_errors = errors
-    return best, best_errors
+    if not isinstance(expected_records, list):
+        return ["TelemetryAssertions.records: expected a list"]
 
+    if len(records) != len(expected_records):
+        return [f"records: expected {len(expected_records)} record(s), got {len(records)}"]
 
-def _is_better(
-    candidate: TelemetryRecord,
-    candidate_errors: list[str],
-    best: TelemetryRecord,
-    best_errors: list[str],
-) -> bool:
-    if len(candidate_errors) != len(best_errors):
-        return len(candidate_errors) < len(best_errors)
-    return _timestamp(candidate) > _timestamp(best)
-
-
-def _timestamp(record: TelemetryRecord) -> float:
-    value = record.event.get("timestamp", 0)
-    return float(value) if isinstance(value, (int, float)) else 0.0
+    errors: list[str] = []
+    for index, (record, entry) in enumerate(zip(records, expected_records, strict=True)):
+        prefix = f"record[{index}]: "
+        if not isinstance(entry, Mapping):
+            errors.append(f"{prefix}TelemetryAssertions.records[{index}]: expected a mapping")
+            continue
+        errors.extend(prefix + error for error in validate_record(record.data, entry, expected))
+    return errors
 
 
 def _validate_operations(actual: Any, expected_operations: Any) -> list[str]:

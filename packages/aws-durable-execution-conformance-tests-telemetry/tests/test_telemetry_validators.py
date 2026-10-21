@@ -15,8 +15,8 @@ from aws_durable_execution_conformance_tests_telemetry.model import (
     TelemetryRecord,
 )
 from aws_durable_execution_conformance_tests_telemetry.validators import (
-    select_passing_record,
     validate_record,
+    validate_records,
 )
 
 ARN = (
@@ -32,10 +32,8 @@ EXPECTED = ExpectedExecution(
 )
 ASSERTIONS: dict[str, Any] = {
     "record": {
-        "recordType": "DurableExecutionTelemetry",
         "schemaVersion": "1.0",
         "status": "SUCCEEDED",
-        "executionArn": ARN,
         "input": {"value": 41},
         "output": {"value": 42},
     },
@@ -86,16 +84,10 @@ def test_valid_record_passes() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        (
-            "executionArn",
-            "arn:aws:lambda:us-west-2:123456789012:function:x:$LATEST/durable-execution/e/i",
-            "executionArn",
-        ),
         ("input", {"value": 40}, "input: expected {'value': 41}, got {'value': 40}"),
         ("output", {"value": 43}, "output: expected {'value': 42}, got {'value': 43}"),
         ("status", "FAILED", "status: expected 'SUCCEEDED', got 'FAILED'"),
         ("schemaVersion", "2.0", "schemaVersion: expected '1.0', got '2.0'"),
-        ("recordType", "Other", "recordType: expected 'DurableExecutionTelemetry', got 'Other'"),
     ],
 )
 def test_wrong_record_field_produces_one_error(field: str, value: Any, message: str) -> None:
@@ -115,6 +107,7 @@ def test_missing_record_field_reports_missing() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("executionArn", "arn:aws:lambda:us-west-2:123456789012:function:x:$LATEST/durable-execution/e/i"),
         ("functionName", "other-function"),
         ("functionQualifier", "1"),
         ("region", "us-east-1"),
@@ -235,54 +228,62 @@ def test_forbid_fields_accepts_single_string() -> None:
     assert validate_record(record, assertions, EXPECTED) == ["error: expected absent, got {}"]
 
 
-def _telemetry(data: dict[str, Any], timestamp: int) -> TelemetryRecord:
-    return TelemetryRecord(event={"timestamp": timestamp, "message": "..."}, data=data)
+def _telemetry(data: dict[str, Any]) -> TelemetryRecord:
+    return TelemetryRecord(event={"timestamp": 1, "message": "..."}, data=data)
 
 
-def test_select_passing_record_does_not_combine_partial_records() -> None:
-    # Record A has the right output but no operations. Record B has the right
-    # operations but the wrong output. Neither is complete on its own.
-    a = _record()
-    del a["operationsByName"]
-    b = _record()
-    b["output"] = {"value": 0}
-    passing, errors = select_passing_record([_telemetry(a, 1), _telemetry(b, 2)], ASSERTIONS, EXPECTED)
-    assert passing is not None
-    assert errors
-    assert len(errors) == 1
+def test_validate_records_single_entry_passes() -> None:
+    assert validate_records([_telemetry(_record())], [ASSERTIONS], EXPECTED) == []
 
 
-def test_select_passing_record_prefers_fewest_errors_then_latest() -> None:
-    two_errors = _record()
-    two_errors["status"] = "FAILED"
-    two_errors["output"] = {"value": 0}
-    one_error_old = _record()
-    one_error_old["output"] = {"value": 0}
-    one_error_new = _record()
-    one_error_new["status"] = "RUNNING"
-    passing, errors = select_passing_record(
-        [_telemetry(two_errors, 5), _telemetry(one_error_old, 1), _telemetry(one_error_new, 9)],
-        ASSERTIONS,
-        EXPECTED,
-    )
-    assert passing is not None
-    assert passing.data is one_error_new
-    assert errors == ["status: expected 'SUCCEEDED', got 'RUNNING'"]
+def test_validate_records_zero_expected_zero_fetched_passes() -> None:
+    assert validate_records([], [], EXPECTED) == []
 
 
-def test_select_passing_record_accepts_complete_record_among_incomplete() -> None:
-    incomplete = _record()
-    incomplete["status"] = "RUNNING"
-    complete = _record()
-    passing, errors = select_passing_record(
-        [_telemetry(incomplete, 1), _telemetry(complete, 2), _telemetry(incomplete, 3)],
-        ASSERTIONS,
-        EXPECTED,
-    )
-    assert passing is not None
-    assert passing.data is complete
-    assert errors == []
+@pytest.mark.parametrize(("fetched", "expected_count"), [(2, 1), (0, 1), (1, 2)])
+def test_validate_records_count_mismatch_is_the_only_error(fetched: int, expected_count: int) -> None:
+    bad = _record()
+    bad["status"] = "FAILED"
+    records = [_telemetry(bad) for _ in range(fetched)]
+    assert validate_records(records, [ASSERTIONS] * expected_count, EXPECTED) == [
+        f"records: expected {expected_count} record(s), got {fetched}"
+    ]
 
 
-def test_select_passing_record_with_no_records() -> None:
-    assert select_passing_record([], ASSERTIONS, EXPECTED) == (None, [])
+def _on_change_fixture() -> tuple[list[TelemetryRecord], list[dict[str, Any]]]:
+    running = _record()
+    running["status"] = "RUNNING"
+    del running["output"]
+    del running["operationsByName"]
+    succeeded = _record()
+    running_entry: dict[str, Any] = {
+        "record": {"status": "RUNNING", "input": {"value": 41}},
+        "forbid_fields": ["output", "error"],
+    }
+    return [_telemetry(running), _telemetry(succeeded)], [running_entry, ASSERTIONS]
+
+
+def test_validate_records_matches_entries_positionally() -> None:
+    records, entries = _on_change_fixture()
+    assert validate_records(records, entries, EXPECTED) == []
+
+
+def test_validate_records_swapped_entries_fail_both_positions() -> None:
+    records, entries = _on_change_fixture()
+    assert validate_records(records, list(reversed(entries)), EXPECTED) == [
+        "record[0]: status: expected 'SUCCEEDED', got 'RUNNING'",
+        "record[0]: output: expected {'value': 42}, got <missing>",
+        "record[0]: operationsByName: expected mapping with keys ['increment'], got <missing>",
+        "record[1]: status: expected 'RUNNING', got 'SUCCEEDED'",
+        "record[1]: output: expected absent, got {'value': 42}",
+    ]
+
+
+def test_validate_records_rejects_non_list_and_non_mapping_entry() -> None:
+    assert validate_records([_telemetry(_record())], {"record": {}}, EXPECTED) == [
+        "TelemetryAssertions.records: expected a list"
+    ]
+    assert validate_records([_telemetry(_record())], None, EXPECTED) == ["TelemetryAssertions.records: expected a list"]
+    assert validate_records([_telemetry(_record())], ["bad"], EXPECTED) == [
+        "record[0]: TelemetryAssertions.records[0]: expected a mapping"
+    ]

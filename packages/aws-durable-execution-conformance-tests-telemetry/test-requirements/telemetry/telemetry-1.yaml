@@ -33,20 +33,19 @@ ExpectedExecutionHistory:
     EventId: 4
     EventTimestamp: '*'
 TelemetryAssertions:
-  record:
-    recordType: DurableExecutionTelemetry
-    schemaVersion: '1.0'
-    status: SUCCEEDED
-    executionArn: ${EXECUTION_ARN}
-    input:
-      value: 41
-    output:
-      value: 42
-  forbid_fields:
-    - error
-  operations_by_name:
-    increment:
-      type: STEP
-      status: SUCCEEDED
-      count: 1
-      failedCount: 0
+  records:
+    - record:
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        input:
+          value: 41
+        output:
+          value: 42
+      forbid_fields:
+        - error
+      operations_by_name:
+        increment:
+          type: STEP
+          status: SUCCEEDED
+          count: 1
+          failedCount: 0
