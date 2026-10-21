@@ -8,6 +8,7 @@ CallbackActions:
     Operation: success
     Payload: callback-complete
     Delay: 1
+    AfterInvocationCompleted: true
 ExpectedExecutionHistory:
   - EventId: 1
     EventType: ExecutionStarted
