@@ -143,9 +143,10 @@ class TelemetryExtension:
 
     @staticmethod
     def _write_artifact(context: ValidationContext, payload: Mapping[str, Any]) -> None:
-        # The artifact is written on every validation, pass or fail. The core
-        # suite writes its execution history the same way. ``output_dir`` is
-        # the runner's ``--history-dir``, so no suite-specific flag is needed.
+        # The caller writes retrieved data whether assertions pass or fail.
+        # Configuration and retrieval failures return before this write.
+        # ``output_dir`` is the runner's ``--history-dir``, so no suite-specific
+        # flag is needed.
         context.output_dir.mkdir(parents=True, exist_ok=True)
         path = context.output_dir / f"{context.description_id}-telemetry.json"
         with path.open("w", encoding="utf-8") as stream:

@@ -46,9 +46,12 @@ When both flags are given, the parameter override is used and
 `--telemetry-log-group` is ignored. The validator queries the group that was
 deployed.
 
-The extension writes `<id>-telemetry.json` to the history directory on every
-run, pass or fail. The directory is the core `--history-dir` option (default
-`output/`), the same directory that receives the execution history files.
+After CloudWatch retrieval completes, the extension writes `<id>-telemetry.json`
+to the history directory, whether telemetry assertions pass or fail. This includes
+empty retrieval results. Configuration and retrieval failures are reported through
+the runner’s error reporting and do not produce a telemetry artifact. The directory
+is the core `--history-dir` option (default `output/`), the same directory that
+receives the execution history files.
 
 ## Template contract
 
