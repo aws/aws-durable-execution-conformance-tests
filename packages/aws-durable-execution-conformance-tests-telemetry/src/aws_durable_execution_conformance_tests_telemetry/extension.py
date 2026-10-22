@@ -70,7 +70,9 @@ class TelemetryExtension:
             "--telemetry-log-group",
             default=None,
             help="CloudWatch Logs group that receives Durable Execution Telemetry records. "
-            f"Defaults to /durable-execution-conformance/{STACK_NAME_PREFIX}-<name>/durable-execution-telemetry.",
+            f"Defaults to /durable-execution-conformance/{STACK_NAME_PREFIX}-<name>/durable-execution-telemetry. "
+            f"Equivalent to --parameter-overrides {LOG_GROUP_PARAMETER}=<group>; "
+            "an explicit parameter override takes precedence.",
         )
         group.add_argument(
             "--telemetry-wait-seconds",
@@ -156,10 +158,26 @@ def default_log_group(run_name: str) -> str:
 
 
 def _resolve_log_group(options: Mapping[str, Any]) -> str:
+    # Core applies --parameter-overrides after extension parameters, so an
+    # explicit TelemetryLogGroupName is the group the stack deploys. The
+    # validator must query that same group, so it wins here as well.
+    explicit = _explicit_log_group(options)
+    if explicit is not None:
+        return explicit
     override = options.get("telemetry_log_group")
     if isinstance(override, str) and override.strip():
         return override
     return default_log_group(str(options["name"]))
+
+
+def _explicit_log_group(options: Mapping[str, Any]) -> str | None:
+    # ``parameter_overrides`` is the list of (key, value) tuples that argparse
+    # builds from --parameter-overrides KEY=VALUE. Core converts it with
+    # dict(...) before deploying, so a key given twice deploys its later value.
+    # Convert it the same way so this suite queries the group core deployed.
+    overrides = dict(options.get("parameter_overrides") or ())
+    value = overrides.get(LOG_GROUP_PARAMETER)
+    return value if isinstance(value, str) else None
 
 
 def _artifact(

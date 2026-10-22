@@ -37,6 +37,15 @@ Options added by this package:
 | `--telemetry-log-group` | `/durable-execution-conformance/conformance-tests-<name>/durable-execution-telemetry` | CloudWatch Logs group that receives the records. |
 | `--telemetry-wait-seconds` | `10` | Seconds to wait before the first CloudWatch Logs query. Raise it when ingestion is slow. |
 
+The log group is resolved in this order: an explicit
+`--parameter-overrides TelemetryLogGroupName=<group>`, then
+`--telemetry-log-group`, then the default. This follows the core rule that
+explicit overrides take precedence over values supplied by extensions
+([core README, lines 113–115](../aws-durable-execution-conformance-tests/README.md#L113-L115)).
+When both flags are given, the parameter override is used and
+`--telemetry-log-group` is ignored. The validator queries the group that was
+deployed.
+
 The extension writes `<id>-telemetry.json` to the history directory on every
 run, pass or fail. The directory is the core `--history-dir` option (default
 `output/`), the same directory that receives the execution history files.

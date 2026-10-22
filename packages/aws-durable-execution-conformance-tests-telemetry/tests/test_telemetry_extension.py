@@ -85,6 +85,8 @@ def retriever(monkeypatch: pytest.MonkeyPatch) -> type[_FakeRetriever]:
 def _args(**overrides: Any) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="abc")
+    # Core declares --parameter-overrides as a list of (key, value) tuples.
+    parser.add_argument("--parameter-overrides", default=[])
     TelemetryExtension().add_arguments(parser)
     args = parser.parse_args([])
     for key, value in overrides.items():
@@ -146,6 +148,43 @@ def test_deployment_parameters_override_log_group() -> None:
     assert TelemetryExtension().deployment_parameters(args) == {"TelemetryLogGroupName": "/custom/group"}
 
 
+def test_deployment_parameters_honors_parameter_override() -> None:
+    args = _args(parameter_overrides=[("TelemetryLogGroupName", "/custom")])
+    extension = TelemetryExtension()
+    extension.validate_configuration(args)
+    assert extension.deployment_parameters(args) == {"TelemetryLogGroupName": "/custom"}
+
+
+def test_parameter_override_takes_precedence_over_flag() -> None:
+    args = _args(telemetry_log_group="/a", parameter_overrides=[("TelemetryLogGroupName", "/b")])
+    extension = TelemetryExtension()
+    extension.validate_configuration(args)
+    assert extension.deployment_parameters(args) == {"TelemetryLogGroupName": "/b"}
+
+
+def test_parameter_override_last_occurrence_wins() -> None:
+    # Core deploys dict(parameter_overrides), which keeps the later value.
+    args = _args(parameter_overrides=[("TelemetryLogGroupName", "/a"), ("TelemetryLogGroupName", "/b")])
+    assert TelemetryExtension().deployment_parameters(args) == {"TelemetryLogGroupName": "/b"}
+
+
+def test_blank_parameter_override_is_passed_through() -> None:
+    # The suite forwards what core deploys; CloudFormation rejects a blank name.
+    args = _args(parameter_overrides=[("TelemetryLogGroupName", "")])
+    extension = TelemetryExtension()
+    extension.validate_configuration(args)
+    assert extension.deployment_parameters(args) == {"TelemetryLogGroupName": ""}
+
+
+def test_validate_configuration_ignores_other_parameter_overrides() -> None:
+    args = _args(parameter_overrides=[("LambdaExecutionRoleArn", "arn:aws:iam::123456789012:role/x")])
+    extension = TelemetryExtension()
+    extension.validate_configuration(args)
+    assert extension.deployment_parameters(args) == {
+        "TelemetryLogGroupName": "/durable-execution-conformance/conformance-tests-abc/durable-execution-telemetry",
+    }
+
+
 def test_validate_configuration_rejects_negative_wait() -> None:
     with pytest.raises(ValueError, match="telemetry-wait-seconds"):
         TelemetryExtension().validate_configuration(_args(telemetry_wait_seconds=-1))
@@ -178,6 +217,21 @@ def test_validate_telemetry_uses_log_group_override(tmp_path: Path, retriever: t
     retriever.events = [_event(_record())]
     TelemetryExtension().validate_telemetry(_context(tmp_path, telemetry_log_group="/custom/group"))
     assert retriever.calls[0]["log_group_name"] == "/custom/group"
+
+
+def test_validate_telemetry_uses_parameter_override_log_group(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:
+    # The deployed group comes from --parameter-overrides, so the validator
+    # must query that group rather than the flag or the default.
+    retriever.events = [_event(_record())]
+    context = _context(
+        tmp_path,
+        telemetry_log_group="/ignored",
+        parameter_overrides=[("TelemetryLogGroupName", "/custom")],
+    )
+    errors = TelemetryExtension().validate_telemetry(context)
+    assert errors == []
+    assert retriever.calls[0]["log_group_name"] == "/custom"
+    assert _artifact(tmp_path)["log_group"] == "/custom"
 
 
 @pytest.mark.parametrize("events", [[], [{"timestamp": 1, "message": "not json"}]])
