@@ -226,8 +226,8 @@ when the parent is returned, constrains it to a non-SDK infrastructure span.
 The parent may be the propagated remote context or a same-trace ambient
 infrastructure span.
 
-The chained target in case 11 is an explicit exception to `$reject_sdk_span`:
-its propagated remote parent can be the caller's SDK invoke span. Its exact
+The chained targets in cases 11 and 27 are explicit exceptions to `$reject_sdk_span`:
+their propagated remote parent can be the caller's SDK invoke span. Its exact
 service carrier and, with X-Ray, the full observed ancestry are checked instead.
 
 `chained_invokes` reads the child's `GetDurableExecution.TraceHeader.XAmznTraceId`

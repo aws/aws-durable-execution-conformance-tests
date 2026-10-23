@@ -146,8 +146,8 @@ orchestrator resolves test revisions once before launching any workers:
 - `contract_test_command` validates the example and template contract.
 - `prepare_command` builds the handlers against the resolved SDK commit.
 
-The optional `case_count` input defaults to `26`. A caller with a pinned legacy
-20- or 24-case catalog can set `case_count: 20` or `case_count: 24` while keeping its existing
+The optional `case_count` input defaults to `27`. A caller with a pinned legacy
+20-, 24- or 26-case catalog can set `case_count: 20`, `case_count: 24` or `case_count: 26` while keeping its existing
 `conformance_test_ref`, and update only the reusable workflow revision to receive
 workflow maintenance fixes. Other counts are rejected before workers start.
 This input controls diagnostic log enumeration; it does not select or filter
@@ -341,3 +341,10 @@ SDK test handlers, provider-neutral assertions, and test coverage.
 ## Launch regression coverage
 
 Cases 21–26 cover completed-operation replay exports, active context in SDK user functions, invocation-retry status, errorless callback failure, and first external callback completion followed by later replays. See [the coverage matrix and callback boundaries](LAUNCH_ISSUE_COVERAGE.md).
+
+Case 27 (`chained-invoke-suspend`) covers the short suspended-child scenario
+previously exercised by `otel-long-running-4`: a caller invokes a child that
+performs a one-second durable wait and then returns its original input. Both
+views require exactly two caller and two child invocations, child trace
+correlation, and the appropriate wait parentage and continuation links.
+The ordinary short suite runs this case; the long-running workflow remains disabled.

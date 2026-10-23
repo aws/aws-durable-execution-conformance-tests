@@ -49,8 +49,8 @@ def test_rejects_core_release_without_callback_phase_and_absent_controls(tmp_pat
         load_extensions(tmp_path, entry_points=[entry_point], core_version="1.0.0")
 
 
-_VIEW_CASE_NUMBERS = range(1, 27)
-_ORDERED_CASES = {2, 3, 8, 9, 10, 11, 17, 18, 21, 22, 23, 24, 25, 26}
+_VIEW_CASE_NUMBERS = range(1, 28)
+_ORDERED_CASES = {2, 3, 8, 9, 10, 11, 17, 18, 21, 22, 23, 24, 25, 26, 27}
 # Context probes and invocation-retry recovery intentionally assert selected spans,
 # not a complete SDK span set (failed invocations may redeliver operations).
 _PARTIAL_INVOCATION_CASES = {22, 23, 24}
@@ -879,6 +879,33 @@ def _assert_chained_invoke_catalog(requirement: dict, view: str) -> None:
         assert terminal["links"][0]["$occurrence"] == 2
 
 
+def _assert_suspended_child_catalog(requirement: dict, view: str) -> None:
+    assertions = requirement["TelemetryAssertions"]
+    assert requirement["Input"] == {"scenario": "chained-invoke-suspend"}
+    assert assertions["require_all_spans"] is True
+    assert assertions["minimum_invocations"] == 4
+    assert assertions["quiescence_seconds"] == 5
+    items = assertions["span_assertions"]
+    child = [
+        item
+        for item in items
+        if item["select"]["name"] == "Invocation"
+        and item["select"]["attributes"]["durable.execution.arn"] == "${TARGET_EXECUTION_ARN}"
+    ]
+    assert [item["expect"]["attributes"]["durable.invocation.status"] for item in child] == ["PENDING", "SUCCEEDED"]
+    assert [item["expect"]["attributes"]["durable.invocation.first"] for item in child] == [True, False]
+    assert all(item["expect"]["same_trace_as"] == assertions["chained_invokes"][0]["parent"] for item in child)
+    waits = [item for item in items if item["select"]["name"] == "otel-suspended-target-wait"]
+    assert len(waits) == (2 if view == "otel-invocation" else 1)
+    for wait in waits:
+        assert wait["expect"]["attributes"]["durable.execution.arn"] == "${TARGET_EXECUTION_ARN}"
+        assert wait["expect"]["parent"]["attributes"]["durable.execution.arn"] == "${TARGET_EXECUTION_ARN}"
+    if view == "otel-invocation":
+        assert waits[-1]["expect"]["links"][0]["name"] == "otel-suspended-target-wait"
+    else:
+        assert waits[0]["expect"]["links"][0]["$occurrence"] == 2
+
+
 def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     requirements = _requirements("otel-invocation")
     callback_submitter_span_names = {
@@ -890,6 +917,9 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
     for case_number in _VIEW_CASE_NUMBERS:
         requirement = load_yaml_file(requirements[f"otel-invocation-{case_number}"])
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 27:
+            _assert_suspended_child_catalog(requirement, "otel-invocation")
+            continue
         if case_number == 11:
             _assert_chained_invoke_catalog(requirement, "otel-invocation")
             continue
@@ -1145,6 +1175,9 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             invocation_requirements[f"otel-invocation-{case_number}"],
         )
         assertions = requirement["TelemetryAssertions"]
+        if case_number == 27:
+            _assert_suspended_child_catalog(requirement, "otel-execution")
+            continue
         if case_number == 11:
             _assert_chained_invoke_catalog(requirement, "otel-execution")
             continue

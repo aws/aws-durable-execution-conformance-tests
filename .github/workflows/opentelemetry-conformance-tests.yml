@@ -11,7 +11,7 @@ name: OpenTelemetry Conformance Tests
 #   catalog. Update it alongside companion SDK handler PRs; otherwise new cases
 #   are UNCOVERED before those handlers reach SDK main. Manual dispatch can select
 #   another revision (including main) without reducing the coverage threshold.
-#   Reference handlers: aws/aws-durable-execution-sdk-python#758, with #752/#756.
+#   Reference handlers: aws/aws-durable-execution-sdk-python#796, stacked on #758/#795.
 
 on:
   pull_request:
@@ -84,9 +84,9 @@ jobs:
       language: py
       resource_prefix: py-self
       sdk_repository: aws/aws-durable-execution-sdk-python
-      # Reference fixture implementing cases 1–26, including caught failure/replay.
+      # Reference fixture implementing cases 1–27, including caught failure/replay.
       # Overridable on manual dispatch.
-      sdk_ref: ${{ inputs.sdk_ref || '3e8f9466c19d6ca3bd6bf5b8d6af76617ac643b7' }}
+      sdk_ref: ${{ inputs.sdk_ref || '68f4bdc2ad9bfe8efa4241de4ad3cc3bb889f209' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel

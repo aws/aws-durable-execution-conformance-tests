@@ -35,7 +35,7 @@ not supply missing Lambda/service parent spans. X-Ray must additionally expose a
 complete parent path from both target roots to the same first invoke. A complete
 path ending elsewhere is a failure, even if every span shares a Root. No
 cross-execution clock-ordering assertion is added by this propagation check.
-These assertions keep the catalog at 26 cases and do not change cases 25 or 26.
+Case 11 retains its caller replay barrier; case 27 separately exercises child suspension and resume.
 
 Use the S3 collector to verify duplicate export counts and `UNSET` status. It
 retains repeated OTLP span records, including repeated trace/span IDs. X-Ray can
@@ -163,12 +163,12 @@ passing. Late duplicate records reset or invalidate that candidate. Handler-root
 fallbacks reject probe spans tagged with `conformance.callback`, and invocation
 replay checks the required link shape for each allowed segment count.
 
-The self-test workflow pins the Python companion fixture from SDK PR #758,
+The self-test workflow pins the Python companion fixture from SDK PR #796,
 including the dedicated caught-failure/replay case25 handler and the correction
 for explicit terminal failure without error details. A fixture still routing25
 to the unhandled case17 handler, or exporting the failed leaf as UNSET, is
 incompatible with this successful-execution requirement. The fixture retains the #752/#756 runtime prerequisites and
-all 26 handlers. Manual dispatch can override that revision; the
+all 27 handlers. Manual dispatch can override that revision; the
 `failed+uncovered` coverage threshold is unchanged.
 
 Case 24 covers every execution-correlated Invocation span and requires five
@@ -180,3 +180,15 @@ including order and status mappings. Legacy RETRY labels, failed or repeated
 phases, and incorrect sampling-independent status values still fail. Operation
 spans remain outside complete-coverage scope so expected redelivery after
 invocation failure is allowed.
+
+## Short suspended-child coverage
+
+Case 27 replaces the short mode of `otel-long-running-4`. Its child performs
+a one-second durable wait, resumes, and returns its input. Exactly one invoke
+completes in the caller, while both executions produce PENDING then SUCCEEDED
+invocations. Invocation view requires both child wait segments and the link
+back to the initial segment. Execution view requires one logical child wait
+linked to the resumed child invocation. Both views check the actual child
+service carrier against the first invoke context, and require five seconds of
+stable telemetry. Child ordering is checked within its own execution; no
+comparison between caller and child clocks is needed.

@@ -39,7 +39,7 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-def _run_resolver_validation(resource_prefix: str, *, case_count: str = "26") -> subprocess.CompletedProcess[str]:
+def _run_resolver_validation(resource_prefix: str, *, case_count: str = "27") -> subprocess.CompletedProcess[str]:
     workflow = _load(RESOLVER_WORKFLOW)
     validation = next(
         step for step in workflow["jobs"]["resolve"]["steps"] if step["name"] == "Validate workflow inputs"
@@ -175,17 +175,17 @@ def test_resource_prefix_validation_matches_lambda_name_limit(
         assert "resource_prefix must contain 1-8 lowercase resource-safe characters" in result.stdout
 
 
-@pytest.mark.parametrize("case_count", ["20", "24", "26"])
+@pytest.mark.parametrize("case_count", ["20", "24", "26", "27"])
 def test_resolver_accepts_supported_catalog_counts(case_count: str) -> None:
     result = _run_resolver_validation("py", case_count=case_count)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "23", "25", "27", "20; exit 0"])
+@pytest.mark.parametrize("case_count", ["", "0", "1", "-20", "20.5", "23", "25", "28", "20; exit 0"])
 def test_resolver_rejects_unsupported_catalog_counts(case_count: str) -> None:
     result = _run_resolver_validation("py", case_count=case_count)
     assert result.returncode != 0
-    assert "case_count must be one of: 20, 24, 26" in result.stdout
+    assert "case_count must be one of: 20, 24, 26, 27" in result.stdout
 
 
 def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_refs() -> None:
@@ -195,7 +195,7 @@ def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_r
         definition = _triggers(workflow)["workflow_call"]["inputs"]["case_count"]
         assert definition["type"] == "number"
         assert definition["required"] is False
-        assert definition["default"] == 26
+        assert definition["default"] == 27
     jobs = orchestrator["jobs"]
     for name in ("resolve", "invocation", "execution"):
         assert jobs[name]["with"]["case_count"] == "${{ inputs.case_count }}"

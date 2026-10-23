@@ -31,9 +31,9 @@ on:
         default: ""
         type: string
       case_count:
-        description: Suite size for diagnostics; 20 or 24 for pinned legacy catalogs, or 26
+        description: Suite size for diagnostics; 20, 24 or 26 for pinned legacy catalogs, or 27
         required: false
-        default: 26
+        default: 27
         type: number
       checkout_sdk:
         description: Check out the SDK before running the preparation command
