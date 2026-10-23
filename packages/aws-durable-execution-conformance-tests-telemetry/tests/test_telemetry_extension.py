@@ -21,16 +21,25 @@ ARN = (
     "arn:aws:lambda:us-west-2:123456789012:function:conformance-tests-abc-telemetry-1:$LATEST"
     "/durable-execution/8f1c2d3e-0000-4000-8000-000000000001/inv-1"
 )
+# The entry as written in a requirement: identity fields are placeholders that
+# the extension binds from the execution ARN before validation.
 SUCCEEDED_ENTRY: dict[str, Any] = {
     "record": {
+        "recordType": "DurableExecutionTelemetry",
         "schemaVersion": "1.0",
+        "emittedAt": "*",
+        "executionArn": "${EXECUTION_ARN}",
+        "executionName": "${EXECUTION_NAME}",
+        "functionName": "${FUNCTION_NAME}",
+        "functionQualifier": "${FUNCTION_QUALIFIER}",
+        "region": "${REGION}",
+        "accountId": "${ACCOUNT_ID}",
         "status": "SUCCEEDED",
         "input": {"value": 41},
         "output": {"value": 42},
-    },
-    "forbid_fields": ["error"],
-    "operations_by_name": {
-        "increment": {"type": "STEP", "status": "SUCCEEDED", "count": 1, "failedCount": 0},
+        "operationsByName": {
+            "increment": {"type": "STEP", "count": 1, "failedCount": 0, "status": "SUCCEEDED", "subType": "Step"},
+        },
     },
 }
 REQUIREMENT: dict[str, Any] = {"TelemetryAssertions": {"records": [SUCCEEDED_ENTRY]}}
@@ -51,7 +60,7 @@ def _record() -> dict[str, Any]:
         "input": {"value": 41},
         "output": {"value": 42},
         "operationsByName": {
-            "increment": {"type": "STEP", "subType": "Step", "count": 1, "failedCount": 0, "status": "SUCCEEDED"},
+            "increment": {"type": "STEP", "count": 1, "failedCount": 0, "status": "SUCCEEDED", "subType": "Step"},
         },
     }
 
@@ -267,6 +276,41 @@ def test_validate_telemetry_assertion_failure(tmp_path: Path, retriever: type[_F
     artifact = _artifact(tmp_path)
     assert artifact["errors"] == errors
     assert artifact["log_group"] == "/durable-execution-conformance/conformance-tests-abc/durable-execution-telemetry"
+
+
+# ``executionArn`` is absent here: retrieval drops a record whose ARN differs
+# before validation, so that case is covered by the retrieval tests.
+@pytest.mark.parametrize(
+    ("field", "expected_value"),
+    [
+        ("executionName", "8f1c2d3e-0000-4000-8000-000000000001"),
+        ("functionName", "conformance-tests-abc-telemetry-1"),
+        ("functionQualifier", "$LATEST"),
+        ("region", "us-west-2"),
+        ("accountId", "123456789012"),
+    ],
+)
+def test_validate_telemetry_binds_identity_placeholders_from_the_arn(
+    tmp_path: Path, retriever: type[_FakeRetriever], field: str, expected_value: str
+) -> None:
+    bad = _record()
+    bad[field] = "other"
+    retriever.events = [_event(bad)]
+    errors = TelemetryExtension().validate_telemetry(_context(tmp_path))
+    assert errors == [f"Durable Execution Telemetry: record[0]: {field}: expected {expected_value!r}, got 'other'"]
+
+
+def test_validate_telemetry_reports_placeholder_collision(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:
+    # A requirement that binds an identity name itself, under Variables, would
+    # otherwise silently override the ARN-derived value.
+    retriever.events = [_event(_record())]
+    context = _context(tmp_path)
+    context = ValidationContext(**{**vars(context), "placeholders": {**context.placeholders, "REGION": "eu-west-1"}})
+    errors = TelemetryExtension().validate_telemetry(context)
+    assert errors == [
+        "Durable Execution Telemetry: Placeholder ${REGION} already bound to 'eu-west-1', cannot rebind to 'us-west-2'"
+    ]
+    assert retriever.calls == []
 
 
 def test_validate_telemetry_region_mismatch(tmp_path: Path, retriever: type[_FakeRetriever]) -> None:

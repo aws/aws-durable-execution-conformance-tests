@@ -19,7 +19,10 @@ from aws_durable_execution_conformance_tests.extensions import (
     ValidationContext,
 )
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
-from aws_durable_execution_conformance_tests_telemetry.model import parse_execution_arn
+from aws_durable_execution_conformance_tests_telemetry.model import (
+    execution_placeholders,
+    parse_execution_arn,
+)
 from aws_durable_execution_conformance_tests_telemetry.retrieval import (
     FetchedRecords,
     TelemetryAccessError,
@@ -102,11 +105,6 @@ class TelemetryExtension:
         if not isinstance(raw_assertions, Mapping):
             return [f"{ASSERTIONS_KEY} must be a mapping"]
 
-        placeholders = PlaceholderContext()
-        for name, value in context.placeholders.items():
-            placeholders.bind(name, value)
-        assertions = placeholders.substitute(raw_assertions)
-
         try:
             expected = parse_execution_arn(context.execution_arn)
         except ValueError as exc:
@@ -115,6 +113,20 @@ class TelemetryExtension:
             return [
                 f"{ERROR_PREFIX}execution ARN region {expected.region!r} differs from run region {context.region!r}"
             ]
+
+        # The expected record names the identity fields through placeholders.
+        # Core binds the placeholders it resolved from the execution history;
+        # the suite adds the ARN-derived ones. A requirement that binds one of
+        # those names itself, under ``Variables``, collides here and fails.
+        placeholders = PlaceholderContext()
+        try:
+            for name, value in context.placeholders.items():
+                placeholders.bind(name, value)
+            for name, value in execution_placeholders(expected).items():
+                placeholders.bind(name, value)
+        except ValueError as exc:
+            return [f"{ERROR_PREFIX}{exc}"]
+        assertions = placeholders.substitute(raw_assertions)
 
         options = context.options
         log_group = _resolve_log_group(options)
@@ -134,7 +146,7 @@ class TelemetryExtension:
             return [f"{ERROR_PREFIX}access failure: {exc}"]
 
         expected_records = assertions.get("records")
-        errors = [f"{ERROR_PREFIX}{error}" for error in validate_records(fetched.records, expected_records, expected)]
+        errors = [f"{ERROR_PREFIX}{error}" for error in validate_records(fetched.records, expected_records)]
         self._write_artifact(context, _artifact(context, log_group, fetched, errors))
         return errors
 

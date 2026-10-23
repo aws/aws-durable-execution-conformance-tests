@@ -32,29 +32,38 @@ ExpectedExecutionHistory:
   - EventType: InvocationCompleted
     EventId: 4
     EventTimestamp: '*'
+# `record` is the complete expected record: every key, in the order the
+# CloudWatch Logs exporter writes them, at every nesting level. A key the
+# record carries but this list omits fails the check. Timestamps must have
+# exactly three fraction digits and a Z suffix.
 TelemetryAssertions:
   records:
     - record:
+        recordType: DurableExecutionTelemetry
         schemaVersion: '1.0'
+        emittedAt: &iso8601_ms '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/}'
+        executionArn: ${EXECUTION_ARN}
+        executionName: ${EXECUTION_NAME}
+        functionName: ${FUNCTION_NAME}
+        functionQualifier: ${FUNCTION_QUALIFIER}
+        region: ${REGION}
+        accountId: ${ACCOUNT_ID}
         status: SUCCEEDED
-        emittedAt: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
-        startTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
-        endTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        startTime: *iso8601_ms
+        endTime: *iso8601_ms
         durationMs: {$integer: {min: 0}}
         input:
           value: 41
         output:
           value: 42
-      forbid_fields:
-        - error
-      operations_by_name:
-        increment:
-          type: STEP
-          subType: Step
-          status: SUCCEEDED
-          count: 1
-          failedCount: 0
-          maxAttempt: 1
-          minDurationMs: {$integer: {min: 0}}
-          maxDurationMs: {$integer: {min: 0}}
-          totalDurationMs: {$integer: {min: 0}}
+        operationsByName:
+          increment:
+            type: STEP
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: Step
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+            maxAttempt: 1
