@@ -14,6 +14,7 @@ jobs:
       issues: write
     uses: aws/aws-durable-execution-ci/.github/workflows/issue-triage.yml@8a06a1e5c82083a9224af9d489ddd030be44d978
     with:
+      runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
       labels: |
         pkg:conformance
         pkg:otel

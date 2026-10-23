@@ -54,7 +54,7 @@ runs:
 
     - name: Set up Python
       # uv supplies Python on both Amazon Linux CodeBuild and Ubuntu runners.
-      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       with:
         python-version: "3.14"
         activate-environment: true
@@ -85,7 +85,7 @@ runs:
         PYTHONPATH: ""
       run: |
         # Ignore the CodeBuild image's global pip target and shared PYTHONPATH.
-        # setup-sam's existing pip installer needs pip in the activated venv.
+        # Keep python -m pip available to caller-supplied setup/prepare commands.
         uv pip install pip hatch==1.16.5
 
     - name: Set up SAM CLI
@@ -94,6 +94,9 @@ runs:
         PIP_CONFIG_FILE: /dev/null
         PYTHONPATH: ""
       uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+      with:
+        # Avoid SAM's legacy pip bootstrap on Python 3.14.
+        use-installer: true
 
     - name: Run language setup and preparation
       if: inputs.prepare-example == 'true'

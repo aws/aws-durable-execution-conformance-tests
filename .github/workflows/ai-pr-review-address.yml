@@ -25,6 +25,7 @@ jobs:
       pull-requests: read
     uses: aws/aws-durable-execution-ci/.github/workflows/ai-work-item-resolver.yml@8a06a1e5c82083a9224af9d489ddd030be44d978
     with:
+      runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
       work-scope: review
       upload-work-items: true
 
@@ -40,5 +41,6 @@ jobs:
       pull-requests: write
     uses: aws/aws-durable-execution-ci/.github/workflows/ai-pr-review-address.yml@8a06a1e5c82083a9224af9d489ddd030be44d978
     with:
+      runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
       pull-request-number: ${{ inputs['pull-request-number'] || '' }}
     secrets: inherit

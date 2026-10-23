@@ -217,6 +217,23 @@ See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
 for language setup and preparation hooks.
 
+## CI runners
+
+Workflows in this repository use ephemeral CodeBuild runners labeled
+`codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}`,
+including shared CI calls and the OTel orchestrator. Fork pull requests keep
+GitHub-hosted validation and ref resolution; cloud test jobs retain their
+same-repository guards.
+
+The reusable OTel workflows accept a `runs_on` override and continue to default
+to `ubuntu-latest` for external callers. This repository's OTel entry point
+passes its CodeBuild label through to every worker.
+
+Python jobs use `uv` to install Python 3.14 on the Amazon Linux runner image and
+ignore its shared pip target and `PYTHONPATH`. The PyPI publishing job retains
+its Docker-based publishing action, so the CodeBuild runner must provide a
+working Docker daemon.
+
 ## Extension API
 
 Core extensions register the
