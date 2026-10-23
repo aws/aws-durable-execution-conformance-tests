@@ -119,8 +119,8 @@ def normalize_otlp_json(payload: Mapping[str, Any]) -> list[Trace]:
                         service_name=str(service_name) if service_name else None,
                         exception_event_count=(
                             None
-                            if int(raw_span.get("droppedEventsCount", 0))
-                            else sum(event.get("name") == "exception" for event in raw_span.get("events", []))
+                            if int(raw_span.get("droppedEventsCount") or 0)
+                            else sum(event.get("name") == "exception" for event in (raw_span.get("events") or []))
                         ),
                     )
                 )
