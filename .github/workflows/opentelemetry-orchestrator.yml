@@ -96,7 +96,7 @@ on:
         default: short
         type: string
       delay_seconds:
-        description: Durable delay in seconds
+        description: Deprecated long-running delay accepted for caller compatibility but ignored
         required: false
         default: "82800"
         type: string
@@ -212,66 +212,6 @@ jobs:
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-execution
       case_count: ${{ inputs.case_count }}
-      aws_region: ${{ inputs.aws_region }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets: inherit
-
-  long-running-invocation:
-    name: Long running invocation view
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-long-running.yml
-    with:
-      language: ${{ inputs.language }}
-      resource_prefix: ${{ inputs.resource_prefix }}
-      conformance_repository: ${{ inputs.conformance_repository }}
-      sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      checkout_sdk: ${{ inputs.checkout_sdk }}
-      setup_command: ${{ inputs.setup_command }}
-      prepare_command: ${{ inputs.prepare_command }}
-      contract_test_command: ${{ inputs.contract_test_command }}
-      adot_release_repository: ${{ inputs.adot_release_repository }}
-      adot_layer_arn: ${{ inputs.adot_layer_arn }}
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: invocation
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || (github.event_name != 'schedule' && inputs.phase == 'short'))
-          && '60' || inputs.delay_seconds }}
-      examples_dir: ${{ inputs.examples_dir }}
-      aws_region: ${{ inputs.aws_region }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets: inherit
-
-  long-running-execution:
-    name: Long running execution view
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-long-running.yml
-    with:
-      language: ${{ inputs.language }}
-      resource_prefix: ${{ inputs.resource_prefix }}
-      conformance_repository: ${{ inputs.conformance_repository }}
-      sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      checkout_sdk: ${{ inputs.checkout_sdk }}
-      setup_command: ${{ inputs.setup_command }}
-      prepare_command: ${{ inputs.prepare_command }}
-      contract_test_command: ${{ inputs.contract_test_command }}
-      adot_release_repository: ${{ inputs.adot_release_repository }}
-      adot_layer_arn: ${{ inputs.adot_layer_arn }}
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: execution
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || (github.event_name != 'schedule' && inputs.phase == 'short'))
-          && '60' || inputs.delay_seconds }}
-      examples_dir: ${{ inputs.examples_dir }}
       aws_region: ${{ inputs.aws_region }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit

@@ -128,10 +128,10 @@ and execution suites:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
 
-The orchestrator's calls to `opentelemetry-long-running.yml` are compatibility
-no-ops in every phase. That workflow retains all existing inputs and outputs,
-returns `check_status: skipped` and `rollover_ready: false`, and performs no test,
-deployment, or artifact operations.
+The orchestrator runs only the invocation and execution suites; it does not
+call `opentelemetry-long-running.yml`. That standalone compatibility workflow
+retains all existing inputs and outputs, returns `check_status: skipped` and
+`rollover_ready: false`, and performs no test, deployment, or artifact operations.
 
 The suite workflow schedules only ADOT/X-Ray and the AWS S3 collector. The
 Datadog and Dash0 adapters remain available for manual runs. The former

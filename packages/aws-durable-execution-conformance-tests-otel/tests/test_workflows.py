@@ -200,21 +200,17 @@ def test_catalog_count_defaults_and_routes_to_both_views_without_changing_test_r
     for name in ("resolve", "invocation", "execution"):
         assert jobs[name]["with"]["case_count"] == "${{ inputs.case_count }}"
     assert jobs["resolve"]["with"]["conformance_test_ref"] == "${{ inputs.conformance_test_ref }}"
-    for view in ("invocation", "execution"):
-        assert "case_count" not in jobs[f"long-running-{view}"]["with"]
     self_test = _load(WORKFLOWS_DIR / "opentelemetry-conformance-tests.yml")
     assert "case_count" not in self_test["jobs"]["opentelemetry"]["with"]
 
 
-def test_orchestrator_owns_suite_and_long_running_views() -> None:
+def test_orchestrator_runs_only_short_suite_views() -> None:
     jobs = _load(ORCHESTRATOR)["jobs"]
 
     assert set(jobs) == {
         "resolve",
         "invocation",
         "execution",
-        "long-running-invocation",
-        "long-running-execution",
     }
     assert jobs["resolve"]["uses"] == "./.github/workflows/opentelemetry-resolve.yml"
     assert "secrets" not in jobs["resolve"]
@@ -226,10 +222,6 @@ def test_orchestrator_owns_suite_and_long_running_views() -> None:
         assert jobs[view]["with"]["resource_prefix"] == "${{ inputs.resource_prefix }}"
         assert "dash0_enabled" not in jobs[view]["with"]
         assert "datadog_enabled" not in jobs[view]["with"]
-    for view in ("invocation", "execution"):
-        initial = jobs[f"long-running-{view}"]
-        assert initial["uses"] == "./.github/workflows/opentelemetry-long-running.yml"
-        assert initial["with"]["view"] == view
     for name, job in jobs.items():
         if name == "resolve":
             continue
@@ -440,11 +432,6 @@ def test_long_running_worker_preserves_caller_compatibility_as_noop() -> None:
     call = _triggers(workflow)["workflow_call"]
 
     assert set(_triggers(workflow)) == {"workflow_call"}
-    required_inputs = {name for name, spec in call["inputs"].items() if spec.get("required")}
-    for view in ("invocation", "execution"):
-        caller = _load(ORCHESTRATOR)["jobs"][f"long-running-{view}"]
-        assert required_inputs <= caller["with"].keys() <= call["inputs"].keys()
-
     assert set(call["outputs"]) == {"check_status", "rollover_ready"}
     assert call["outputs"]["check_status"]["value"] == "${{ jobs.run.outputs.check_status }}"
     assert call["outputs"]["rollover_ready"]["value"] == "${{ jobs.run.outputs.rollover_ready }}"
