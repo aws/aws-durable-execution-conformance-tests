@@ -1,0 +1,256 @@
+name: Durable Execution Telemetry Suite
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: SDK language recorded in conformance reports
+        required: true
+        type: string
+      resource_prefix:
+        description: Unique 1-8 character prefix for persistent telemetry resources
+        required: true
+        type: string
+      sdk_repository:
+        description: GitHub repository containing the SDK and telemetry handlers
+        required: true
+        type: string
+      sdk_ref:
+        description: Full SDK commit SHA to test
+        required: true
+        type: string
+      examples_dir:
+        description: Directory containing template.yaml, relative to the conformance checkout
+        required: true
+        type: string
+      setup_command:
+        description: Optional shell command that selects the language toolchain
+        default: ""
+        type: string
+      prepare_command:
+        description: Optional shell command that builds and tests the SDK handlers
+        default: ""
+        type: string
+      conformance_test_ref:
+        description: Runner and requirements revision; defaults to this workflow's commit
+        default: ""
+        type: string
+      aws_region:
+        description: AWS region for deployment and validation
+        default: us-west-2
+        type: string
+      runs_on:
+        description: Runner label, including a CodeBuild-hosted runner label
+        default: ubuntu-latest
+        type: string
+      timeout_minutes:
+        description: Job timeout in minutes
+        default: 30
+        type: number
+    secrets:
+      CONFORMANCE_TEST_ROLE_ARN:
+        description: SAM-capable AWS deployment role assumed through OIDC
+        required: true
+      CONFORMANCE_TEST_ACCOUNT_ID:
+        description: Expected AWS test account ID
+        required: true
+      CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN:
+        description: Lambda execution role with permission to write telemetry logs
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  telemetry:
+    name: Telemetry / CloudWatch Logs
+    # Cloud runs execute SDK code. Fork and Dependabot PRs must not receive credentials.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.actor != 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    concurrency:
+      group: telemetry-stack-${{ inputs.resource_prefix }}-${{ inputs.aws_region }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      EXAMPLES_DIR: ${{ inputs.examples_dir }}
+      LANGUAGE: ${{ inputs.language }}
+      RESOURCE_PREFIX: ${{ inputs.resource_prefix }}
+      SDK_CHECKOUT: ${{ github.workspace }}/.build/durable-sdk
+      SDK_REF: ${{ inputs.sdk_ref }}
+      TEST_NAME: ${{ inputs.resource_prefix }}-telemetry
+      TEST_STACK_NAME: conformance-tests-${{ inputs.resource_prefix }}-telemetry
+      HISTORY_DIR: ${{ github.workspace }}/telemetry-output/history
+      REPORT_FILE: ${{ github.workspace }}/telemetry-output/report
+      # CodeBuild's global pip target and PYTHONPATH bypass virtual environments.
+      # Clear both so package installation stays in the activated environment.
+      PIP_CONFIG_FILE: /dev/null
+      PYTHONPATH: ""
+      PYTHONUNBUFFERED: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate workflow inputs
+        env:
+          SDK_REPOSITORY: ${{ inputs.sdk_repository }}
+          TEST_ACCOUNT_ID: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$LANGUAGE" =~ ^[a-z][a-z0-9-]{0,19}$ ]]; then
+            echo "language must contain 1-20 lowercase resource-safe characters"
+            exit 1
+          fi
+          if [[ ! "$RESOURCE_PREFIX" =~ ^[a-z][a-z0-9-]{0,7}$ ]]; then
+            echo "resource_prefix must contain 1-8 lowercase resource-safe characters"
+            exit 1
+          fi
+          if [[ ! "$SDK_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "sdk_repository must be an owner/repository pair"
+            exit 1
+          fi
+          if [[ ! "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sdk_ref must be a full 40-character commit SHA"
+            exit 1
+          fi
+          if [[ ! "$TEST_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "CONFORMANCE_TEST_ACCOUNT_ID must be a 12-digit account ID"
+            exit 1
+          fi
+          if [[ -z "$EXAMPLES_DIR" || "$EXAMPLES_DIR" == /* ]]; then
+            echo "examples_dir must be a non-empty relative directory"
+            exit 1
+          fi
+
+      - name: Check out conformance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ inputs.conformance_test_ref || job.workflow_sha }}
+          persist-credentials: false
+
+      - name: Check out SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.sdk_repository }}
+          ref: ${{ inputs.sdk_ref }}
+          path: .build/durable-sdk
+          persist-credentials: false
+
+      - name: Record tested revisions
+        run: |
+          {
+            echo '### Telemetry conformance revisions'
+            printf 'Conformance commit: %s\n\n' "$(git rev-parse HEAD)"
+            printf 'SDK commit: %s\n' "$(git -C "$SDK_CHECKOUT" rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Set up SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+
+      - name: Install conformance runner and telemetry extension
+        run: |
+          uv pip install \
+            ./packages/aws-durable-execution-conformance-tests \
+            ./packages/aws-durable-execution-conformance-tests-telemetry
+
+      - name: Prepare SDK handlers
+        env:
+          SETUP_COMMAND: ${{ inputs.setup_command }}
+          PREPARE_COMMAND: ${{ inputs.prepare_command }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SETUP_COMMAND" ]; then
+            eval "$SETUP_COMMAND"
+          fi
+          if [ -n "$PREPARE_COMMAND" ]; then
+            eval "$PREPARE_COMMAND"
+          fi
+
+      - name: Check handler template
+        run: test -f "$EXAMPLES_DIR/template.yaml"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.CONFORMANCE_TEST_ROLE_ARN }}
+          role-session-name: durableTelemetry-${{ inputs.resource_prefix }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+
+      - name: Verify AWS test account
+        id: account
+        env:
+          TEST_ACCOUNT_ID: ${{ secrets.CONFORMANCE_TEST_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          actual_account_id=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$actual_account_id" != "$TEST_ACCOUNT_ID" ]; then
+            echo "Assumed role does not belong to the expected AWS test account"
+            exit 1
+          fi
+
+      - name: Recover rolled-back test stack
+        run: |
+          set -euo pipefail
+          if stack_status=$(aws cloudformation describe-stacks \
+            --stack-name "$TEST_STACK_NAME" \
+            --query 'Stacks[0].StackStatus' --output text \
+            2> "$RUNNER_TEMP/telemetry-stack-error"); then
+            if [ "$stack_status" = ROLLBACK_COMPLETE ]; then
+              aws cloudformation delete-stack --stack-name "$TEST_STACK_NAME"
+              aws cloudformation wait stack-delete-complete --stack-name "$TEST_STACK_NAME"
+            fi
+          elif grep -q 'ValidationError.*does not exist' "$RUNNER_TEMP/telemetry-stack-error"; then
+            echo "Test stack does not exist yet"
+          else
+            cat "$RUNNER_TEMP/telemetry-stack-error" >&2
+            exit 1
+          fi
+
+      - name: Run telemetry conformance
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          python -m aws_durable_execution_conformance_tests.app \
+            --template "$EXAMPLES_DIR/template.yaml" \
+            --language "$LANGUAGE" \
+            --region "$AWS_REGION" \
+            --name "$TEST_NAME" \
+            --suite telemetry \
+            --history-dir "$HISTORY_DIR" \
+            --report console json junit github \
+            --report-file "$REPORT_FILE" \
+            --fail-on failed+uncovered \
+            --no-cleanup \
+            --parameter-overrides "LambdaExecutionRoleArn=$LAMBDA_EXECUTION_ROLE_ARN"
+
+      - name: Show CloudFormation diagnostics
+        if: failure() && steps.account.outcome == 'success'
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$TEST_STACK_NAME" \
+            --query "StackEvents[?ResourceStatus == 'CREATE_FAILED' || ResourceStatus == 'UPDATE_FAILED'].[LogicalResourceId,ResourceStatusReason]" \
+            --output table || true
+
+      - name: Upload reports and histories
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.resource_prefix }}-telemetry-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.aws_region }}
+          path: |
+            ${{ env.HISTORY_DIR }}/
+            ${{ env.REPORT_FILE }}.json
+            ${{ env.REPORT_FILE }}.xml
+          if-no-files-found: ignore
