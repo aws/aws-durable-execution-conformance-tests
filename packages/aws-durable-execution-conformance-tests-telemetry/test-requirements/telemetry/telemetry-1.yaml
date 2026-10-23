@@ -1,0 +1,60 @@
+---
+# telemetry-1: Durable Execution Telemetry success record for a single-step workflow
+description: Durable Execution Telemetry exports a complete success record to CloudWatch Logs for a single-step workflow
+handler: |
+  A single step named `increment` that adds one to `event.value`. The
+  Durable Execution Telemetry plugin is configured with a CloudWatchLogsExporter that
+  writes to the log group supplied through the `TelemetryLogGroupName`
+  template parameter, with `emitMode: on-complete`, `samplingRate: 1`,
+  `operationDetail: top-level`, and `content: {input: true, output: true}`.
+invocations: |
+  - Handler invokes `context.step("increment", ...)`, step succeeds on first attempt, returns `{value: input + 1}`.
+  - The plugin emits one DurableExecutionTelemetry record with status SUCCEEDED after the invocation completes.
+Input:
+  value: 41
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    value: 42
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: increment
+    EventTimestamp: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: increment
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+TelemetryAssertions:
+  records:
+    - record:
+        schemaVersion: '1.0'
+        status: SUCCEEDED
+        emittedAt: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        startTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        endTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
+        durationMs: {$integer: {min: 0}}
+        input:
+          value: 41
+        output:
+          value: 42
+      forbid_fields:
+        - error
+      operations_by_name:
+        increment:
+          type: STEP
+          subType: Step
+          status: SUCCEEDED
+          count: 1
+          failedCount: 0
+          maxAttempt: 1
+          minDurationMs: {$integer: {min: 0}}
+          maxDurationMs: {$integer: {min: 0}}
+          totalDurationMs: {$integer: {min: 0}}
