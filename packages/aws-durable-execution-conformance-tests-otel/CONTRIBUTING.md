@@ -495,6 +495,24 @@ expect:
       durable.execution.arn: ${EXECUTION_ARN}
 ```
 
+`expect.same_operation_as` selects exactly one other span and requires both
+spans to carry the same non-empty string `durable.execution.arn` and
+`durable.operation.id`. This checks logical-operation identity across segments
+whose operation ID is not available in the caller's service history. It does
+not compare timestamps and takes a direct span selector, without `$linked` or
+timestamp controls. The identity comparison is enforced even when a backend
+does not expose span links. For example, case 27's completed child wait must
+retain the initial segment's identity:
+
+```yaml
+expect:
+  same_operation_as:
+    name: otel-suspended-target-wait
+    attributes:
+      durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      durable.operation.status: STARTED
+```
+
 `expect.descendant_of` selects exactly one ancestor and follows actual
 `parent_span_id` edges in the same trace. Intervening infrastructure spans are
 allowed, but every edge up to that ancestor must be observed. A shared trace ID,

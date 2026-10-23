@@ -242,3 +242,15 @@ def test_case27_rejects_both_wait_segments_in_one_child_invocation(first: bool) 
         )
     errors = _validate("invocation", replace(trace, spans=tuple(spans)))
     assert any("parent.$occurrence" in error for error in errors), errors
+
+
+def test_case27_rejects_changed_wait_operation_id_on_resume() -> None:
+    trace = _trace("invocation")
+    spans = tuple(
+        replace(span, attributes=dict(span.attributes) | {"durable.operation.id": "different-wait"})
+        if span.name == "otel-suspended-target-wait" and span.status == "OK"
+        else span
+        for span in trace.spans
+    )
+    errors = _validate("invocation", replace(trace, spans=spans))
+    assert any("same_operation_as" in error for error in errors), errors

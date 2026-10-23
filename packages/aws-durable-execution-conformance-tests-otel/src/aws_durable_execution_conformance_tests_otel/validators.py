@@ -36,7 +36,7 @@ _EXECUTION_ATTRIBUTE_KEYS = (
     "durable_execution_arn",
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
-_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as", "descendant_of")
+_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as", "same_operation_as", "descendant_of")
 # These are serialized properties from span_to_dict, not provider payload fields
 # or the fields of a dataclass. Attribute mappings remain open-ended.
 _SPAN_PROPERTIES = frozenset(
@@ -479,8 +479,8 @@ def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> l
 def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
-    if relation == "descendant_of":
-        # Missing ancestry must never pass through link/backend or timestamp controls.
+    if relation in {"descendant_of", "same_operation_as"}:
+        # Ancestry and operation identity must not be bypassed by backend link controls.
         return _span_selector_schema_errors(expected, path=path)
     # Preserve the existing relation flags; same_trace_as still forbids link filtering.
     controls = {"$linked", "$millisecond_precision"}
@@ -944,6 +944,16 @@ def _span_relation_errors(
         if selected_span.trace_id != related_span.trace_id:
             return [f"{path}: span {selected_span.name!r} uses a different trace than {related_span.name!r}"]
         return []
+    if relation == "same_operation_as":
+        errors = []
+        for key in ("durable.execution.arn", "durable.operation.id"):
+            selected_value = selected_span.attributes.get(key)
+            related_value = related_span.attributes.get(key)
+            if not all(isinstance(value, str) and value for value in (selected_value, related_value)):
+                errors.append(f"{path}: both spans must have a non-empty string {key}")
+            elif selected_value != related_value:
+                errors.append(f"{path}: spans have different {key} values: {selected_value!r} != {related_value!r}")
+        return errors
     timestamp_tolerance = max(
         _timestamp_tolerance(feature_disparities),
         timedelta(milliseconds=1) if millisecond_precision else timedelta(0),

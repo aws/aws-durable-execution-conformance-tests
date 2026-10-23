@@ -301,6 +301,11 @@ TelemetryAssertions:
           durable.operation.subtype: Wait
           durable.operation.status: SUCCEEDED
           durable.operation.name: otel-suspended-target-wait
+        same_operation_as:
+          name: otel-suspended-target-wait
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.operation.status: STARTED
         after:
           name: otel-suspended-target-wait
           attributes:

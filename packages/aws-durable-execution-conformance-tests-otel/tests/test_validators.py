@@ -2137,6 +2137,82 @@ def test_same_trace_relation_rejects_link_filter_even_when_backend_lacks_links()
         assert any("does not support $linked" in error for error in errors)
 
 
+def _operation_identity_trace() -> Trace:
+    trace = _trace()
+    return replace(
+        trace,
+        spans=tuple(
+            replace(span, attributes=dict(span.attributes) | {"durable.operation.id": "operation"})
+            for span in trace.spans
+        ),
+    )
+
+
+def _operation_identity_errors(trace: Trace, selector: dict | None = None) -> list[str]:
+    return validate_trace(
+        trace,
+        {
+            "span_assertions": {
+                "select": {"name": "child"},
+                "expect": {"same_operation_as": selector or {"name": "root"}},
+            }
+        },
+        _query(),
+        feature_disparities={BackendFeatureDisparity.SPAN_LINKS},
+    )
+
+
+def test_same_operation_compares_identity_without_requiring_span_links() -> None:
+    trace = _operation_identity_trace()
+    root, child = trace.spans
+    assert _operation_identity_errors(replace(trace, spans=(root, replace(child, links=())))) == []
+
+
+@pytest.mark.parametrize("key", ["durable.execution.arn", "durable.operation.id"])
+def test_same_operation_rejects_different_identities(key: str) -> None:
+    trace = _operation_identity_trace()
+    root, child = trace.spans
+    child = replace(child, attributes=dict(child.attributes) | {key: "different"})
+    errors = _operation_identity_errors(replace(trace, spans=(root, child)))
+    assert any(f"different {key}" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("key", ["durable.execution.arn", "durable.operation.id"])
+@pytest.mark.parametrize("value", [None, "", 1, False])
+def test_same_operation_rejects_equal_invalid_identities(key: str, value: object) -> None:
+    trace = _operation_identity_trace()
+    spans = tuple(replace(span, attributes=dict(span.attributes) | {key: value}) for span in trace.spans)
+    errors = _operation_identity_errors(replace(trace, spans=spans))
+    assert any(f"non-empty string {key}" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_same_operation_rejects_missing_identity_on_either_span(index: int) -> None:
+    trace = _operation_identity_trace()
+    spans = list(trace.spans)
+    attributes = dict(spans[index].attributes)
+    del attributes["durable.operation.id"]
+    spans[index] = replace(spans[index], attributes=attributes)
+    assert any(
+        "non-empty string durable.operation.id" in error
+        for error in _operation_identity_errors(replace(trace, spans=tuple(spans)))
+    )
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_same_operation_requires_one_comparison_span(count: int) -> None:
+    trace = _operation_identity_trace()
+    root, child = trace.spans
+    errors = _operation_identity_errors(replace(trace, spans=(*((root,) * count), child)))
+    assert any("same_operation_as matched" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("control", ["$linked", "$millisecond_precision", "$allow_unresolved"])
+def test_same_operation_rejects_controls_that_could_skip_comparison(control: str) -> None:
+    errors = _operation_identity_errors(_operation_identity_trace(), {"name": "root", control: True})
+    assert any("same_operation_as" in error and control in error for error in errors), errors
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -2151,6 +2227,7 @@ def test_same_trace_relation_rejects_link_filter_even_when_backend_lacks_links()
         {"after": {"count": 1}},
         {"inside": {"$allow_unresolved": True}},
         {"same_trace_as": {"$not": {"name": "root"}}},
+        {"same_operation_as": {"$linked": True, "name": "root"}},
         {"links": [{"parnet": None}]},
         {"links": [{"$linked": True}]},
         {"links": {"$any_of": [[{"name": "root"}], [{"parent": {"name": "root"}}]]}},
