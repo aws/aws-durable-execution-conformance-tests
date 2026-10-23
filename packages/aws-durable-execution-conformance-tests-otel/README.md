@@ -161,12 +161,6 @@ requirements. The pinned test revision determines the catalog, and both suite
 workers still fail on failed or uncovered requirements. Long-running requirements
 are not executed by the hosted workflows.
 
-The S3 worker checks out `actions/setup-go` at its full pinned commit using
-the pinned `actions/checkout` action, verifies the commit, tree and action
-manifest, and then invokes the checked-out local action. The Go-version and
-cache inputs remain unchanged. This uses the standard Git checkout path rather
-than the runner's action-archive path, without changing to a mutable release tag.
-
 The hooks run in one Bash process after the optional SDK checkout, so setup
 exports remain available to the contract and preparation commands. They receive
 `SDK_CHECKOUT`, `SDK_REF`, and the shared workflow environment, including

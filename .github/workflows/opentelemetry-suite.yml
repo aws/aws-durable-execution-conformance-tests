@@ -355,31 +355,8 @@ jobs:
           ref: layer-collector/0.22.0
           path: ${{ env.OTEL_LAMBDA_CHECKOUT }}
 
-      - name: Check out pinned setup-go action
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: actions/setup-go
-          ref: b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-          path: .build/setup-go
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Verify pinned setup-go action
-        shell: bash
-        working-directory: .build/setup-go
-        env:
-          SETUP_GO_COMMIT: b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-          SETUP_GO_TREE: c5a9f59184ebebf27a466db31500c90156089f62
-          SETUP_GO_MANIFEST: 74a4e7e9f0b1eb0faee6d30576af05c489c39a3b
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SETUP_GO_COMMIT"
-          test "$(git rev-parse 'HEAD^{tree}')" = "$SETUP_GO_TREE"
-          test "$(git hash-object action.yml)" = "$SETUP_GO_MANIFEST"
-          git diff --quiet HEAD --
-
       - name: Set up Go
-        uses: ./.build/setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: ${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.mod
           cache-dependency-path: |
