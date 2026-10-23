@@ -128,6 +128,7 @@ compare operation IDs against the execution history.
 
 ## Retrieval
 
-Records are fetched with the core `CloudWatchLogRetriever`, which waits
-`--telemetry-wait-seconds`, then queries for a fixed ten-second window. A record
-that lands after that window fails the case as "no DurableExecutionTelemetry record".
+Records are fetched with the core `CloudWatchLogRetriever`. The retriever first
+sleeps `--telemetry-wait-seconds` (default 10). It then polls `FilterLogEvents` for the full core poll budget of 120 seconds. Events seen on any poll are kept, since a later response can omit a record that an earlier one returned. So each case takes at least 130 seconds. A record that is still absent when polling stops fails the
+case as `records: expected 1 record(s), got 0`. Events that fail to parse, or carry a different `recordType`, are listed under `malformed` in the artifact
+and are not counted.

@@ -37,9 +37,12 @@ def validate_record(
 
     Every check runs against this record alone. Expected values follow the
     rules of the core history matcher, see :func:`_expectation_errors`.
-    Unknown top-level and per-operation keys are ignored, so additive schema
-    changes do not fail the check. Error strings use the form
-    ``<json path>: expected <x>, got <y>``.
+    Error strings use the form ``<json path>: expected <x>, got <y>``.
+
+    Known limitation: unknown top-level and per-operation keys are ignored.
+    A key that one SDK emits and another does not is a cross-SDK difference.
+    This check does not detect it. Only ``forbid_fields`` rejects a named key.
+    An exact-shape check is planned as a follow-up.
     """
     errors: list[str] = []
 
