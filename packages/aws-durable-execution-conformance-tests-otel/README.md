@@ -51,13 +51,9 @@ propagated parent is not guaranteed to be the durable backend server span
 itself, and OpenTelemetry does not expose an ancestor chain that an SDK could
 traverse. A deterministic synthetic execution root is used only when no valid
 remote parent can be constructed.
-The long-running suite applies both invocation and execution views to waits,
-retry delays, callbacks, and chained invokes that can remain suspended for up
-to one day. Java, JavaScript, and Python all run both views. Each SDK
-repository schedules its own runs: the orchestrator launches a suite when no
-run is active and validates active executions on later runs, and callers can
-also dispatch it manually to launch or check a run. This repository no longer
-hosts per-language preset workflows.
+The long-running requirements and CLI remain available for manual use, but the
+reusable long-running workflow is disabled. It is retained as a compatibility
+no-op for existing callers and does not launch, poll, or update executions.
 
 Case 25 separates durable outcome from error details. A callback failure with an
 exactly empty service error payload still requires an ERROR callback span in both
@@ -127,10 +123,15 @@ workflow discovers the latest Python layer from the ADOT release.
 
 ## Reusable Workflow
 
-The hosted tests use one language-neutral reusable workflow for suites and
-long-running views:
+The hosted tests use one language-neutral reusable workflow for the invocation
+and execution suites:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
+
+The orchestrator's calls to `opentelemetry-long-running.yml` are compatibility
+no-ops in every phase. That workflow retains all existing inputs and outputs,
+returns `check_status: skipped` and `rollover_ready: false`, and performs no test,
+deployment, or artifact operations.
 
 The suite workflow schedules only ADOT/X-Ray and the AWS S3 collector. The
 Datadog and Dash0 adapters remain available for manual runs. The former
@@ -151,8 +152,8 @@ The optional `case_count` input defaults to `26`. A caller with a pinned legacy
 workflow maintenance fixes. Other counts are rejected before workers start.
 This input controls diagnostic log enumeration; it does not select or filter
 requirements. The pinned test revision determines the catalog, and both suite
-workers still fail on failed or uncovered requirements. The four-case short
-long-running suite is unchanged.
+workers still fail on failed or uncovered requirements. Long-running requirements
+are not executed by the hosted workflows.
 
 The S3 worker checks out `actions/setup-go` at its full pinned commit using
 the pinned `actions/checkout` action, verifies the commit, tree and action

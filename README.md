@@ -165,11 +165,11 @@ jobs:
       CONFORMANCE_TEST_LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.TEST_LAMBDA_EXECUTION_ROLE_ARN }}
 ```
 
-Use `phase: short` for pull requests and pushes. For day-scale tests, expose
-`launch` and `check` as `workflow_dispatch` choices and pass the same
-`delay_seconds`, region, and conformance revision to both runs. The workflow
-stores launch state as an artifact in the caller repository, so the checking
-run needs `actions: write`.
+Use `phase: short` for pull requests and pushes. The reusable
+`opentelemetry-long-running.yml` workflow is a compatibility no-op: it accepts
+the existing inputs, returns `check_status: skipped` and `rollover_ready: false`,
+and does not launch or check executions. Existing scheduled and manual callers
+can keep their calls, but long-running tests are disabled.
 
 Set `checkout_sdk: true` when `setup_command` or `prepare_command` needs an SDK
 checkout. Set it to `false` when the language example resolves the SDK through

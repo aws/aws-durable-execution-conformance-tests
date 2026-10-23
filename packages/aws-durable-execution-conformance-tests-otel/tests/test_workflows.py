@@ -288,31 +288,15 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
     }
     expected_action = "./.build/workflow-support/.github/actions/prepare-otel-example"
 
-    for path, job_names, conformance_ref in (
-        (SUITE_WORKFLOW, ("adot", "s3_collector"), "${{ inputs.conformance_test_sha }}"),
-        (
-            LONG_RUNNING_WORKFLOW,
-            ("run",),
-            "${{ steps.state.outputs.source_revision || inputs.conformance_test_sha }}",
-        ),
-    ):
-        workflow = _load(path)
-        for job_name in job_names:
-            steps = {step["name"]: step for step in workflow["jobs"][job_name]["steps"]}
-            assert steps["Check out conformance tests"]["with"] == {
-                "repository": "${{ inputs.conformance_repository }}",
-                "ref": conformance_ref,
-            }
-            assert steps["Check out workflow support"]["with"] == expected_support_checkout
-            assert steps["Prepare conformance example"]["uses"] == expected_action
-
-    long_running_steps = {step["name"]: step for step in _load(LONG_RUNNING_WORKFLOW)["jobs"]["run"]["steps"]}
-    assert long_running_steps["Check out next conformance tests"]["with"] == {
-        "repository": "${{ inputs.conformance_repository }}",
-        "ref": "${{ inputs.conformance_test_sha }}",
-        "clean": False,
-    }
-    assert long_running_steps["Prepare next conformance example"]["uses"] == expected_action
+    workflow = _load(SUITE_WORKFLOW)
+    for job_name in ("adot", "s3_collector"):
+        steps = {step["name"]: step for step in workflow["jobs"][job_name]["steps"]}
+        assert steps["Check out conformance tests"]["with"] == {
+            "repository": "${{ inputs.conformance_repository }}",
+            "ref": "${{ inputs.conformance_test_sha }}",
+        }
+        assert steps["Check out workflow support"]["with"] == expected_support_checkout
+        assert steps["Prepare conformance example"]["uses"] == expected_action
 
 
 def test_setup_go_uses_verified_immutable_checkout_with_unchanged_inputs() -> None:
@@ -477,7 +461,7 @@ def test_sam_and_owned_hatch_steps_keep_isolation_local() -> None:
                 if "hatch run " in step.get("run", ""):
                     owned_steps.append((path.name, step["name"]))
                     assert all(step.get("env", {}).get(key) == value for key, value in isolation.items())
-    assert len(owned_steps) == 6
+    assert len(owned_steps) == 3
 
 
 def test_adot_and_s3_resources_remain_stable() -> None:
@@ -516,32 +500,30 @@ def test_datadog_retention_setup_is_optional(
     )
 
 
-def test_long_running_worker_is_reusable_and_language_neutral() -> None:
+def test_long_running_worker_preserves_caller_compatibility_as_noop() -> None:
     workflow = _load(LONG_RUNNING_WORKFLOW)
-    text = LONG_RUNNING_WORKFLOW.read_text(encoding="utf-8")
     call = _triggers(workflow)["workflow_call"]
 
     assert set(_triggers(workflow)) == {"workflow_call"}
-    for name in (
-        "language",
-        "resource_prefix",
-        "conformance_repository",
-        "setup_command",
-        "prepare_command",
-    ):
-        assert name in call["inputs"]
-    assert "runtime_language" not in call["inputs"]
-    assert workflow["concurrency"]["group"].startswith("${{ inputs.language }}-otel-long-running-")
-    assert call["inputs"]["examples_dir"]["required"] is True
-    assert "default" not in call["inputs"]["examples_dir"]
-    assert workflow["env"]["EXAMPLES_DIR"] == "${{ inputs.examples_dir }}"
-    assert workflow["env"]["STATE_FILE"] == "/tmp/${{ inputs.language }}-otel-long-running-state.json"
-    assert workflow["env"]["TEST_TEMPLATE"] == "${{ inputs.examples_dir }}/template-long-running.yaml"
-    assert "aws-durable-execution-conformance-tests-otel/examples" not in text
-    assert '--language "$LANGUAGE"' in text
-    assert "aws cloudformation delete-stack" not in text
-    assert "setup-java" not in text
-    assert "setup-node" not in text
+    required_inputs = {name for name, spec in call["inputs"].items() if spec.get("required")}
+    for view in ("invocation", "execution"):
+        caller = _load(ORCHESTRATOR)["jobs"][f"long-running-{view}"]
+        assert required_inputs <= caller["with"].keys() <= call["inputs"].keys()
+
+    assert set(call["outputs"]) == {"check_status", "rollover_ready"}
+    assert call["outputs"]["check_status"]["value"] == "${{ jobs.run.outputs.check_status }}"
+    assert call["outputs"]["rollover_ready"]["value"] == "${{ jobs.run.outputs.rollover_ready }}"
+    assert workflow["permissions"] == {}
+    assert "concurrency" not in workflow
+    assert "env" not in workflow
+    assert set(workflow["jobs"]) == {"run"}
+    job = workflow["jobs"]["run"]
+    assert job["outputs"] == {"check_status": "skipped", "rollover_ready": "false"}
+    assert "if" not in job
+    assert job["runs-on"] == "${{ inputs.runs_on }}"
+    assert len(job["steps"]) == 1
+    assert job["steps"][0]["run"] == ":"
+    assert "uses" not in job["steps"][0]
 
 
 def test_otel_workflows_only_delete_rolled_back_stacks() -> None:
