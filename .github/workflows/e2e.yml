@@ -28,8 +28,12 @@ jobs:
     name: Deploy + validate fixtures
     # Cloud credentials are unavailable to fork PRs; run for same-repo events only.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 30
+    env:
+      # Ignore the CodeBuild image's shared pip target and package path.
+      PIP_CONFIG_FILE: /dev/null
+      PYTHONPATH: ""
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,9 +44,10 @@ jobs:
           node-version: "22"
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.14"
+          activate-environment: true
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -57,10 +62,10 @@ jobs:
           npm run build
 
       - name: Install runner from local source
-        run: python -m pip install ./packages/aws-durable-execution-conformance-tests
+        run: uv pip install ./packages/aws-durable-execution-conformance-tests
 
       - name: Install AWS SAM CLI
-        run: python -m pip install aws-sam-cli
+        run: uv pip install aws-sam-cli
 
       - name: Run step suite (sync invoke path)
         env:

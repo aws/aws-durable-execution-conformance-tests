@@ -128,6 +128,9 @@ env:
   OTEL_SUITE: ${{ inputs.suite }}
   OTEL_VIEW_SUFFIX: ${{ inputs.suite == 'otel-invocation' && 'inv' || 'exec' }}
   PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
+  # Ignore the CodeBuild image's shared pip target and package path.
+  PIP_CONFIG_FILE: /dev/null
+  PYTHONPATH: ""
   PYTHONUNBUFFERED: "1"
   SDK_REF: ${{ inputs.sdk_ref }}
   TEST_TEMPLATE: ${{ inputs.examples_dir }}/template.yaml
