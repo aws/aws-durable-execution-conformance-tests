@@ -707,10 +707,12 @@ def _assert_external_completion_catalog(assertions: dict, suite: str) -> None:
     assert target["expect"]["parent"]["name"] == ("Invocation" if suite == "otel-invocation" else "Workflow")
     if suite == "otel-invocation":
         assert target["expect"]["parent"]["$occurrence"] == 2
-    assert target["expect"]["before"] == {
-        "name": "otel-external-target-observed attempt 1",
-        "attributes": {"durable.operation.id": "${TARGET_OBSERVED}"},
-    }
+        assert target["expect"]["before"] == {
+            "name": "otel-external-target-observed attempt 1",
+            "attributes": {"durable.operation.id": "${TARGET_OBSERVED}"},
+        }
+    else:
+        assert target["expect"]["links"][0]["$occurrence"] == 2
     for item in spans:
         assert item["expect"]["service_name"] == "${SERVICE_NAME}"
         assert item["expect"]["kind"] == "INTERNAL"

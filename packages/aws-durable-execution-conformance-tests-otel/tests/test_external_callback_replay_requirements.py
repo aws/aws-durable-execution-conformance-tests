@@ -194,6 +194,36 @@ def test_first_completion_and_two_subsequent_replays_pass_oracle(view: str) -> N
     assert validate(trace(view), view) == []
 
 
+@pytest.mark.parametrize(
+    "callback_id,timestamp,value,wrong_invocation",
+    [("cb0", "end_time", 4.7, 12), ("cb1", "start_time", 4.4, 13), ("cb2", "start_time", 4.4, 12)],
+)
+def test_execution_service_clock_skew_preserves_callback_phase(
+    callback_id: str, timestamp: str, value: float, wrong_invocation: int
+) -> None:
+    original = trace("execution")
+    spans = tuple(
+        replace(
+            item,
+            start_time=START + timedelta(seconds=value) if timestamp == "start_time" else item.start_time,
+            end_time=START + timedelta(seconds=value) if timestamp == "end_time" else item.end_time,
+        )
+        if item.attributes.get("durable.operation.id") == callback_id
+        else item
+        for item in original.spans
+    )
+    # Service callback timestamps may overlap the SDK observation attempt.
+    # History and invocation links establish the phase, independent of clock skew.
+    assert validate(replace(original, spans=spans), "execution") == []
+    wrong_phase = tuple(
+        replace(item, links=(SpanLink(TRACE, f"{wrong_invocation:016x}"),))
+        if item.attributes.get("durable.operation.id") == callback_id
+        else item
+        for item in spans
+    )
+    assert validate(replace(original, spans=wrong_phase), "execution")
+
+
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 @pytest.mark.parametrize(
     "corruption",
@@ -238,7 +268,10 @@ def test_external_completion_mutations_fail(view: str, corruption: str) -> None:
             "wrong-trace": replace(target, trace_id="2" * 32),
             "wrong-parent": replace(target, parent_span_id=f"{999:016x}"),
             "late-completion": replace(
-                target, start_time=START + timedelta(seconds=6.4), end_time=START + timedelta(seconds=7.4)
+                target,
+                start_time=START + timedelta(seconds=6.4),
+                end_time=START + timedelta(seconds=7.4),
+                links=(SpanLink(TRACE, f"{12:016x}"),) if view == "execution" else target.links,
             ),
         }
         spans = [mutations[corruption] if s is target else s for s in spans]

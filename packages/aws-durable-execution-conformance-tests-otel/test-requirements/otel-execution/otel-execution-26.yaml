@@ -223,10 +223,6 @@ TelemetryAssertions:
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}
             $occurrence: 2
-        before:
-          name: otel-external-target-observed attempt 1
-          attributes:
-            durable.operation.id: ${TARGET_OBSERVED}
     - select:
         name: '${/^(?:otel-external-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -258,10 +254,6 @@ TelemetryAssertions:
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}
             $occurrence: 3
-        after:
-          name: otel-external-target-observed attempt 1
-          attributes:
-            durable.operation.id: ${TARGET_OBSERVED}
     - select:
         name: '${/^(?:otel-external-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -293,10 +285,6 @@ TelemetryAssertions:
             attributes:
               durable.execution.arn: ${EXECUTION_ARN}
             $occurrence: 4
-        after:
-          name: otel-external-target-observed attempt 1
-          attributes:
-            durable.operation.id: ${TARGET_OBSERVED}
     - select:
         name: otel-external-target-observed attempt 1
         attributes:
@@ -318,11 +306,6 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${TARGET_OBSERVED}
-        after:
-          name: ${/^(?:otel-external-target|CALLBACK)$/}
-          attributes:
-            durable.operation.id: ${TARGET_CALLBACK}
-            durable.operation.status: SUCCEEDED
         links:
           - name: Invocation
             attributes:

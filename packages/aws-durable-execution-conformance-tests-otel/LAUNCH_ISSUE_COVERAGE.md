@@ -142,8 +142,12 @@ a completed child context. Every replay visits that same operation. After its
 first result, a durable step records the value once; two separate callback
 barriers then force two later resumes. Driver actions wait for a newer
 `InvocationCompleted` event before delivering each response. The four-invocation
-history, stable operation IDs, root parentage and first-completion timing are
-checked. Raw S3 terminal records must occur exactly once, including when two
+history, stable operation IDs, root parentage and first-completion invocation are
+checked. Invocation-view spans also check timing against the observation attempt.
+Execution-view callback timestamps come from the service, so that view uses
+history and invocation links to associate completions with their phases without
+comparing those timestamps to the observation attempt's SDK clock.
+Raw S3 terminal records must occur exactly once, including when two
 records have identical span IDs. Five seconds of unchanged telemetry are
 required. X-Ray merging cannot establish this raw export-count property.
 This cloud scenario does not exercise the JS local invocation-event wrapper.
