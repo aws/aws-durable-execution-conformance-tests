@@ -159,12 +159,13 @@ passing. Late duplicate records reset or invalidate that candidate. Handler-root
 fallbacks reject probe spans tagged with `conformance.callback`, and invocation
 replay checks the required link shape for each allowed segment count.
 
-The self-test workflow pins the Python companion fixture from SDK PR #758,
-including the dedicated caught-failure/replay case25 handler and the correction
-for explicit terminal failure without error details. A fixture still routing25
-to the unhandled case17 handler, or exporting the failed leaf as UNSET, is
-incompatible with this successful-execution requirement. The fixture retains the #752/#756 runtime prerequisites and
-all 26 handlers. Manual dispatch can override that revision; the
+The self-test workflow defaults to the Python SDK's `main` branch and resolves it
+once to an immutable commit shared by every test job. Manual dispatch can select
+another SDK branch or commit. The selected revision must include the dedicated
+caught-failure/replay case 25 handler and the correction for explicit terminal
+failure without error details. A revision still routing case 25 to the unhandled
+case 17 handler, or exporting the failed leaf as UNSET, is incompatible with this
+successful-execution requirement. Missing handlers remain uncovered; the
 `failed+uncovered` coverage threshold is unchanged.
 
 Case 24 covers every execution-correlated Invocation span and requires five
