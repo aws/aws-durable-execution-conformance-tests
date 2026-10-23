@@ -689,15 +689,18 @@ class PollingValidator:
         last_event_count: int = 0
         last_progress_time: float = time.time()
         errors: list[str] = []
+        closed_callback_errors: list[tuple[CallbackError, str | None]] = []
         final_status: str | None = None
         actual_events: list[dict[str, Any]] = []
         history_only_mode: bool = expected_result is None
+        execution_terminal = False
 
         while True:
             time.sleep(self._config.poll_interval_seconds)
 
             history: dict | None = get_execution_history(execution_arn, self._lambda_client)
             if history is None:
+                errors.extend(str(error) for error, _operation_id in closed_callback_errors)
                 errors.append("Failed to retrieve execution history during polling")
                 return AsyncValidationResult(
                     passed=False,
@@ -728,63 +731,138 @@ class PollingValidator:
                     )
                     break
 
-            # Handle new CallbackStarted events
-            new_callbacks: list[dict[str, Any]] = extract_callback_events(actual_events, handled_callback_ids)
-            for cb_event in new_callbacks:
-                details: dict[str, Any] = cb_event.get("CallbackStartedDetails", {})
-                callback_id: str = details.get("CallbackId", "")
+            # Serve every known callback once before any heartbeat follow-up.
+            # This preserves the first round's action matching and prevents a
+            # delayed follow-up from starving another callback in the batch.
+            callback_round: list[dict[str, Any]] = (
+                [] if execution_terminal else extract_callback_events(actual_events, handled_callback_ids)
+            )
+            initial_round = True
+            while True:
+                heartbeat_followups: list[dict[str, Any]] = []
+                for cb_event in callback_round:
+                    details: dict[str, Any] = cb_event.get("CallbackStartedDetails", {})
+                    callback_id: str = details.get("CallbackId", "")
 
-                action, idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
-                if action is None:
-                    if not actions:
-                        # No actions configured — timeout test, expected behaviour
-                        print(
-                            f"  No CallbackAction configured for"
-                            f" '{cb_event.get('Name', '<anonymous>')}'; leaving callback open"
+                    action, idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
+                    if action is None:
+                        if not initial_round:
+                            # Retain the normal next-poll unmatched-action error
+                            # when a heartbeat has no configured follow-up.
+                            continue
+                        if not actions:
+                            # No actions configured — timeout test, expected behaviour
+                            print(
+                                f"  No CallbackAction configured for"
+                                f" '{cb_event.get('Name', '<anonymous>')}'; leaving callback open"
+                            )
+                        else:
+                            event_name: str = cb_event.get("Name", "<anonymous>")
+                            errors.append(f"No matching CallbackAction for callback '{event_name}' (id={callback_id})")
+                        handled_callback_ids.add(callback_id)
+                        continue
+
+                    if idx is not None:
+                        used_action_indices.add(idx)
+
+                    # Only a terminal action consumes the callback.
+                    if action.operation != "heartbeat":
+                        handled_callback_ids.add(callback_id)
+
+                    try:
+                        if action.delay_seconds > 0:
+                            time.sleep(action.delay_seconds)
+                        resolved_action: CallbackAction = CallbackAction(
+                            callback_name=action.callback_name,
+                            operation=action.operation,
+                            payload=self._context.substitute(action.payload),
                         )
-                    else:
-                        event_name: str = cb_event.get("Name", "<anonymous>")
-                        errors.append(f"No matching CallbackAction for callback '{event_name}' (id={callback_id})")
-                    handled_callback_ids.add(callback_id)
-                    continue
+                        self._callback_sender.send(callback_id, resolved_action)
+                        callbacks_sent += 1
+                        print(f"  Sent {action.operation} callback for '{action.callback_name}' (id={callback_id})")
+                    except CallbackError as e:
+                        cause = e.__cause__
+                        if (
+                            isinstance(cause, ClientError)
+                            and cause.response.get("Error", {}).get("Code") == "CallbackTimeoutException"
+                        ):
+                            # This token is expired or closed, so retrying another
+                            # action against it cannot help. Distinguish genuine
+                            # expiry from a racing execution's closure below.
+                            operation_id = cb_event.get("Id")
+                            closed_callback_errors.append((e, operation_id if isinstance(operation_id, str) else None))
+                            handled_callback_ids.add(callback_id)
+                        else:
+                            errors.append(str(e))
+                        continue
 
-                if idx is not None:
-                    used_action_indices.add(idx)
+                    if action.operation == "heartbeat":
+                        heartbeat_followups.append(cb_event)
 
-                # Heartbeat is a keep-alive, not terminal — don't
-                # consume the callback so it remains matchable for a
-                # follow-up success/failure action.
-                if action.operation != "heartbeat":
-                    handled_callback_ids.add(callback_id)
+                # Preserve the old history-only boundary after the first round,
+                # before another action changes an already-matched execution.
+                # Also check when no callbacks were available in this history.
+                if history_only_mode and expected_events:
+                    matcher = EventHistoryMatcher(context=self._context)
+                    match_result = matcher.match(expected_events, actual_events)
+                    if match_result.success:
+                        return AsyncValidationResult(
+                            passed=True,
+                            errors=[],
+                            placeholders=match_result.resolved_placeholders,
+                            callbacks_sent=callbacks_sent,
+                            final_status=final_status,
+                            event_count=len(actual_events),
+                        )
 
-                try:
-                    if action.delay_seconds > 0:
-                        time.sleep(action.delay_seconds)
-                    resolved_action: CallbackAction = CallbackAction(
-                        callback_name=action.callback_name,
-                        operation=action.operation,
-                        payload=self._context.substitute(action.payload),
-                    )
-                    self._callback_sender.send(callback_id, resolved_action)
-                    callbacks_sent += 1
-                    print(f"  Sent {action.operation} callback for '{action.callback_name}' (id={callback_id})")
-                except CallbackError as e:
-                    errors.append(str(e))
+                if not heartbeat_followups:
+                    break
+                # A heartbeat produces no history event. Dispatch its known
+                # follow-up in the next round before a potentially slow fetch.
+                callback_round = heartbeat_followups
+                initial_round = False
 
-            # In history-only mode, stop polling once all expected
-            # events are matched rather than waiting for terminal status.
-            if history_only_mode and expected_events:
-                matcher = EventHistoryMatcher(context=self._context)
-                match_result = matcher.match(expected_events, actual_events)
-                if match_result.success:
-                    return AsyncValidationResult(
-                        passed=True,
-                        errors=[],
-                        placeholders=match_result.resolved_placeholders,
-                        callbacks_sent=callbacks_sent,
-                        final_status=final_status,
-                        event_count=len(actual_events),
-                    )
+            # Never put status lookup latency ahead of a known live callback.
+            # Only rejected closed/expired tokens require reconciliation, after
+            # every available round has finished sending its healthy actions.
+            if closed_callback_errors and not execution_terminal:
+                execution = get_durable_execution(execution_arn, self._lambda_client)
+                if execution is not None and execution.get("Status") in _TERMINAL_STATUSES:
+                    execution_terminal = True
+                else:
+                    # A failed or nonterminal lookup cannot justify dropping the
+                    # original callback failure. Keep normal polling and errors.
+                    errors.extend(str(error) for error, _operation_id in closed_callback_errors)
+                    closed_callback_errors.clear()
+
+        if closed_callback_errors:
+            # CallbackTimeoutException also means real expiry. Only a complete
+            # terminal history with the same stable callback identity can prove
+            # that the rejected token belonged to a still-pending race loser.
+            complete_terminal_history = (
+                history is not None
+                and not history.get("NextMarker")
+                and final_status in _TERMINAL_STATUSES
+                and get_execution_status({"Events": actual_events}) == final_status
+            )
+            callback_ids = {
+                event.get("Id"): event.get("CallbackStartedDetails", {}).get("CallbackId")
+                for event in actual_events
+                if event.get("EventType") == "CallbackStarted"
+            }
+            completed_callback_ids = {
+                event.get("Id")
+                for event in actual_events
+                if event.get("EventType") in {"CallbackSucceeded", "CallbackFailed", "CallbackTimedOut"}
+            }
+            for error, operation_id in closed_callback_errors:
+                if (
+                    not complete_terminal_history
+                    or not operation_id
+                    or callback_ids.get(operation_id) != error.callback_id
+                    or operation_id in completed_callback_ids
+                ):
+                    errors.append(str(error))
 
         # --- Final assertion: match event history ---
         if expected_events:
