@@ -70,6 +70,9 @@ def fetch_records(
         if record.data.get("executionArn") != execution_arn:
             continue
         records.append(record)
+    # Poll accumulation preserves discovery order, not timestamp order.
+    # Restore chronological order before positional validation.
+    records.sort(key=lambda record: (record.event.get("timestamp", 0), record.event.get("ingestionTime", 0)))
     return FetchedRecords(
         events=tuple(events),
         records=tuple(records),

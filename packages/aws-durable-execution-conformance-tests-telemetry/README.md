@@ -73,7 +73,7 @@ The function's execution role must allow `logs:CreateLogStream` and
 ## What is asserted
 
 `TelemetryAssertions.records` is an ordered list. Entry `i` describes the
-`i`-th record the plugin emitted for the execution:
+`i`-th record after sorting by CloudWatch event timestamp and ingestion time:
 
 ```yaml
 TelemetryAssertions:
@@ -92,9 +92,8 @@ The number of fetched records must equal the list length. When the counts
 differ, that is the only error reported. An empty list passes when no record
 was emitted.
 
-Fetched records are matched to entries in the order the retriever returned
-them. Every current requirement expects one record, so no ordering rule is
-defined yet.
+Fetched records are sorted by event timestamp, then ingestion time, ascending.
+The artifact’s raw events list preserves the order in which the retriever first observed each event. Only the parsed records list is sorted by timestamp.
 
 For each `(record, entry)` pair the validator checks, on that record alone:
 

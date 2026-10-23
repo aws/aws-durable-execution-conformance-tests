@@ -94,3 +94,26 @@ def test_cloudwatch_error_becomes_access_error() -> None:
 def test_empty_response_yields_no_records() -> None:
     fetched = _fetch(_FakeRetriever([]))
     assert fetched == fetched.__class__(events=(), records=(), malformed=())
+
+
+@pytest.mark.parametrize(
+    ("timestamps", "ingestion_times"),
+    [((1, 2), (30, 20)), ((1, 1), (20, 30))],
+)
+def test_records_sorted_independently_of_discovery_order(
+    timestamps: tuple[int, int], ingestion_times: tuple[int, int]
+) -> None:
+    payload = {"recordType": "DurableExecutionTelemetry", "executionArn": ARN}
+    earlier = {**_event(payload, timestamps[0]), "ingestionTime": ingestion_times[0]}
+    later = {**_event(payload, timestamps[1]), "ingestionTime": ingestion_times[1]}
+    fetched = _fetch(_FakeRetriever([later, earlier]))
+    assert [record.event for record in fetched.records] == [earlier, later]
+    assert fetched.events == (later, earlier)
+
+
+def test_timestamp_ties_preserve_discovery_order_and_distinct_events() -> None:
+    payload = {"recordType": "DurableExecutionTelemetry", "executionArn": ARN}
+    first = {**_event(payload), "eventId": "first"}
+    second = {**_event(payload), "eventId": "second"}
+    fetched = _fetch(_FakeRetriever([second, first]))
+    assert [record.event["eventId"] for record in fetched.records] == ["second", "first"]
