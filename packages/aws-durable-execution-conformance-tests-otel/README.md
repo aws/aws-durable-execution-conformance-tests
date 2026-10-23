@@ -128,6 +128,12 @@ and execution suites:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
 
+This repository's self-test caller uses the Java SDK's `main` branch, Java 21,
+and the SDK's `conformance-tests-otel` module. It builds the SDK and OTel plugin
+before packaging the handlers. The `jvm` runtime alias selects Java exporter
+configuration while keeping self-test resource names separate from the Java
+SDK's own `java` runs. Manual dispatch can override the SDK revision.
+
 The orchestrator's calls to `opentelemetry-long-running.yml` are compatibility
 no-ops in every phase. That workflow retains all existing inputs and outputs,
 returns `check_status: skipped` and `rollover_ready: false`, and performs no test,
@@ -314,7 +320,7 @@ up, and neither half breaks the other.
 If the requirement turns out to be wrong once an SDK writes the handler against
 it, correct the requirement here first, then land the handler; the
 `Requirement correctness dispute` issue template captures the evidence. The
-`OpenTelemetry Conformance Tests` workflow runs the Python SDK's handlers against the
+`OpenTelemetry Conformance Tests` workflow runs the Java SDK's handlers against the
 requirements on every PR here, so a change that breaks an existing case fails on
 that PR rather than in the next SDK to bump.
 

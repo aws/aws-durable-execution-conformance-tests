@@ -159,7 +159,7 @@ passing. Late duplicate records reset or invalidate that candidate. Handler-root
 fallbacks reject probe spans tagged with `conformance.callback`, and invocation
 replay checks the required link shape for each allowed segment count.
 
-The self-test workflow defaults to the Python SDK's `main` branch and resolves it
+The self-test workflow defaults to the Java SDK's `main` branch and resolves it
 once to an immutable commit shared by every test job. Manual dispatch can select
 another SDK branch or commit. The selected revision must include the dedicated
 caught-failure/replay case 25 handler and the correction for explicit terminal

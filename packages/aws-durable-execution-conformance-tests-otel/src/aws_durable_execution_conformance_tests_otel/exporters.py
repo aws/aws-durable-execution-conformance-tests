@@ -30,6 +30,7 @@ class ExporterConfiguration:
 
 
 _RUNTIME_ALIASES = {
+    "jvm": "java",
     "js": "javascript",
     "node": "javascript",
     "nodejs": "javascript",
