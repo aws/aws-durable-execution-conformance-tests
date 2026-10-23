@@ -110,8 +110,8 @@ Expected values follow the rules of the core execution-history matcher:
 
 | Expected value | Rule |
 | --- | --- |
-| `'*'` | The field must be present. Any value passes. Use it for values that differ per run, such as `durationMs`. |
-| `'${/regex/}'` | `str(actual)` must match the regex. Use it for formats, such as ISO-8601 timestamps. |
+| `'*'` | The field must be present. Any value passes, including `null`. Use it only for values whose type is not worth asserting. |
+| `'${/regex/}'` | `str(actual)` must match the regex. Use it for formats, such as ISO-8601 timestamps, and for per-run numbers, such as `durationMs: '${/^\d+$/}'`. |
 | mapping | `actual` must be a mapping. Every listed key is checked recursively. Extra keys in `actual` are ignored. |
 | list | `actual` must be a list of the same length. Items are checked pairwise. |
 | anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. |

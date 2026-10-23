@@ -462,3 +462,39 @@ def test_telemetry_1_rejects_record_missing_each_asserted_field(path: tuple[str,
     assert len(errors) == 1
     assert errors[0].startswith(f"{'.'.join(path)}: expected ")
     assert errors[0].endswith(", got <missing>")
+
+
+# Every SDK emits durations as a non-negative integer millisecond count. The
+# requirement therefore rejects null, booleans, negatives, and non-integers so
+# that an exporter with broken duration serialization fails the check.
+_TELEMETRY_1_DURATION_PATHS: list[tuple[str, ...]] = [
+    ("durationMs",),
+    ("operationsByName", "increment", "minDurationMs"),
+    ("operationsByName", "increment", "maxDurationMs"),
+    ("operationsByName", "increment", "totalDurationMs"),
+]
+
+
+def _set_path(record: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    parent: dict[str, Any] = record
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = value
+
+
+@pytest.mark.parametrize("path", _TELEMETRY_1_DURATION_PATHS, ids=".".join)
+@pytest.mark.parametrize("value", [0, 1, 1000])
+def test_telemetry_1_accepts_non_negative_integer_duration(path: tuple[str, ...], value: int) -> None:
+    record = _record()
+    _set_path(record, path, value)
+    assert validate_record(record, _telemetry_1_entry(), EXPECTED) == []
+
+
+@pytest.mark.parametrize("path", _TELEMETRY_1_DURATION_PATHS, ids=".".join)
+@pytest.mark.parametrize("value", [None, True, False, -1, 12.5, float("nan"), float("inf"), ""])
+def test_telemetry_1_rejects_non_integer_duration(path: tuple[str, ...], value: Any) -> None:
+    record = _record()
+    _set_path(record, path, value)
+    errors = validate_record(record, _telemetry_1_entry(), EXPECTED)
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{'.'.join(path)}: value {value!r} does not match regex pattern")

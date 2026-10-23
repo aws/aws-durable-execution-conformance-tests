@@ -40,7 +40,7 @@ TelemetryAssertions:
         emittedAt: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
         startTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
         endTime: '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/}'
-        durationMs: '*'
+        durationMs: '${/^\d+$/}'
         input:
           value: 41
         output:
@@ -55,6 +55,6 @@ TelemetryAssertions:
           count: 1
           failedCount: 0
           maxAttempt: 1
-          minDurationMs: '*'
-          maxDurationMs: '*'
-          totalDurationMs: '*'
+          minDurationMs: '${/^\d+$/}'
+          maxDurationMs: '${/^\d+$/}'
+          totalDurationMs: '${/^\d+$/}'
