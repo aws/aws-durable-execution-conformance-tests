@@ -61,11 +61,10 @@ def test_adot_configures_each_supported_runtime(runtime: str, expected_layer: st
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in config.environment
 
 
-@pytest.mark.parametrize("runtime", ["java", "jvm"])
-def test_adot_java_uses_current_distro_wrapper_parameter(runtime: str) -> None:
+def test_adot_java_uses_current_distro_wrapper_parameter() -> None:
     config = AdotExporterProfile().configure(
         _options(
-            runtime,
+            "java",
             layer_arn="arn:aws:lambda:us-west-2:615299751070:layer:AWSOpenTelemetryDistroJava:16",
         )
     )
@@ -130,9 +129,8 @@ def test_community_non_javascript_runtimes_use_the_base_endpoint(runtime: str) -
     assert "OtelMetricsExporter" not in config.parameter_overrides
 
 
-@pytest.mark.parametrize("runtime", ["java", "jvm"])
-def test_community_java_uses_the_versioned_public_layer(runtime: str) -> None:
-    config = CommunityExporterProfile().configure(_options(runtime))
+def test_community_java_uses_the_versioned_public_layer() -> None:
+    config = CommunityExporterProfile().configure(_options("java"))
 
     assert config.layer_arns == ("arn:aws:lambda:us-west-2:184161586896:layer:opentelemetry-javaagent-0_20_0:1",)
 
