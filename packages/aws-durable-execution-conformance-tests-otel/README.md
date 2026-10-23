@@ -64,11 +64,12 @@ exactly empty service error payload still requires an ERROR callback span in bot
 views, even when the handler catches the failed child, replays through two durable
 barriers, and returns `caught/one/two` successfully. Case 17 retains the unhandled
 failure path. Explicit FAILED, TIMED_OUT and STOPPED operation ends are failures even
-when details are absent; exception events require real error details. The cloud
-case covers FAILED, while the other terminal mappings require SDK unit coverage.
-Pending/retrying, successful operations and unrelated cancellation retain their
-existing contracts. See [launch coverage](LAUNCH_ISSUE_COVERAGE.md) for the S3
-exception-event assertion and backend observation limits.
+when details are absent. A real SDK exception may produce an exception event even
+when the service error payload is empty; case 25 does not constrain event counts.
+The cloud case covers FAILED, while the other terminal mappings require SDK unit
+coverage. Pending/retrying, successful operations and unrelated cancellation retain their
+existing contracts. See [launch coverage](LAUNCH_ISSUE_COVERAGE.md) for the replay
+assertions and backend observation limits.
 
 ## Run
 

@@ -9,7 +9,7 @@ instrumentation hooks themselves.
 | --- | --- | --- |
 | Chained-invoke propagation | `otel-invocation-11`, `otel-execution-11` | The child service carrier must retain the first invoke span's Root/Parent and sampled-positive decision. X-Ray also requires the real child ancestry to reach that span; completed replay must not start another child. |
 | 4 — Python status mapping | `otel-invocation-24`, `otel-execution-24` | A genuine invocation retry must report `RETRYING` and `UNSET`, followed by successful recovery. An ordinary step retry reports `PENDING` and does not test this path. |
-| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A handler catches the real failed child, checkpoints an observation, replays through two barriers and returns successfully while the FAILED callback leaf remains ERROR without an exception event. Service history retains its untruncated, exactly empty error payload. |
+| 4 — Errorless operation failure | `otel-invocation-25`, `otel-execution-25` | A handler catches the real failed child, checkpoints an observation, replays through two barriers and returns successfully while the FAILED callback leaf remains ERROR. Exception events are optional. Service history retains its untruncated, exactly empty error payload. |
 | External-completion replay | `otel-invocation-26`, `otel-execution-26` | A root callback first completes before a checkpointed observation step, then is visited again on two later resumes without another terminal export. |
 | 5 — User-function context | `otel-invocation-22..23`, `otel-execution-22..23` | User code must receive valid context on the execution's trace, with the appropriate operation/attempt parent and restoration after nested work and resume. |
 | 6 — Completed-operation replay exports | `otel-execution-21` | A completed step before a normal wait/resume must not export its operation or user attempt again. The paired invocation-view case permits that view's distinct replay segments. |
@@ -115,27 +115,27 @@ active, or completion during End/forceFlush. SDK public tests separately establi
 any additional live-delivery or direct-callback replay coverage.
 
 The corrected operation-end contract maps explicit `FAILED`, `TIMED_OUT`, and
-`STOPPED` to `ERROR`, even without error metadata. Real error details may produce
-an exception event; their absence must not. Successful operations remain `OK`;
-pending operations and invocation `RETRYING/UNSET` retain their existing behavior.
+`STOPPED` to `ERROR`, even without error metadata. An empty service error payload
+does not imply that the SDK has no exception to record. OpenTelemetry
+[permits an exception event when an exception escapes the span and causes ERROR status](https://opentelemetry.io/docs/specs/otel/trace/exceptions/),
+even if an enclosing workflow later catches it. Case 25 accepts telemetry with or
+without that event and does not require a backend to expose its count.
+Successful operations remain `OK`; pending operations and invocation
+`RETRYING/UNSET` retain their existing behavior.
 Unrelated cancellation is not assigned a new status by this change. SDK unit
 controls cover the terminal status mapping, details, success and retry behavior.
 Case 25 exercises the actual cloud `FAILED` path; it does not claim cloud coverage
 of `TIMED_OUT` or `STOPPED`. An execution timeout leaving a wait `STARTED` (case
 15) is not evidence of an operation ending `TIMED_OUT` without an error.
 
-Case 25 also requires `exception_event_count: 0` on the failed callback leaf.
-Its complete matching trace must remain unchanged for five seconds, so an early
-passing observation cannot hide a later duplicate or exception event within that
-window. This bounds the observation period; it does not prove that no record can
-arrive after the window.
-OTLP JSON/protobuf normalization counts actual span events named `exception`.
-Dropped events make the count unknown, so the lossless-backend assertion fails
-instead of treating an incomplete event list as proof of absence. X-Ray and
-Datadog adapters do not expose the complete OTLP event list; their explicit
-`exception-events` disparity skips only an unavailable event-count expectation.
-It never relaxes the required ERROR status. S3 is the reference for exception
-absence; a passing X-Ray report alone cannot establish it.
+Case 25's complete matching trace must remain unchanged for five seconds, so an
+early passing observation cannot hide a later duplicate terminal export within
+that window. A change in the observed exception-event count restarts the
+stability window, but does not invalidate an otherwise conformant trace.
+This bounds the observation period; it does not prove that no record can arrive
+after the window. S3 retains repeated OTLP records and is the reference for the
+terminal export count; X-Ray can merge updates to the same span ID. Every backend
+must still enforce the required ERROR status.
 
 Case 26 uses a direct root `createCallback` operation, not a callback hidden in
 a completed child context. Every replay visits that same operation. After its

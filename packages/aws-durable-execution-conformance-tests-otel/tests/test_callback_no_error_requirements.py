@@ -534,8 +534,11 @@ def test_case25_error_status_cannot_be_bypassed_by_xray_unset_disparity(view: st
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
-@pytest.mark.parametrize("exception_count", [1, None])
-def test_case25_rejects_exception_event_or_unobservable_event_absence(view: str, exception_count: int | None) -> None:
+@pytest.mark.parametrize("exception_count", [0, 1, None])
+@pytest.mark.parametrize("feature_disparities", [(), (BackendFeatureDisparity.EXCEPTION_EVENTS,)])
+def test_case25_accepts_optional_callback_exception_events(
+    view: str, exception_count: int | None, feature_disparities: tuple[BackendFeatureDisparity, ...]
+) -> None:
     trace = _trace(view)
     spans = tuple(
         replace(span, exception_event_count=exception_count)
@@ -544,22 +547,15 @@ def test_case25_rejects_exception_event_or_unobservable_event_absence(view: str,
         else span
         for span in trace.spans
     )
-    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
-    assert any("exception_event_count" in error for error in errors)
-
-
-@pytest.mark.parametrize("view", ["invocation", "execution"])
-@pytest.mark.parametrize("exception_count", [None, 1])
-def test_case25_backend_event_gap_only_exempts_unobservable_events(view: str, exception_count: int | None) -> None:
-    trace = _trace(view)
-    spans = tuple(replace(span, exception_event_count=exception_count) for span in trace.spans)
-    errors = validate_trace(
-        replace(trace, spans=spans),
-        _assertions(view),
-        _query(),
-        feature_disparities=(BackendFeatureDisparity.EXCEPTION_EVENTS,),
+    assert (
+        validate_trace(
+            replace(trace, spans=spans),
+            _assertions(view),
+            _query(),
+            feature_disparities=feature_disparities,
+        )
+        == []
     )
-    assert bool(errors) is (exception_count is not None)
 
 
 class _DelayedCallbackBackend(PollingBackend):
@@ -616,6 +612,10 @@ def test_case25_waits_for_stable_callback_evidence(view: str, late_record: str) 
     if late_record == "stable":
         assert errors == []
         assert backend.elapsed == 5
+    elif late_record == "exception":
+        assert actual is later
+        assert errors == []
+        assert backend.elapsed == 7
     else:
         assert actual is later
         assert errors

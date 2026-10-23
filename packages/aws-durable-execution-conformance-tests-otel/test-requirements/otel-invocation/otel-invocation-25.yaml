@@ -315,7 +315,6 @@ TelemetryAssertions:
           durable.operation.status: FAILED
       expect:
         status: ERROR
-        exception_event_count: 0
         service_name: ${SERVICE_NAME}
         links:
           - $occurrence: 1

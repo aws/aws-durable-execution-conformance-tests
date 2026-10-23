@@ -279,12 +279,16 @@ accepted as evidence of correct unsampled propagation.
 
 `expect.exception_event_count` checks the number of actual span events named
 `exception`. OTLP JSON/protobuf adapters supply a complete count only when no
-events were dropped; otherwise the value is unknown, not zero. Case 25 requires
-zero on the failed callback leaf, independently of its required ERROR status.
+events were dropped; otherwise the value is unknown, not zero.
 Backends with the declared `exception-events` disparity skip an unavailable count
 in `expect`, but still enforce status and any count they actually expose. Direct
 selectors always match the observed value. X-Ray and Datadog do not establish
 exception-event absence; use the S3 collector for that evidence.
+
+Case 25 does not constrain exception-event counts. An SDK may record a real
+exception that escapes the failed callback span even though the service supplied
+an empty error payload and the enclosing workflow catches the failure. Its
+required ERROR status is independent of whether an exception event is recorded.
 
 ## Durable trace topology
 
