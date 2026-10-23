@@ -277,6 +277,7 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          $occurrence: 1
     - select:
         name: otel-suspended-target-wait
         attributes:
@@ -309,6 +310,7 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          $occurrence: 2
   chained_invokes:
     - child_execution_arn: ${TARGET_EXECUTION_ARN}
       parent:

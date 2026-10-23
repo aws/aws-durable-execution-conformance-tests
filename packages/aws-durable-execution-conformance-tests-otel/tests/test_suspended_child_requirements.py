@@ -219,3 +219,26 @@ def test_case27_does_not_compare_clocks_between_executions(view: str) -> None:
         for s in trace.spans
     )
     assert _validate(view, replace(trace, spans=shifted)) == []
+
+
+@pytest.mark.parametrize("first", [True, False], ids=["initial", "resumed"])
+def test_case27_rejects_both_wait_segments_in_one_child_invocation(first: bool) -> None:
+    trace = _trace("invocation")
+    parent = next(
+        span
+        for span in trace.spans
+        if span.name == "Invocation"
+        and span.attributes["durable.execution.arn"] == CHILD
+        and span.attributes["durable.invocation.first"] is first
+    )
+    spans = list(trace.spans)
+    waits = [span for span in spans if span.name == "otel-suspended-target-wait"]
+    for index, wait in enumerate(waits):
+        spans[spans.index(wait)] = replace(
+            wait,
+            parent_span_id=parent.span_id,
+            start_time=parent.start_time + timedelta(seconds=0.1 + index * 0.4),
+            end_time=parent.start_time + timedelta(seconds=0.3 + index * 0.4),
+        )
+    errors = _validate("invocation", replace(trace, spans=tuple(spans)))
+    assert any("parent.$occurrence" in error for error in errors), errors
