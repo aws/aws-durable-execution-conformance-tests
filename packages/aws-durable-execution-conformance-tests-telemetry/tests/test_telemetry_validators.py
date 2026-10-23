@@ -341,6 +341,39 @@ def test_regex_rejects_missing_field() -> None:
     ]
 
 
+NON_NEGATIVE_INTEGER = {"$integer": {"min": 0}}
+
+
+@pytest.mark.parametrize("value", [0, 1, 1163])
+def test_integer_accepts_json_integer(value: int) -> None:
+    record = _record()
+    record["durationMs"] = value
+    assert validate_record(record, _assertions_with_record({"durationMs": NON_NEGATIVE_INTEGER}), EXPECTED) == []
+
+
+@pytest.mark.parametrize("value", ["1000", "0", 1000.0, 12.5, True, False, None, float("nan"), {}, []])
+def test_integer_rejects_non_integer(value: Any) -> None:
+    record = _record()
+    record["durationMs"] = value
+    assert validate_record(record, _assertions_with_record({"durationMs": NON_NEGATIVE_INTEGER}), EXPECTED) == [
+        f"durationMs: expected an integer, got {value!r}"
+    ]
+
+
+def test_integer_rejects_below_min() -> None:
+    record = _record()
+    record["durationMs"] = -1
+    assert validate_record(record, _assertions_with_record({"durationMs": NON_NEGATIVE_INTEGER}), EXPECTED) == [
+        "durationMs: expected an integer >= 0, got -1"
+    ]
+
+
+def test_integer_without_constraints_accepts_any_integer() -> None:
+    record = _record()
+    record["durationMs"] = -5
+    assert validate_record(record, _assertions_with_record({"durationMs": {"$integer": {}}}), EXPECTED) == []
+
+
 def test_wildcard_inside_nested_mapping() -> None:
     record = _record()
     record["output"] = {"value": 42, "generated": "anything"}
@@ -465,8 +498,9 @@ def test_telemetry_1_rejects_record_missing_each_asserted_field(path: tuple[str,
 
 
 # Every SDK emits durations as a non-negative integer millisecond count. The
-# requirement therefore rejects null, booleans, negatives, and non-integers so
-# that an exporter with broken duration serialization fails the check.
+# requirement therefore rejects null, booleans, strings, negatives, and
+# non-integers so that an exporter with broken duration serialization fails
+# the check.
 _TELEMETRY_1_DURATION_PATHS: list[tuple[str, ...]] = [
     ("durationMs",),
     ("operationsByName", "increment", "minDurationMs"),
@@ -491,10 +525,17 @@ def test_telemetry_1_accepts_non_negative_integer_duration(path: tuple[str, ...]
 
 
 @pytest.mark.parametrize("path", _TELEMETRY_1_DURATION_PATHS, ids=".".join)
-@pytest.mark.parametrize("value", [None, True, False, -1, 12.5, float("nan"), float("inf"), ""])
+@pytest.mark.parametrize("value", [None, True, False, "1000", "", 12.5, 1000.0, float("nan"), float("inf")])
 def test_telemetry_1_rejects_non_integer_duration(path: tuple[str, ...], value: Any) -> None:
     record = _record()
     _set_path(record, path, value)
     errors = validate_record(record, _telemetry_1_entry(), EXPECTED)
-    assert len(errors) == 1
-    assert errors[0].startswith(f"{'.'.join(path)}: value {value!r} does not match regex pattern")
+    assert errors == [f"{'.'.join(path)}: expected an integer, got {value!r}"]
+
+
+@pytest.mark.parametrize("path", _TELEMETRY_1_DURATION_PATHS, ids=".".join)
+def test_telemetry_1_rejects_negative_duration(path: tuple[str, ...]) -> None:
+    record = _record()
+    _set_path(record, path, -1)
+    errors = validate_record(record, _telemetry_1_entry(), EXPECTED)
+    assert errors == [f"{'.'.join(path)}: expected an integer >= 0, got -1"]

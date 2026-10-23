@@ -139,6 +139,9 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
 
     - ``'*'``: the field must be present; any value is accepted.
     - ``${/regex/}``: ``str(actual)`` must match the pattern.
+    - ``{$integer: {min: N}}``: ``actual`` must be a JSON integer, so a
+      number with no fraction and not a boolean, string, or null. ``min``
+      is optional and inclusive.
     - mapping: ``actual`` must be a mapping; every expected key must be
       present and is compared recursively. Extra actual keys are ignored.
     - sequence: ``actual`` must be a sequence of the same length; items are
@@ -154,6 +157,18 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
         if pattern.search(str(actual)):
             return []
         return [f"{path}: value {actual!r} does not match regex pattern {pattern.pattern!r}"]
+    if isinstance(expected, Mapping) and set(expected) == {"$integer"}:
+        constraints = expected["$integer"] or {}
+        if not isinstance(constraints, Mapping):
+            return [f"{path}: $integer constraints must be a mapping"]
+        # json.loads yields int only for a JSON integer literal. bool is an int
+        # subclass in Python, so it is excluded explicitly.
+        if isinstance(actual, bool) or not isinstance(actual, int):
+            return [f"{path}: expected an integer, got {actual!r}"]
+        minimum = constraints.get("min")
+        if minimum is not None and actual < minimum:
+            return [f"{path}: expected an integer >= {minimum}, got {actual!r}"]
+        return []
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
             return [f"{path}: expected mapping, got {actual!r}"]

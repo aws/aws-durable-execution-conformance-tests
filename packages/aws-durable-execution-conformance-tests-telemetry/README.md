@@ -106,12 +106,14 @@ For each `(record, entry)` pair the validator checks, on that record alone:
   every key listed under an operation against its expected value, and no
   `error` on the operation.
 
-Expected values follow the rules of the core execution-history matcher:
+Expected values follow the rules of the core execution-history matcher, plus
+`$integer`:
 
 | Expected value | Rule |
 | --- | --- |
 | `'*'` | The field must be present. Any value passes, including `null`. Use it only for values whose type is not worth asserting. |
-| `'${/regex/}'` | `str(actual)` must match the regex. Use it for formats, such as ISO-8601 timestamps, and for per-run numbers, such as `durationMs: '${/^\d+$/}'`. |
+| `'${/regex/}'` | `str(actual)` must match the regex. Use it for string formats, such as ISO-8601 timestamps. A number also matches when its decimal text does, so do not use it to assert a numeric type. |
+| `{$integer: {min: N}}` | `actual` must be a JSON integer: not a string, boolean, null, or fraction. `min` is optional and inclusive. Use it for per-run counts and durations, such as `durationMs: {$integer: {min: 0}}`. |
 | mapping | `actual` must be a mapping. Every listed key is checked recursively. Extra keys in `actual` are ignored. |
 | list | `actual` must be a list of the same length. Items are checked pairwise. |
 | anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. |
