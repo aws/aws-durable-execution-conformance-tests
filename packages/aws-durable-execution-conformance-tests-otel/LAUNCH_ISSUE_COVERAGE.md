@@ -55,6 +55,14 @@ The existing core plugin requirements
 and [10-19](../aws-durable-execution-conformance-tests/test-requirements/plugin/10-19.yaml)
 separately check service-supplied externally updated operations on resume.
 
+Case 21's service history requires `WaitSucceeded` before the following
+`StepStarted`, with the same operation ID as `WaitStarted`. Execution-view timer
+timestamps are supplied by the service, so their ordering against SDK step or
+Workflow timestamps is not required. The timer must still have its Workflow
+parent and link to the resumed Invocation. Case 27 applies the same rule to its
+child timer's Workflow containment; parent identity and invocation phase remain
+strict even when service and SDK clocks differ.
+
 ## User-function coverage and limits
 
 Cases 22 and 23 cover handler entry and resume, successful and retried step

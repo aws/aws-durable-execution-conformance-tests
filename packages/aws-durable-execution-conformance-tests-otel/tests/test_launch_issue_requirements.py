@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression evidence for user-visible OTel launch issues."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
+from aws_durable_execution_conformance_tests.history import EventHistoryMatcher
 from aws_durable_execution_conformance_tests.validate import discover_test_files, load_yaml_file
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.backends.collector import _merge_trace_files
@@ -130,6 +133,41 @@ def _query() -> TelemetryQuery:
 
 def test_successful_replay_requirement_accepts_one_export_per_completed_operation() -> None:
     assert validate_trace(_normal_successful_resume(), _replay_assertions(), _query()) == []
+
+
+@pytest.mark.parametrize("service_end", [4.7, 5.2])
+def test_successful_replay_preserves_timer_phase_despite_clock_skew(service_end: float) -> None:
+    trace = _normal_successful_resume()
+    spans = tuple(
+        replace(span, end_time=START + timedelta(seconds=service_end)) if span.name == "otel-replay-wait" else span
+        for span in trace.spans
+    )
+    # The service end can exceed the next step or SDK Workflow end. Completion
+    # history and the resumed Invocation link still establish the correct phase.
+    assert validate_trace(replace(trace, spans=spans), _replay_assertions(), _query()) == []
+    wrong_phase = tuple(
+        replace(span, links=(SpanLink(TRACE_ID, f"{2:016x}"),)) if span.name == "otel-replay-wait" else span
+        for span in spans
+    )
+    assert validate_trace(replace(trace, spans=wrong_phase), _replay_assertions(), _query())
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+@pytest.mark.parametrize("mutation", [None, "missing-completion", "completion-after-step", "changed-id"])
+def test_case21_history_establishes_timer_completion_before_next_step(view: str, mutation: str | None) -> None:
+    # Sanitized service history from successful cloud run 40040364906.
+    history = json.loads((Path(__file__).parent / "fixtures/completed_step_replay_history.json").read_text())
+    events = history["Events"]
+    if mutation == "missing-completion":
+        events = [event for event in events if event["EventType"] != "WaitSucceeded"]
+    elif mutation == "completion-after-step":
+        for event in events:
+            if event["EventId"] in (6, 7):
+                event["EventId"] = 13 - event["EventId"]
+    elif mutation == "changed-id":
+        next(event for event in events if event["EventType"] == "WaitSucceeded")["Id"] = "different-wait"
+    result = EventHistoryMatcher().match(_requirement(f"otel-{view}", 21)["ExpectedExecutionHistory"], events)
+    assert result.success is (mutation is None), result.errors
 
 
 @pytest.mark.parametrize("duplicate_index", [3, 4])

@@ -254,3 +254,17 @@ def test_case27_rejects_changed_wait_operation_id_on_resume() -> None:
     )
     errors = _validate("invocation", replace(trace, spans=spans))
     assert any("same_operation_as" in error for error in errors), errors
+
+
+def test_case27_execution_preserves_timer_phase_despite_workflow_clock_skew() -> None:
+    trace = _trace("execution")
+    spans = tuple(
+        replace(span, end_time=START + timedelta(seconds=4.2)) if span.name == "otel-suspended-target-wait" else span
+        for span in trace.spans
+    )
+    assert _validate("execution", replace(trace, spans=spans)) == []
+    wrong_phase = tuple(
+        replace(span, links=(SpanLink(TRACE, f"{20:016x}"),)) if span.name == "otel-suspended-target-wait" else span
+        for span in spans
+    )
+    assert _validate("execution", replace(trace, spans=wrong_phase))

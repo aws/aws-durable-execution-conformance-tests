@@ -230,6 +230,7 @@ TelemetryAssertions:
           durable.operation.name: otel-suspended-target-wait
           durable.operation.status: SUCCEEDED
         parent:
+          $allow_outside: true
           name: Workflow
           kind: INTERNAL
           attributes:

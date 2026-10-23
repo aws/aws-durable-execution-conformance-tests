@@ -20,6 +20,13 @@ ExpectedExecutionHistory:
     SubType: Wait
     Id: ${REPLAY_WAIT}
     Name: otel-replay-wait
+  - EventId: 5
+    EventType: InvocationCompleted
+  - EventId: 6
+    EventType: WaitSucceeded
+    SubType: Wait
+    Id: ${REPLAY_WAIT}
+    Name: otel-replay-wait
   - EventId: 7
     EventType: StepStarted
     SubType: Step
@@ -121,11 +128,8 @@ TelemetryAssertions:
           durable.operation.type: WAIT
           durable.operation.subtype: Wait
           durable.operation.name: otel-replay-wait
-        before:
-          name: otel-after-wait
-          attributes:
-            durable.operation.id: ${AFTER_STEP}
         parent:
+          $allow_outside: true
           name: Workflow
           kind: INTERNAL
           attributes:
@@ -150,10 +154,6 @@ TelemetryAssertions:
           durable.operation.type: STEP
           durable.operation.subtype: Step
           durable.operation.name: otel-after-wait
-        after:
-          name: otel-replay-wait
-          attributes:
-            durable.operation.id: ${REPLAY_WAIT}
         parent:
           name: Workflow
           kind: INTERNAL

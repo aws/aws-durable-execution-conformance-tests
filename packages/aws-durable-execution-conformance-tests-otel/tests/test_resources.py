@@ -1285,7 +1285,11 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
                 assert "inside" not in expected
             parent = expected["parent"]
             if parent["name"] == "Workflow":
-                assert "$allow_outside" not in parent
+                if case_number == 21 and selected_name == "otel-replay-wait":
+                    # The timer's service timestamp need not fit the SDK Workflow clock.
+                    assert parent["$allow_outside"] is True
+                else:
+                    assert "$allow_outside" not in parent
             elif case_number in {3, 9, 10, 17, 25}:
                 assert parent["$allow_outside"] is True
             else:

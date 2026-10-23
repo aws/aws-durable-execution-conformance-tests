@@ -20,6 +20,13 @@ ExpectedExecutionHistory:
     SubType: Wait
     Id: ${REPLAY_WAIT}
     Name: otel-replay-wait
+  - EventId: 5
+    EventType: InvocationCompleted
+  - EventId: 6
+    EventType: WaitSucceeded
+    SubType: Wait
+    Id: ${REPLAY_WAIT}
+    Name: otel-replay-wait
   - EventId: 7
     EventType: StepStarted
     SubType: Step
