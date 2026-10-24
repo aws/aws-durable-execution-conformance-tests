@@ -32,9 +32,9 @@ ExpectedExecutionHistory:
   - EventType: InvocationCompleted
     EventId: 4
     EventTimestamp: '*'
-# `record` is the complete expected record: every key, in the order the
-# CloudWatch Logs exporter writes them, at every nesting level. A key the
-# record carries but this list omits fails the check. Timestamps must have
+# `record` is the complete expected record: exactly the listed keys at every
+# nesting level, in any order. A key the record carries but this list omits
+# fails the check. Timestamps must have
 # exactly three fraction digits and a Z suffix.
 TelemetryAssertions:
   records:

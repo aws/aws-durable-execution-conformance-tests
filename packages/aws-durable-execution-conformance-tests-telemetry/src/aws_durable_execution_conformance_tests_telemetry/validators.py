@@ -21,8 +21,8 @@ def validate_record(data: Mapping[str, Any], assertions: Mapping[str, Any]) -> l
     """Check one record against one entry of ``TelemetryAssertions.records``.
 
     ``entry.record`` is the complete expected record. It lists every key the
-    record must carry, in the order the record must carry them, at every
-    nesting level. A key the record carries but the entry does not list is an
+    record must carry at every nesting level, in any order. A key the record
+    carries but the entry does not list is an
     error, because a key one SDK emits and another does not is a cross-SDK
     difference, and this suite exists to detect such differences. Expected
     values follow the rules of :func:`_expectation_errors`. Error strings use

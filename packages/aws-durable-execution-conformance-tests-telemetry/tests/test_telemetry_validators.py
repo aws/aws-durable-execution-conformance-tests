@@ -216,7 +216,7 @@ def test_identity_field_mismatch_fails(field: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Exact shape: unlisted keys, key order, numeric type
+# Exact shape: unlisted keys, ignored key order, numeric type
 # ---------------------------------------------------------------------------
 
 
