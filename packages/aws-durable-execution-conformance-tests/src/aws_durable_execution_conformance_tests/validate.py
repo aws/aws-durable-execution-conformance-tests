@@ -138,6 +138,7 @@ class AsyncValidationResult:
         callbacks_sent: Number of callbacks successfully sent.
         final_status: The execution status when polling stopped.
         event_count: Total number of events observed.
+        execution_history: Last service history snapshot observed during polling.
     """
 
     passed: bool
@@ -146,6 +147,7 @@ class AsyncValidationResult:
     callbacks_sent: int = 0
     final_status: str | None = None
     event_count: int = 0
+    execution_history: dict[str, Any] = field(default_factory=dict)
 
 
 # endregion
@@ -637,6 +639,16 @@ def find_matching_action(
 # region Async validator
 
 
+def _callback_invocation_completed(callback_event: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    callback_event_id = callback_event.get("EventId")
+    return type(callback_event_id) is int and any(
+        event.get("EventType") == "InvocationCompleted"
+        and type(event.get("EventId")) is int
+        and event["EventId"] > callback_event_id
+        for event in events
+    )
+
+
 class PollingValidator:
     """Polls execution history, handles callbacks, and asserts results.
 
@@ -667,8 +679,8 @@ class PollingValidator:
         """Poll execution history, handle callbacks, and assert results.
 
         When expected_result is None, polling stops as soon as the expected
-        event history is fully matched — without waiting for the execution
-        to reach a terminal state. When expected_result is provided, polling
+        event history is fully matched and matching callback follow-ups have
+        been delivered, without waiting for a terminal state. When expected_result is provided, polling
         continues until a terminal status is reached.
 
         Args:
@@ -685,13 +697,18 @@ class PollingValidator:
         actions: list[CallbackAction] = callback_actions or []
         handled_callback_ids: set[str] = set()
         used_action_indices: set[int] = set()
+        pending_action_indices: dict[str, int] = {}
+        deferred_callback_ids: set[str] = set()
         callbacks_sent: int = 0
         last_event_count: int = 0
         last_progress_time: float = time.time()
         errors: list[str] = []
+        callback_delivery_failed = False
         final_status: str | None = None
         actual_events: list[dict[str, Any]] = []
+        last_history: dict[str, Any] = {}
         history_only_mode: bool = expected_result is None
+        action: CallbackAction | None
 
         while True:
             time.sleep(self._config.poll_interval_seconds)
@@ -704,9 +721,13 @@ class PollingValidator:
                     errors=errors,
                     callbacks_sent=callbacks_sent,
                     final_status=final_status,
+                    execution_history=last_history,
                 )
 
-            actual_events = history.get("Events", history.get("events", []))
+            last_history = history
+            # Name inheritance is a matching aid, not part of the service
+            # response retained for artifacts and extension validation.
+            actual_events = [dict(event) for event in history.get("Events", history.get("events", []))]
             inherit_wait_for_callback_event_names(actual_events)
             current_event_count: int = len(actual_events)
             final_status = get_execution_status(history)
@@ -714,6 +735,18 @@ class PollingValidator:
             # Check if execution reached a terminal state (before
             # no-progress check so quick completions exit cleanly)
             if final_status in _TERMINAL_STATUSES:
+                terminal_action_indices = used_action_indices | set(pending_action_indices.values())
+                for cb_event in extract_callback_events(actual_events, handled_callback_ids):
+                    callback_id = cb_event["CallbackStartedDetails"]["CallbackId"]
+                    idx = pending_action_indices.get(callback_id)
+                    if idx is not None:
+                        action = actions[idx]
+                    else:
+                        action, idx = find_matching_action(cb_event, actions, terminal_action_indices, self._context)
+                    if idx is not None:
+                        terminal_action_indices.add(idx)
+                    if action is not None and action.after_invocation_completed:
+                        deferred_callback_ids.add(cb_event["CallbackStartedDetails"]["CallbackId"])
                 break
 
             # Check for progress
@@ -732,10 +765,18 @@ class PollingValidator:
             new_callbacks: list[dict[str, Any]] = extract_callback_events(actual_events, handled_callback_ids)
             for cb_event in new_callbacks:
                 details: dict[str, Any] = cb_event.get("CallbackStartedDetails", {})
-                callback_id: str = details.get("CallbackId", "")
+                callback_id = details.get("CallbackId", "")
 
-                action, idx = find_matching_action(cb_event, actions, used_action_indices, self._context)
+                idx = pending_action_indices.get(callback_id)
+                if idx is not None:
+                    action = actions[idx]
+                else:
+                    action, idx = find_matching_action(
+                        cb_event, actions, used_action_indices | set(pending_action_indices.values()), self._context
+                    )
                 if action is None:
+                    # An unmatched callback has no pending phase requirement.
+                    deferred_callback_ids.discard(callback_id)
                     if not actions:
                         # No actions configured — timeout test, expected behaviour
                         print(
@@ -748,6 +789,17 @@ class PollingValidator:
                     handled_callback_ids.add(callback_id)
                     continue
 
+                if action.after_invocation_completed and not _callback_invocation_completed(cb_event, actual_events):
+                    # Retain this allocation across polls so another callback
+                    # can use the next action, including an immediate response
+                    # needed to let this invocation finish.
+                    if idx is not None:
+                        pending_action_indices[callback_id] = idx
+                    deferred_callback_ids.add(callback_id)
+                    continue
+
+                deferred_callback_ids.discard(callback_id)
+                pending_action_indices.pop(callback_id, None)
                 if idx is not None:
                     used_action_indices.add(idx)
 
@@ -770,21 +822,36 @@ class PollingValidator:
                     print(f"  Sent {action.operation} callback for '{action.callback_name}' (id={callback_id})")
                 except CallbackError as e:
                     errors.append(str(e))
+                    callback_delivery_failed = True
 
             # In history-only mode, stop polling once all expected
             # events are matched rather than waiting for terminal status.
-            if history_only_mode and expected_events:
+            if history_only_mode and expected_events and not deferred_callback_ids:
+                # A heartbeat leaves its callback open for a matching follow-up.
+                # Deliver that action before accepting an already matched history.
+                if any(
+                    find_matching_action(
+                        callback, actions, used_action_indices | set(pending_action_indices.values()), self._context
+                    )[0]
+                    is not None
+                    for callback in extract_callback_events(actual_events, handled_callback_ids)
+                ):
+                    continue
                 matcher = EventHistoryMatcher(context=self._context)
                 match_result = matcher.match(expected_events, actual_events)
                 if match_result.success:
                     return AsyncValidationResult(
-                        passed=True,
-                        errors=[],
+                        passed=not callback_delivery_failed,
+                        errors=errors if callback_delivery_failed else [],
                         placeholders=match_result.resolved_placeholders,
                         callbacks_sent=callbacks_sent,
                         final_status=final_status,
                         event_count=len(actual_events),
+                        execution_history=last_history,
                     )
+
+        if deferred_callback_ids:
+            errors.append("Callback actions gated on InvocationCompleted were not delivered")
 
         # --- Final assertion: match event history ---
         if expected_events:
@@ -799,6 +866,7 @@ class PollingValidator:
                     callbacks_sent=callbacks_sent,
                     final_status=final_status,
                     event_count=len(actual_events),
+                    execution_history=last_history,
                 )
             placeholders: dict[str, Any] = match_result.resolved_placeholders
         else:
@@ -821,6 +889,7 @@ class PollingValidator:
             callbacks_sent=callbacks_sent,
             final_status=final_status,
             event_count=len(actual_events),
+            execution_history=last_history,
         )
 
 
@@ -1188,8 +1257,9 @@ def _validate_description_async(
         callback_actions=callback_actions,
     )
 
-    # --- Save final history ---
-    final_history: dict | None = get_execution_history(execution_arn, aws_clients["lambda"])
+    # Retain the same snapshot that was matched; a separate refetch could fail
+    # or return a different history after polling has already passed.
+    final_history = async_result.execution_history
     if final_history:
         save_execution_history(description_id, final_history, output_dir=output_dir)
 
@@ -1234,7 +1304,7 @@ def _validate_description_async(
         execution_arn=execution_arn,
         invocation_started_at_ms=invocation_start_ms,
         invocation_finished_at_ms=int(time.time() * 1000),
-        execution_history=final_history or {},
+        execution_history=final_history,
     )
 
 

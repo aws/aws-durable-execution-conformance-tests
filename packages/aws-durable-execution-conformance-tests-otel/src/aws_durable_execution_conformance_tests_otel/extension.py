@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
@@ -20,6 +21,7 @@ from aws_durable_execution_conformance_tests.extensions import (
 )
 from aws_durable_execution_conformance_tests.variables import PlaceholderContext
 from aws_durable_execution_conformance_tests_otel.backends import BUILTIN_BACKENDS
+from aws_durable_execution_conformance_tests_otel.chained_invoke import load_execution_trace_contexts
 from aws_durable_execution_conformance_tests_otel.discovery import (
     BACKEND_ENTRY_POINT_GROUP,
     EXPORTER_ENTRY_POINT_GROUP,
@@ -32,7 +34,9 @@ from aws_durable_execution_conformance_tests_otel.exporters import (
     ExporterOptions,
 )
 from aws_durable_execution_conformance_tests_otel.model import (
+    ExecutionTraceContext,
     TelemetryQuery,
+    Trace,
     trace_to_dict,
 )
 from aws_durable_execution_conformance_tests_otel.polling import (
@@ -40,7 +44,7 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     PollingPolicy,
 )
 from aws_durable_execution_conformance_tests_otel.redaction import redact
-from aws_durable_execution_conformance_tests_otel.validators import validate_trace
+from aws_durable_execution_conformance_tests_otel.validators import TraceValidationDetails, validate_trace
 
 DEFAULT_OTEL_SERVICE_NAME = "durable-execution-conformance"
 
@@ -59,9 +63,19 @@ SUPPORT_MATRIX = frozenset(
 )
 
 
+def _trace_evidence(
+    trace: Trace | None, contexts: Mapping[str, ExecutionTraceContext], full_trace_ancestry_checked: bool
+) -> dict[str, Any]:
+    payload: dict[str, Any] = trace_to_dict(trace) if trace is not None else {"trace_unavailable": True}
+    if contexts:
+        payload["execution_trace_contexts"] = {arn: asdict(carrier) for arn, carrier in contexts.items()}
+        payload["full_trace_ancestry_checked"] = full_trace_ancestry_checked and trace is not None
+    return payload
+
+
 class OtelExtension:
     name = "otel"
-    requires_core = ">=1.0.0,<2.0.0"
+    requires_core = ">=1.1.0,<2.0.0"
 
     def requirement_suites(self) -> tuple[RequirementSuite, ...]:
         project_root = Path(__file__).resolve().parent.parent.parent
@@ -188,6 +202,9 @@ class OtelExtension:
 
     def validate_telemetry(self, context: ValidationContext) -> list[str]:
         options = context.options
+        execution_trace_contexts: dict[str, ExecutionTraceContext] = {}
+        full_trace_ancestry = False
+        details = TraceValidationDetails()
         try:
             factories = self._backends()
             backend_name = str(options["otel_backend"])
@@ -214,6 +231,14 @@ class OtelExtension:
                 placeholders.bind(name, value)
             placeholders.bind("SERVICE_NAME", str(options["otel_service_name"]))
             assertions = placeholders.substitute(raw_assertions)
+            execution_trace_contexts = (
+                load_execution_trace_contexts(
+                    assertions["chained_invokes"], context.execution_history, context.aws_clients["lambda"]
+                )
+                if "chained_invokes" in assertions
+                else {}
+            )
+            full_trace_ancestry = getattr(backend, "provides_infrastructure_ancestry", False)
             allowed_execution_arns = assertions.get("allowed_execution_arns", ())
             additional_execution_arns: tuple[str, ...]
             if isinstance(allowed_execution_arns, str):
@@ -242,6 +267,7 @@ class OtelExtension:
                         (context.execution_arn, *additional_execution_arns),
                     )
                 ),
+                execution_trace_contexts=execution_trace_contexts,
             )
             trace = backend.find_trace(
                 query,
@@ -249,12 +275,17 @@ class OtelExtension:
                     timeout_seconds=timeout,
                     interval_seconds=float(options["otel_poll_interval"]),
                     max_attempts=int(options["otel_poll_attempts"]),
+                    quiescence_seconds=assertions.get("quiescence_seconds", 0.0),
                 ),
-                accept=lambda candidate: not validate_trace(
-                    candidate,
-                    assertions,
-                    query,
-                    feature_disparities=backend.feature_disparities,
+                accept=lambda candidate: (
+                    not validate_trace(
+                        candidate,
+                        assertions,
+                        query,
+                        feature_disparities=backend.feature_disparities,
+                        full_trace_ancestry=full_trace_ancestry,
+                        details=details,
+                    )
                 ),
             )
             errors = validate_trace(
@@ -262,11 +293,23 @@ class OtelExtension:
                 assertions,
                 query,
                 feature_disparities=backend.feature_disparities,
+                full_trace_ancestry=full_trace_ancestry,
+                details=details,
             )
-            if errors or bool(options.get("otel_write_trace_artifact")):
-                self._write_artifact(context, trace_to_dict(trace))
+            if errors or execution_trace_contexts or bool(options.get("otel_write_trace_artifact")):
+                self._write_artifact(
+                    context, _trace_evidence(trace, execution_trace_contexts, details.full_trace_ancestry_checked)
+                )
             return [f"OpenTelemetry: {error}" for error in errors]
-        except (BackendError, PluginDiscoveryError, KeyError, ValueError) as exc:
+        except BackendError as exc:
+            latest_trace = exc.latest_trace
+            if latest_trace is not None or execution_trace_contexts:
+                self._write_artifact(
+                    context,
+                    _trace_evidence(latest_trace, execution_trace_contexts, details.full_trace_ancestry_checked),
+                )
+            return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
+        except (PluginDiscoveryError, KeyError, ValueError) as exc:
             return [f"OpenTelemetry backend validation failed: {redact(str(exc))}"]
 
     def _exporter_options(self, args: argparse.Namespace) -> ExporterOptions:

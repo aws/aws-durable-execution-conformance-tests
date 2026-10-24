@@ -117,6 +117,11 @@ def normalize_otlp_json(payload: Mapping[str, Any]) -> list[Trace]:
                         attributes=attributes,
                         links=links,
                         service_name=str(service_name) if service_name else None,
+                        exception_event_count=(
+                            None
+                            if int(raw_span.get("droppedEventsCount") or 0)
+                            else sum(event.get("name") == "exception" for event in (raw_span.get("events") or []))
+                        ),
                     )
                 )
     return [Trace(trace_id=trace_id, spans=tuple(spans), raw_artifact=payload) for trace_id, spans in grouped.items()]
@@ -172,6 +177,11 @@ def normalize_otlp_protobuf(
                         attributes=attributes,
                         links=links,
                         service_name=str(service_name) if service_name else None,
+                        exception_event_count=(
+                            None
+                            if raw_span.dropped_events_count
+                            else sum(event.name == "exception" for event in raw_span.events)
+                        ),
                     )
                 )
     return [Trace(trace_id=trace_id, spans=tuple(spans)) for trace_id, spans in grouped.items()]

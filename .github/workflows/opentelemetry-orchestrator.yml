@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       sdk_ref:
-        description: Full SDK commit SHA; defaults to the SDK main branch
+        description: SDK commit SHA or named ref; defaults to the SDK main branch
         required: false
         default: ""
         type: string
@@ -30,6 +30,11 @@ on:
         required: false
         default: ""
         type: string
+      case_count:
+        description: Suite size for diagnostics; 20, 24 or 26 for pinned legacy catalogs, or 27
+        required: false
+        default: 27
+        type: number
       checkout_sdk:
         description: Check out the SDK before running the preparation command
         required: false
@@ -91,7 +96,7 @@ on:
         default: short
         type: string
       delay_seconds:
-        description: Durable delay in seconds
+        description: Deprecated long-running delay accepted for caller compatibility but ignored
         required: false
         default: "82800"
         type: string
@@ -144,6 +149,7 @@ jobs:
       sdk_ref: ${{ inputs.sdk_ref }}
       conformance_repository: ${{ inputs.conformance_repository }}
       conformance_test_ref: ${{ inputs.conformance_test_ref }}
+      case_count: ${{ inputs.case_count }}
       adot_release_repository: ${{ inputs.adot_release_repository }}
       adot_layer_arn: ${{ inputs.adot_layer_arn }}
       phase: ${{ inputs.phase }}
@@ -174,7 +180,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-invocation
-      case_count: 20
+      case_count: ${{ inputs.case_count }}
       aws_region: ${{ inputs.aws_region }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit
@@ -205,67 +211,7 @@ jobs:
       suite_timeout_minutes: ${{ inputs.suite_timeout_minutes }}
       examples_dir: ${{ inputs.examples_dir }}
       suite: otel-execution
-      case_count: 20
-      aws_region: ${{ inputs.aws_region }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets: inherit
-
-  long-running-invocation:
-    name: Long running invocation view
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-long-running.yml
-    with:
-      language: ${{ inputs.language }}
-      resource_prefix: ${{ inputs.resource_prefix }}
-      conformance_repository: ${{ inputs.conformance_repository }}
-      sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      checkout_sdk: ${{ inputs.checkout_sdk }}
-      setup_command: ${{ inputs.setup_command }}
-      prepare_command: ${{ inputs.prepare_command }}
-      contract_test_command: ${{ inputs.contract_test_command }}
-      adot_release_repository: ${{ inputs.adot_release_repository }}
-      adot_layer_arn: ${{ inputs.adot_layer_arn }}
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: invocation
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || (github.event_name != 'schedule' && inputs.phase == 'short'))
-          && '60' || inputs.delay_seconds }}
-      examples_dir: ${{ inputs.examples_dir }}
-      aws_region: ${{ inputs.aws_region }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets: inherit
-
-  long-running-execution:
-    name: Long running execution view
-    needs: resolve
-    uses: ./.github/workflows/opentelemetry-long-running.yml
-    with:
-      language: ${{ inputs.language }}
-      resource_prefix: ${{ inputs.resource_prefix }}
-      conformance_repository: ${{ inputs.conformance_repository }}
-      sdk_repository: ${{ inputs.sdk_repository }}
-      sdk_ref: ${{ needs.resolve.outputs.sdk_ref }}
-      conformance_test_sha: ${{ needs.resolve.outputs.conformance_test_sha }}
-      checkout_sdk: ${{ inputs.checkout_sdk }}
-      setup_command: ${{ inputs.setup_command }}
-      prepare_command: ${{ inputs.prepare_command }}
-      contract_test_command: ${{ inputs.contract_test_command }}
-      adot_release_repository: ${{ inputs.adot_release_repository }}
-      adot_layer_arn: ${{ inputs.adot_layer_arn }}
-      phase: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push')
-          && 'short' || (github.event_name == 'schedule' && 'auto' || inputs.phase) }}
-      view: execution
-      delay_seconds: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'push'
-          || (github.event_name != 'schedule' && inputs.phase == 'short'))
-          && '60' || inputs.delay_seconds }}
-      examples_dir: ${{ inputs.examples_dir }}
+      case_count: ${{ inputs.case_count }}
       aws_region: ${{ inputs.aws_region }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit

@@ -1,0 +1,329 @@
+---
+description: Invocation view preserves chained-invoke telemetry across child suspension
+  and resume
+Input:
+  scenario: chained-invoke-suspend
+AsyncInvoke: true
+ExpectedExecutionHistory:
+  - EventId: 1
+    EventType: ExecutionStarted
+  - EventId: 2
+    EventType: ChainedInvokeStarted
+    SubType: ChainedInvoke
+    Id: ${INVOKE1}
+    Name: otel-suspended-invoke
+    ChainedInvokeStartedDetails:
+      DurableExecutionArn: ${TARGET_EXECUTION_ARN}
+    $absent:
+      - [ParentId]
+  - EventId: 3
+    EventType: InvocationCompleted
+  - EventId: 4
+    EventType: ChainedInvokeSucceeded
+    SubType: ChainedInvoke
+    Id: ${INVOKE1}
+    Name: otel-suspended-invoke
+    $absent:
+      - [ParentId]
+  - EventId: 5
+    EventType: InvocationCompleted
+  - EventId: 6
+    EventType: ExecutionSucceeded
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+TelemetryAssertions:
+  minimum_spans: 10
+  minimum_invocations: 4
+  require_execution_correlation: true
+  require_single_trace_per_execution: true
+  require_parented_spans:
+    - name: Workflow
+    - name: Invocation
+  require_unique_root_per_trace: true
+  allowed_execution_arns: ['${EXECUTION_ARN}', '${TARGET_EXECUTION_ARN}']
+  require_all_spans: true
+  span_assertion_scope:
+    - attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - attributes:
+        durable.execution.arn: ${TARGET_EXECUTION_ARN}
+  span_assertions:
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+      expect:
+        parent:
+          $allow_unresolved: true
+          $allow_outside: true
+          $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+    - select:
+        name: Workflow
+        status: OK
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      expect:
+        parent:
+          $any_of:
+            - name: otel-suspended-invoke
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+                durable.operation.id: ${INVOKE1}
+                durable.operation.status: STARTED
+              $allow_outside: true
+            - $allow_unresolved: true
+              $allow_outside: true
+              $reject_sdk_span: true
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.execution.status: SUCCEEDED
+        same_trace_as:
+          name: otel-suspended-invoke
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${INVOKE1}
+            durable.operation.status: STARTED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: false
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.invocation.first: true
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: true
+          durable.invocation.status: PENDING
+        before:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: false
+        same_trace_as:
+          name: otel-suspended-invoke
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${INVOKE1}
+            durable.operation.status: STARTED
+    - select:
+        name: Invocation
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links: []
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.invocation.first: false
+          durable.invocation.status: SUCCEEDED
+        after:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.invocation.first: true
+        same_trace_as:
+          name: otel-suspended-invoke
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+            durable.operation.id: ${INVOKE1}
+            durable.operation.status: STARTED
+    - select:
+        name: otel-suspended-invoke
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        status: UNSET
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INVOKE1}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.status: STARTED
+          durable.operation.name: otel-suspended-invoke
+        before:
+          name: otel-suspended-invoke
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 1
+    - select:
+        name: otel-suspended-invoke
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - $occurrence: 1
+            name: otel-suspended-invoke
+            attributes:
+              durable.operation.id: ${INVOKE1}
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INVOKE1}
+          durable.operation.type: CHAINED_INVOKE
+          durable.operation.subtype: ChainedInvoke
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-suspended-invoke
+        after:
+          name: otel-suspended-invoke
+          attributes:
+            durable.operation.status: STARTED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 2
+    - select:
+        name: otel-suspended-target-wait
+        attributes:
+          durable.operation.status: STARTED
+      expect:
+        status: UNSET
+        service_name: ${SERVICE_NAME}
+        links:
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${TARGET_EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.operation.id: '*'
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: STARTED
+          durable.operation.name: otel-suspended-target-wait
+        before:
+          name: otel-suspended-target-wait
+          attributes:
+            durable.operation.status: SUCCEEDED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          $occurrence: 1
+    - select:
+        name: otel-suspended-target-wait
+        attributes:
+          durable.operation.status: SUCCEEDED
+      expect:
+        status: OK
+        service_name: ${SERVICE_NAME}
+        links:
+          - $occurrence: 1
+            name: otel-suspended-target-wait
+            attributes:
+              durable.operation.id: '*'
+          - name: Workflow
+            attributes:
+              durable.execution.arn: ${TARGET_EXECUTION_ARN}
+        kind: INTERNAL
+        attributes:
+          durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          durable.operation.id: '*'
+          durable.operation.type: WAIT
+          durable.operation.subtype: Wait
+          durable.operation.status: SUCCEEDED
+          durable.operation.name: otel-suspended-target-wait
+        same_operation_as:
+          name: otel-suspended-target-wait
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+            durable.operation.status: STARTED
+        after:
+          name: otel-suspended-target-wait
+          attributes:
+            durable.operation.status: STARTED
+        parent:
+          name: Invocation
+          kind: INTERNAL
+          attributes:
+            durable.execution.arn: ${TARGET_EXECUTION_ARN}
+          $occurrence: 2
+  chained_invokes:
+    - child_execution_arn: ${TARGET_EXECUTION_ARN}
+      parent:
+        name: otel-suspended-invoke
+        attributes:
+          durable.execution.arn: ${EXECUTION_ARN}
+          durable.operation.id: ${INVOKE1}
+          durable.operation.status: STARTED
+      sampled: true
+  quiescence_seconds: 5
+  exact_attribute_prefixes: [durable.]

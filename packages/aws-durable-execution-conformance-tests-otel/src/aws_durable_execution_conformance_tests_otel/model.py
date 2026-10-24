@@ -76,6 +76,8 @@ class Span:
     attributes: Mapping[str, Any] = field(default_factory=dict)
     links: tuple[SpanLink, ...] = ()
     service_name: str | None = None
+    # None means the backend cannot provide a complete exception-event count.
+    exception_event_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,15 @@ class Trace:
 
 
 @dataclass(frozen=True)
+class ExecutionTraceContext:
+    """Trace context observed in the service's GetDurableExecution response."""
+
+    trace_id: str
+    parent_span_id: str
+    sampled: bool
+
+
+@dataclass(frozen=True)
 class TelemetryQuery:
     execution_arn: str
     service_name: str
@@ -96,6 +107,7 @@ class TelemetryQuery:
     ended_at: datetime
     trace_id: str | None = None
     execution_arns: tuple[str, ...] = ()
+    execution_trace_contexts: Mapping[str, ExecutionTraceContext] = field(default_factory=dict)
 
 
 def trace_to_dict(trace: Trace) -> dict[str, Any]:
@@ -121,6 +133,7 @@ def span_to_dict(span: Span) -> dict[str, Any]:
         "end_time": span.end_time.isoformat(),
         "status": span.status,
         "service_name": span.service_name,
+        "exception_event_count": span.exception_event_count,
         "attributes": dict(span.attributes),
         "links": [{"trace_id": link.trace_id, "span_id": link.span_id} for link in span.links],
     }

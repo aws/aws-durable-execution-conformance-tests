@@ -19,11 +19,24 @@ input.
 pip install aws-durable-execution-conformance-tests-otel
 ```
 
-The package requires a compatible `>=1.0,<2.0` core runner and owns all OTel
+The package requires a compatible `>=1.1.0,<2.0.0` core runner and owns all OTel
 protocol dependencies, telemetry parsing, exporter profiles, backend adapters,
 validators, and requirement resources. Core `0.2.0` introduced the extension
-API used to discover these suites; this release of the package requires core
-`1.x` and cannot be installed against core `0.2.x` or earlier.
+API used to discover these suites. Core `1.1.0` adds the callback-delivery phase
+gate and history absence checks required by cases 25–26; core `1.0.x` and earlier
+cannot run this catalog. Package installation and extension discovery enforce
+the same minimum version.
+
+To validate an unreleased checkout, install both local packages together so the
+core requirement is satisfied by that checkout:
+
+```bash
+python -m pip install ./packages/aws-durable-execution-conformance-tests ./packages/aws-durable-execution-conformance-tests-otel
+```
+
+The workspace Hatch environments used by CI likewise declare both local
+packages. Built-wheel verification must install the matching core wheel with
+the OTel wheel; it does not require publishing the new core version first.
 
 The suites pair the same execution scenarios with view-specific telemetry
 contracts. Invocation-view requirements assert spans emitted around each
@@ -38,13 +51,21 @@ propagated parent is not guaranteed to be the durable backend server span
 itself, and OpenTelemetry does not expose an ancestor chain that an SDK could
 traverse. A deterministic synthetic execution root is used only when no valid
 remote parent can be constructed.
-The long-running suite applies both invocation and execution views to waits,
-retry delays, callbacks, and chained invokes that can remain suspended for up
-to one day. Java, JavaScript, and Python all run both views. Each SDK
-repository schedules its own runs: the orchestrator launches a suite when no
-run is active and validates active executions on later runs, and callers can
-also dispatch it manually to launch or check a run. This repository no longer
-hosts per-language preset workflows.
+The long-running requirements and CLI remain available for manual use, but the
+reusable long-running workflow is disabled. It is retained as a compatibility
+no-op for existing callers and does not launch, poll, or update executions.
+
+Case 25 separates durable outcome from error details. A callback failure with an
+exactly empty service error payload still requires an ERROR callback span in both
+views, even when the handler catches the failed child, replays through two durable
+barriers, and returns `caught/one/two` successfully. Case 17 retains the unhandled
+failure path. Explicit FAILED, TIMED_OUT and STOPPED operation ends are failures even
+when details are absent. A real SDK exception may produce an exception event even
+when the service error payload is empty; case 25 does not constrain event counts.
+The cloud case covers FAILED, while the other terminal mappings require SDK unit
+coverage. Pending/retrying, successful operations and unrelated cancellation retain their
+existing contracts. See [launch coverage](LAUNCH_ISSUE_COVERAGE.md) for the replay
+assertions and backend observation limits.
 
 ## Run
 
@@ -102,10 +123,15 @@ workflow discovers the latest Python layer from the ADOT release.
 
 ## Reusable Workflow
 
-The hosted tests use one language-neutral reusable workflow for suites and
-long-running views:
+The hosted tests use one language-neutral reusable workflow for the invocation
+and execution suites:
 
 - `.github/workflows/opentelemetry-orchestrator.yml`
+
+The orchestrator runs only the invocation and execution suites; it does not
+call `opentelemetry-long-running.yml`. That standalone compatibility workflow
+retains all existing inputs and outputs, returns `check_status: skipped` and
+`rollover_ready: false`, and performs no test, deployment, or artifact operations.
 
 The suite workflow schedules only ADOT/X-Ray and the AWS S3 collector. The
 Datadog and Dash0 adapters remain available for manual runs. The former
@@ -119,6 +145,15 @@ orchestrator resolves test revisions once before launching any workers:
 - `setup_command` installs or selects any SDK toolchain.
 - `contract_test_command` validates the example and template contract.
 - `prepare_command` builds the handlers against the resolved SDK commit.
+
+The optional `case_count` input defaults to `27`. A caller with a pinned legacy
+20-, 24- or 26-case catalog can set `case_count: 20`, `case_count: 24` or `case_count: 26` while keeping its existing
+`conformance_test_ref`, and update only the reusable workflow revision to receive
+workflow maintenance fixes. Other counts are rejected before workers start.
+This input controls diagnostic log enumeration; it does not select or filter
+requirements. The pinned test revision determines the catalog, and both suite
+workers still fail on failed or uncovered requirements. Long-running requirements
+are not executed by the hosted workflows.
 
 The hooks run in one Bash process after the optional SDK checkout, so setup
 exports remain available to the contract and preparation commands. They receive
@@ -302,3 +337,14 @@ Names must be unique. A backend factory exposes `name` and
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidance on adding OTel requirements,
 SDK test handlers, provider-neutral assertions, and test coverage.
+
+## Launch regression coverage
+
+Cases 21–26 cover completed-operation replay exports, active context in SDK user functions, invocation-retry status, errorless callback failure, and first external callback completion followed by later replays. See [the coverage matrix and callback boundaries](LAUNCH_ISSUE_COVERAGE.md).
+
+Case 27 (`chained-invoke-suspend`) covers the short suspended-child scenario
+previously exercised by `otel-long-running-4`: a caller invokes a child that
+performs a one-second durable wait and then returns its original input. Both
+views require exactly two caller and two child invocations, child trace
+correlation, and the appropriate wait parentage and continuation links.
+The ordinary short suite runs this case; the long-running workflow remains disabled.

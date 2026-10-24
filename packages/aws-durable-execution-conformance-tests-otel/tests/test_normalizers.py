@@ -9,6 +9,7 @@ import json
 from datetime import timedelta
 
 import pytest
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
 from aws_durable_execution_conformance_tests_otel.backends.dash0 import (
     normalize_dash0,
@@ -17,8 +18,10 @@ from aws_durable_execution_conformance_tests_otel.backends.datadog import (
     normalize_datadog,
 )
 from aws_durable_execution_conformance_tests_otel.backends.xray import normalize_xray
+from aws_durable_execution_conformance_tests_otel.model import span_to_dict
 from aws_durable_execution_conformance_tests_otel.normalizers import (
     normalize_otlp_json,
+    normalize_otlp_protobuf,
     normalize_span_kind,
 )
 
@@ -70,6 +73,40 @@ def test_normalizes_otlp_json_resource_and_span_attributes() -> None:
     assert span.kind == "INTERNAL"
     assert span.attributes["durable.execution.arn"] == "arn:test"
     assert span.status == "OK"
+    assert span.exception_event_count == 0
+
+
+@pytest.mark.parametrize("wire_format", ["json", "protobuf"])
+@pytest.mark.parametrize(
+    ("event_names", "dropped", "expected"),
+    [
+        ([], 0, 0),
+        (["annotation"], 0, 0),
+        (["exception"], 0, 1),
+        (["exception", "annotation", "exception"], 0, 2),
+        ([], 1, None),
+        (["exception"], 1, None),
+    ],
+)
+def test_otlp_exception_events_require_complete_observation(
+    wire_format: str, event_names: list[str], dropped: int, expected: int | None
+) -> None:
+    if wire_format == "json":
+        payload = _otlp_payload()
+        raw = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+        raw.update(events=[{"name": name} for name in event_names], droppedEventsCount=dropped)
+        trace = normalize_otlp_json(payload)[0]
+    else:
+        request = ExportTraceServiceRequest()
+        raw_span = request.resource_spans.add().scope_spans.add().spans.add()
+        raw_span.trace_id = bytes.fromhex("1" * 32)
+        raw_span.span_id = bytes.fromhex("2" * 16)
+        raw_span.dropped_events_count = dropped
+        for name in event_names:
+            raw_span.events.add(name=name)
+        trace = normalize_otlp_protobuf(request.SerializeToString())[0]
+    assert trace.spans[0].exception_event_count == expected
+    assert span_to_dict(trace.spans[0])["exception_event_count"] == expected
 
 
 def test_normalizes_span_kind_names_and_numbers() -> None:
