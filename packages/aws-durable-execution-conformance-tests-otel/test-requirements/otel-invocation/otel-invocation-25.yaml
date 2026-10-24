@@ -286,6 +286,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: STARTED
+          durable.operation.id: ${FAILED_CALLBACK}
       expect:
         status: UNSET
         service_name: ${SERVICE_NAME}
@@ -305,6 +306,7 @@ TelemetryAssertions:
           name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: FAILED
+            durable.operation.id: ${FAILED_CALLBACK}
         parent:
           name: otel-failed-callback
           kind: INTERNAL
@@ -314,6 +316,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: FAILED
+          durable.operation.id: ${FAILED_CALLBACK}
       expect:
         status: ERROR
         service_name: ${SERVICE_NAME}
@@ -337,6 +340,7 @@ TelemetryAssertions:
           name: '${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: STARTED
+            durable.operation.id: ${FAILED_CALLBACK}
         parent:
           name: otel-failed-callback
           kind: INTERNAL
@@ -351,6 +355,7 @@ TelemetryAssertions:
         status: OK
         attributes:
           durable.operation.status: SUCCEEDED
+          durable.operation.id: ${CALLBACK_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -373,11 +378,34 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
             durable.operation.status: STARTED
+      count:
+        $any_of:
+          - 1
+          - 2
+      expect_by_occurrence:
+        1:
+          - {}
+        2:
+          - {}
+          - parent:
+              name: otel-failed-callback
+              kind: INTERNAL
+              attributes:
+                durable.operation.id: ${FAILED_CALLBACK_CONTEXT}
+                durable.operation.status: FAILED
+            links:
+              - $occurrence: 1
+                name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP)$/}'
+                attributes:
+                  durable.operation.id: ${CALLBACK_SUBMITTER}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP) attempt
-          1$/}'
+        name: '${/^(?:otel-failed-callback(?: submitter|-submitter)|STEP) attempt 1$/}'
         attributes:
           durable.attempt.outcome: SUCCEEDED
+          durable.operation.id: ${CALLBACK_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -401,6 +429,7 @@ TelemetryAssertions:
             durable.operation.id: ${CALLBACK_SUBMITTER}
             durable.operation.type: STEP
             durable.operation.subtype: Step
+          $occurrence: 1
     - select:
         name: otel-failed-callback-observed
         status: OK
@@ -428,6 +457,66 @@ TelemetryAssertions:
           attributes:
             durable.execution.arn: ${EXECUTION_ARN}
           $occurrence: 2
+      count:
+        $any_of:
+          - 1
+          - 2
+          - 3
+      expect_by_occurrence:
+        1:
+          - {}
+        2:
+          - {}
+          - links:
+              - $occurrence: 1
+                name: otel-failed-callback-observed
+                attributes:
+                  durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              $any_of:
+                - name: Invocation
+                  kind: INTERNAL
+                  attributes:
+                    durable.execution.arn: ${EXECUTION_ARN}
+                  $occurrence: 3
+                - name: Invocation
+                  kind: INTERNAL
+                  attributes:
+                    durable.execution.arn: ${EXECUTION_ARN}
+                  $occurrence: 4
+        3:
+          - {}
+          - links:
+              - $occurrence: 1
+                name: otel-failed-callback-observed
+                attributes:
+                  durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              name: Invocation
+              kind: INTERNAL
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+              $occurrence: 3
+          - links:
+              - $occurrence: 1
+                name: otel-failed-callback-observed
+                attributes:
+                  durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
+            parent:
+              name: Invocation
+              kind: INTERNAL
+              attributes:
+                durable.execution.arn: ${EXECUTION_ARN}
+              $occurrence: 4
     - select:
         name: otel-failed-callback-observed attempt 1
         attributes:
@@ -453,6 +542,7 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${FAILED_CALLBACK_OBSERVED}
+          $occurrence: 1
     - select:
         name: otel-failed-callback-barrier-one
         attributes:
@@ -519,6 +609,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: STARTED
+          durable.operation.id: ${BARRIER_ONE_CALLBACK}
       expect:
         status: UNSET
         service_name: ${SERVICE_NAME}
@@ -533,12 +624,12 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: '${/^otel-failed-callback-barrier-one(?: create
-            callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-failed-callback-barrier-one(?: create callback id|-callback)$/}'
         before:
           name: '${/^(?:otel-failed-callback-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: SUCCEEDED
+            durable.operation.id: ${BARRIER_ONE_CALLBACK}
         parent:
           name: otel-failed-callback-barrier-one
           kind: INTERNAL
@@ -548,6 +639,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: SUCCEEDED
+          durable.operation.id: ${BARRIER_ONE_CALLBACK}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -566,12 +658,12 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
-          durable.operation.name: '${/^otel-failed-callback-barrier-one(?: create
-            callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-failed-callback-barrier-one(?: create callback id|-callback)$/}'
         after:
           name: '${/^(?:otel-failed-callback-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: STARTED
+            durable.operation.id: ${BARRIER_ONE_CALLBACK}
         parent:
           name: otel-failed-callback-barrier-one
           kind: INTERNAL
@@ -582,6 +674,7 @@ TelemetryAssertions:
         status: OK
         attributes:
           durable.operation.status: SUCCEEDED
+          durable.operation.id: ${BARRIER_ONE_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -604,11 +697,34 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${BARRIER_ONE_CONTEXT}
             durable.operation.status: STARTED
+      count:
+        $any_of:
+          - 1
+          - 2
+      expect_by_occurrence:
+        1:
+          - {}
+        2:
+          - {}
+          - parent:
+              name: otel-failed-callback-barrier-one
+              kind: INTERNAL
+              attributes:
+                durable.operation.id: ${BARRIER_ONE_CONTEXT}
+                durable.operation.status: SUCCEEDED
+            links:
+              - $occurrence: 1
+                name: '${/^(?:otel-failed-callback-barrier-one(?: submitter|-submitter)|STEP)$/}'
+                attributes:
+                  durable.operation.id: ${BARRIER_ONE_SUBMITTER}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: '${/^(?:otel-failed-callback-barrier-one(?: submitter|-submitter)|STEP)
-          attempt 1$/}'
+        name: '${/^(?:otel-failed-callback-barrier-one(?: submitter|-submitter)|STEP) attempt 1$/}'
         attributes:
           durable.attempt.outcome: SUCCEEDED
+          durable.operation.id: ${BARRIER_ONE_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -632,6 +748,7 @@ TelemetryAssertions:
             durable.operation.id: ${BARRIER_ONE_SUBMITTER}
             durable.operation.type: STEP
             durable.operation.subtype: Step
+          $occurrence: 1
     - select:
         name: otel-failed-callback-barrier-two
         attributes:
@@ -698,6 +815,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: STARTED
+          durable.operation.id: ${BARRIER_TWO_CALLBACK}
       expect:
         status: UNSET
         service_name: ${SERVICE_NAME}
@@ -712,12 +830,12 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: '${/^otel-failed-callback-barrier-two(?: create
-            callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-failed-callback-barrier-two(?: create callback id|-callback)$/}'
         before:
           name: '${/^(?:otel-failed-callback-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: SUCCEEDED
+            durable.operation.id: ${BARRIER_TWO_CALLBACK}
         parent:
           name: otel-failed-callback-barrier-two
           kind: INTERNAL
@@ -727,6 +845,7 @@ TelemetryAssertions:
         name: '${/^(?:otel-failed-callback-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
           durable.operation.status: SUCCEEDED
+          durable.operation.id: ${BARRIER_TWO_CALLBACK}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -745,12 +864,12 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
-          durable.operation.name: '${/^otel-failed-callback-barrier-two(?: create
-            callback id|-callback)$/}'
+          durable.operation.name: '${/^otel-failed-callback-barrier-two(?: create callback id|-callback)$/}'
         after:
           name: '${/^(?:otel-failed-callback-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.status: STARTED
+            durable.operation.id: ${BARRIER_TWO_CALLBACK}
         parent:
           name: otel-failed-callback-barrier-two
           kind: INTERNAL
@@ -761,6 +880,7 @@ TelemetryAssertions:
         status: OK
         attributes:
           durable.operation.status: SUCCEEDED
+          durable.operation.id: ${BARRIER_TWO_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -783,11 +903,34 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${BARRIER_TWO_CONTEXT}
             durable.operation.status: STARTED
+      count:
+        $any_of:
+          - 1
+          - 2
+      expect_by_occurrence:
+        1:
+          - {}
+        2:
+          - {}
+          - parent:
+              name: otel-failed-callback-barrier-two
+              kind: INTERNAL
+              attributes:
+                durable.operation.id: ${BARRIER_TWO_CONTEXT}
+                durable.operation.status: SUCCEEDED
+            links:
+              - $occurrence: 1
+                name: '${/^(?:otel-failed-callback-barrier-two(?: submitter|-submitter)|STEP)$/}'
+                attributes:
+                  durable.operation.id: ${BARRIER_TWO_SUBMITTER}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: '${/^(?:otel-failed-callback-barrier-two(?: submitter|-submitter)|STEP)
-          attempt 1$/}'
+        name: '${/^(?:otel-failed-callback-barrier-two(?: submitter|-submitter)|STEP) attempt 1$/}'
         attributes:
           durable.attempt.outcome: SUCCEEDED
+          durable.operation.id: ${BARRIER_TWO_SUBMITTER}
       expect:
         status: OK
         service_name: ${SERVICE_NAME}
@@ -811,3 +954,4 @@ TelemetryAssertions:
             durable.operation.id: ${BARRIER_TWO_SUBMITTER}
             durable.operation.type: STEP
             durable.operation.subtype: Step
+          $occurrence: 1

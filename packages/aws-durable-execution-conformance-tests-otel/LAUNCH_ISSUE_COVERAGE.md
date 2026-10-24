@@ -127,6 +127,17 @@ callback body. This does not claim a callback failure while invocation 1 remains
 active, or completion during End/forceFlush. SDK public tests separately establish
 any additional live-delivery or direct-callback replay coverage.
 
+Invocation-view completed steps may still emit replay segments without running
+their user bodies. Case 25 therefore permits one observation-step segment in
+Invocation 2 plus at most one linked replay segment in each of Invocations 3 and
+4. Its single user attempt must belong to the original segment. Callback
+submitters in cases 11 and 25 may likewise emit a second segment when their
+pending callback scope resumes; their attempts remain single. Generic `STEP`
+and `CALLBACK` names are disambiguated by checkpointed operation IDs. These
+allowances do not relax terminal callback export counts or execution-view
+completed-operation counts. Case 26 already leaves step segments outside its
+complete-coverage scope while checking the observation attempt separately.
+
 The corrected operation-end contract maps explicit `FAILED`, `TIMED_OUT`, and
 `STOPPED` to `ERROR`, even without error metadata. An empty service error payload
 does not imply that the SDK has no exception to record. OpenTelemetry

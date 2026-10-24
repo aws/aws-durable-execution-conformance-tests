@@ -386,6 +386,186 @@ def _trace(view: str, context_status: str = "ERROR", callback_status: str = "ERR
     return replace(initial, spans=tuple(spans))
 
 
+def _observation_replay_segments(phases: tuple[int, ...]) -> Trace:
+    trace = _trace("invocation")
+    original = next(span for span in trace.spans if span.name == "otel-failed-callback-observed")
+    replays = tuple(
+        replace(
+            original,
+            span_id=f"{80 + phase:016x}",
+            parent_span_id=f"{phase + 8:016x}",
+            start_time=START + timedelta(seconds=(phase - 1) * 3 + 0.2),
+            end_time=START + timedelta(seconds=(phase - 1) * 3 + 0.4),
+            links=(SpanLink(TRACE_ID, original.span_id), SpanLink(TRACE_ID, f"{1:016x}")),
+        )
+        for phase in phases
+    )
+    return replace(trace, spans=(*trace.spans, *replays))
+
+
+@pytest.mark.parametrize("phases", [(3,), (4,), (3, 4)])
+def test_case25_allows_invocation_view_observation_replay_segments(phases: tuple[int, ...]) -> None:
+    trace = _observation_replay_segments(phases)
+    assert validate_trace(trace, _assertions("invocation"), _query()) == []
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "extra-attempt",
+        "late-attempt",
+        "callback-duplicate",
+        "wrong-link",
+        "wrong-phase",
+        "changed-id",
+        "duplicate-segment",
+    ],
+)
+def test_case25_replay_segments_preserve_attempt_and_callback_uniqueness(corruption: str) -> None:
+    trace = _observation_replay_segments((3, 4))
+    spans = list(trace.spans)
+    replay = next(span for span in spans if span.span_id == f"{83:016x}")
+    attempt = next(span for span in spans if span.name == "otel-failed-callback-observed attempt 1")
+    if corruption in {"extra-attempt", "late-attempt"}:
+        late = replace(
+            attempt,
+            span_id=f"{85:016x}",
+            parent_span_id=replay.span_id,
+            start_time=replay.start_time,
+            end_time=replay.end_time,
+        )
+        if corruption == "late-attempt":
+            spans.remove(attempt)
+        spans.append(late)
+    elif corruption == "callback-duplicate":
+        spans.append(next(span for span in spans if span.span_id == f"{7:016x}"))
+    elif corruption == "wrong-link":
+        spans[spans.index(replay)] = replace(replay, links=(SpanLink(TRACE_ID, f"{1:016x}"),))
+    elif corruption == "wrong-phase":
+        later = next(span for span in spans if span.span_id == f"{84:016x}")
+        spans[spans.index(later)] = replace(
+            later, parent_span_id=replay.parent_span_id, start_time=replay.start_time, end_time=replay.end_time
+        )
+    elif corruption == "changed-id":
+        spans[spans.index(replay)] = replace(
+            replay, attributes=dict(replay.attributes) | {"durable.operation.id": "different"}
+        )
+    else:
+        spans.append(replay)
+    assert validate_trace(replace(trace, spans=tuple(spans)), _assertions("invocation"), _query())
+
+
+def test_case25_execution_view_still_exports_observation_only_once() -> None:
+    trace = _trace("execution")
+    observed = next(span for span in trace.spans if span.name == "otel-failed-callback-observed")
+    errors = validate_trace(replace(trace, spans=(*trace.spans, observed)), _assertions("execution"), _query())
+    assert any("must select exactly one" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("step_id,parent_id,start", [(8, 5, 3.2), (34, 31, 6.3), (44, 41, 9.3)])
+def test_case25_allows_completed_submitter_replay_without_another_attempt(
+    step_id: int, parent_id: int, start: float
+) -> None:
+    trace = _observation_replay_segments((3, 4))
+    original = next(span for span in trace.spans if span.span_id == f"{step_id:016x}")
+    replay = replace(
+        original,
+        span_id=f"{100 + step_id:016x}",
+        parent_span_id=f"{parent_id:016x}",
+        start_time=START + timedelta(seconds=start),
+        end_time=START + timedelta(seconds=start + 0.1),
+        links=(SpanLink(TRACE_ID, original.span_id), SpanLink(TRACE_ID, f"{1:016x}")),
+    )
+    replayed = replace(trace, spans=(*trace.spans, replay))
+    assert validate_trace(replayed, _assertions("invocation"), _query()) == []
+    attempt = next(
+        span
+        for span in trace.spans
+        if span.parent_span_id == original.span_id and "durable.attempt.outcome" in span.attributes
+    )
+    repeated_attempt = replace(
+        attempt,
+        span_id=f"{200 + step_id:016x}",
+        parent_span_id=replay.span_id,
+        start_time=replay.start_time,
+        end_time=replay.end_time,
+    )
+    assert validate_trace(
+        replace(replayed, spans=(*replayed.spans, repeated_attempt)), _assertions("invocation"), _query()
+    )
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_distinguishes_all_generic_callback_and_submitter_names(view: str) -> None:
+    trace = _trace(view)
+    spans = []
+    for span in trace.spans:
+        kind = span.attributes.get("durable.operation.type")
+        name = span.attributes.get("durable.operation.name", "")
+        if kind == "CALLBACK":
+            span = replace(span, name="CALLBACK")
+        elif kind == "STEP" and name.endswith(" submitter"):
+            span = replace(span, name="STEP attempt 1" if "durable.attempt.outcome" in span.attributes else "STEP")
+        spans.append(span)
+    assert validate_trace(replace(trace, spans=tuple(spans)), _assertions(view), _query()) == []
+
+
+def test_case11_barrier_submitter_allows_replay_but_not_another_user_attempt() -> None:
+    # Reuse the callback barrier fixture to isolate the two case-11 submitter assertions.
+    trace = _trace("invocation")
+    kept = {f"{number:016x}" for number in (1, 2, 3, 11, 30, 31, 34, 35)}
+    old_name, new_name = "otel-failed-callback-barrier-one", "otel-invoke-replay-barrier"
+    spans = tuple(
+        replace(
+            span,
+            name=span.name.replace(old_name, new_name),
+            attributes={
+                key: value.replace(old_name, new_name) if isinstance(value, str) else value
+                for key, value in span.attributes.items()
+            },
+        )
+        for span in trace.spans
+        if span.span_id in kept
+    )
+    original = next(span for span in spans if span.span_id == f"{34:016x}")
+    replay = replace(
+        original,
+        span_id=f"{134:016x}",
+        parent_span_id=f"{31:016x}",
+        start_time=START + timedelta(seconds=6.3),
+        end_time=START + timedelta(seconds=6.4),
+        links=(SpanLink(TRACE_ID, original.span_id), SpanLink(TRACE_ID, f"{1:016x}")),
+    )
+    context = PlaceholderContext()
+    for name, value in {
+        "EXECUTION_ARN": EXECUTION_ARN,
+        "SERVICE_NAME": SERVICE,
+        "INVOKE_BARRIER_CONTEXT": "barrier-one-context",
+        "INVOKE_BARRIER_SUBMITTER": "barrier-one-submitter",
+    }.items():
+        context.bind(name, value)
+    assertions = {
+        "span_assertions": context.substitute(
+            [
+                item
+                for item in _requirement("invocation", 11)["TelemetryAssertions"]["span_assertions"]
+                if item["expect"].get("attributes", {}).get("durable.operation.id") == "${INVOKE_BARRIER_SUBMITTER}"
+            ]
+        )
+    }
+    replayed = replace(trace, spans=(*spans, replay))
+    assert validate_trace(replayed, assertions, _query()) == []
+    attempt = next(span for span in spans if span.span_id == f"{35:016x}")
+    repeated = replace(
+        attempt,
+        span_id=f"{135:016x}",
+        parent_span_id=replay.span_id,
+        start_time=replay.start_time,
+        end_time=replay.end_time,
+    )
+    assert validate_trace(replace(replayed, spans=(*replayed.spans, repeated)), assertions, _query())
+
+
 def _query() -> TelemetryQuery:
     return TelemetryQuery(EXECUTION_ARN, SERVICE, START, START + timedelta(seconds=11))
 

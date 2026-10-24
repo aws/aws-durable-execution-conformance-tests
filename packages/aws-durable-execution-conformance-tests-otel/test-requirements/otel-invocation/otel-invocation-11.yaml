@@ -406,9 +406,31 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${INVOKE_BARRIER_CONTEXT}
             durable.operation.status: STARTED
+      count:
+        $any_of:
+          - 1
+          - 2
+      expect_by_occurrence:
+        1:
+          - {}
+        2:
+          - {}
+          - parent:
+              name: otel-invoke-replay-barrier
+              kind: INTERNAL
+              attributes:
+                durable.operation.id: ${INVOKE_BARRIER_CONTEXT}
+                durable.operation.status: SUCCEEDED
+            links:
+              - $occurrence: 1
+                name: '${/^(?:otel-invoke-replay-barrier(?: submitter|-submitter)|STEP)$/}'
+                attributes:
+                  durable.operation.id: ${INVOKE_BARRIER_SUBMITTER}
+              - name: Workflow
+                attributes:
+                  durable.execution.arn: ${EXECUTION_ARN}
     - select:
-        name: '${/^(?:otel-invoke-replay-barrier(?: submitter|-submitter)|STEP) attempt
-          1$/}'
+        name: '${/^(?:otel-invoke-replay-barrier(?: submitter|-submitter)|STEP) attempt 1$/}'
         attributes:
           durable.attempt.outcome: SUCCEEDED
       expect:
@@ -434,6 +456,7 @@ TelemetryAssertions:
             durable.operation.id: ${INVOKE_BARRIER_SUBMITTER}
             durable.operation.type: STEP
             durable.operation.subtype: Step
+          $occurrence: 1
   quiescence_seconds: 5
   chained_invokes:
     - child_execution_arn: ${TARGET_EXECUTION_ARN}
