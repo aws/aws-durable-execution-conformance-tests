@@ -145,3 +145,31 @@ def test_descendant_of_requires_unique_first_invoke_target() -> None:
     invoke, infrastructure, target = _chain()
     errors = _validate((invoke, replace(invoke, span_id="5" * 16), infrastructure, target))
     assert any("must select exactly one" in error for error in errors), errors
+
+
+def test_descendant_of_occurrence_selects_one_ancestor_phase() -> None:
+    invoke, infrastructure, target = _chain()
+    later = replace(
+        invoke,
+        span_id="5" * 16,
+        start_time=invoke.start_time + timedelta(seconds=1),
+        end_time=invoke.end_time + timedelta(seconds=1),
+    )
+    assert _validate((invoke, infrastructure, target, later), **{"$occurrence": 1}) == []
+    assert _validate((invoke, infrastructure, target, later), **{"$occurrence": 2})
+    assert _validate((invoke, infrastructure, target, later), **{"$occurrence": 3})
+
+
+def test_descendant_of_occurrence_deduplicates_identity_and_excludes_other_traces() -> None:
+    invoke, infrastructure, target = _chain()
+    unrelated = replace(
+        invoke, trace_id="9" * 32, span_id="5" * 16, start_time=invoke.start_time - timedelta(seconds=1)
+    )
+    assert _validate((unrelated, invoke, invoke, infrastructure, target), **{"$occurrence": 1}) == []
+    assert _validate((unrelated, invoke, invoke, infrastructure, target), **{"$occurrence": 2})
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "1", None])
+def test_descendant_of_occurrence_rejects_invalid_values(value: object) -> None:
+    errors = _validate(_chain(), **{"$occurrence": value})
+    assert any("$occurrence must be a positive integer" in error for error in errors), errors

@@ -667,6 +667,33 @@ def test_case25_initial_callback_scope_cannot_move_to_resumed_invocation() -> No
     assert any("parent.$occurrence" in error for error in errors), errors
 
 
+@pytest.mark.parametrize(
+    "leaf,parent,begin,end",
+    [
+        (6, 5, 3.11, 3.19),
+        (7, 4, 1.6, 1.7),
+        (32, 31, 6.11, 6.19),
+        (33, 30, 4.81, 4.89),
+        (42, 41, 9.11, 9.19),
+        (43, 40, 7.81, 7.89),
+    ],
+)
+def test_case25_callback_leaf_must_use_matching_context_phase(leaf: int, parent: int, begin: float, end: float) -> None:
+    trace = _trace("invocation")
+    spans = tuple(
+        replace(
+            span,
+            parent_span_id=f"{parent:016x}",
+            start_time=START + timedelta(seconds=begin),
+            end_time=START + timedelta(seconds=end),
+        )
+        if span.span_id == f"{leaf:016x}"
+        else span
+        for span in trace.spans
+    )
+    assert validate_trace(replace(trace, spans=spans), _assertions("invocation"), _query())
+
+
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case25_matches_independent_public_runner_history(view: str) -> None:
     # Sanitized producer history, not derived from the requirement under test.

@@ -225,6 +225,11 @@ TelemetryAssertions:
           attributes:
             durable.operation.id: ${TARGET_CALLBACK}
             durable.operation.status: SUCCEEDED
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 1
     - select:
         name: ${/^(?:otel-external-target|CALLBACK)$/}
         attributes:
@@ -268,6 +273,11 @@ TelemetryAssertions:
           name: otel-external-target-observed attempt 1
           attributes:
             durable.operation.id: ${TARGET_OBSERVED}
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 2
     - select:
         name: '${/^(?:otel-external-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -286,19 +296,24 @@ TelemetryAssertions:
           durable.operation.id: ${BARRIER_ONE_CALLBACK}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
-          durable.operation.name: '${/^otel-external-barrier-one(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-external-barrier-one(?: create callback id|-callback)$/}'
           durable.operation.status: STARTED
         parent:
           name: otel-external-barrier-one
           kind: INTERNAL
           attributes:
             durable.operation.id: ${BARRIER_ONE_CONTEXT}
+            durable.operation.status: STARTED
         before:
           name: '${/^(?:otel-external-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.id: ${BARRIER_ONE_CALLBACK}
             durable.operation.status: SUCCEEDED
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 2
     - select:
         name: '${/^(?:otel-external-barrier-one(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -313,14 +328,14 @@ TelemetryAssertions:
           durable.operation.id: ${BARRIER_ONE_CALLBACK}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
-          durable.operation.name: '${/^otel-external-barrier-one(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-external-barrier-one(?: create callback id|-callback)$/}'
           durable.operation.status: SUCCEEDED
         parent:
           name: otel-external-barrier-one
           kind: INTERNAL
           attributes:
             durable.operation.id: ${BARRIER_ONE_CONTEXT}
+            durable.operation.status: SUCCEEDED
         same_trace_as:
           name: Workflow
           attributes:
@@ -337,6 +352,11 @@ TelemetryAssertions:
           name: otel-external-target-observed attempt 1
           attributes:
             durable.operation.id: ${TARGET_OBSERVED}
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 3
     - select:
         name: '${/^(?:otel-external-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -355,19 +375,24 @@ TelemetryAssertions:
           durable.operation.id: ${BARRIER_TWO_CALLBACK}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
-          durable.operation.name: '${/^otel-external-barrier-two(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-external-barrier-two(?: create callback id|-callback)$/}'
           durable.operation.status: STARTED
         parent:
           name: otel-external-barrier-two
           kind: INTERNAL
           attributes:
             durable.operation.id: ${BARRIER_TWO_CONTEXT}
+            durable.operation.status: STARTED
         before:
           name: '${/^(?:otel-external-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
             durable.operation.id: ${BARRIER_TWO_CALLBACK}
             durable.operation.status: SUCCEEDED
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 3
     - select:
         name: '${/^(?:otel-external-barrier-two(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -382,14 +407,14 @@ TelemetryAssertions:
           durable.operation.id: ${BARRIER_TWO_CALLBACK}
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
-          durable.operation.name: '${/^otel-external-barrier-two(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-external-barrier-two(?: create callback id|-callback)$/}'
           durable.operation.status: SUCCEEDED
         parent:
           name: otel-external-barrier-two
           kind: INTERNAL
           attributes:
             durable.operation.id: ${BARRIER_TWO_CONTEXT}
+            durable.operation.status: SUCCEEDED
         same_trace_as:
           name: Workflow
           attributes:
@@ -406,6 +431,11 @@ TelemetryAssertions:
           name: otel-external-target-observed attempt 1
           attributes:
             durable.operation.id: ${TARGET_OBSERVED}
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 4
     - select:
         name: otel-external-target-observed attempt 1
         attributes:

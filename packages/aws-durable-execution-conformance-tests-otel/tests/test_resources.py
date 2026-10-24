@@ -1165,6 +1165,34 @@ def test_completed_step_replay_attempts_stay_on_initial_segment() -> None:
     assert checked > 0
 
 
+@pytest.mark.parametrize("case_number", [11, 25, 26])
+def test_callback_leaf_phase_matches_service_history(case_number: int) -> None:
+    requirement = load_yaml_file(_requirements("otel-invocation")[f"otel-invocation-{case_number}"])
+    events = requirement["ExpectedExecutionHistory"]
+    for span in requirement["TelemetryAssertions"]["span_assertions"]:
+        expected = span["expect"]
+        attrs = expected.get("attributes", {})
+        if attrs.get("durable.operation.type") != "CALLBACK":
+            continue
+        state = attrs["durable.operation.status"]
+        event_type = "CallbackStarted" if state == "STARTED" else f"Callback{state.title()}"
+        event = next(
+            event
+            for event in events
+            if event.get("Id") == attrs["durable.operation.id"] and event["EventType"] == event_type
+        )
+        phase = 1 + sum(
+            item["EventType"] == "InvocationCompleted" and item["EventId"] < event["EventId"] for item in events
+        )
+        assert expected["descendant_of"] == {
+            "name": "Invocation",
+            "attributes": _EXECUTION_ATTRIBUTES,
+            "$occurrence": phase,
+        }
+        if expected["parent"]["name"] != "Invocation":
+            assert expected["parent"]["attributes"]["durable.operation.status"] == state
+
+
 def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -> None:
     execution_requirements = _requirements("otel-execution")
     invocation_requirements = _requirements("otel-invocation")

@@ -335,8 +335,7 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: STARTED
-          durable.operation.name: '${/^otel-invoke-replay-barrier(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-invoke-replay-barrier(?: create callback id|-callback)$/}'
         before:
           name: '${/^(?:otel-invoke-replay-barrier(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
@@ -346,6 +345,12 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${INVOKE_BARRIER_CONTEXT}
+            durable.operation.status: STARTED
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 2
     - select:
         name: '${/^(?:otel-invoke-replay-barrier(?: create callback id|-callback)|CALLBACK)$/}'
         attributes:
@@ -368,8 +373,7 @@ TelemetryAssertions:
           durable.operation.type: CALLBACK
           durable.operation.subtype: Callback
           durable.operation.status: SUCCEEDED
-          durable.operation.name: '${/^otel-invoke-replay-barrier(?: create callback
-            id|-callback)$/}'
+          durable.operation.name: '${/^otel-invoke-replay-barrier(?: create callback id|-callback)$/}'
         after:
           name: '${/^(?:otel-invoke-replay-barrier(?: create callback id|-callback)|CALLBACK)$/}'
           attributes:
@@ -379,6 +383,12 @@ TelemetryAssertions:
           kind: INTERNAL
           attributes:
             durable.operation.id: ${INVOKE_BARRIER_CONTEXT}
+            durable.operation.status: SUCCEEDED
+        descendant_of:
+          name: Invocation
+          attributes:
+            durable.execution.arn: ${EXECUTION_ARN}
+          $occurrence: 3
     - select:
         name: '${/^(?:otel-invoke-replay-barrier(?: submitter|-submitter)|STEP)$/}'
         status: OK

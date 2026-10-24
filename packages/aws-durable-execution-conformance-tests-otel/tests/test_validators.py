@@ -2228,6 +2228,7 @@ def test_same_operation_rejects_controls_that_could_skip_comparison(control: str
         {"inside": {"$allow_unresolved": True}},
         {"same_trace_as": {"$not": {"name": "root"}}},
         {"same_operation_as": {"$linked": True, "name": "root"}},
+        {"descendant_of": {"name": "Invocation", "$occurrence": False}},
         {"links": [{"parnet": None}]},
         {"links": [{"$linked": True}]},
         {"links": {"$any_of": [[{"name": "root"}], [{"parent": {"name": "root"}}]]}},

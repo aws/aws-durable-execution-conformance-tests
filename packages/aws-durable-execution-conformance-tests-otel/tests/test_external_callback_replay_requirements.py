@@ -98,8 +98,24 @@ def trace(view: str) -> Trace:
         if view == "invocation":
             spans.extend(
                 [
-                    span(100 + stage * 2, name, created + 0.2, 3 * stage + 1.99, 10 + stage, "UNSET", ctxattrs),
-                    span(101 + stage * 2, name, completed + 0.2, completed + 1.6, 11 + stage, "OK", ctxattrs),
+                    span(
+                        100 + stage * 2,
+                        name,
+                        created + 0.2,
+                        3 * stage + 1.99,
+                        10 + stage,
+                        "UNSET",
+                        ctxattrs | {"durable.operation.status": "STARTED"},
+                    ),
+                    span(
+                        101 + stage * 2,
+                        name,
+                        completed + 0.2,
+                        completed + 1.6,
+                        11 + stage,
+                        "OK",
+                        ctxattrs | {"durable.operation.status": "SUCCEEDED"},
+                    ),
                     span(
                         200 + stage * 2,
                         name + " create callback id",
@@ -245,6 +261,49 @@ def test_initial_callback_cannot_be_exported_in_the_resumed_invocation() -> None
     )
     errors = validate(replace(original, spans=spans), "invocation")
     assert any("parent.$occurrence" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "leaf,parent,begin,end",
+    [
+        (202, 103, 6.25, 6.35),
+        (203, 102, 4.96, 4.98),
+        (204, 105, 9.25, 9.35),
+        (205, 104, 7.96, 7.98),
+    ],
+)
+def test_case26_barrier_leaf_must_use_matching_context_phase(leaf: int, parent: int, begin: float, end: float) -> None:
+    original = trace("invocation")
+    spans = tuple(
+        replace(
+            item,
+            parent_span_id=f"{parent:016x}",
+            start_time=START + timedelta(seconds=begin),
+            end_time=START + timedelta(seconds=end),
+        )
+        if item.span_id == f"{leaf:016x}"
+        else item
+        for item in original.spans
+    )
+    assert validate(replace(original, spans=spans), "invocation")
+
+
+def test_case26_barrier_context_cannot_move_its_leaf_into_another_invocation() -> None:
+    original = trace("invocation")
+    spans = []
+    for item in original.spans:
+        if item.span_id == f"{102:016x}":
+            item = replace(
+                item,
+                parent_span_id=f"{12:016x}",
+                start_time=START + timedelta(seconds=6.05),
+                end_time=START + timedelta(seconds=6.3),
+            )
+        elif item.span_id == f"{202:016x}":
+            item = replace(item, start_time=START + timedelta(seconds=6.1), end_time=START + timedelta(seconds=6.25))
+        spans.append(item)
+    errors = validate(replace(original, spans=tuple(spans)), "invocation")
+    assert any("descendant_of" in error for error in errors), errors
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])

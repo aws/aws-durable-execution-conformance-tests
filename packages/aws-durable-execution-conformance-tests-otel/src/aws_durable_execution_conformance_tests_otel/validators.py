@@ -479,7 +479,14 @@ def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> l
 def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
-    if relation in {"descendant_of", "same_operation_as"}:
+    if relation == "descendant_of":
+        errors = []
+        if "$occurrence" in expected and (type(expected["$occurrence"]) is not int or expected["$occurrence"] < 1):
+            errors.append(f"{path}.$occurrence must be a positive integer")
+        return errors + _span_selector_schema_errors(
+            {key: value for key, value in expected.items() if key != "$occurrence"}, path=path
+        )
+    if relation == "same_operation_as":
         # Ancestry and operation identity must not be bypassed by backend link controls.
         return _span_selector_schema_errors(expected, path=path)
     # Preserve the existing relation flags; same_trace_as still forbids link filtering.
@@ -923,7 +930,9 @@ def _span_relation_errors(
         return [f"{path}.$linked must be true"]
     if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
         return []
-    selector = {key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision"}}
+    selector = {
+        key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision", "$occurrence"}
+    }
     linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
@@ -932,6 +941,21 @@ def _span_relation_errors(
         and (not linked_only or (span.trace_id, span.span_id) in linked_span_keys)
         and _matches_span(selector, serialized_span, feature_disparities)
     ]
+    occurrence = expected.get("$occurrence") if relation == "descendant_of" else None
+    if occurrence is not None:
+        if type(occurrence) is not int or occurrence < 1:
+            return [f"{path}.$occurrence must be a positive integer"]
+        candidates: dict[tuple[str, str], Span] = {}
+        for candidate in sorted(
+            matches, key=lambda item: (item.start_time, item.end_time, item.trace_id, item.span_id)
+        ):
+            if candidate.trace_id == selected_span.trace_id:
+                candidates.setdefault((candidate.trace_id, candidate.span_id), candidate)
+        if occurrence > len(candidates):
+            return [
+                f"{path}.$occurrence: requested {occurrence}, found {len(candidates)} matching spans in the selected trace"
+            ]
+        matches = [list(candidates.values())[occurrence - 1]]
     if not matches:
         return [f"{path} matched no spans"]
     if len(matches) > 1:

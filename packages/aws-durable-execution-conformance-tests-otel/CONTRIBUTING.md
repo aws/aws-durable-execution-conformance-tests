@@ -536,6 +536,14 @@ The example selects the first invocation-view invoke segment. An execution-view
 requirement selects the single logical invoke span instead. Backend queries must
 return the required path; a partial response cannot qualify this assertion.
 
+Use `descendant_of.$occurrence` to select a chronological unique ancestor within
+the selected span's trace, with the same ordering and positive-integer rules as
+parent occurrences. For example, a callback leaf can require Invocation 2 even
+when a callback context lies between them. The complete observed parent path
+must still reach that invocation. Callback parent expectations should also match
+the context's STARTED or terminal operation state so the two local context
+segments cannot be interchanged.
+
 `expect.parent.$any_of` accepts a non-empty list of complete parent expectations.
 Each alternative retains the usual parent-ID, cycle and timestamp checks. This
 allows a handler to preserve a same-trace Lambda instrumentation context or use
