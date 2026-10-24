@@ -162,8 +162,11 @@ jobs:
           use-installer: true
 
       - name: Install conformance runner and telemetry extension
+        # The uv environment has no pip. Keep python -m pip available to caller-supplied
+        # prepare commands and to SAM makefile builds, as prepare-otel-example does.
         run: |
           uv pip install \
+            pip \
             ./packages/aws-durable-execution-conformance-tests \
             ./packages/aws-durable-execution-conformance-tests-telemetry
 
