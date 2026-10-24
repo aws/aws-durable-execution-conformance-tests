@@ -265,29 +265,23 @@ def test_unlisted_nested_payload_key_fails() -> None:
     assert validate_record(record, ENTRY) == ["output: unexpected keys ['extra']"]
 
 
-def test_top_level_key_order_is_checked() -> None:
+def test_top_level_key_order_is_ignored() -> None:
     record = _record()
     status = record.pop("status")
     record["status"] = status
-    expected = TOP_LEVEL_KEYS
-    actual = [key for key in TOP_LEVEL_KEYS if key != "status"] + ["status"]
-    assert validate_record(record, ENTRY) == [f"expected key order {expected}, got {actual}"]
+    assert validate_record(record, ENTRY) == []
 
 
-def test_operation_key_order_is_checked() -> None:
+def test_operation_key_order_is_ignored() -> None:
+    # The Java exporter writes summary keys in a different order from JS. A
+    # JSON object is unordered, so that is not a difference between SDKs.
     record = _record()
     summary = record["operationsByName"]["increment"]
-    sub_type = summary.pop("subType")
-    reordered = {"type": summary.pop("type"), "subType": sub_type, **summary}
-    record["operationsByName"]["increment"] = reordered
-    assert validate_record(record, ENTRY) == [
-        f"operationsByName.increment: expected key order {SUMMARY_KEYS}, got {list(reordered)}"
-    ]
+    record["operationsByName"]["increment"] = dict(reversed(list(summary.items())))
+    assert validate_record(record, ENTRY) == []
 
 
-def test_key_order_is_not_reported_when_the_key_sets_differ() -> None:
-    # A missing or unexpected key is already one error; a second error about
-    # order would describe the same defect.
+def test_missing_and_unexpected_keys_are_each_reported_once() -> None:
     record = _record()
     del record["status"]
     record["extra"] = 1
@@ -565,11 +559,19 @@ def test_nested_mapping_reports_each_leaf() -> None:
     assert validate_record(record, _entry(output={"value": 42})) == ["output.value: expected 42, got 43"]
 
 
-def test_nested_mapping_key_order_is_checked() -> None:
+def test_nested_mapping_key_order_is_ignored() -> None:
     record = _record()
     record["output"] = {"b": 2, "a": 1}
-    assert validate_record(record, _entry(output={"a": 1, "b": 2})) == [
-        "output: expected key order ['a', 'b'], got ['b', 'a']"
+    assert validate_record(record, _entry(output={"a": 1, "b": 2})) == []
+
+
+def test_list_item_order_is_checked() -> None:
+    # A list is ordered, so swapped items are a real difference.
+    record = _record()
+    record["output"] = {"items": [2, 1]}
+    assert validate_record(record, _entry(output={"items": [1, 2]})) == [
+        "output.items[0]: expected 1, got 2",
+        "output.items[1]: expected 2, got 1",
     ]
 
 
@@ -683,12 +685,10 @@ def test_telemetry_1_checks_each_identity_field_against_the_arn(field: str, attr
     assert errors == [f"{field}: expected {getattr(EXPECTED, attribute)!r}, got 'other'"]
 
 
-def test_telemetry_1_rejects_reordered_keys() -> None:
+def test_telemetry_1_accepts_reordered_keys() -> None:
     record = _record()
     reordered = {key: record[key] for key in reversed(TOP_LEVEL_KEYS)}
-    assert validate_record(reordered, _telemetry_1_entry()) == [
-        f"expected key order {TOP_LEVEL_KEYS}, got {list(reversed(TOP_LEVEL_KEYS))}"
-    ]
+    assert validate_record(reordered, _telemetry_1_entry()) == []
 
 
 _TIMESTAMP_PATHS = [("emittedAt",), ("startTime",), ("endTime",)]
