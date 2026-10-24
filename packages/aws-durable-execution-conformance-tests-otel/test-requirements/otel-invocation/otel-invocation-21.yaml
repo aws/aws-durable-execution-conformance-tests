@@ -325,6 +325,7 @@ TelemetryAssertions:
           durable.attempt.number: 1
           durable.attempt.outcome: SUCCEEDED
         parent:
+          $occurrence: 1
           name: otel-before-wait
           kind: INTERNAL
           attributes:

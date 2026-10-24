@@ -192,6 +192,35 @@ def test_case21_wait_segments_must_belong_to_distinct_invocation_phases(first: b
     assert any("parent.$occurrence" in error for error in errors), errors
 
 
+def test_case21_user_attempt_must_belong_to_original_completed_step_segment() -> None:
+    trace = _normal_invocation_resume()
+    original = next(span for span in trace.spans if span.name == "otel-before-wait")
+    replay = replace(
+        original,
+        span_id=f"{10:016x}",
+        parent_span_id=f"{3:016x}",
+        start_time=START + timedelta(seconds=3.55),
+        end_time=START + timedelta(seconds=3.85),
+        links=(SpanLink(TRACE_ID, original.span_id), SpanLink(TRACE_ID, f"{1:016x}")),
+    )
+    trace = replace(trace, spans=(*trace.spans, replay))
+    assertions = _replay_assertions("invocation")
+    assert validate_trace(trace, assertions, _query()) == []
+    spans = tuple(
+        replace(
+            span,
+            parent_span_id=replay.span_id,
+            start_time=START + timedelta(seconds=3.6),
+            end_time=START + timedelta(seconds=3.8),
+        )
+        if span.name == "otel-before-wait attempt 1"
+        else span
+        for span in trace.spans
+    )
+    errors = validate_trace(replace(trace, spans=spans), assertions, _query())
+    assert any("parent.$occurrence" in error for error in errors), errors
+
+
 def test_successful_replay_requirement_accepts_one_export_per_completed_operation() -> None:
     assert validate_trace(_normal_successful_resume(), _replay_assertions(), _query()) == []
 

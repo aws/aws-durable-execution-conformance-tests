@@ -1073,7 +1073,7 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                     case_number,
                     expected_attributes["durable.operation.name"],
                 )
-                assert expected["parent"] == {
+                expected_parent: dict[str, object] = {
                     "name": expected_parent_name,
                     "kind": "INTERNAL",
                     "attributes": {
@@ -1082,6 +1082,9 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
                         "durable.operation.subtype": expected_attributes["durable.operation.subtype"],
                     },
                 }
+                if case_number == 21 and selected_name == "otel-before-wait attempt 1":
+                    expected_parent["$occurrence"] = 1
+                assert expected["parent"] == expected_parent
             if selected_name == "Invocation":
                 selector_attributes = span_assertion["select"]["attributes"]
                 assert isinstance(expected_attributes["durable.invocation.first"], bool)
@@ -1132,6 +1135,34 @@ def test_invocation_view_catalog_exercises_span_hierarchy_assertions() -> None:
             "EXECUTION_ARN",
             "SERVICE_NAME",
         }
+
+
+def test_completed_step_replay_attempts_stay_on_initial_segment() -> None:
+    checked = 0
+    for path in _requirements("otel-invocation").values():
+        spans = load_yaml_file(path)["TelemetryAssertions"]["span_assertions"]
+        for step in spans:
+            attributes = step["expect"].get("attributes", {})
+            counts = step.get("count", 1)
+            if (
+                attributes.get("durable.operation.type") != "STEP"
+                or attributes.get("durable.operation.status") != "SUCCEEDED"
+                or not isinstance(counts, dict)
+                or max(counts["$any_of"]) <= 1
+            ):
+                continue
+            attempts = [
+                span
+                for span in spans
+                if span["expect"].get("attributes", {}).get("durable.operation.id")
+                == attributes["durable.operation.id"]
+                and "durable.attempt.outcome" in span["expect"].get("attributes", {})
+            ]
+            assert len(attempts) == 1
+            assert attempts[0].get("count", 1) == 1
+            assert attempts[0]["expect"]["parent"]["$occurrence"] == 1
+            checked += 1
+    assert checked > 0
 
 
 def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -> None:
