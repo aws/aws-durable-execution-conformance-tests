@@ -117,17 +117,18 @@ The artifact’s raw events list preserves the order in which the retriever firs
 
 For each `(record, entry)` pair the validator compares the record against
 `entry.record` as one nested mapping, on that record alone. At every mapping
-level, the record must carry exactly the listed keys, in the listed order, and
-every value is checked recursively. So `operationsByName` must have exactly
-the listed operation names, each summary must have exactly the listed keys,
-and `input` and `output` must have exactly the listed payload keys. A key the
-record carries but the entry does not list is reported as `unexpected keys`.
-Key order is reported only when the key sets already match, so one defect
-produces one error.
+level, the record must carry exactly the listed keys, and every value is
+checked recursively. So `operationsByName` must have exactly the listed
+operation names, each summary must have exactly the listed keys, and `input`
+and `output` must have exactly the listed payload keys. A key the record
+carries but the entry does not list is reported as `unexpected keys`.
 
 This check exists to detect a record that differs between SDKs. A key one SDK
-emits and another omits is such a difference. So is a different key order, a
-different number format, or a different timestamp format. The entry therefore
+emits and another omits is such a difference. So is a different number format
+or a different timestamp format. Key order is not such a difference. A JSON
+object is unordered, and no destination reads a field by its position. So the
+check ignores the order of keys in a mapping. A list is ordered, so the check
+compares list items in order. The entry therefore
 describes the record of the reference implementation, the JS SDK, and the
 other SDKs must match it.
 
@@ -162,7 +163,7 @@ type.
 | `'*'` | The field must be present. Any value passes, including `null`. Use it only for values whose type is not worth asserting. |
 | `'${/regex/}'` | `str(actual)` must match the regex. Use it for string formats, such as ISO-8601 timestamps. A number also matches when its decimal text does, so do not use it to assert a numeric type. |
 | `{$integer: {min: N}}` | `actual` must be a JSON integer: not a string, boolean, null, or fraction. `min` is optional and inclusive. Use it for per-run counts and durations, such as `durationMs: {$integer: {min: 0}}`. |
-| mapping | `actual` must be a mapping with exactly the listed keys, in the listed order. Every key is checked recursively. |
+| mapping | `actual` must be a mapping with exactly the listed keys, in any order. Every key is checked recursively. |
 | list | `actual` must be a list of the same length. Items are checked pairwise. |
 | anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. A number matches only a number of the same JSON type, so `count: 1` does not match `1.0`. |
 

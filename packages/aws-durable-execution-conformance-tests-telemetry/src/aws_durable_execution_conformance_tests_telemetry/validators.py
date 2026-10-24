@@ -21,8 +21,8 @@ def validate_record(data: Mapping[str, Any], assertions: Mapping[str, Any]) -> l
     """Check one record against one entry of ``TelemetryAssertions.records``.
 
     ``entry.record`` is the complete expected record. It lists every key the
-    record must carry, in the order the record must carry them, at every
-    nesting level. A key the record carries but the entry does not list is an
+    record must carry at every nesting level, in any order. A key the record
+    carries but the entry does not list is an
     error, because a key one SDK emits and another does not is a cross-SDK
     difference, and this suite exists to detect such differences. Expected
     values follow the rules of :func:`_expectation_errors`. Error strings use
@@ -94,11 +94,10 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
     - ``{$integer: {min: N}}``: ``actual`` must be a JSON integer, so a
       number with no fraction and not a boolean, string, or null. ``min``
       is optional and inclusive.
-    - mapping: ``actual`` must be a mapping with exactly the expected keys,
-      in the expected order. Every key is compared recursively. Keys that
-      ``actual`` carries but ``expected`` does not list are reported as
-      ``unexpected keys``. The order is checked only when the key sets are
-      equal, so one defect produces one error.
+    - mapping: ``actual`` must be a mapping with exactly the expected keys.
+      Every key is compared recursively. Keys that ``actual`` carries but
+      ``expected`` does not list are reported as ``unexpected keys``. Key
+      order is not checked, because a JSON object is unordered.
     - sequence: ``actual`` must be a sequence of the same length; items are
       compared pairwise.
     - anything else: equality. A boolean matches only a boolean, and a
@@ -127,8 +126,6 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
         unexpected = [key for key in actual if key not in expected]
         if unexpected:
             errors.append(_at(path, f"unexpected keys {unexpected}"))
-        elif len(actual) == len(expected) and list(actual) != list(expected):
-            errors.append(_at(path, f"expected key order {list(expected)}, got {list(actual)}"))
         return errors
     if _is_sequence(expected):
         if not _is_sequence(actual):
