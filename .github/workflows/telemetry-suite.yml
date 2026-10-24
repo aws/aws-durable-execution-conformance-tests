@@ -83,6 +83,8 @@ jobs:
       RESOURCE_PREFIX: ${{ inputs.resource_prefix }}
       SDK_CHECKOUT: ${{ github.workspace }}/.build/durable-sdk
       SDK_REF: ${{ inputs.sdk_ref }}
+      # Python handler requirements.txt files install the SDK from git at this ref during sam build.
+      PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
       TEST_NAME: ${{ inputs.resource_prefix }}-telemetry
       TEST_STACK_NAME: conformance-tests-${{ inputs.resource_prefix }}-telemetry
       HISTORY_DIR: ${{ github.workspace }}/telemetry-output/history
