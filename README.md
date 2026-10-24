@@ -156,7 +156,8 @@ that group; the runner identity must allow `logs:FilterLogEvents`. The default
 group is `/durable-execution-conformance/conformance-tests-<name>/durable-execution-telemetry`;
 override it with `--telemetry-log-group`. See the
 [Telemetry package README](packages/aws-durable-execution-conformance-tests-telemetry/README.md)
-for the full assertion list.
+for the full assertion list and the
+[reusable telemetry workflow guide](packages/aws-durable-execution-conformance-tests-telemetry/README.md#reusable-github-actions-workflow).
 
 ### Reuse the GitHub Actions workflow
 
