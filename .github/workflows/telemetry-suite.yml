@@ -255,4 +255,7 @@ jobs:
             ${{ env.HISTORY_DIR }}/
             ${{ env.REPORT_FILE }}.json
             ${{ env.REPORT_FILE }}.xml
-          if-no-files-found: ignore
+          # The runner exits 0 without writing a report when no function in the
+          # template declares a telemetry requirement. A green job with no report
+          # would mean nothing was validated. So a missing report fails the job.
+          if-no-files-found: error
