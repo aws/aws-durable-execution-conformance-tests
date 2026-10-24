@@ -31,7 +31,7 @@ def _requirement(suite: str, number: int) -> dict:
     return load_yaml_file(files[f"{suite}-{number}"])
 
 
-def _replay_assertions() -> dict:
+def _replay_assertions(view: str = "execution") -> dict:
     placeholders = PlaceholderContext()
     for name, value in {
         "EXECUTION_ARN": EXECUTION_ARN,
@@ -41,7 +41,7 @@ def _replay_assertions() -> dict:
         "AFTER_STEP": "completed-after-wait",
     }.items():
         placeholders.bind(name, value)
-    return placeholders.substitute(_requirement("otel-execution", 21)["TelemetryAssertions"])
+    return placeholders.substitute(_requirement(f"otel-{view}", 21)["TelemetryAssertions"])
 
 
 def _span(number: int, name: str, start: float, end: float, parent: int | None, attributes: dict, links=()) -> Span:
@@ -129,6 +129,67 @@ def _normal_successful_resume() -> Trace:
 
 def _query() -> TelemetryQuery:
     return TelemetryQuery(EXECUTION_ARN, SERVICE_NAME, START, START + timedelta(seconds=5))
+
+
+def _normal_invocation_resume() -> Trace:
+    trace = _normal_successful_resume()
+    spans = []
+    workflow_link = SpanLink(TRACE_ID, f"{1:016x}")
+    for span in trace.spans:
+        if span.name in {"Workflow", "Invocation"}:
+            spans.append(span)
+        elif span.name == "otel-replay-wait":
+            spans.extend(
+                [
+                    replace(
+                        span,
+                        end_time=START + timedelta(seconds=1.9),
+                        parent_span_id=f"{2:016x}",
+                        status="UNSET",
+                        attributes=dict(span.attributes) | {"durable.operation.status": "STARTED"},
+                        links=(workflow_link,),
+                    ),
+                    replace(
+                        span,
+                        span_id=f"{9:016x}",
+                        start_time=START + timedelta(seconds=3.1),
+                        parent_span_id=f"{3:016x}",
+                        attributes=dict(span.attributes) | {"durable.operation.status": "SUCCEEDED"},
+                        links=(SpanLink(TRACE_ID, span.span_id), workflow_link),
+                    ),
+                ]
+            )
+        else:
+            attributes = dict(span.attributes) | {"durable.attempt.number": 1}
+            parent = span.parent_span_id
+            if "durable.attempt.outcome" not in attributes:
+                attributes["durable.operation.status"] = "SUCCEEDED"
+                parent = f"{2 if span.name == 'otel-before-wait' else 3:016x}"
+            spans.append(replace(span, attributes=attributes, parent_span_id=parent, links=(workflow_link,)))
+    return replace(trace, spans=tuple(spans))
+
+
+@pytest.mark.parametrize("first", [True, False], ids=["initial", "resumed"])
+def test_case21_wait_segments_must_belong_to_distinct_invocation_phases(first: bool) -> None:
+    trace = _normal_invocation_resume()
+    assertions = _replay_assertions("invocation")
+    assert validate_trace(trace, assertions, _query()) == []
+    parent = next(
+        span
+        for span in trace.spans
+        if span.name == "Invocation" and span.attributes["durable.invocation.first"] is first
+    )
+    spans = list(trace.spans)
+    waits = [span for span in spans if span.name == "otel-replay-wait"]
+    for index, wait in enumerate(waits):
+        spans[spans.index(wait)] = replace(
+            wait,
+            parent_span_id=parent.span_id,
+            start_time=parent.start_time + timedelta(seconds=0.1 + index * 0.4),
+            end_time=parent.start_time + timedelta(seconds=0.3 + index * 0.4),
+        )
+    errors = validate_trace(replace(trace, spans=tuple(spans)), assertions, _query())
+    assert any("parent.$occurrence" in error for error in errors), errors
 
 
 def test_successful_replay_requirement_accepts_one_export_per_completed_operation() -> None:

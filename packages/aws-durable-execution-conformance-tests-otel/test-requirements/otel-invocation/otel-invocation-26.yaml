@@ -215,6 +215,7 @@ TelemetryAssertions:
           durable.operation.name: otel-external-target
           durable.operation.status: STARTED
         parent:
+          $occurrence: 1
           name: Invocation
           kind: INTERNAL
           attributes:

@@ -63,6 +63,11 @@ parent and link to the resumed Invocation. Case 27 applies the same rule to its
 child timer's Workflow containment; parent identity and invocation phase remain
 strict even when service and SDK clocks differ.
 
+The same clock rule applies to case 26's root callback and the chained invokes
+in cases 11 and 27. Initial invocation-view waits and callback scopes in cases
+21, 25 and 26 explicitly name Invocation 1; their start segments cannot move
+into a resumed invocation while leaving an empty initial invocation behind.
+
 ## User-function coverage and limits
 
 Cases 22 and 23 cover handler entry and resume, successful and retried step

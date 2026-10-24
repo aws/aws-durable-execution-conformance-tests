@@ -210,6 +210,7 @@ TelemetryAssertions:
           durable.operation.name: otel-external-target
           durable.operation.status: SUCCEEDED
         parent:
+          $allow_outside: true
           name: Workflow
           kind: INTERNAL
           attributes:

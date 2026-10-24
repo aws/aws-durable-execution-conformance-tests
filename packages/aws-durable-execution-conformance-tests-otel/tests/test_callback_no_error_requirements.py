@@ -469,6 +469,24 @@ def test_case25_execution_does_not_order_backend_end_against_observation_clock()
     assert validate_trace(replace(trace, spans=wrong_phase), _assertions("execution"), _query())
 
 
+def test_case25_initial_callback_scope_cannot_move_to_resumed_invocation() -> None:
+    trace = _trace("invocation")
+    initial_scope = {f"{number:016x}" for number in (4, 6, 8, 9)}
+    spans = tuple(
+        replace(
+            span,
+            parent_span_id=f"{3:016x}" if span.span_id == f"{4:016x}" else span.parent_span_id,
+            start_time=START + timedelta(seconds=3 + (span.start_time - START).total_seconds() * 0.04),
+            end_time=START + timedelta(seconds=3 + (span.end_time - START).total_seconds() * 0.04),
+        )
+        if span.span_id in initial_scope
+        else span
+        for span in trace.spans
+    )
+    errors = validate_trace(replace(trace, spans=spans), _assertions("invocation"), _query())
+    assert any("parent.$occurrence" in error for error in errors), errors
+
+
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case25_matches_independent_public_runner_history(view: str) -> None:
     # Sanitized producer history, not derived from the requirement under test.

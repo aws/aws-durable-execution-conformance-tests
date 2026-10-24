@@ -590,6 +590,18 @@ occurrences. The value must be a positive integer and cannot be combined with
 `$allow_unresolved`. Case 26 uses this to associate the terminal root callback
 with the first resumed Invocation, independently of asynchronous exporter arrival.
 
+Bind invocation-view operation segments to their actual invocation phase using
+`$occurrence` or attributes that uniquely identify that phase. Counts and segment
+ordering alone can accept every segment under one later Invocation. In particular,
+initial waits, callbacks and callback scopes must retain the initial Invocation
+as their parent.
+
+Execution-view waits, callbacks and chained invokes can carry service completion
+timestamps. Their SDK Workflow parent uses a different clock, so use
+`$allow_outside: true` for that parent while retaining its identity and attributes.
+Establish completion order with service history and invocation links, not a
+comparison with subsequent SDK step or Workflow timestamps.
+
 
 Selector field names are checked against the canonical serialized span properties,
 including in inactive occurrence branches and parent/link alternatives. Unknown

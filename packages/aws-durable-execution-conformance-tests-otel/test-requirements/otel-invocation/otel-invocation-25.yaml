@@ -240,6 +240,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: FAILED
         parent:
+          $occurrence: 1
           name: Invocation
           kind: INTERNAL
           attributes:

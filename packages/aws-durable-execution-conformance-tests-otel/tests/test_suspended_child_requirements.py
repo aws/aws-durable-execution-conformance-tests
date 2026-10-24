@@ -256,15 +256,21 @@ def test_case27_rejects_changed_wait_operation_id_on_resume() -> None:
     assert any("same_operation_as" in error for error in errors), errors
 
 
-def test_case27_execution_preserves_timer_phase_despite_workflow_clock_skew() -> None:
+@pytest.mark.parametrize(
+    "operation_name,service_end,wrong_invocation",
+    [("otel-suspended-target-wait", 4.2, 20), ("otel-suspended-invoke", 5.2, 10)],
+)
+def test_case27_execution_preserves_external_phase_despite_workflow_clock_skew(
+    operation_name: str, service_end: float, wrong_invocation: int
+) -> None:
     trace = _trace("execution")
     spans = tuple(
-        replace(span, end_time=START + timedelta(seconds=4.2)) if span.name == "otel-suspended-target-wait" else span
+        replace(span, end_time=START + timedelta(seconds=service_end)) if span.name == operation_name else span
         for span in trace.spans
     )
     assert _validate("execution", replace(trace, spans=spans)) == []
     wrong_phase = tuple(
-        replace(span, links=(SpanLink(TRACE, f"{20:016x}"),)) if span.name == "otel-suspended-target-wait" else span
+        replace(span, links=(SpanLink(TRACE, f"{wrong_invocation:016x}"),)) if span.name == operation_name else span
         for span in spans
     )
     assert _validate("execution", replace(trace, spans=wrong_phase))

@@ -196,7 +196,12 @@ def test_first_completion_and_two_subsequent_replays_pass_oracle(view: str) -> N
 
 @pytest.mark.parametrize(
     "callback_id,timestamp,value,wrong_invocation",
-    [("cb0", "end_time", 4.7, 12), ("cb1", "start_time", 4.4, 13), ("cb2", "start_time", 4.4, 12)],
+    [
+        ("cb0", "end_time", 4.7, 12),
+        ("cb0", "end_time", 12.5, 12),
+        ("cb1", "start_time", 4.4, 13),
+        ("cb2", "start_time", 4.4, 12),
+    ],
 )
 def test_execution_service_clock_skew_preserves_callback_phase(
     callback_id: str, timestamp: str, value: float, wrong_invocation: int
@@ -222,6 +227,24 @@ def test_execution_service_clock_skew_preserves_callback_phase(
         for item in spans
     )
     assert validate(replace(original, spans=wrong_phase), "execution")
+
+
+def test_initial_callback_cannot_be_exported_in_the_resumed_invocation() -> None:
+    original = trace("invocation")
+    spans = tuple(
+        replace(
+            item,
+            parent_span_id=f"{11:016x}",
+            start_time=START + timedelta(seconds=3.05),
+            end_time=START + timedelta(seconds=3.2),
+        )
+        if item.attributes.get("durable.operation.id") == "cb0"
+        and item.attributes.get("durable.operation.status") == "STARTED"
+        else item
+        for item in original.spans
+    )
+    errors = validate(replace(original, spans=spans), "invocation")
+    assert any("parent.$occurrence" in error for error in errors), errors
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])

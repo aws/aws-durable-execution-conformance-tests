@@ -20,7 +20,13 @@ from aws_durable_execution_conformance_tests_otel.chained_invoke import (
     load_execution_trace_contexts,
 )
 from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
-from aws_durable_execution_conformance_tests_otel.model import ExecutionTraceContext, Span, TelemetryQuery, Trace
+from aws_durable_execution_conformance_tests_otel.model import (
+    ExecutionTraceContext,
+    Span,
+    SpanLink,
+    TelemetryQuery,
+    Trace,
+)
 from aws_durable_execution_conformance_tests_otel.polling import (
     BackendError,
     BackendFeatureDisparity,
@@ -65,6 +71,68 @@ def _fixture() -> tuple[Trace, TelemetryQuery]:
         execution_trace_contexts={CHILD: execution_trace_context({"TraceHeader": {"XAmznTraceId": HEADER}})},
     )
     return Trace(invoke.trace_id, (invoke, child, invocation)), query
+
+
+def test_case11_service_invoke_end_may_exceed_sdk_workflow_clock() -> None:
+    suite = next(s for s in OtelExtension().requirement_suites() if s.name == "otel-execution")
+    requirement = load_yaml_file(str(suite.root / "otel-execution-11.yaml"))
+    context = PlaceholderContext()
+    for name, value in {"EXECUTION_ARN": "arn:caller", "SERVICE_NAME": "service", "INVOKE1": "invoke"}.items():
+        context.bind(name, value)
+    assertion = context.substitute(
+        next(
+            item
+            for item in requirement["TelemetryAssertions"]["span_assertions"]
+            if item["select"]["name"] == "otel-invoke"
+        )
+    )
+    trace, query = _fixture()
+    original = trace.spans[0]
+    start = original.start_time
+    workflow = replace(
+        original,
+        name="Workflow",
+        span_id="5" * 16,
+        end_time=start + timedelta(seconds=4),
+        kind="INTERNAL",
+        status="OK",
+        service_name="service",
+        attributes={"durable.execution.arn": "arn:caller", "durable.execution.status": "SUCCEEDED"},
+    )
+    first = replace(
+        workflow,
+        name="Invocation",
+        span_id="6" * 16,
+        end_time=start + timedelta(seconds=1),
+        attributes={"durable.execution.arn": "arn:caller"},
+    )
+    second = replace(
+        first, span_id="7" * 16, start_time=start + timedelta(seconds=2), end_time=start + timedelta(seconds=4)
+    )
+    invoke = replace(
+        original,
+        parent_span_id=workflow.span_id,
+        end_time=start + timedelta(seconds=4.2),
+        kind="INTERNAL",
+        status="OK",
+        service_name="service",
+        links=(SpanLink(original.trace_id, second.span_id),),
+        attributes={
+            "durable.execution.arn": "arn:caller",
+            "durable.operation.id": "invoke",
+            "durable.operation.type": "CHAINED_INVOKE",
+            "durable.operation.subtype": "ChainedInvoke",
+            "durable.operation.name": "otel-invoke",
+            "durable.operation.status": "SUCCEEDED",
+        },
+    )
+    trace = replace(trace, spans=(workflow, first, second, invoke))
+    assertions = {"span_assertions": [assertion]}
+    assert validate_trace(trace, assertions, query) == []
+    wrong_parent = replace(invoke, parent_span_id=second.span_id)
+    assert validate_trace(replace(trace, spans=(workflow, first, second, wrong_parent)), assertions, query)
+    wrong_phase = replace(invoke, links=(SpanLink(original.trace_id, first.span_id),))
+    assert validate_trace(replace(trace, spans=(workflow, first, second, wrong_phase)), assertions, query)
 
 
 @pytest.mark.parametrize("sampled", [False, True])

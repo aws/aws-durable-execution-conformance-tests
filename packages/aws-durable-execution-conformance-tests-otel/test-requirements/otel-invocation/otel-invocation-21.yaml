@@ -139,6 +139,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: SUCCEEDED
         parent:
+          $occurrence: 1
           name: Invocation
           kind: INTERNAL
           attributes:
@@ -175,6 +176,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: SUCCEEDED
         parent:
+          $occurrence: 2
           name: Invocation
           kind: INTERNAL
           attributes:
@@ -204,6 +206,7 @@ TelemetryAssertions:
           attributes:
             durable.operation.status: SUCCEEDED
         parent:
+          $occurrence: 2
           name: Invocation
           kind: INTERNAL
           attributes:
