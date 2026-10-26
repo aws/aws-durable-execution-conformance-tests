@@ -118,6 +118,9 @@ env:
   HISTORY_DIR: /tmp/${{ inputs.language }}-otel-long-running-history
   OTEL_SERVICE_NAME: durable-execution-conformance
   PYTHON_SDK_REF: ${{ inputs.sdk_ref }}
+  # Ignore the CodeBuild image's shared pip target and package path.
+  PIP_CONFIG_FILE: /dev/null
+  PYTHONPATH: ""
   PYTHONUNBUFFERED: "1"
   REPORT_FILE: /tmp/${{ inputs.language }}-otel-long-running-report
   SDK_REF: ${{ inputs.sdk_ref }}

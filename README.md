@@ -5,13 +5,14 @@ Execution SDKs.
 
 ## Workspace
 
-This repository is a Hatch workspace containing two independently versioned
+This repository is a Hatch workspace containing three independently versioned
 distributions:
 
 ```text
 packages/
   aws-durable-execution-conformance-tests/
   aws-durable-execution-conformance-tests-otel/
+  aws-durable-execution-conformance-tests-telemetry/
 ```
 
 The core distribution contains the runner, reports, and generic requirements.
@@ -35,6 +36,15 @@ pip install aws-durable-execution-conformance-tests-otel
 
 The OTel `0.2.x` line requires core `>=1.0,<2.0`.
 
+The optional Durable Execution Telemetry distribution contributes the `telemetry` suite. It
+has no dependencies beyond the core package:
+
+```bash
+pip install aws-durable-execution-conformance-tests-telemetry
+```
+
+The Telemetry `0.1.x` line requires core `>=1.0,<2.0`.
+
 ## Development
 
 Install Hatch and run all commands from the repository root:
@@ -49,10 +59,10 @@ hatch run dist:build
 hatch run dist:check
 ```
 
-Package-specific test commands are `hatch run test:core` and
-`hatch run test:otel`. Each child package can also be built independently:
+Package-specific test commands are `hatch run test:core`,
+`hatch run test:otel`, and `hatch run test:telemetry`. Each child package can also be built independently:
 
-Run `hatch build` from either child package directory to build just that
+Run `hatch build` from any child package directory to build just that
 distribution.
 
 ## Running Conformance
@@ -123,6 +133,32 @@ Each SDK repository owns the handlers that map these OTel requirements to
 deployable functions and passes their location to the shared workflow through
 the required `examples_dir` input.
 
+## Durable Execution Telemetry
+
+The Telemetry package checks that the SDK's Durable Execution Telemetry plugin, configured
+with the CloudWatch Logs exporter, writes one complete `DurableExecutionTelemetry` record
+for a successful single-step execution.
+
+```bash
+hatch run validate \
+  --template path/to/template.yaml \
+  --language js \
+  --suite telemetry \
+  --parameter-overrides LambdaExecutionRoleArn=<role-arn> \
+  --report console json
+```
+
+The extension passes one SAM parameter, `TelemetryLogGroupName`. The template
+must declare it, create the group with an `AWS::Logs::LogGroup` resource, and
+hand the name to the function so the exporter writes to it. The function's
+execution role must allow `logs:CreateLogStream` and `logs:PutLogEvents` on
+that group; the runner identity must allow `logs:FilterLogEvents`. The default
+group is `/durable-execution-conformance/conformance-tests-<name>/durable-execution-telemetry`;
+override it with `--telemetry-log-group`. See the
+[Telemetry package README](packages/aws-durable-execution-conformance-tests-telemetry/README.md)
+for the full assertion list and the
+[reusable telemetry workflow guide](packages/aws-durable-execution-conformance-tests-telemetry/README.md#reusable-github-actions-workflow).
+
 ### Reuse the GitHub Actions workflow
 
 SDK repositories can call the hosted
@@ -181,6 +217,23 @@ Dash0 secrets for compatibility with existing callers, but does not use them.
 See the
 [OTel reusable workflow guide](packages/aws-durable-execution-conformance-tests-otel/README.md#reusable-workflow)
 for language setup and preparation hooks.
+
+## CI runners
+
+Workflows in this repository use ephemeral CodeBuild runners labeled
+`codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}`,
+including shared CI calls and the OTel orchestrator. Fork pull requests keep
+GitHub-hosted validation and ref resolution; cloud test jobs retain their
+same-repository guards.
+
+The reusable OTel workflows accept a `runs_on` override and continue to default
+to `ubuntu-latest` for external callers. This repository's OTel entry point
+passes its CodeBuild label through to every worker.
+
+Python jobs use `uv` to install Python 3.14 on the Amazon Linux runner image and
+ignore its shared pip target and `PYTHONPATH`. The PyPI publishing job retains
+its Docker-based publishing action, so the CodeBuild runner must provide a
+working Docker daemon.
 
 ## Extension API
 
