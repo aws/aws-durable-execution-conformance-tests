@@ -38,14 +38,35 @@ def test_telemetry_1_loads_with_core_sections() -> None:
     ]
 
 
-def test_telemetry_assertions_expect_one_record_with_three_sections() -> None:
+def test_telemetry_assertions_expect_one_complete_record() -> None:
     requirement = load_yaml_file(_requirements()["telemetry-1"])
     assertions = requirement["TelemetryAssertions"]
     assert set(assertions) == {"records"}
     assert len(assertions["records"]) == 1
     entry = assertions["records"][0]
-    assert set(entry) == {"record", "forbid_fields", "operations_by_name"}
-    assert entry["record"]["schemaVersion"] == "1.0"
-    assert {"emittedAt", "startTime", "endTime", "durationMs"} <= set(entry["record"])
-    assert entry["forbid_fields"] == ["error"]
-    assert set(entry["operations_by_name"]) == {"increment"}
+    assert set(entry) == {"record"}
+    record = entry["record"]
+    assert record["recordType"] == "DurableExecutionTelemetry"
+    assert record["schemaVersion"] == "1.0"
+    assert {"emittedAt", "startTime", "endTime", "durationMs"} <= set(record)
+    assert set(record["operationsByName"]) == {"increment"}
+
+
+def test_telemetry_1_names_identity_fields_through_placeholders() -> None:
+    record = load_yaml_file(_requirements()["telemetry-1"])["TelemetryAssertions"]["records"][0]["record"]
+    assert {field: record[field] for field in ("executionArn", "executionName", "functionName")} == {
+        "executionArn": "${EXECUTION_ARN}",
+        "executionName": "${EXECUTION_NAME}",
+        "functionName": "${FUNCTION_NAME}",
+    }
+    assert {field: record[field] for field in ("functionQualifier", "region", "accountId")} == {
+        "functionQualifier": "${FUNCTION_QUALIFIER}",
+        "region": "${REGION}",
+        "accountId": "${ACCOUNT_ID}",
+    }
+
+
+def test_telemetry_1_pins_timestamps_to_three_fraction_digits() -> None:
+    record = load_yaml_file(_requirements()["telemetry-1"])["TelemetryAssertions"]["records"][0]["record"]
+    pattern = "${/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/}"
+    assert record["emittedAt"] == record["startTime"] == record["endTime"] == pattern

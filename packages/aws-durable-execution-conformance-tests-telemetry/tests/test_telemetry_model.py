@@ -11,6 +11,7 @@ import pytest
 
 from aws_durable_execution_conformance_tests_telemetry.model import (
     ExpectedExecution,
+    execution_placeholders,
     parse_execution_arn,
     parse_record,
 )
@@ -30,6 +31,17 @@ def test_parse_execution_arn_yields_identity_fields() -> None:
         account_id="123456789012",
         execution_name="8f1c2d3e-0000-4000-8000-000000000001",
     )
+
+
+def test_execution_placeholders_cover_every_identity_field() -> None:
+    assert execution_placeholders(parse_execution_arn(ARN)) == {
+        "EXECUTION_ARN": ARN,
+        "EXECUTION_NAME": "8f1c2d3e-0000-4000-8000-000000000001",
+        "FUNCTION_NAME": "conformance-tests-abc-telemetry-1",
+        "FUNCTION_QUALIFIER": "$LATEST",
+        "REGION": "us-west-2",
+        "ACCOUNT_ID": "123456789012",
+    }
 
 
 def test_parse_execution_arn_accepts_numeric_qualifier() -> None:

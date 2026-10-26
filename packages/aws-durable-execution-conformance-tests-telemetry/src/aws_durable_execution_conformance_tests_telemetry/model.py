@@ -69,6 +69,25 @@ def parse_execution_arn(arn: str) -> ExpectedExecution:
     )
 
 
+def execution_placeholders(expected: ExpectedExecution) -> dict[str, str]:
+    """Placeholder bindings a requirement may reference under ``TelemetryAssertions``.
+
+    A requirement cannot know the execution ARN when it is written. So its
+    expected record names the identity fields through these placeholders, and
+    the suite binds them from the ARN of the execution under test before
+    substituting the assertions. Core binds ``EXECUTION_ARN`` with the same
+    value; binding an equal value again is accepted.
+    """
+    return {
+        "EXECUTION_ARN": expected.execution_arn,
+        "EXECUTION_NAME": expected.execution_name,
+        "FUNCTION_NAME": expected.function_name,
+        "FUNCTION_QUALIFIER": expected.qualifier,
+        "REGION": expected.region,
+        "ACCOUNT_ID": expected.account_id,
+    }
+
+
 @dataclass(frozen=True)
 class TelemetryRecord:
     """One parsed Durable Execution Telemetry record and the CloudWatch event it came from."""
