@@ -1,0 +1,66 @@
+{
+  "Events": [
+    {
+      "EventId": 1,
+      "EventType": "ExecutionStarted",
+      "Id": "execution",
+      "Name": "completed-step-replay"
+    },
+    {
+      "EventId": 2,
+      "EventType": "StepStarted",
+      "SubType": "Step",
+      "Id": "completed-before-wait",
+      "Name": "otel-before-wait"
+    },
+    {
+      "EventId": 3,
+      "EventType": "StepSucceeded",
+      "SubType": "Step",
+      "Id": "completed-before-wait",
+      "Name": "otel-before-wait"
+    },
+    {
+      "EventId": 4,
+      "EventType": "WaitStarted",
+      "SubType": "Wait",
+      "Id": "resume-timer",
+      "Name": "otel-replay-wait"
+    },
+    {
+      "EventId": 5,
+      "EventType": "InvocationCompleted"
+    },
+    {
+      "EventId": 6,
+      "EventType": "WaitSucceeded",
+      "SubType": "Wait",
+      "Id": "resume-timer",
+      "Name": "otel-replay-wait"
+    },
+    {
+      "EventId": 7,
+      "EventType": "StepStarted",
+      "SubType": "Step",
+      "Id": "completed-after-wait",
+      "Name": "otel-after-wait"
+    },
+    {
+      "EventId": 8,
+      "EventType": "StepSucceeded",
+      "SubType": "Step",
+      "Id": "completed-after-wait",
+      "Name": "otel-after-wait"
+    },
+    {
+      "EventId": 9,
+      "EventType": "InvocationCompleted"
+    },
+    {
+      "EventId": 10,
+      "EventType": "ExecutionSucceeded",
+      "Id": "execution",
+      "Name": "completed-step-replay"
+    }
+  ]
+}

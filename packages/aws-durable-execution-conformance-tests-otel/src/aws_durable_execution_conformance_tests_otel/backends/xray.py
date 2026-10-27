@@ -106,11 +106,13 @@ def normalize_xray(documents: Iterable[str | Mapping[str, Any]]) -> list[Trace]:
 
 
 class XRayBackend(PollingBackend):
+    provides_infrastructure_ancestry = True
     name = "xray"
     feature_disparities = frozenset(
         {
             BackendFeatureDisparity.SPAN_LINKS,
             BackendFeatureDisparity.UNSET_STATUS,
+            BackendFeatureDisparity.EXCEPTION_EVENTS,
         }
     )
 

@@ -53,6 +53,7 @@ runs:
         path: .build/durable-sdk
 
     - name: Set up Python
+      # uv supplies Python on both Amazon Linux CodeBuild and Ubuntu runners.
       uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       with:
         python-version: "3.14"
@@ -79,11 +80,19 @@ runs:
 
     - name: Install Hatch
       shell: bash
-      # Keep python -m pip available to caller-supplied setup/prepare commands.
-      run: uv pip install pip hatch==1.16.5
+      env:
+        PIP_CONFIG_FILE: /dev/null
+        PYTHONPATH: ""
+      run: |
+        # Ignore the CodeBuild image's global pip target and shared PYTHONPATH.
+        # Keep python -m pip available to caller-supplied setup/prepare commands.
+        uv pip install pip hatch==1.16.5
 
     - name: Set up SAM CLI
       if: inputs.prepare-example == 'true'
+      env:
+        PIP_CONFIG_FILE: /dev/null
+        PYTHONPATH: ""
       uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
       with:
         # Avoid SAM's legacy pip bootstrap on Python 3.14.

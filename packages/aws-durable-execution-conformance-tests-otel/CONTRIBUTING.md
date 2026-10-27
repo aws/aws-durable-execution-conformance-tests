@@ -76,6 +76,7 @@ The currently supported telemetry assertions are:
 | `span_assertion_scope` | Limit complete span coverage to spans matching this partial selector. |
 | `exact_attribute_prefixes` | Require assertions to enumerate every attribute under the listed prefixes. |
 | `span_assertions` | Select one span and assert arbitrary canonical properties or metadata. |
+| `chained_invokes` | Compare each child's actual service trace header with a uniquely selected caller invoke span and an explicit sampling decision. X-Ray additionally checks the full observed parent path. |
 
 `span_assertions` accepts one mapping or a list of mappings. Each `select`
 mapping matches exactly one span by default. Set `count` to an exact positive
@@ -135,8 +136,8 @@ The OTel validator binds `${SERVICE_NAME}` to the configured
 requirement remains independent of the deployed resource name.
 
 Both `select` and `expect` can use any canonical span property: `trace_id`,
-`span_id`, `parent_span_id`, `name`, `start_time`, `end_time`, `status`,
-`service_name`, `attributes`, or `links`. Nested mappings support arbitrary
+`span_id`, `parent_span_id`, `name`, `kind`, `start_time`, `end_time`, `status`,
+`service_name`, `attributes`, `exception_event_count`, or `links`. Nested mappings support arbitrary
 attribute metadata without interpreting provider-specific keys. Sequence
 assertions compare length, order, and nested values. Each `expect.links` item
 resolves the linked span within the trace and applies a partial span assertion,
@@ -224,6 +225,70 @@ Use `$allow_unresolved: true`, `$allow_outside: true`, and
 when the parent is returned, constrains it to a non-SDK infrastructure span.
 The parent may be the propagated remote context or a same-trace ambient
 infrastructure span.
+
+The chained targets in cases 11 and 27 are explicit exceptions to `$reject_sdk_span`:
+their propagated remote parent can be the caller's SDK invoke span. Its exact
+service carrier and, with X-Ray, the full observed ancestry are checked instead.
+
+`chained_invokes` reads the child's `GetDurableExecution.TraceHeader.XAmznTraceId`
+through the runner's existing Lambda client. The child ARN must occur exactly
+once in actual `ChainedInvokeStarted` history. The carrier must contain valid,
+unambiguous `Root`, `Parent`, and `Sampled` fields; absence is a failure. The
+runner normalizes this service evidence separately from telemetry spans:
+
+```yaml
+chained_invokes:
+  - child_execution_arn: ${TARGET_EXECUTION_ARN}
+    parent:
+      name: otel-invoke
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+        durable.operation.id: ${INVOKE1}
+        durable.operation.status: STARTED
+    sampled: true
+```
+
+`parent` selects exactly one span, using the invocation view's first STARTED
+segment or the execution view's unique logical invoke. The service-reported Root must
+equal that span's trace ID, Parent must equal its span ID, and Sampled must equal
+the declared decision. Child Workflow and Invocation spans must use that same
+Root. An outgoing header or a shared trace ID alone cannot satisfy this check.
+
+X-Ray returns Lambda and service spans, so its backend advertises
+`provides_infrastructure_ancestry` and additionally requires the child's Workflow
+and Invocation parent chains to reach the selected invoke. Missing intermediates
+still fail that check. Collector exports can omit those infrastructure spans:
+their evidence is the exact service-reported carrier plus the SDK trace and
+ordinary SDK parent/link assertions. No intermediate span is manufactured and
+full backend ancestry is not claimed for such an export. Other backends opt into
+the full ancestry check only when they return that infrastructure. The generic
+`expect.descendant_of` assertion remains strict on every backend.
+
+The runner always saves case 11's normalized trace, observed service context, and
+whether full ancestry was checked, including a failing trace when available.
+If no correlated trace is returned, the failure artifact still preserves the
+observed service context with `trace_unavailable: true`. It contains no fabricated
+trace ID or spans and records that full ancestry was not checked.
+Backend support alone does not set `full_trace_ancestry_checked`: every requested
+child must have both its Workflow and Invocation parent chains checked. Ambiguous
+caller selection or missing child roots leaves this flag false. A true flag
+records that the checks ran, not that they passed.
+Case 11 tests the sampled-positive boundary. Existing SDK sampling controls cover
+explicit zero and missing decisions; absence of exported telemetry is never
+accepted as evidence of correct unsampled propagation.
+
+`expect.exception_event_count` checks the number of actual span events named
+`exception`. OTLP JSON/protobuf adapters supply a complete count only when no
+events were dropped; otherwise the value is unknown, not zero.
+Backends with the declared `exception-events` disparity skip an unavailable count
+in `expect`, but still enforce status and any count they actually expose. Direct
+selectors always match the observed value. X-Ray and Datadog do not establish
+exception-event absence; use the S3 collector for that evidence.
+
+Case 25 does not constrain exception-event counts. An SDK may record a real
+exception that escapes the failed callback span even though the service supplied
+an empty error payload and the enclosing workflow catches the failure. Its
+required ERROR status is independent of whether an exception event is recorded.
 
 ## Durable trace topology
 
@@ -416,3 +481,161 @@ examples hosted in separate SDK repositories can use the same build logic.
 - Requirement discovery works from both source and built wheels.
 - No secrets or provider credentials appear in fixtures, diagnostics, or
   artifacts.
+
+### User-function context assertions
+
+`expect.same_trace_as` selects exactly one other span and requires the selected
+span to have its trace ID. This is independent of parent identity and timestamps:
+
+```yaml
+expect:
+  same_trace_as:
+    name: Workflow
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+```
+
+`expect.same_operation_as` selects exactly one other span and requires both
+spans to carry the same non-empty string `durable.execution.arn` and
+`durable.operation.id`. This checks logical-operation identity across segments
+whose operation ID is not available in the caller's service history. It does
+not compare timestamps and takes a direct span selector, without `$linked` or
+timestamp controls. The identity comparison is enforced even when a backend
+does not expose span links. For example, case 27's completed child wait must
+retain the initial segment's identity:
+
+```yaml
+expect:
+  same_operation_as:
+    name: otel-suspended-target-wait
+    attributes:
+      durable.execution.arn: ${TARGET_EXECUTION_ARN}
+      durable.operation.status: STARTED
+```
+
+`expect.descendant_of` selects exactly one ancestor and follows actual
+`parent_span_id` edges in the same trace. Intervening infrastructure spans are
+allowed, but every edge up to that ancestor must be observed. A shared trace ID,
+span link, missing intermediate span, parent cycle, or conflicting parent IDs in
+duplicate exports cannot establish ancestry. Repeated exports with the same
+parent ID do not create additional edges. This assertion does not compare clocks
+or require temporal containment. It has no `$linked`, `$allow_unresolved`, or
+timestamp-tolerance controls:
+
+```yaml
+expect:
+  descendant_of:
+    name: otel-invoke
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
+      durable.operation.id: ${INVOKE1}
+      durable.operation.status: STARTED
+```
+
+The example selects the first invocation-view invoke segment. An execution-view
+requirement selects the single logical invoke span instead. Backend queries must
+return the required path; a partial response cannot qualify this assertion.
+
+Use `descendant_of.$occurrence` to select a chronological unique ancestor within
+the selected span's trace, with the same ordering and positive-integer rules as
+parent occurrences. For example, a callback leaf can require Invocation 2 even
+when a callback context lies between them. The complete observed parent path
+must still reach that invocation. Callback parent expectations should also match
+the context's STARTED or terminal operation state so the two local context
+segments cannot be interchanged.
+
+`expect.parent.$any_of` accepts a non-empty list of complete parent expectations.
+Each alternative retains the usual parent-ID, cycle and timestamp checks. This
+allows a handler to preserve a same-trace Lambda instrumentation context or use
+the view's SDK root, without imposing a new parent choice on existing integrations:
+
+```yaml
+parent:
+  $any_of:
+    - name: Workflow
+      attributes:
+        durable.execution.arn: ${EXECUTION_ARN}
+    - $reject_sdk_span: true
+      $allow_unresolved: true
+```
+
+Use `same_trace_as` alongside this alternative when the upstream parent may be
+omitted from a backend response. A user span on a different trace must still fail.
+Operation bodies should name their actual operation or attempt parent; they
+should not use this broad handler-root alternative.
+
+A parent expectation or temporal selector may set `$millisecond_precision: true`
+to allow at most 1 ms of timestamp rounding. Cases 22/23 use it for normal user
+spans: the public tracer can start them on a millisecond wall-clock tick while
+SDK spans use explicit monotonic timestamps. Parent identity, trace identity and
+cycle checks remain strict. This flag is opt-in; existing requirements retain
+their previous timing checks, and a stale parent outside the 1 ms bound fails.
+
+Exact-count requirements may set `TelemetryAssertions.quiescence_seconds` to a
+finite, non-negative interval within the polling timeout. A passing normalized
+trace must remain unchanged for that interval. Span multiplicity is preserved,
+so a duplicate arriving in a later S3 object invalidates the earlier match.
+Observation gaps and retryable backend errors restart the interval; exhausting
+the polling budget before stability is confirmed fails validation. The default
+is zero, preserving existing polling behavior. Cases 21 use a five-second window.
+
+A parent expectation may use `$not: <span selector>` to reject a matching parent.
+The handler ambient fallback rejects parents with `conformance.callback`, so a
+leaked probe span cannot be accepted as Lambda ambient context.
+
+For `count: {$any_of: [1, 2]}`, `expect_by_occurrence` may be a mapping from each
+permitted count to exactly that many occurrence expectations. Every permitted
+count must be covered. This lets invocation replay require one Workflow-linked
+initial segment, or that segment plus a distinct replay segment linked to both
+the original operation and Workflow. The existing sequence form is unchanged.
+
+Matcher syntax is validated recursively in every parent alternative and every count-dependent occurrence branch, including branches not selected by the observed trace. `same_trace_as` requires a direct selector and does not accept `$linked`, so missing backend link support cannot skip the trace-ID comparison.
+
+A resolved parent expectation may set `$occurrence: 2` to require the second
+chronological unique `(trace_id, span_id)` matching the parent properties in the
+child's trace. Ordering uses start time, end time and identifiers, as for link
+occurrences. The value must be a positive integer and cannot be combined with
+`$allow_unresolved`. Case 26 uses this to associate the terminal root callback
+with the first resumed Invocation, independently of asynchronous exporter arrival.
+
+Bind invocation-view operation segments to their actual invocation phase using
+`$occurrence` or attributes that uniquely identify that phase. Counts and segment
+ordering alone can accept every segment under one later Invocation. In particular,
+initial waits, callbacks and callback scopes must retain the initial Invocation
+as their parent.
+
+Execution-view waits, callbacks and chained invokes can carry service completion
+timestamps. Their SDK Workflow parent uses a different clock, so use
+`$allow_outside: true` for that parent while retaining its identity and attributes.
+Establish completion order with service history and invocation links, not a
+comparison with subsequent SDK step or Workflow timestamps.
+
+
+Selector field names are checked against the canonical serialized span properties,
+including in inactive occurrence branches and parent/link alternatives. Unknown
+fields and controls in the wrong context are rejected before matching telemetry or
+applying backend feature disparities. Direct `select`, `span_assertion_scope`,
+`require_parented_spans`, and parent `$not` selectors accept canonical properties
+only. `expect` additionally accepts `parent` and the documented relations; parent,
+temporal, and linked-span selectors accept only their documented controls.
+`same_trace_as` continues to reject `$linked` because missing backend links must
+not bypass trace-identity comparison. In direct selectors, `links` matches
+serialized `trace_id`/`span_id` pairs; `expect.links` instead resolves those links
+to spans and accepts their canonical properties plus `count` and `$occurrence`.
+Attribute keys, nested attribute mappings, and valid value matchers remain open-ended.
+
+Serialized `links` selectors require a sequence of ID-pair mappings. Every
+`$any_of` alternative must preserve that container shape, including inactive
+branches. Wildcard and regex matchers remain supported for the sequence and its
+items; a bare ID-pair mapping cannot stand in for a link sequence.
+
+The outer `attributes` container requires a mapping or a whole-value wildcard,
+regex, or recursively valid `$any_of` matcher, including in inactive branches.
+Keys inside that mapping remain arbitrary, and their values may contain nested
+mappings and arrays.
+
+Scalar span properties and serialized link IDs accept scalar matchers (including
+wildcards and regexes) or recursively valid `$any_of` alternatives. Ordinary
+mappings or sequences are invalid for those scalar properties, including inside
+unused parent or occurrence alternatives. Attribute metadata remains open-ended:
+arbitrary nested mappings and arrays are still supported there.

@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
 import yaml
+from botocore.exceptions import ClientError
 
 import aws_durable_execution_conformance_tests.validate as validate_module
 from aws_durable_execution_conformance_tests.clients import AwsClients
@@ -106,3 +108,97 @@ def test_validate_description_preserves_existing_callers_and_forwards_log_timeou
         DEFAULT_LOG_POLL_TIMEOUT_SECONDS if timeout is None else timeout
     )
     assert validate_logs.call_args.kwargs["aws_clients"] is aws_clients
+
+
+@pytest.mark.parametrize("history_only", [False, True])
+@pytest.mark.parametrize("later_read", ["failed", "incomplete"])
+def test_async_result_preserves_matched_service_history_without_final_refetch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, history_only: bool, later_read: str
+) -> None:
+    history: dict[str, Any] = {
+        "Events": [
+            {"EventId": 1, "EventType": "ExecutionStarted"},
+            {
+                "EventId": 2,
+                "EventType": "ChainedInvokeStarted",
+                "Id": "invoke-1",
+                "ChainedInvokeStartedDetails": {"DurableExecutionArn": "arn:child"},
+            },
+            {
+                "EventId": 3,
+                "EventType": "ContextStarted",
+                "Id": "context-1",
+                "SubType": "WaitForCallback",
+                "Name": "barrier",
+            },
+            {
+                "EventId": 4,
+                "EventType": "CallbackStarted",
+                "Id": "callback-1",
+                "ParentId": "context-1",
+                "CallbackStartedDetails": {"CallbackId": "capability"},
+            },
+        ]
+    }
+    if not history_only:
+        history["Events"].append({"EventId": 5, "EventType": "ExecutionSucceeded"})
+
+    class Client:
+        reads = 0
+
+        def get_durable_execution_history(self, **_kwargs: Any) -> dict:
+            self.reads += 1
+            if self.reads == 1:
+                return deepcopy(history)
+            if later_read == "failed":
+                raise ClientError(
+                    {"Error": {"Code": "TooManyRequestsException", "Message": "try later"}},
+                    "GetDurableExecutionHistory",
+                )
+            return {"Events": [history["Events"][0]]}
+
+        def get_durable_execution(self, **_kwargs: Any) -> dict:
+            return {"Status": "SUCCEEDED"}
+
+    client = Client()
+    expected = deepcopy(history["Events"])
+    expected[1]["Id"] = "${INVOKE1}"
+    expected[1]["ChainedInvokeStartedDetails"]["DurableExecutionArn"] = "${CHILD_ARN}"
+    expected[3]["Name"] = "barrier"
+    data = {"AsyncInvoke": True, "AsyncConfig": {"PollIntervalSeconds": 0}, "ExpectedExecutionHistory": expected}
+    if not history_only:
+        data["ExpectedResult"] = {"ExecutionStatus": "SUCCEEDED"}
+    requirement = tmp_path / "test-1.yaml"
+    requirement.write_text(yaml.safe_dump(data))
+    invoker = Invoker(stack_name="test-stack")
+    monkeypatch.setattr(
+        invoker,
+        "invoke_async",
+        Mock(
+            return_value=InvocationResult(
+                success=True,
+                command="invoke",
+                output=json.dumps({"DurableExecutionArn": "arn:caller"}),
+                stderr="",
+                function_name="TestFunction",
+            )
+        ),
+    )
+    output_dir = tmp_path / "history"
+    result = validate_description(
+        "TestFunction",
+        "test-1",
+        str(requirement),
+        invoker,
+        str(tmp_path),
+        "us-west-2",
+        AwsClients({"lambda": client}),
+        str(output_dir),
+    )
+    assert result.passed, result.errors
+    assert result.execution_history == history
+    assert json.loads((output_dir / "test-1.json").read_text()) == history
+    assert result.placeholders["CHILD_ARN"] == "arn:child"
+    assert result.placeholders["INVOKE1"] == "invoke-1"
+    assert "Name" not in result.execution_history["Events"][3]
+    assert client.reads == 1

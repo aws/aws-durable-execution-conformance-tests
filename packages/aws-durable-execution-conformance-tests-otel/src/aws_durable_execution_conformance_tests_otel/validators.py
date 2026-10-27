@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -20,13 +22,40 @@ from aws_durable_execution_conformance_tests_otel.polling import (
     BackendFeatureDisparity,
 )
 
+
+@dataclass
+class TraceValidationDetails:
+    """Checks actually performed on the most recently validated trace."""
+
+    full_trace_ancestry_checked: bool = False
+
+
 _EXECUTION_ATTRIBUTE_KEYS = (
     "aws.lambda.durable_execution.arn",
     "durable.execution.arn",
     "durable_execution_arn",
 )
 _DURABLE_INVOCATION_ATTRIBUTE_KEYS = ("durable.invocation.first",)
-_TEMPORAL_RELATION_KEYS = ("before", "after", "inside")
+_SPAN_RELATION_KEYS = ("before", "after", "inside", "same_trace_as", "same_operation_as", "descendant_of")
+# These are serialized properties from span_to_dict, not provider payload fields
+# or the fields of a dataclass. Attribute mappings remain open-ended.
+_SPAN_PROPERTIES = frozenset(
+    {
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "name",
+        "kind",
+        "start_time",
+        "end_time",
+        "status",
+        "service_name",
+        "exception_event_count",
+        "attributes",
+        "links",
+    }
+)
+_SERIALIZED_LINK_PROPERTIES = frozenset({"trace_id", "span_id"})
 _MILLISECOND_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
 
 
@@ -215,7 +244,7 @@ def _select_span_matches(
         if (
             BackendFeatureDisparity.UNSET_STATUS not in feature_disparities
             or len(matches) <= expected_count
-            or selector.get("status") not in {"UNSET", "OK"}
+            or selector.get("status") not in ("UNSET", "OK")
         ):
             return matches
         ordered = sorted(
@@ -312,7 +341,268 @@ def _span_expectation_errors(
             continue
         if key == "status" and _matches_span_status(value, actual[key], feature_disparities):
             continue
+        if (
+            key == "exception_event_count"
+            and actual[key] is None
+            and BackendFeatureDisparity.EXCEPTION_EVENTS in feature_disparities
+        ):
+            continue
         errors.extend(_expectation_errors(value, actual[key], path=child_path))
+    return errors
+
+
+def _unknown_field_errors(expected: Mapping[str, Any], allowed: Collection[str], *, path: str) -> list[str]:
+    unknown = sorted(set(expected) - set(allowed), key=str)
+    return [f"{path} has unknown field(s): {', '.join(str(key) for key in unknown)}"] if unknown else []
+
+
+def _matcher_schema_errors(
+    expected: Any,
+    *,
+    path: str,
+    allowed_keys: Collection[str] | None = None,
+    scalar_only: bool = False,
+) -> list[str]:
+    """Validate nested value matchers without consulting observed values."""
+    if isinstance(expected, str):
+        try:
+            get_regex_pattern(expected)
+        except re.error as exc:
+            return [f"{path}: invalid regex matcher: {exc}"]
+        return []
+    if isinstance(expected, Mapping):
+        if set(expected) == {"$any_of"}:
+            alternatives = expected["$any_of"]
+            if not _is_sequence(alternatives) or not alternatives:
+                return [f"{path}.$any_of must be a non-empty sequence"]
+            return [
+                error
+                for i, alternative in enumerate(alternatives)
+                for error in _matcher_schema_errors(
+                    alternative,
+                    path=f"{path}.$any_of[{i}]",
+                    allowed_keys=allowed_keys,
+                    scalar_only=scalar_only,
+                )
+            ]
+        if scalar_only:
+            return [f"{path} must be a scalar matcher or a valid $any_of mapping"]
+        errors = _unknown_field_errors(expected, allowed_keys, path=path) if allowed_keys is not None else []
+        return errors + [
+            error
+            for key, value in expected.items()
+            for error in _matcher_schema_errors(value, path=f"{path}.{key}", scalar_only=allowed_keys is not None)
+        ]
+    if _is_sequence(expected):
+        if scalar_only:
+            return [f"{path} must be a scalar matcher or a valid $any_of mapping"]
+        return [
+            error
+            for i, value in enumerate(expected)
+            for error in _matcher_schema_errors(value, path=f"{path}[{i}]", allowed_keys=allowed_keys)
+        ]
+    return []
+
+
+def _attributes_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Require the outer attribute mapping while leaving nested metadata open."""
+    if isinstance(expected, str):
+        errors = _matcher_schema_errors(expected, path=path)
+        if errors:
+            return errors
+        if expected == "*" or get_regex_pattern(expected):
+            return []
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping or wildcard/regex matcher"]
+    if set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _attributes_schema_errors(alternative, path=f"{path}.$any_of[{index}]")
+        ]
+    return _matcher_schema_errors(expected, path=path)
+
+
+def _serialized_links_schema_errors(expected: Any, *, path: str, item: bool = False) -> list[str]:
+    """Check every raw link-list branch and each serialized ID-pair matcher."""
+    if isinstance(expected, str):
+        errors = _matcher_schema_errors(expected, path=path)
+        if errors:
+            return errors
+        if expected == "*" or get_regex_pattern(expected):
+            return []
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _serialized_links_schema_errors(alternative, path=f"{path}.$any_of[{index}]", item=item)
+        ]
+    if item:
+        if not isinstance(expected, Mapping):
+            return [f"{path} must be a serialized link mapping or wildcard/regex matcher"]
+        return _matcher_schema_errors(expected, path=path, allowed_keys=_SERIALIZED_LINK_PROPERTIES)
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence or wildcard/regex matcher"]
+    return [
+        error
+        for index, link in enumerate(expected)
+        for error in _serialized_links_schema_errors(link, path=f"{path}[{index}]", item=True)
+    ]
+
+
+def _span_selector_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
+    """Direct selectors contain serialized span properties, never relation controls."""
+    errors = _unknown_field_errors(expected, _SPAN_PROPERTIES, path=path)
+    for key, value in expected.items():
+        if key == "attributes":
+            errors.extend(_attributes_schema_errors(value, path=f"{path}.{key}"))
+        elif key == "links":
+            # Direct selectors match serialized ID pairs, not resolved spans.
+            errors.extend(_serialized_links_schema_errors(value, path=f"{path}.{key}"))
+        elif key in _SPAN_PROPERTIES:
+            errors.extend(
+                _matcher_schema_errors(
+                    value,
+                    path=f"{path}.{key}",
+                    scalar_only=key != "attributes",
+                )
+            )
+    return errors
+
+
+def _relation_schema_errors(relation: str, expected: Any, *, path: str) -> list[str]:
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+    if relation == "descendant_of":
+        errors = []
+        if "$occurrence" in expected and (type(expected["$occurrence"]) is not int or expected["$occurrence"] < 1):
+            errors.append(f"{path}.$occurrence must be a positive integer")
+        return errors + _span_selector_schema_errors(
+            {key: value for key, value in expected.items() if key != "$occurrence"}, path=path
+        )
+    if relation == "same_operation_as":
+        # Ancestry and operation identity must not be bypassed by backend link controls.
+        return _span_selector_schema_errors(expected, path=path)
+    # Preserve the existing relation flags; same_trace_as still forbids link filtering.
+    controls = {"$linked", "$millisecond_precision"}
+    errors = [
+        f"{path}.{flag} must be true" for flag in sorted(controls) if flag in expected and expected[flag] is not True
+    ]
+    if relation == "same_trace_as" and "$linked" in expected:
+        errors.append(f"{path} does not support $linked; select the comparison span directly")
+    errors.extend(
+        _span_selector_schema_errors(
+            {key: value for key, value in expected.items() if key not in controls},
+            path=path,
+        )
+    )
+    return errors
+
+
+def _links_schema_errors(expected: Any, *, path: str) -> list[str]:
+    if isinstance(expected, Mapping) and set(expected) == {"$any_of"}:
+        alternatives = expected["$any_of"]
+        if not _is_sequence(alternatives) or not alternatives:
+            return [f"{path}.$any_of must be a non-empty sequence"]
+        return [
+            error
+            for i, alternative in enumerate(alternatives)
+            for error in _links_schema_errors(alternative, path=f"{path}.$any_of[{i}]")
+        ]
+    if not _is_sequence(expected):
+        return [f"{path} must be a sequence"]
+    errors = []
+    for i, item in enumerate(expected):
+        item_path = f"{path}[{i}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{item_path} must be a mapping")
+            continue
+        for key in ("count", "$occurrence"):
+            if key in item and (isinstance(item[key], bool) or not isinstance(item[key], int) or item[key] < 1):
+                errors.append(f"{item_path}.{key} must be a positive integer")
+        errors.extend(
+            _span_selector_schema_errors(
+                {key: value for key, value in item.items() if key not in {"count", "$occurrence"}}, path=item_path
+            )
+        )
+    return errors
+
+
+def _expectation_schema_errors(expected: Mapping[str, Any], *, path: str) -> list[str]:
+    errors = _unknown_field_errors(expected, _SPAN_PROPERTIES | {"parent", *_SPAN_RELATION_KEYS}, path=path)
+    for key, value in expected.items():
+        child = f"{path}.{key}"
+        if key == "parent":
+            errors.extend(_parent_schema_errors(value, path=child))
+        elif key == "links":
+            errors.extend(_links_schema_errors(value, path=child))
+        elif key in _SPAN_RELATION_KEYS:
+            errors.extend(_relation_schema_errors(key, value, path=child))
+        elif key == "attributes":
+            errors.extend(_attributes_schema_errors(value, path=child))
+        elif key in _SPAN_PROPERTIES:
+            errors.extend(_matcher_schema_errors(value, path=child, scalar_only=key != "attributes"))
+    return errors
+
+
+def _parent_schema_errors(expected: Any, *, path: str) -> list[str]:
+    """Validate every parent alternative independently of observed telemetry."""
+    if not isinstance(expected, Mapping):
+        return [f"{path} must be a mapping"]
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        return [
+            error
+            for index, alternative in enumerate(alternatives)
+            for error in _parent_schema_errors(alternative, path=f"{path}.$any_of[{index}]")
+        ]
+    errors = [
+        f"{path}.{flag} must be true"
+        for flag in ("$allow_outside", "$allow_unresolved", "$reject_sdk_span", "$millisecond_precision")
+        if flag in expected and expected[flag] is not True
+    ]
+    if "$occurrence" in expected:
+        occurrence = expected["$occurrence"]
+        if type(occurrence) is not int or occurrence <= 0:
+            errors.append(f"{path}.$occurrence must be a positive integer")
+        if expected.get("$allow_unresolved") is True:
+            errors.append(f"{path}.$occurrence requires a resolved parent")
+    if "$not" in expected:
+        if not isinstance(expected["$not"], Mapping):
+            errors.append(f"{path}.$not must be a span selector mapping")
+        else:
+            errors.extend(_span_selector_schema_errors(expected["$not"], path=f"{path}.$not"))
+    errors.extend(
+        _span_selector_schema_errors(
+            {
+                key: value
+                for key, value in expected.items()
+                if key
+                not in {
+                    "$allow_outside",
+                    "$allow_unresolved",
+                    "$reject_sdk_span",
+                    "$millisecond_precision",
+                    "$not",
+                    "$occurrence",
+                }
+            },
+            path=path,
+        )
+    )
     return errors
 
 
@@ -324,22 +614,62 @@ def _parent_expectation_errors(
     path: str,
     feature_disparities: Collection[BackendFeatureDisparity],
 ) -> list[str]:
+    schema_errors = _parent_schema_errors(expected, path=path)
+    if schema_errors:
+        return schema_errors
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    if "$any_of" in expected:
+        alternatives = expected["$any_of"]
+        if (
+            set(expected) != {"$any_of"}
+            or not _is_sequence(alternatives)
+            or not alternatives
+            or not all(isinstance(alternative, Mapping) for alternative in alternatives)
+        ):
+            return [f"{path}.$any_of must be a non-empty sequence of parent mappings without sibling fields"]
+        failures = []
+        for index, alternative in enumerate(alternatives):
+            alternative_errors = _parent_expectation_errors(
+                alternative,
+                span,
+                spans_by_id,
+                path=f"{path}.$any_of[{index}]",
+                feature_disparities=feature_disparities,
+            )
+            if not alternative_errors:
+                return []
+            failures.extend(alternative_errors)
+        return [f"{path}: parent did not match any permitted alternative", *failures]
+
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     allow_outside = expected.get("$allow_outside", False)
     if "$allow_outside" in expected and allow_outside is not True:
         return [f"{path}.$allow_outside must be true"]
     allow_unresolved = expected.get("$allow_unresolved", False)
     if "$allow_unresolved" in expected and allow_unresolved is not True:
         return [f"{path}.$allow_unresolved must be true"]
+    rejected_parent = expected.get("$not")
+    if "$not" in expected and not isinstance(rejected_parent, Mapping):
+        return [f"{path}.$not must be a span selector mapping"]
     reject_sdk_span = expected.get("$reject_sdk_span", False)
     if "$reject_sdk_span" in expected and reject_sdk_span is not True:
         return [f"{path}.$reject_sdk_span must be true"]
     expected_properties = {
         key: value
         for key, value in expected.items()
-        if key not in {"$allow_outside", "$allow_unresolved", "$reject_sdk_span"}
+        if key
+        not in {
+            "$allow_outside",
+            "$allow_unresolved",
+            "$reject_sdk_span",
+            "$millisecond_precision",
+            "$not",
+            "$occurrence",
+        }
     }
 
     parent_span_id = span.parent_span_id
@@ -375,6 +705,12 @@ def _parent_expectation_errors(
             parent_errors.append(
                 f"{path}: resolved parent span {parent.name!r} ({parent.span_id}) is emitted by the durable SDK"
             )
+        if (
+            not parent_errors
+            and isinstance(rejected_parent, Mapping)
+            and _matches_span(rejected_parent, serialized_parent, feature_disparities)
+        ):
+            parent_errors.append(f"{path}: resolved parent matches the forbidden span selector")
         expectation_errors.append(parent_errors)
     matching_parents = [
         parent for (parent, _serialized_parent), errors in zip(parents, expectation_errors, strict=True) if not errors
@@ -384,10 +720,35 @@ def _parent_expectation_errors(
             return [f"{path}: parent span id matched {len(parents)} spans; none matched the expected parent"]
         return expectation_errors[0]
 
+    expected_occurrence = expected.get("$occurrence")
+    if expected_occurrence is not None:
+        candidates = {
+            (candidate.trace_id, candidate.span_id): serialized
+            for entries in spans_by_id.values()
+            for candidate, serialized in entries
+            if candidate.trace_id == span.trace_id
+            and not _span_expectation_errors(
+                expected_properties, serialized, path=path, feature_disparities=feature_disparities
+            )
+        }
+        ordered_candidates = sorted(
+            candidates,
+            key=lambda key: (candidates[key]["start_time"], candidates[key]["end_time"], key[0], key[1]),
+        )
+        parent_key = (span.trace_id, parent_span_id)
+        actual_occurrence = ordered_candidates.index(parent_key) + 1
+        if actual_occurrence != expected_occurrence:
+            return [
+                f"{path}.$occurrence: parent span is occurrence {actual_occurrence}, expected {expected_occurrence}"
+            ]
+
     if allow_outside:
         return []
 
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     candidate_errors = []
     for parent in matching_parents:
         errors: list[str] = []
@@ -490,7 +851,9 @@ def _link_expectation_errors(
                 candidates = {
                     (candidate["trace_id"], candidate["span_id"]): candidate
                     for candidate in spans
-                    if _matches_span(expected_properties, candidate, feature_disparities)
+                    if not _span_expectation_errors(
+                        expected_properties, candidate, path=link_path, feature_disparities=feature_disparities
+                    )
                 }
                 ordered_candidates = sorted(
                     candidates,
@@ -516,7 +879,36 @@ def _link_expectation_errors(
     return errors
 
 
-def _temporal_relation_errors(
+def _descendant_errors(selected: Span, ancestor: Span, trace: Trace, *, path: str) -> list[str]:
+    """Follow observed parent IDs without inventing missing infrastructure edges."""
+    if selected.trace_id != ancestor.trace_id:
+        return [f"{path}: selected span and ancestor use different traces"]
+    if selected.span_id == ancestor.span_id:
+        return [f"{path}: a span cannot be its own ancestor"]
+    parents_by_id: dict[str, set[str | None]] = {}
+    for span in trace.spans:
+        if span.trace_id == selected.trace_id:
+            parents_by_id.setdefault(span.span_id, set()).add(span.parent_span_id)
+
+    visited: set[str] = set()
+    current_id: str | None = selected.span_id
+    reached = False
+    while current_id is not None:
+        if current_id in visited:
+            return [f"{path}: parent cycle at span {current_id}"]
+        visited.add(current_id)
+        reached = reached or current_id == ancestor.span_id
+        parent_ids = parents_by_id.get(current_id)
+        if parent_ids is None:
+            # Once the required ancestor was observed, its upstream path is optional.
+            return [] if reached else [f"{path}: unresolved parent {current_id} before the required ancestor"]
+        if len(parent_ids) != 1:
+            return [f"{path}: conflicting parents for span {current_id}"]
+        current_id = next(iter(parent_ids))
+    return [] if reached else [f"{path}: parent chain does not reach ancestor {ancestor.name!r} ({ancestor.span_id})"]
+
+
+def _span_relation_errors(
     relation: str,
     expected: Any,
     selected_span: Span,
@@ -530,12 +922,17 @@ def _temporal_relation_errors(
     if not isinstance(expected, Mapping):
         return [f"{path} must be a mapping"]
 
+    millisecond_precision = expected.get("$millisecond_precision", False)
+    if "$millisecond_precision" in expected and millisecond_precision is not True:
+        return [f"{path}.$millisecond_precision must be true"]
     linked_only = expected.get("$linked", False)
     if "$linked" in expected and linked_only is not True:
         return [f"{path}.$linked must be true"]
     if linked_only and BackendFeatureDisparity.SPAN_LINKS in feature_disparities:
         return []
-    selector = {key: value for key, value in expected.items() if key != "$linked"}
+    selector = {
+        key: value for key, value in expected.items() if key not in {"$linked", "$millisecond_precision", "$occurrence"}
+    }
     linked_span_keys = {(link.trace_id, link.span_id) for link in selected_span.links}
     matches = [
         span
@@ -544,13 +941,47 @@ def _temporal_relation_errors(
         and (not linked_only or (span.trace_id, span.span_id) in linked_span_keys)
         and _matches_span(selector, serialized_span, feature_disparities)
     ]
+    occurrence = expected.get("$occurrence") if relation == "descendant_of" else None
+    if occurrence is not None:
+        if type(occurrence) is not int or occurrence < 1:
+            return [f"{path}.$occurrence must be a positive integer"]
+        candidates: dict[tuple[str, str], Span] = {}
+        for candidate in sorted(
+            matches, key=lambda item: (item.start_time, item.end_time, item.trace_id, item.span_id)
+        ):
+            if candidate.trace_id == selected_span.trace_id:
+                candidates.setdefault((candidate.trace_id, candidate.span_id), candidate)
+        if occurrence > len(candidates):
+            return [
+                f"{path}.$occurrence: requested {occurrence}, found {len(candidates)} matching spans in the selected trace"
+            ]
+        matches = [list(candidates.values())[occurrence - 1]]
     if not matches:
         return [f"{path} matched no spans"]
     if len(matches) > 1:
         return [f"{path} matched {len(matches)} spans; it must select exactly one"]
 
     related_span = matches[0]
-    timestamp_tolerance = _timestamp_tolerance(feature_disparities)
+    if relation == "descendant_of":
+        return _descendant_errors(selected_span, related_span, trace, path=path)
+    if relation == "same_trace_as":
+        if selected_span.trace_id != related_span.trace_id:
+            return [f"{path}: span {selected_span.name!r} uses a different trace than {related_span.name!r}"]
+        return []
+    if relation == "same_operation_as":
+        errors = []
+        for key in ("durable.execution.arn", "durable.operation.id"):
+            selected_value = selected_span.attributes.get(key)
+            related_value = related_span.attributes.get(key)
+            if not all(isinstance(value, str) and value for value in (selected_value, related_value)):
+                errors.append(f"{path}: both spans must have a non-empty string {key}")
+            elif selected_value != related_value:
+                errors.append(f"{path}: spans have different {key} values: {selected_value!r} != {related_value!r}")
+        return errors
+    timestamp_tolerance = max(
+        _timestamp_tolerance(feature_disparities),
+        timedelta(milliseconds=1) if millisecond_precision else timedelta(0),
+    )
     selected_description = f"{selected_span.name!r} ({selected_span.span_id})"
     related_description = f"{related_span.name!r} ({related_span.span_id})"
     if relation == "before" and selected_span.end_time - related_span.start_time > timestamp_tolerance:
@@ -629,7 +1060,21 @@ def _span_assertion_errors(
             errors.append(f"{path}.expect must be a mapping")
             continue
         occurrence_expectations: list[Mapping[str, Any]] | None = None
-        if raw_occurrence_expectations is not None:
+        count_occurrence_expectations: Mapping[int, Any] | None = None
+        if isinstance(raw_occurrence_expectations, Mapping):
+            if not raw_occurrence_expectations or not all(
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and count > 0
+                and _is_sequence(items)
+                and len(items) == count
+                and all(isinstance(item, Mapping) for item in items)
+                for count, items in raw_occurrence_expectations.items()
+            ):
+                errors.append(f"{path}.expect_by_occurrence must map positive counts to that many expectation mappings")
+                continue
+            count_occurrence_expectations = raw_occurrence_expectations
+        elif raw_occurrence_expectations is not None:
             if not _is_sequence(raw_occurrence_expectations) or not all(
                 isinstance(occurrence_expected, Mapping) for occurrence_expected in raw_occurrence_expectations
             ):
@@ -653,6 +1098,27 @@ def _span_assertion_errors(
             errors.append(f"{path}.count must be a positive integer or $any_of positive integers")
             continue
 
+        schema_errors = _span_selector_schema_errors(selector, path=f"{path}.select")
+        schema_errors.extend(_expectation_schema_errors(expected, path=f"{path}.expect"))
+        if count_occurrence_expectations is not None:
+            if set(count_occurrence_expectations) != set(expected_counts):
+                schema_errors.append(f"{path}.expect_by_occurrence must cover every permitted count")
+            for count, branches in count_occurrence_expectations.items():
+                for occurrence_index, branch in enumerate(branches):
+                    schema_errors.extend(
+                        _expectation_schema_errors(
+                            branch, path=f"{path}.expect_by_occurrence[{count}][{occurrence_index}]"
+                        )
+                    )
+        elif occurrence_expectations is not None:
+            for occurrence_index, branch in enumerate(occurrence_expectations):
+                schema_errors.extend(
+                    _expectation_schema_errors(branch, path=f"{path}.expect_by_occurrence[{occurrence_index}]")
+                )
+        if schema_errors:
+            errors.extend(schema_errors)
+            continue
+
         matches = _select_span_matches(
             selector,
             spans,
@@ -670,6 +1136,11 @@ def _span_assertion_errors(
             allowed_counts = " or ".join(str(count) for count in expected_counts)
             errors.append(f"{path}.select matched {len(matches)} spans; expected {allowed_counts}")
             continue
+        if count_occurrence_expectations is not None:
+            if set(count_occurrence_expectations) != set(expected_counts):
+                errors.append(f"{path}.expect_by_occurrence must cover every permitted count")
+                continue
+            occurrence_expectations = list(count_occurrence_expectations[len(matches)])
         if occurrence_expectations is not None:
             if len(occurrence_expectations) != len(matches):
                 errors.append(
@@ -702,7 +1173,7 @@ def _span_assertion_errors(
             expected_properties = {
                 key: value
                 for key, value in effective_expected.items()
-                if key not in {"links", "parent"} and key not in _TEMPORAL_RELATION_KEYS
+                if key not in {"links", "parent"} and key not in _SPAN_RELATION_KEYS
             }
             expected_attributes = effective_expected.get("attributes")
             errors.extend(
@@ -734,10 +1205,10 @@ def _span_assertion_errors(
                         feature_disparities=feature_disparities,
                     )
                 )
-            for relation in _TEMPORAL_RELATION_KEYS:
+            for relation in _SPAN_RELATION_KEYS:
                 if relation in effective_expected:
                     errors.extend(
-                        _temporal_relation_errors(
+                        _span_relation_errors(
                             relation,
                             effective_expected[relation],
                             trace.spans[span_index],
@@ -794,6 +1265,10 @@ def _parented_span_errors(
         if not isinstance(selector, Mapping):
             errors.append(f"{path} must be a mapping")
             continue
+        schema_errors = _span_selector_schema_errors(selector, path=path)
+        if schema_errors:
+            errors.extend(schema_errors)
+            continue
         for span, serialized_span in zip(trace.spans, serialized_spans, strict=True):
             if not _matches_span(selector, serialized_span, feature_disparities):
                 continue
@@ -806,16 +1281,93 @@ def _parented_span_errors(
     return errors
 
 
+def _chained_invoke_errors(
+    trace: Trace,
+    expected: Any,
+    query: TelemetryQuery,
+    *,
+    feature_disparities: Collection[BackendFeatureDisparity],
+    full_ancestry: bool,
+) -> tuple[list[str], bool]:
+    if expected is None:
+        return [], False
+    if not _is_sequence(expected):
+        return ["chained_invokes must be a sequence of mappings"], False
+    serialized_spans = [span_to_dict(span) for span in trace.spans]
+    errors = []
+    checked_children = 0
+    for index, item in enumerate(expected):
+        path = f"chained_invokes[{index}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{path} must be a mapping")
+            continue
+        schema = _unknown_field_errors(item, {"child_execution_arn", "parent", "sampled"}, path=path)
+        child_arn = item.get("child_execution_arn")
+        parent = item.get("parent")
+        if not isinstance(child_arn, str) or not child_arn:
+            schema.append(f"{path}.child_execution_arn must be a non-empty string")
+        if not isinstance(item.get("sampled"), bool):
+            schema.append(f"{path}.sampled must be a boolean")
+        if not isinstance(parent, Mapping):
+            schema.append(f"{path}.parent must be a span selector")
+        else:
+            schema.extend(_span_selector_schema_errors(parent, path=f"{path}.parent"))
+        if schema:
+            errors.extend(schema)
+            continue
+        assert isinstance(parent, Mapping) and isinstance(child_arn, str)
+        parents = _select_span_matches(parent, serialized_spans, (), 1, feature_disparities)
+        if len(parents) != 1:
+            errors.append(f"{path}.parent must select exactly one span; found {len(parents)}")
+            continue
+        ancestor = trace.spans[parents[0][0]]
+        carrier = query.execution_trace_contexts.get(child_arn)
+        if carrier is None:
+            errors.append(f"{path}: missing actual child GetDurableExecution trace context")
+            continue
+        if carrier.trace_id != ancestor.trace_id:
+            errors.append(f"{path}: child service Root differs from the selected invoke trace ID")
+        if carrier.parent_span_id != ancestor.span_id:
+            errors.append(f"{path}: child service Parent differs from the selected first invoke span ID")
+        if carrier.sampled is not item["sampled"]:
+            errors.append(f"{path}: child service Sampled differs from the expected decision")
+        roots = [
+            span
+            for span in trace.spans
+            if span.name in {"Workflow", "Invocation"} and span.attributes.get("durable.execution.arn") == child_arn
+        ]
+        if {span.name for span in roots} != {"Workflow", "Invocation"}:
+            errors.append(f"{path}: child Workflow and Invocation telemetry are required")
+        for root in roots:
+            if root.trace_id != carrier.trace_id:
+                errors.append(f"{path}: child {root.name} trace ID differs from its service Root")
+            if full_ancestry:
+                errors.extend(_descendant_errors(root, ancestor, trace, path=f"{path}.{root.name}.descendant_of"))
+        if full_ancestry and {span.name for span in roots} == {"Workflow", "Invocation"}:
+            checked_children += 1
+    return errors, bool(expected) and checked_children == len(expected)
+
+
 def validate_trace(
     trace: Trace,
     assertions: Mapping[str, Any],
     query: TelemetryQuery,
     *,
     feature_disparities: Collection[BackendFeatureDisparity] = (),
+    full_trace_ancestry: bool = False,
+    details: TraceValidationDetails | None = None,
 ) -> list[str]:
     """Validate stable integration invariants without prescribing span schemas."""
 
-    errors: list[str] = []
+    errors, ancestry_checked = _chained_invoke_errors(
+        trace,
+        assertions.get("chained_invokes"),
+        query,
+        feature_disparities=feature_disparities,
+        full_ancestry=full_trace_ancestry,
+    )
+    if details is not None:
+        details.full_trace_ancestry_checked = ancestry_checked
     minimum_spans = int(assertions.get("minimum_spans", 1))
     if len(trace.spans) < minimum_spans:
         errors.append(f"Expected at least {minimum_spans} span(s), found {len(trace.spans)}")
@@ -900,6 +1452,14 @@ def validate_trace(
     else:
         errors.append("span_assertion_scope must be a mapping or sequence of mappings")
         assertion_scopes = ({},)
+
+    valid_scopes = []
+    for index, scope in enumerate(assertion_scopes):
+        schema_errors = _span_selector_schema_errors(scope, path=f"span_assertion_scope[{index}]")
+        errors.extend(schema_errors)
+        if not schema_errors:
+            valid_scopes.append(scope)
+    assertion_scopes = tuple(valid_scopes)
 
     errors.extend(
         _span_assertion_errors(

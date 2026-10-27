@@ -82,6 +82,65 @@ def test_deploy_passes_but_redacts_secret_parameters(
     assert "[REDACTED]" in result.output
 
 
+@pytest.mark.parametrize("stderr", ["", "Stack update failed: stderr-secret"])
+def test_failed_deploy_preserves_redacted_stdout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stderr: str) -> None:
+    template = tmp_path / "template.yaml"
+    template.write_text("Resources: {}\n", encoding="utf-8")
+    resource_failure = "CREATE_FAILED TestResource: access denied, stdout-secret"
+
+    def run(command: list[str]) -> subprocess.CompletedProcess:
+        if "build" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="built", stderr="")
+        return subprocess.CompletedProcess(command, 2, stdout=resource_failure, stderr=stderr)
+
+    monkeypatch.setattr(sam.SamExecutor, "run", run)
+    deployer = Deployer(str(template), build_dir=str(tmp_path / "build"))
+    deployer.build()
+    with pytest.raises(sam.SamCliError) as raised:
+        deployer.deploy("stack", secret_parameter_overrides={"One": "stdout-secret", "Two": "stderr-secret"})
+
+    error = raised.value
+    assert "CREATE_FAILED TestResource: access denied" in str(error)
+    assert error.exit_code == 2
+    assert error.stderr == stderr.replace("stderr-secret", "[REDACTED]")
+    assert error.stdout == resource_failure.replace("stdout-secret", "[REDACTED]")
+    for text in (str(error), repr(error), error.command, error.stderr, error.stdout):
+        assert "stdout-secret" not in text
+        assert "stderr-secret" not in text
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_deploy_noop_output_still_succeeds_and_is_redacted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream: str
+) -> None:
+    template = tmp_path / "template.yaml"
+    template.write_text("Resources: {}\n", encoding="utf-8")
+    message = "No changes to deploy, stack is up to date: header-secret"
+
+    def run(command: list[str]) -> subprocess.CompletedProcess:
+        if "build" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="built", stderr="")
+        return subprocess.CompletedProcess(
+            command, 1, stdout=message if stream == "stdout" else "", stderr=message if stream == "stderr" else ""
+        )
+
+    monkeypatch.setattr(sam.SamExecutor, "run", run)
+    deployer = Deployer(str(template), build_dir=str(tmp_path / "build"))
+    deployer.build()
+    result = deployer.deploy("stack", secret_parameter_overrides={"OtelExporterHeaders": "header-secret"})
+    assert result.success
+    assert result.output == message.replace("header-secret", "[REDACTED]")
+    assert "header-secret" not in result.command
+
+
+def test_sam_cli_error_preserves_legacy_arguments_and_message() -> None:
+    error = sam.SamCliError("sam build", 2, "build failed")
+    assert error.command == "sam build"
+    assert error.exit_code == 2
+    assert error.stderr == "build failed"
+    assert str(error) == "SAM CLI command failed (exit code 2): build failed"
+
+
 # region Invoker (direct boto3 invocation)
 
 

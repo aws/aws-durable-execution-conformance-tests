@@ -224,6 +224,7 @@ class DatadogBackend(PollingBackend):
             BackendFeatureDisparity.MILLISECOND_TIMESTAMPS,
             BackendFeatureDisparity.SPAN_LINKS,
             BackendFeatureDisparity.UNSET_STATUS,
+            BackendFeatureDisparity.EXCEPTION_EVENTS,
         }
     )
 

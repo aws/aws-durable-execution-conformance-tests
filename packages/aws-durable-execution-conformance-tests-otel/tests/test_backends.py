@@ -235,6 +235,7 @@ def test_json_http_client_marks_rate_limits_as_retryable(
                 {
                     BackendFeatureDisparity.SPAN_LINKS,
                     BackendFeatureDisparity.UNSET_STATUS,
+                    BackendFeatureDisparity.EXCEPTION_EVENTS,
                 }
             ),
         ),
@@ -245,6 +246,7 @@ def test_json_http_client_marks_rate_limits_as_retryable(
                     BackendFeatureDisparity.MILLISECOND_TIMESTAMPS,
                     BackendFeatureDisparity.SPAN_LINKS,
                     BackendFeatureDisparity.UNSET_STATUS,
+                    BackendFeatureDisparity.EXCEPTION_EVENTS,
                 }
             ),
         ),
