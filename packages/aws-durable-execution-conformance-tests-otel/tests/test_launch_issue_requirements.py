@@ -19,6 +19,8 @@ from aws_durable_execution_conformance_tests_otel.model import Span, SpanLink, T
 from aws_durable_execution_conformance_tests_otel.polling import PollingBackend, PollingPolicy
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+from .requirement_assertions import assert_span_error
+
 TRACE_ID = "1" * 32
 EXECUTION_ARN = "arn:test:execution:successful-replay"
 SERVICE_NAME = "durable-execution-conformance"
@@ -189,7 +191,12 @@ def test_case21_wait_segments_must_belong_to_distinct_invocation_phases(first: b
             end_time=parent.start_time + timedelta(seconds=0.3 + index * 0.4),
         )
     errors = validate_trace(replace(trace, spans=tuple(spans)), assertions, _query())
-    assert any("parent.$occurrence" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        assertions,
+        {"name": "otel-replay-wait", "attributes": {"durable.operation.status": "SUCCEEDED" if first else "STARTED"}},
+        "expect.parent.$occurrence: parent span is occurrence",
+    )
 
 
 def test_case21_user_attempt_must_belong_to_original_completed_step_segment() -> None:
@@ -218,7 +225,12 @@ def test_case21_user_attempt_must_belong_to_original_completed_step_segment() ->
         for span in trace.spans
     )
     errors = validate_trace(replace(trace, spans=spans), assertions, _query())
-    assert any("parent.$occurrence" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        assertions,
+        {"name": "otel-before-wait attempt 1"},
+        "expect.parent.$occurrence: parent span is occurrence 2, expected 1",
+    )
 
 
 def test_successful_replay_requirement_accepts_one_export_per_completed_operation() -> None:
@@ -239,7 +251,13 @@ def test_successful_replay_preserves_timer_phase_despite_clock_skew(service_end:
         replace(span, links=(SpanLink(TRACE_ID, f"{2:016x}"),)) if span.name == "otel-replay-wait" else span
         for span in spans
     )
-    assert validate_trace(replace(trace, spans=wrong_phase), _replay_assertions(), _query())
+    errors = validate_trace(replace(trace, spans=wrong_phase), _replay_assertions(), _query())
+    assert_span_error(
+        errors,
+        _replay_assertions(),
+        {"name": "otel-replay-wait"},
+        "expect.links[0].$occurrence: linked span is occurrence 1, expected 2",
+    )
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -274,13 +292,18 @@ def test_successful_replay_requirement_rejects_duplicate_operation_or_user_attem
     )[0]
     assert len(merged.spans) == len(trace.spans) + 1
     errors = validate_trace(merged, _replay_assertions(), _query())
-    assert errors, "normal successful replay must not export a completed operation or rerun its user attempt"
-    assert any("matched 2 spans; it must select exactly one" in error for error in errors)
+    assert_span_error(
+        errors,
+        _replay_assertions(),
+        {"name": trace.spans[duplicate_index].name},
+        "select matched 2 spans; it must select exactly one",
+    )
 
 
 def test_replay_requirement_rejects_missing_pre_suspend_operation() -> None:
     trace = _normal_successful_resume()
-    assert validate_trace(replace(trace, spans=trace.spans[:3] + trace.spans[4:]), _replay_assertions(), _query())
+    errors = validate_trace(replace(trace, spans=trace.spans[:3] + trace.spans[4:]), _replay_assertions(), _query())
+    assert_span_error(errors, _replay_assertions(), {"name": "otel-before-wait"}, "select matched no spans")
 
 
 def test_completed_step_replay_scenarios_match_across_views() -> None:
@@ -307,10 +330,17 @@ def test_invocation_retry_contract_rejects_old_python_alias_and_false_success(vi
     assertions = _bound_assertions(f"otel-{view}", 24)
     assert validate_trace(trace, assertions, _query()) == []
     old_alias = replace(retrying, attributes={**retrying.attributes, "durable.invocation.status": "RETRY"})
-    assert validate_trace(replace(trace, spans=(workflow, old_alias, resumed)), assertions, _query())
-    assert validate_trace(
+    errors = validate_trace(replace(trace, spans=(workflow, old_alias, resumed)), assertions, _query())
+    assert_span_error(
+        errors,
+        assertions,
+        {"name": "Invocation"},
+        "expect_by_occurrence[0].attributes.durable.invocation.status: expected 'RETRYING'",
+    )
+    errors = validate_trace(
         replace(trace, spans=(workflow, replace(retrying, status="OK"), resumed)), assertions, _query()
     )
+    assert_span_error(errors, assertions, {"name": "Invocation"}, "expect_by_occurrence[0].status: expected 'UNSET'")
     # Failed-invocation recovery may redeliver deterministic operation spans.
     # Case 24 must not accidentally impose case 21's successful-replay rule.
     recovered = replace(trace, spans=(*trace.spans, normal.spans[3], normal.spans[3]))
@@ -335,14 +365,20 @@ def test_invocation_retry_contract_allows_a_checkpointed_step_retry_delay(view: 
     assertions = _bound_assertions(f"otel-{view}", 24)
     assert validate_trace(trace, assertions, _query()) == []
     # The optional phase has a precise mapping and order, not an arbitrary extra span allowance.
-    assert validate_trace(
-        replace(trace, spans=(workflow, retrying, replace(pending, status="ERROR"), resumed)), assertions, _query()
+    for status in ("ERROR", "UNSET"):
+        errors = validate_trace(
+            replace(trace, spans=(workflow, retrying, replace(pending, status=status), resumed)), assertions, _query()
+        )
+        assert_span_error(errors, assertions, {"name": "Invocation"}, "expect_by_occurrence[1].status: expected 'OK'")
+    errors = validate_trace(replace(trace, spans=(workflow, retrying, pending, pending, resumed)), assertions, _query())
+    assert_span_error(errors, assertions, {"name": "Invocation"}, "select matched 4 spans; expected 2 or 3")
+    errors = validate_trace(replace(trace, spans=(workflow, pending, resumed)), assertions, _query())
+    assert_span_error(
+        errors,
+        assertions,
+        {"name": "Invocation"},
+        "expect_by_occurrence[0].attributes.durable.invocation.status: expected 'RETRYING'",
     )
-    assert validate_trace(
-        replace(trace, spans=(workflow, retrying, replace(pending, status="UNSET"), resumed)), assertions, _query()
-    )
-    assert validate_trace(replace(trace, spans=(workflow, retrying, pending, pending, resumed)), assertions, _query())
-    assert validate_trace(replace(trace, spans=(workflow, pending, resumed)), assertions, _query())
     assert (
         validate_trace(replace(trace, spans=(*trace.spans, normal.spans[3], normal.spans[3])), assertions, _query())
         == []
@@ -361,7 +397,21 @@ def test_invocation_retry_contract_rejects_additional_lifecycle_spans(view: str,
         attributes={**retrying.attributes, "durable.invocation.status": unexpected_status},
     )
     trace = replace(normal, spans=(workflow, retrying, resumed, unexpected))
-    assert validate_trace(trace, _bound_assertions(f"otel-{view}", 24), _query())
+    assertions = _bound_assertions(f"otel-{view}", 24)
+    errors = validate_trace(trace, assertions, _query())
+    for diagnostic in (
+        "expect_by_occurrence[1].status: expected 'OK'",
+        "expect_by_occurrence[1].attributes.durable.invocation.first: expected False",
+        "expect_by_occurrence[1].after: span 'Invocation'",
+    ):
+        assert_span_error(errors, assertions, {"name": "Invocation"}, diagnostic)
+    if unexpected_status != "PENDING":
+        assert_span_error(
+            errors,
+            assertions,
+            {"name": "Invocation"},
+            "expect_by_occurrence[1].attributes.durable.invocation.status: expected 'PENDING'",
+        )
 
 
 @pytest.mark.parametrize("view", ["execution", "invocation"])
@@ -401,18 +451,32 @@ def test_user_function_contract_rejects_orphans_and_wrong_active_scope(
     trace = Trace(TRACE_ID, (parent, user_span, *others))
     focused = {"span_assertions": [assertion]}
     assert validate_trace(trace, focused, _query()) == []
-    assert validate_trace(
+    errors = validate_trace(
         replace(trace, spans=(parent, replace(user_span, parent_span_id=None), *others)), focused, _query()
     )
+    selector = {"name": f"conformance.{callback}"}
+    parent_path = "expect.parent.$any_of[0]" if callback == "handler-after-resume" else "expect.parent"
+    assert_span_error(errors, focused, selector, f"{parent_path}: selected span has no parent")
     # A valid span in another branch is not a correct active context.
     wrong_scope = replace(
         parent,
         name="otel-context-branch-b" if callback == "parallel-a" else "unrelated-scope",
         attributes={**parent.attributes, "durable.operation.type": "CONTEXT"},
     )
-    assert validate_trace(replace(trace, spans=(wrong_scope, user_span, *others)), focused, _query())
-    assert validate_trace(
+    errors = validate_trace(replace(trace, spans=(wrong_scope, user_span, *others)), focused, _query())
+    assert_span_error(errors, focused, selector, f"{parent_path}.name: expected {parent_name!r}")
+    if callback == "handler-after-resume":
+        assert_span_error(
+            errors,
+            focused,
+            selector,
+            "expect.parent.$any_of[1]: resolved parent span 'unrelated-scope'",
+        )
+    errors = validate_trace(
         replace(trace, spans=(parent, replace(user_span, trace_id="9" * 32), *others)), focused, _query()
+    )
+    assert_span_error(
+        errors, focused, selector, f"expect.same_trace_as: span 'conformance.{callback}' uses a different trace"
     )
 
 
@@ -430,8 +494,14 @@ def test_handler_restore_rejects_a_stale_user_span_as_ambient_parent(view: str) 
         status="UNSET",
     )
     trace = Trace(TRACE_ID, (workflow, invocation, stale_user, restored))
-    errors = validate_trace(trace, {"span_assertions": [assertion]}, _query())
-    assert any("forbidden span selector" in error for error in errors)
+    focused = {"span_assertions": [assertion]}
+    errors = validate_trace(trace, focused, _query())
+    assert_span_error(
+        errors,
+        focused,
+        {"name": "conformance.handler-after-resume"},
+        "expect.parent.$any_of[1]: resolved parent matches the forbidden span selector",
+    )
 
 
 @pytest.mark.parametrize("view", ["execution", "invocation"])
@@ -454,7 +524,12 @@ def test_context_polling_observes_forbidden_parent_after_initial_passing_snapsho
     partial = Trace(TRACE_ID, (workflow, invocation, restored))
     complete = replace(partial, spans=(*partial.spans, stale_user))
     assert validate_trace(partial, focused, _query()) == []
-    assert any("forbidden span selector" in error for error in validate_trace(complete, focused, _query()))
+    assert_span_error(
+        validate_trace(complete, focused, _query()),
+        focused,
+        {"name": "conformance.handler-after-resume"},
+        "expect.parent.$any_of[1]: resolved parent matches the forbidden span selector",
+    )
 
     class IngestionBackend(PollingBackend):
         name = "context-ingestion"
@@ -480,7 +555,12 @@ def test_context_polling_observes_forbidden_parent_after_initial_passing_snapsho
     )
     errors = validate_trace(observed, focused, _query())
     if late_forbidden_parent:
-        assert any("forbidden span selector" in error for error in errors), errors
+        assert_span_error(
+            errors,
+            focused,
+            {"name": "conformance.handler-after-resume"},
+            "expect.parent.$any_of[1]: resolved parent matches the forbidden span selector",
+        )
         assert backend.lookups > 1
     else:
         assert errors == []
@@ -516,10 +596,21 @@ def test_invocation_replay_permitted_counts_require_distinct_linked_segments() -
     trace = Trace(TRACE_ID, (workflow, initial, resumed, first))
     assert validate_trace(trace, focused, _query()) == []
     assert validate_trace(replace(trace, spans=(*trace.spans, second)), focused, _query()) == []
-    assert validate_trace(replace(trace, spans=(*trace.spans, first)), focused, _query())
-    assert validate_trace(replace(trace, spans=(*trace.spans, replace(second, links=()))), focused, _query())
-    assert validate_trace(
+    errors = validate_trace(replace(trace, spans=(*trace.spans, first)), focused, _query())
+    for diagnostic in (
+        "expect_by_occurrence[1].parent.attributes.durable.invocation.first: expected False",
+        "expect_by_occurrence[1].links: expected 2 item(s), found 1",
+    ):
+        assert_span_error(errors, focused, {"name": "otel-before-wait"}, diagnostic)
+    errors = validate_trace(replace(trace, spans=(*trace.spans, replace(second, links=()))), focused, _query())
+    assert_span_error(
+        errors, focused, {"name": "otel-before-wait"}, "expect_by_occurrence[1].links: expected 2 item(s), found 0"
+    )
+    errors = validate_trace(
         replace(trace, spans=(workflow, initial, resumed, replace(first, links=()))), focused, _query()
+    )
+    assert_span_error(
+        errors, focused, {"name": "otel-before-wait"}, "expect_by_occurrence[0].links: expected 1 item(s), found 0"
     )
 
 
@@ -541,4 +632,9 @@ def test_callback_case_requires_initial_and_terminal_invocations_not_duplicate_i
     assert validate_trace(complete, focused, _query()) == []
     duplicate_initial = replace(base, spans=(workflow, initial, initial))
     errors = validate_trace(duplicate_initial, focused, _query())
-    assert any("matched no spans" in error for error in errors)
+    assert_span_error(
+        errors,
+        focused,
+        {"name": "Invocation", "attributes": {"durable.invocation.first": False}},
+        "select matched no spans",
+    )

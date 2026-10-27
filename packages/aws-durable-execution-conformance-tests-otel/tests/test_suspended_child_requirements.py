@@ -20,6 +20,8 @@ from aws_durable_execution_conformance_tests_otel.model import (
 )
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+from .requirement_assertions import assert_span_error, span_assertion_path
+
 START = datetime(2026, 10, 23, tzinfo=UTC)
 TRACE = "1" * 32
 CALLER = "arn:caller"
@@ -164,20 +166,20 @@ def test_case27_accepts_child_suspension_and_resume(view: str) -> None:
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 @pytest.mark.parametrize(
-    "mutation",
+    "mutation,diagnostic",
     [
-        "missing-resume",
-        "echo-child",
-        "wrong-first",
-        "split-trace",
-        "wrong-parent",
-        "wrong-link",
-        "duplicate-wait",
-        "missing-wait",
-        "wrong-status",
+        ("missing-resume", "select matched no spans"),
+        ("echo-child", "select matched no spans"),
+        ("wrong-first", "select matched no spans"),
+        ("split-trace", "expect.same_trace_as: span 'Invocation' uses a different trace"),
+        ("wrong-parent", "expect.parent.attributes.durable.execution.arn: expected 'arn:child'"),
+        ("wrong-link", "expect.links: expected 2 item(s), found 1"),
+        ("duplicate-wait", "select matched 2 spans; it must select exactly one"),
+        ("missing-wait", "select matched no spans"),
+        ("wrong-status", "expect.status: expected 'OK'"),
     ],
 )
-def test_case27_rejects_broken_child_continuations(view: str, mutation: str) -> None:
+def test_case27_rejects_broken_child_continuations(view: str, mutation: str, diagnostic: str) -> None:
     trace = _trace(view)
     resumed = next(s for s in trace.spans if s.span_id == f"{21:016x}")
     initial = next(s for s in trace.spans if s.span_id == f"{20:016x}")
@@ -206,7 +208,51 @@ def test_case27_rejects_broken_child_continuations(view: str, mutation: str) -> 
         spans.remove(wait)
     else:
         spans[spans.index(wait)] = replace(wait, status="ERROR")
-    assert _validate(view, replace(trace, spans=tuple(spans)))
+    errors = _validate(view, replace(trace, spans=tuple(spans)))
+    assertions = _assertions(view)
+    wait_selector: dict = {"name": "otel-suspended-target-wait"}
+    if view == "invocation":
+        wait_selector["attributes"] = {"durable.operation.status": "SUCCEEDED"}
+    selector = wait_selector
+    if mutation in {"missing-resume", "echo-child", "wrong-first", "split-trace"}:
+        selector = {
+            "name": "Invocation",
+            "attributes": {"durable.execution.arn": CHILD, "durable.invocation.first": False},
+        }
+    if mutation == "wrong-link" and view == "execution":
+        diagnostic = "expect.links[0].attributes.durable.execution.arn: expected 'arn:child'"
+    assert_span_error(errors, assertions, selector, diagnostic)
+    if mutation == "echo-child":
+        # An echo child loses both its suspension and its durable wait.
+        assert_span_error(
+            errors,
+            assertions,
+            {"name": "Invocation", "attributes": {"durable.execution.arn": CHILD, "durable.invocation.first": True}},
+            "select matched no spans",
+        )
+        assert_span_error(errors, assertions, wait_selector, "select matched no spans")
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_missing_resume_control_requires_its_own_selector_error(view: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Other missing-resume errors must not mask loss of the resumed selector check."""
+    original_validate = validate_trace
+    selector = {
+        "name": "Invocation",
+        "attributes": {"durable.execution.arn": CHILD, "durable.invocation.first": False},
+    }
+
+    def suppress_selector_error(trace: Trace, assertions: dict, query: TelemetryQuery) -> list[str]:
+        errors = original_validate(trace, assertions, query)
+        expected = f"{span_assertion_path(assertions, selector)}.select matched no spans"
+        assert expected in errors, errors
+        remaining = [error for error in errors if error != expected]
+        assert any("expect.before matched no spans" in error for error in remaining), remaining
+        return remaining
+
+    monkeypatch.setattr(f"{__name__}.validate_trace", suppress_selector_error)
+    with pytest.raises(AssertionError, match=r"Missing .*select matched no spans"):
+        test_case27_rejects_broken_child_continuations(view, "missing-resume", "select matched no spans")
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -241,7 +287,15 @@ def test_case27_rejects_both_wait_segments_in_one_child_invocation(first: bool) 
             end_time=parent.start_time + timedelta(seconds=0.3 + index * 0.4),
         )
     errors = _validate("invocation", replace(trace, spans=tuple(spans)))
-    assert any("parent.$occurrence" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        _assertions("invocation"),
+        {
+            "name": "otel-suspended-target-wait",
+            "attributes": {"durable.operation.status": "SUCCEEDED" if first else "STARTED"},
+        },
+        "expect.parent.$occurrence: parent span is occurrence",
+    )
 
 
 def test_case27_rejects_changed_wait_operation_id_on_resume() -> None:
@@ -253,7 +307,12 @@ def test_case27_rejects_changed_wait_operation_id_on_resume() -> None:
         for span in trace.spans
     )
     errors = _validate("invocation", replace(trace, spans=spans))
-    assert any("same_operation_as" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        _assertions("invocation"),
+        {"name": "otel-suspended-target-wait", "attributes": {"durable.operation.status": "SUCCEEDED"}},
+        "expect.same_operation_as: spans have different durable.operation.id values",
+    )
 
 
 @pytest.mark.parametrize(
@@ -273,4 +332,10 @@ def test_case27_execution_preserves_external_phase_despite_workflow_clock_skew(
         replace(span, links=(SpanLink(TRACE, f"{wrong_invocation:016x}"),)) if span.name == operation_name else span
         for span in spans
     )
-    assert _validate("execution", replace(trace, spans=wrong_phase))
+    errors = _validate("execution", replace(trace, spans=wrong_phase))
+    assert_span_error(
+        errors,
+        _assertions("execution"),
+        {"name": operation_name},
+        "expect.links[0].$occurrence: linked span is occurrence 1, expected 2",
+    )

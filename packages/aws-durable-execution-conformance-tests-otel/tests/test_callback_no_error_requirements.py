@@ -21,6 +21,8 @@ from aws_durable_execution_conformance_tests_otel.model import Span, SpanLink, T
 from aws_durable_execution_conformance_tests_otel.polling import BackendFeatureDisparity, PollingBackend, PollingPolicy
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+from .requirement_assertions import assert_span_error
+
 TRACE_ID = "1" * 32
 EXECUTION_ARN = "arn:test:no-error-callback"
 SERVICE = "durable-execution-conformance"
@@ -50,6 +52,15 @@ def _assertions(view: str, case: int = 25) -> dict:
     }.items():
         context.bind(key, value)
     return context.substitute(_requirement(view, case)["TelemetryAssertions"])
+
+
+def _failed_callback_selector(view: str) -> dict:
+    return {
+        "name": "${/^(?:otel-failed-callback(?: create callback id|-callback)|CALLBACK)$/}",
+        "attributes": {"durable.operation.status": "FAILED"}
+        if view == "invocation"
+        else {"durable.operation.id": "callback"},
+    }
 
 
 def _operation(identifier: str, operation_type: str, subtype: str, name: str, **extra: object) -> dict:
@@ -410,18 +421,18 @@ def test_case25_allows_invocation_view_observation_replay_segments(phases: tuple
 
 
 @pytest.mark.parametrize(
-    "corruption",
+    "corruption,diagnostic",
     [
-        "extra-attempt",
-        "late-attempt",
-        "callback-duplicate",
-        "wrong-link",
-        "wrong-phase",
-        "changed-id",
-        "duplicate-segment",
+        ("extra-attempt", "select matched 2 spans; it must select exactly one"),
+        ("late-attempt", "expect.parent.$occurrence: parent span is occurrence 2, expected 1"),
+        ("callback-duplicate", "select matched 2 spans; it must select exactly one"),
+        ("wrong-link", "expect_by_occurrence[1].links: expected 2 item(s), found 1"),
+        ("wrong-phase", "expect_by_occurrence[2].parent.$occurrence: parent span is occurrence 3, expected 4"),
+        ("changed-id", "expect_by_occurrence[1].attributes.durable.operation.id: expected 'observed'"),
+        ("duplicate-segment", "select matched 4 spans; expected 1 or 2 or 3"),
     ],
 )
-def test_case25_replay_segments_preserve_attempt_and_callback_uniqueness(corruption: str) -> None:
+def test_case25_replay_segments_preserve_attempt_and_callback_uniqueness(corruption: str, diagnostic: str) -> None:
     trace = _observation_replay_segments((3, 4))
     spans = list(trace.spans)
     replay = next(span for span in spans if span.span_id == f"{83:016x}")
@@ -452,14 +463,25 @@ def test_case25_replay_segments_preserve_attempt_and_callback_uniqueness(corrupt
         )
     else:
         spans.append(replay)
-    assert validate_trace(replace(trace, spans=tuple(spans)), _assertions("invocation"), _query())
+    errors = validate_trace(replace(trace, spans=tuple(spans)), _assertions("invocation"), _query())
+    selector = {"name": "otel-failed-callback-observed"}
+    if corruption in {"extra-attempt", "late-attempt"}:
+        selector = {"name": "otel-failed-callback-observed attempt 1"}
+    elif corruption == "callback-duplicate":
+        selector = _failed_callback_selector("invocation")
+    assert_span_error(errors, _assertions("invocation"), selector, diagnostic)
 
 
 def test_case25_execution_view_still_exports_observation_only_once() -> None:
     trace = _trace("execution")
     observed = next(span for span in trace.spans if span.name == "otel-failed-callback-observed")
     errors = validate_trace(replace(trace, spans=(*trace.spans, observed)), _assertions("execution"), _query())
-    assert any("must select exactly one" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        _assertions("execution"),
+        {"name": "otel-failed-callback-observed"},
+        "select matched 2 spans; it must select exactly one",
+    )
 
 
 @pytest.mark.parametrize("step_id,parent_id,start", [(8, 5, 3.2), (34, 31, 6.3), (44, 41, 9.3)])
@@ -490,8 +512,19 @@ def test_case25_allows_completed_submitter_replay_without_another_attempt(
         start_time=replay.start_time,
         end_time=replay.end_time,
     )
-    assert validate_trace(
+    errors = validate_trace(
         replace(replayed, spans=(*replayed.spans, repeated_attempt)), _assertions("invocation"), _query()
+    )
+    assert_span_error(
+        errors,
+        _assertions("invocation"),
+        {
+            "attributes": {
+                "durable.operation.id": original.attributes["durable.operation.id"],
+                "durable.attempt.outcome": "SUCCEEDED",
+            }
+        },
+        "select matched 2 spans; it must select exactly one",
     )
 
 
@@ -563,7 +596,13 @@ def test_case11_barrier_submitter_allows_replay_but_not_another_user_attempt() -
         start_time=replay.start_time,
         end_time=replay.end_time,
     )
-    assert validate_trace(replace(replayed, spans=(*replayed.spans, repeated)), assertions, _query())
+    errors = validate_trace(replace(replayed, spans=(*replayed.spans, repeated)), assertions, _query())
+    assert_span_error(
+        errors,
+        assertions,
+        {"attributes": {"durable.attempt.outcome": "SUCCEEDED"}},
+        "select matched 2 spans; it must select exactly one",
+    )
 
 
 def _query() -> TelemetryQuery:
@@ -584,7 +623,8 @@ def test_case25_requires_successful_workflow_despite_failed_callback(view: str) 
         else span
         for span in trace.spans
     )
-    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    assert_span_error(errors, _assertions(view), {"name": "Workflow"}, "select matched no spans")
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -596,12 +636,24 @@ def test_case25_caught_failure_does_not_fail_its_invocation(view: str) -> None:
         else span
         for span in trace.spans
     )
-    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    for diagnostic in (
+        "expect_by_occurrence[1].status: expected 'OK'",
+        "expect_by_occurrence[1].attributes.durable.invocation.status: expected 'PENDING'",
+    ):
+        assert_span_error(errors, _assertions(view), {"name": "Invocation"}, diagnostic)
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
-@pytest.mark.parametrize("corruption", ["missing-marker", "repeated-marker", "missing-final-invocation"])
-def test_case25_requires_observation_once_and_both_later_replays(view: str, corruption: str) -> None:
+@pytest.mark.parametrize(
+    "corruption,diagnostic",
+    [
+        ("missing-marker", "select matched no spans"),
+        ("repeated-marker", "select matched 2 spans; it must select exactly one"),
+        ("missing-final-invocation", "select matched 3 spans; expected 4"),
+    ],
+)
+def test_case25_requires_observation_once_and_both_later_replays(view: str, corruption: str, diagnostic: str) -> None:
     trace = _trace(view)
     marker = next(span for span in trace.spans if span.span_id == f"{21:016x}")
     if corruption == "missing-marker":
@@ -610,7 +662,9 @@ def test_case25_requires_observation_once_and_both_later_replays(view: str, corr
         spans = (*trace.spans, marker)
     else:
         spans = tuple(span for span in trace.spans if span.span_id != f"{12:016x}")
-    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    name = "Invocation" if corruption == "missing-final-invocation" else "otel-failed-callback-observed attempt 1"
+    assert_span_error(errors, _assertions(view), {"name": name}, diagnostic)
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -628,7 +682,24 @@ def test_case25_first_failed_leaf_cannot_be_delayed_until_later_replay(view: str
             if view == "invocation" and span.span_id == f"{5:016x}":
                 span = replace(span, parent_span_id=f"{11:016x}")
         spans.append(span)
-    assert validate_trace(replace(trace, spans=tuple(spans)), _assertions(view), _query())
+    errors = validate_trace(replace(trace, spans=tuple(spans)), _assertions(view), _query())
+    if view == "invocation":
+        assert_span_error(
+            errors,
+            _assertions(view),
+            _failed_callback_selector(view),
+            "expect.before: span 'otel-failed-callback create callback id'",
+        )
+        assert_span_error(
+            errors, _assertions(view), _failed_callback_selector(view), "expect.descendant_of: unresolved parent"
+        )
+    else:
+        assert_span_error(
+            errors,
+            _assertions(view),
+            _failed_callback_selector(view),
+            "expect.links[0].$occurrence: linked span is occurrence 3, expected 2",
+        )
 
 
 def test_case25_execution_does_not_order_backend_end_against_observation_clock() -> None:
@@ -646,7 +717,14 @@ def test_case25_execution_does_not_order_backend_end_against_observation_clock()
         replace(span, links=(SpanLink(TRACE_ID, f"{11:016x}"),)) if span.span_id in {f"{5:016x}", f"{7:016x}"} else span
         for span in spans
     )
-    assert validate_trace(replace(trace, spans=wrong_phase), _assertions("execution"), _query())
+    errors = validate_trace(replace(trace, spans=wrong_phase), _assertions("execution"), _query())
+    for selector in ({"name": "otel-failed-callback"}, _failed_callback_selector("execution")):
+        assert_span_error(
+            errors,
+            _assertions("execution"),
+            selector,
+            "expect.links[0].$occurrence: linked span is occurrence 3, expected 2",
+        )
 
 
 def test_case25_initial_callback_scope_cannot_move_to_resumed_invocation() -> None:
@@ -664,7 +742,12 @@ def test_case25_initial_callback_scope_cannot_move_to_resumed_invocation() -> No
         for span in trace.spans
     )
     errors = validate_trace(replace(trace, spans=spans), _assertions("invocation"), _query())
-    assert any("parent.$occurrence" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        _assertions("invocation"),
+        {"name": "otel-failed-callback", "attributes": {"durable.operation.status": "STARTED"}},
+        "expect.parent.$occurrence: parent span is occurrence 2, expected 1",
+    )
 
 
 @pytest.mark.parametrize(
@@ -691,7 +774,14 @@ def test_case25_callback_leaf_must_use_matching_context_phase(leaf: int, parent:
         else span
         for span in trace.spans
     )
-    assert validate_trace(replace(trace, spans=spans), _assertions("invocation"), _query())
+    errors = validate_trace(replace(trace, spans=spans), _assertions("invocation"), _query())
+    target = next(span for span in trace.spans if span.span_id == f"{leaf:016x}")
+    assert_span_error(
+        errors,
+        _assertions("invocation"),
+        {"attributes": {key: target.attributes[key] for key in ("durable.operation.id", "durable.operation.status")}},
+        "expect.parent.attributes.durable.operation.status: expected",
+    )
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -716,7 +806,7 @@ def test_case25_matches_independent_public_runner_history(view: str) -> None:
 @pytest.mark.parametrize("callback_status", ["OK", "UNSET"])
 def test_case25_rejects_wrong_terminal_callback_status_on_lossless_backend(view: str, callback_status: str) -> None:
     errors = validate_trace(_trace(view, callback_status=callback_status), _assertions(view), _query())
-    assert any("status" in error for error in errors)
+    assert_span_error(errors, _assertions(view), _failed_callback_selector(view), "expect.status: expected 'ERROR'")
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -738,24 +828,32 @@ def test_case25_requires_exact_failed_callback_leaf(view: str, corruption: str) 
             replace(s, attributes={**s.attributes, "durable.operation.status": "SUCCEEDED"}) if s is terminal else s
             for s in trace.spans
         )
-    assert validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    errors = validate_trace(replace(trace, spans=spans), _assertions(view), _query())
+    diagnostic = (
+        "select matched 2 spans; it must select exactly one" if corruption == "duplicate" else "select matched no spans"
+    )
+    if corruption == "wrong-operation-status" and view == "execution":
+        diagnostic = "expect.attributes.durable.operation.status: expected 'FAILED'"
+    assert_span_error(errors, _assertions(view), _failed_callback_selector(view), diagnostic)
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 def test_case17_retains_strict_rich_error_mapping(view: str) -> None:
     assert validate_trace(_unhandled_trace(view, callback_status="ERROR"), _assertions(view, 17), _query()) == []
-    assert validate_trace(_unhandled_trace(view, callback_status="UNSET"), _assertions(view, 17), _query())
+    errors = validate_trace(_unhandled_trace(view, callback_status="UNSET"), _assertions(view, 17), _query())
+    assert_span_error(errors, _assertions(view, 17), _failed_callback_selector(view), "expect.status: expected 'ERROR'")
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 @pytest.mark.parametrize("callback_status", ["OK", "UNSET"])
 def test_case25_error_status_cannot_be_bypassed_by_xray_unset_disparity(view: str, callback_status: str) -> None:
-    assert validate_trace(
+    errors = validate_trace(
         _trace(view, callback_status=callback_status),
         _assertions(view),
         _query(),
         feature_disparities=(BackendFeatureDisparity.UNSET_STATUS, BackendFeatureDisparity.EXCEPTION_EVENTS),
     )
+    assert_span_error(errors, _assertions(view), _failed_callback_selector(view), "expect.status: expected 'ERROR'")
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -843,7 +941,12 @@ def test_case25_waits_for_stable_callback_evidence(view: str, late_record: str) 
         assert backend.elapsed == 7
     else:
         assert actual is later
-        assert errors
+        assert_span_error(
+            errors,
+            assertions,
+            _failed_callback_selector(view),
+            "select matched 2 spans; it must select exactly one",
+        )
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
