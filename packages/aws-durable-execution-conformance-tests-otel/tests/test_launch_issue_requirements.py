@@ -278,6 +278,31 @@ def test_successful_replay_requirement_rejects_duplicate_operation_or_user_attem
     assert any("matched 2 spans; it must select exactly one" in error for error in errors)
 
 
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case21_rejects_renamed_duplicate_operation(view: str) -> None:
+    trace = _normal_invocation_resume() if view == "invocation" else _normal_successful_resume()
+    renamed = replace(trace.spans[3], name="replayed-before-wait", span_id="d" * 16)
+    errors = validate_trace(replace(trace, spans=(*trace.spans, renamed)), _replay_assertions(view), _query())
+    assert any("Span assertions did not cover" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case21_allows_infrastructure_span_outside_execution_scope(view: str) -> None:
+    trace = _normal_invocation_resume() if view == "invocation" else _normal_successful_resume()
+    infra_span = Span(
+        trace_id=TRACE_ID,
+        span_id="e" * 16,
+        name="internal-infrastructure",
+        start_time=START,
+        end_time=START + timedelta(seconds=1),
+        kind="INTERNAL",
+        status="OK",
+        service_name=SERVICE_NAME,
+        attributes={"service.name": SERVICE_NAME},
+    )
+    assert validate_trace(replace(trace, spans=(*trace.spans, infra_span)), _replay_assertions(view), _query()) == []
+
+
 def test_replay_requirement_rejects_missing_pre_suspend_operation() -> None:
     trace = _normal_successful_resume()
     assert validate_trace(replace(trace, spans=trace.spans[:3] + trace.spans[4:]), _replay_assertions(), _query())

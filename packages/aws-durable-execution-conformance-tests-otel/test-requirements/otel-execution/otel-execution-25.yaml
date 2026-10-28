@@ -154,6 +154,10 @@ TelemetryAssertions:
     - name: Invocation
   require_unique_root_per_trace: true
   minimum_invocations: 4
+  require_all_spans: true
+  span_assertion_scope:
+    attributes:
+      durable.execution.arn: ${EXECUTION_ARN}
   span_assertions:
     - select:
         name: Workflow

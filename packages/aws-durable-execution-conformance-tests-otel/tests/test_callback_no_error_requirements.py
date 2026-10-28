@@ -462,6 +462,32 @@ def test_case25_execution_view_still_exports_observation_only_once() -> None:
     assert any("must select exactly one" in error for error in errors), errors
 
 
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_rejects_renamed_duplicate_callback(view: str) -> None:
+    trace = _trace(view)
+    callback = next(span for span in trace.spans if span.name == "otel-failed-callback create callback id")
+    renamed = replace(callback, name="replayed-callback", span_id="d" * 16)
+    errors = validate_trace(replace(trace, spans=(*trace.spans, renamed)), _assertions(view), _query())
+    assert any("Span assertions did not cover" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_case25_allows_infrastructure_span_outside_execution_scope(view: str) -> None:
+    trace = _trace(view)
+    infra_span = Span(
+        trace_id=TRACE_ID,
+        span_id="e" * 16,
+        name="internal-infrastructure",
+        start_time=START,
+        end_time=START + timedelta(seconds=1),
+        kind="INTERNAL",
+        status="OK",
+        service_name=SERVICE,
+        attributes={"service.name": SERVICE},
+    )
+    assert validate_trace(replace(trace, spans=(*trace.spans, infra_span)), _assertions(view), _query()) == []
+
+
 @pytest.mark.parametrize("step_id,parent_id,start", [(8, 5, 3.2), (34, 31, 6.3), (44, 41, 9.3)])
 def test_case25_allows_completed_submitter_replay_without_another_attempt(
     step_id: int, parent_id: int, start: float

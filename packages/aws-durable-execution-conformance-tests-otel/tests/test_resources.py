@@ -730,9 +730,9 @@ def _assert_caught_callback_catalog(requirement: dict, suite: str) -> None:
     assert assertions["require_single_trace_per_execution"] is True
     assert assertions["require_unique_root_per_trace"] is True
     assert assertions["require_parented_spans"] == [{"name": "Workflow"}, {"name": "Invocation"}]
+    assert assertions["require_all_spans"] is True
+    assert assertions["span_assertion_scope"] == {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}}
     if suite == "otel-invocation":
-        assert assertions["require_all_spans"] is True
-        assert assertions["span_assertion_scope"] == {"attributes": {"durable.execution.arn": "${EXECUTION_ARN}"}}
         assert assertions["exact_attribute_prefixes"] == ["durable."]
     spans = assertions["span_assertions"]
     (workflow,) = [span for span in spans if span["select"]["name"] == "Workflow"]
@@ -1276,6 +1276,11 @@ def test_execution_view_catalog_asserts_workflow_parentage_and_ambient_links() -
             assert assertions["require_all_spans"] is True
             assert assertions["span_assertion_scope"] == {
                 "name": "Invocation",
+                "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
+            }
+        elif case_number == 21:
+            assert assertions["require_all_spans"] is True
+            assert assertions["span_assertion_scope"] == {
                 "attributes": {"durable.execution.arn": "${EXECUTION_ARN}"},
             }
         else:
