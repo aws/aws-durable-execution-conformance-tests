@@ -629,18 +629,22 @@ def test_sequence_expected_but_scalar_actual() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _telemetry_1_entry() -> dict[str, Any]:
-    """The shipped entry, with the identity placeholders bound as the extension binds them."""
+def _shipped_entry(requirement_id: str, expected: ExpectedExecution = EXPECTED) -> dict[str, Any]:
+    """The shipped entry of one requirement, with the identity placeholders bound as the extension binds them."""
     from aws_durable_execution_conformance_tests.validate import discover_test_files, load_yaml_file
     from aws_durable_execution_conformance_tests_telemetry.extension import TelemetryExtension
 
     (suite,) = TelemetryExtension().requirement_suites()
-    requirement = load_yaml_file(discover_test_files(suite.root)["telemetry-1"])
+    requirement = load_yaml_file(discover_test_files(suite.root)[requirement_id])
     (entry,) = requirement["TelemetryAssertions"]["records"]
     placeholders = PlaceholderContext()
-    for name, value in execution_placeholders(EXPECTED).items():
+    for name, value in execution_placeholders(expected).items():
         placeholders.bind(name, value)
     return placeholders.substitute(entry)
+
+
+def _telemetry_1_entry() -> dict[str, Any]:
+    return _shipped_entry("telemetry-1")
 
 
 def test_telemetry_1_accepts_the_fixture_record() -> None:
@@ -758,3 +762,157 @@ def test_telemetry_1_rejects_negative_duration(path: tuple[str, ...]) -> None:
     record = _record()
     _set_path(record, path, -1)
     assert validate_record(record, _telemetry_1_entry()) == [f"{'.'.join(path)}: expected an integer >= 0, got -1"]
+
+
+# ---------------------------------------------------------------------------
+# The shipped telemetry-2 requirement against the JS CloudWatch Logs record
+# ---------------------------------------------------------------------------
+
+FAILED_ARN = (
+    "arn:aws:lambda:us-west-2:123456789012:function:conformance-tests-abc-telemetry-2:$LATEST"
+    "/durable-execution/8f1c2d3e-0000-4000-8000-000000000002/inv-1"
+)
+FAILED_EXPECTED = ExpectedExecution(
+    execution_arn=FAILED_ARN,
+    function_name="conformance-tests-abc-telemetry-2",
+    qualifier="$LATEST",
+    region="us-west-2",
+    account_id="123456789012",
+    execution_name="8f1c2d3e-0000-4000-8000-000000000002",
+)
+
+# The failed record in the shape the JS CloudWatch Logs exporter writes. A
+# failed execution has no `output`; `error` follows `input`; the summary of a
+# failed step that ran once carries its `error` after `maxAttempt`.
+FAILED_TOP_LEVEL_KEYS = [*TOP_LEVEL_KEYS[:-2], "error", "operationsByName"]
+FAILED_SUMMARY_KEYS = [*SUMMARY_KEYS, "error"]
+
+
+def _failed_record() -> dict[str, Any]:
+    # The step threw `Error("card declined")`. The SDK rebuilt the step error
+    # from the checkpoint as `StepError("card declined")` with a cause carrying
+    # the checkpointed type and message. The handler threw
+    # `Error("payment failed", { cause: <step error> })`.
+    step_error = {
+        "name": "StepError",
+        "message": "card declined",
+        "cause": {"name": "Error", "message": "card declined"},
+    }
+    return {
+        "recordType": "DurableExecutionTelemetry",
+        "schemaVersion": "1.0",
+        "emittedAt": "2026-11-03T20:00:00.000Z",
+        "executionArn": FAILED_ARN,
+        "executionName": "8f1c2d3e-0000-4000-8000-000000000002",
+        "functionName": "conformance-tests-abc-telemetry-2",
+        "functionQualifier": "$LATEST",
+        "region": "us-west-2",
+        "accountId": "123456789012",
+        "status": "FAILED",
+        "startTime": "2026-11-03T19:59:59.000Z",
+        "endTime": "2026-11-03T20:00:00.000Z",
+        "durationMs": 1000,
+        "input": {"value": 41},
+        "error": {"name": "Error", "message": "payment failed", "cause": deepcopy(step_error)},
+        "operationsByName": {
+            "charge": {
+                "type": "STEP",
+                "count": 1,
+                "failedCount": 1,
+                "status": "FAILED",
+                "subType": "Step",
+                "minDurationMs": 3,
+                "maxDurationMs": 3,
+                "totalDurationMs": 3,
+                "maxAttempt": 1,
+                "error": deepcopy(step_error),
+            },
+        },
+    }
+
+
+def _telemetry_2_entry() -> dict[str, Any]:
+    return _shipped_entry("telemetry-2", FAILED_EXPECTED)
+
+
+def test_failed_fixture_record_has_the_expected_shape() -> None:
+    record = _failed_record()
+    assert list(record) == FAILED_TOP_LEVEL_KEYS
+    assert list(record["operationsByName"]["charge"]) == FAILED_SUMMARY_KEYS
+    for error in (record["error"], record["error"]["cause"], record["operationsByName"]["charge"]["error"]):
+        assert list(error) == ["name", "message", "cause"]
+
+
+def test_telemetry_2_accepts_the_fixture_record() -> None:
+    assert validate_record(_failed_record(), _telemetry_2_entry()) == []
+
+
+@pytest.mark.parametrize("path", _leaf_paths(_telemetry_2_entry()["record"]), ids=".".join)
+def test_telemetry_2_rejects_record_missing_each_asserted_field(path: tuple[str, ...]) -> None:
+    record = _failed_record()
+    _del_path(record, path)
+    errors = validate_record(record, _telemetry_2_entry())
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{'.'.join(path)}: expected ")
+    assert errors[0].endswith(", got <missing>")
+
+
+def test_telemetry_2_rejects_an_output_on_a_failed_record() -> None:
+    record = _failed_record()
+    record["output"] = None
+    assert validate_record(record, _telemetry_2_entry()) == ["unexpected keys ['output']"]
+
+
+# Every error level is `{name, message, cause?}`. These are the paths of every
+# level in the record: three on the execution error, two on the step error.
+_ERROR_LEVEL_PATHS: list[tuple[str, ...]] = [
+    ("error",),
+    ("error", "cause"),
+    ("error", "cause", "cause"),
+    ("operationsByName", "charge", "error"),
+    ("operationsByName", "charge", "error", "cause"),
+]
+
+
+@pytest.mark.parametrize("path", _ERROR_LEVEL_PATHS, ids=".".join)
+@pytest.mark.parametrize("name", ["StepError", "StepFailedError", "java.lang.RuntimeException", ""])
+def test_telemetry_2_accepts_any_error_name_at_every_level(path: tuple[str, ...], name: str) -> None:
+    # Error names differ per language by design, so the requirement matches
+    # every name with the wildcard.
+    record = _failed_record()
+    _set_path(record, (*path, "name"), name)
+    assert validate_record(record, _telemetry_2_entry()) == []
+
+
+@pytest.mark.parametrize("path", _ERROR_LEVEL_PATHS, ids=".".join)
+def test_telemetry_2_rejects_a_different_message_at_every_level(path: tuple[str, ...]) -> None:
+    record = _failed_record()
+    _set_path(record, (*path, "message"), "other")
+    entry = _telemetry_2_entry()
+    expected = entry["record"]
+    for key in (*path, "message"):
+        expected = expected[key]
+    assert validate_record(record, entry) == [f"{'.'.join(path)}.message: expected {expected!r}, got 'other'"]
+
+
+@pytest.mark.parametrize(
+    "path", [("error", "cause", "cause"), ("operationsByName", "charge", "error", "cause")], ids=".".join
+)
+def test_telemetry_2_rejects_a_deeper_cause_chain(path: tuple[str, ...]) -> None:
+    # The chain depth is part of the shape. A fourth level on the execution
+    # error, or a third on the step error, is a cross-SDK difference.
+    record = _failed_record()
+    _set_path(record, (*path, "cause"), {"name": "Error", "message": "gateway 402"})
+    assert validate_record(record, _telemetry_2_entry()) == [f"{'.'.join(path)}: unexpected keys ['cause']"]
+
+
+def test_telemetry_2_rejects_a_cause_that_is_not_an_error_object() -> None:
+    record = _failed_record()
+    _set_path(record, ("error", "cause"), "card declined")
+    assert validate_record(record, _telemetry_2_entry()) == ["error.cause: expected mapping, got 'card declined'"]
+
+
+def test_telemetry_2_rejects_an_extra_key_on_an_error() -> None:
+    record = _failed_record()
+    _set_path(record, ("error", "stack"), "Error: payment failed\n    at handler")
+    assert validate_record(record, _telemetry_2_entry()) == ["error: unexpected keys ['stack']"]

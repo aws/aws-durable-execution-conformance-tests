@@ -5,8 +5,9 @@ distribution adds the `telemetry` suite to the core runner through the
 `aws_durable_execution_conformance_tests.extensions` entry point.
 
 The suite checks that the SDK's Durable Execution Telemetry plugin, configured with the
-CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` record for a
-successful single-step execution.
+CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` record per
+execution. `telemetry-1` covers a successful single-step execution. `telemetry-2` covers
+a failed execution whose errors carry a cause chain.
 
 The SDK handler and SAM template that exercises this suite live in each SDK repository, not here.
 
@@ -166,6 +167,47 @@ type.
 | mapping | `actual` must be a mapping with exactly the listed keys, in any order. Every key is checked recursively. |
 | list | `actual` must be a list of the same length. Items are checked pairwise. |
 | anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. A number matches only a number of the same JSON type, so `count: 1` does not match `1.0`. |
+
+### Errors
+
+Every error in a record has the shape `{name, message, cause?}`. The execution
+`error` and `operationsByName.<name>.error` use the same shape. `cause` is
+present only when the error has one, and has the same shape again.
+
+Error names differ per language by design. The JS SDK writes `Error` and
+`StepError`; another SDK writes its own exception class names. So a requirement
+matches every `name` with `'*'` and matches every `message` exactly. The depth
+of the cause chain is part of the shape: a mapping is closed, so a missing or
+extra `cause` level fails the check.
+
+`telemetry-2` pins the chain the JS SDK produces for a step that fails once
+and a handler that rethrows with the step error as its cause:
+
+```yaml
+error:
+  name: '*'              # the handler's error
+  message: payment failed
+  cause:
+    name: '*'            # the step error the SDK raised to the handler
+    message: card declined
+    cause:
+      name: '*'          # the checkpointed error the SDK rebuilt the step error from
+      message: card declined
+operationsByName:
+  charge:
+    # ...
+    error:
+      name: '*'
+      message: card declined
+      cause:
+        name: '*'
+        message: card declined
+```
+
+The innermost level exists because a checkpointed error holds only its type
+and message. The SDK rebuilds the step error from the checkpoint and attaches
+that type and message as the rebuilt error's cause. So a step error has two
+levels, and an error that wraps it has three.
 
 ### Timestamps
 

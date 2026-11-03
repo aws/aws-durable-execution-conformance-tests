@@ -1,0 +1,101 @@
+---
+# telemetry-2: Durable Execution Telemetry failure record with an error cause chain
+description: Durable Execution Telemetry exports a complete failure record whose errors carry a cause chain
+handler: |
+  A single step named `charge` that throws an error with message `card declined`.
+  The step's retry strategy returns `shouldRetry: false`, so the step fails on
+  its first attempt. The handler catches the step error and throws a new error
+  with message `payment failed` whose cause is the step error. The Durable
+  Execution Telemetry plugin is configured as in telemetry-1: a
+  CloudWatchLogsExporter writing to the `TelemetryLogGroupName` log group, with
+  `emitMode: on-complete`, `samplingRate: 1`, `operationDetail: top-level`, and
+  `content: {input: true, output: true}`.
+invocations: |
+  - Handler invokes `context.step("charge", ...)`, step throws `card declined`, retry strategy declines, step fails permanently.
+  - Handler catches the step error and throws `payment failed` with the step error as its cause. The execution fails.
+  - The plugin emits one DurableExecutionTelemetry record with status FAILED after the invocation completes.
+Input:
+  value: 41
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+    ErrorMessage: payment failed
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: charge
+    EventTimestamp: '*'
+  - EventType: StepFailed
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: charge
+    EventTimestamp: '*'
+    StepFailedDetails:
+      Error:
+        Payload:
+          ErrorMessage: card declined
+          ErrorType: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+# `record` is the complete expected record: exactly the listed keys at every
+# nesting level, in any order. A failed execution has no `output` key.
+#
+# Every error is `{name, message, cause?}`. Error names differ per language by
+# design (`Error` in JS, an exception class name elsewhere), so every `name` is
+# `'*'`. Messages and the depth of the cause chain are part of the shape.
+#
+# The execution `error` is the error the handler threw. Its first cause is the
+# step error the SDK raised to the handler. The SDK rebuilds that step error
+# from the checkpointed `{ErrorType, ErrorMessage}`, and the rebuilt error
+# carries the checkpointed type and message as its own cause. So the execution
+# error has three levels, and `operationsByName.charge.error`, which is the
+# rebuilt step error, has two.
+TelemetryAssertions:
+  records:
+    - record:
+        recordType: DurableExecutionTelemetry
+        schemaVersion: '1.0'
+        emittedAt: &iso8601_ms '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/}'
+        executionArn: ${EXECUTION_ARN}
+        executionName: ${EXECUTION_NAME}
+        functionName: ${FUNCTION_NAME}
+        functionQualifier: ${FUNCTION_QUALIFIER}
+        region: ${REGION}
+        accountId: ${ACCOUNT_ID}
+        status: FAILED
+        startTime: *iso8601_ms
+        endTime: *iso8601_ms
+        durationMs: {$integer: {min: 0}}
+        input:
+          value: 41
+        error:
+          name: '*'
+          message: payment failed
+          cause:
+            name: '*'
+            message: card declined
+            cause:
+              name: '*'
+              message: card declined
+        operationsByName:
+          charge:
+            type: STEP
+            count: 1
+            failedCount: 1
+            status: FAILED
+            subType: Step
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+            maxAttempt: 1
+            error:
+              name: '*'
+              message: card declined
+              cause:
+                name: '*'
+                message: card declined
