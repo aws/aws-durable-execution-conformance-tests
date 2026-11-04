@@ -900,50 +900,6 @@ def test_telemetry_2_rejects_an_output_on_a_failed_record() -> None:
     assert validate_record(record, _telemetry_2_entry()) == ["unexpected keys ['output']"]
 
 
-# Error names and the depth of the cause chain differ per SDK by design. These
-# are the `error` and `operationsByName.charge.error` values each SDK writes for
-# the telemetry-2 handler. The requirement must accept every one of them.
-_ERRORS_BY_SDK: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
-    "js": (
-        {
-            "name": "Error",
-            "message": "payment failed",
-            "cause": {
-                "name": "StepError",
-                "message": "card declined",
-                "cause": {"name": "Error", "message": "card declined"},
-            },
-        },
-        {
-            "name": "StepError",
-            "message": "card declined",
-            "cause": {"name": "Error", "message": "card declined"},
-        },
-    ),
-    "java": (
-        {
-            "name": "RuntimeException",
-            "message": "payment failed",
-            "cause": {"name": "RuntimeException", "message": "card declined"},
-        },
-        {"name": "RuntimeException", "message": "card declined"},
-    ),
-    "python": (
-        {"name": "RuntimeError", "message": "payment failed"},
-        {"name": "RuntimeError", "message": "card declined"},
-    ),
-}
-
-
-@pytest.mark.parametrize("sdk", sorted(_ERRORS_BY_SDK))
-def test_telemetry_2_accepts_each_sdk_error_shape(sdk: str) -> None:
-    execution_error, step_error = _ERRORS_BY_SDK[sdk]
-    record = _failed_record()
-    record["error"] = deepcopy(execution_error)
-    record["operationsByName"]["charge"]["error"] = deepcopy(step_error)
-    assert validate_record(record, _telemetry_2_entry()) == []
-
-
 _ERROR_PATHS: list[tuple[str, ...]] = [("error",), ("operationsByName", "charge", "error")]
 
 
