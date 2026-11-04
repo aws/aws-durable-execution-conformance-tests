@@ -78,33 +78,14 @@ def test_telemetry_2_describes_a_failure_record_without_output() -> None:
     record = load_yaml_file(_requirements()["telemetry-2"])["TelemetryAssertions"]["records"][0]["record"]
     assert record["status"] == "FAILED"
     assert "output" not in record
-    assert "error" in record
     summary = record["operationsByName"]["charge"]
     assert summary["status"] == "FAILED"
     assert summary["failedCount"] == 1
-    assert "error" in summary
-
-
-def _chain(error: dict[str, object]) -> list[dict[str, object]]:
-    levels: list[dict[str, object]] = []
-    node: object = error
-    while isinstance(node, dict):
-        levels.append(node)
-        node = node.get("cause")
-    return levels
-
-
-def test_telemetry_2_error_chain_has_wildcard_names_and_exact_messages() -> None:
-    record = load_yaml_file(_requirements()["telemetry-2"])["TelemetryAssertions"]["records"][0]["record"]
-    execution_levels = _chain(record["error"])
-    step_levels = _chain(record["operationsByName"]["charge"]["error"])
-    assert [level["message"] for level in execution_levels] == ["payment failed", "card declined", "card declined"]
-    assert [level["message"] for level in step_levels] == ["card declined", "card declined"]
-    for level in [*execution_levels, *step_levels]:
-        assert level["name"] == "*"
-        assert set(level) <= {"name", "message", "cause"}
-    # The execution error's cause is the step error. So the two chains agree below the top level.
-    assert execution_levels[1:] == step_levels
+    # Error names and cause depth differ per SDK by design. So both errors are
+    # asserted as present objects only; the messages are pinned by the core
+    # ExpectedResult and ExpectedExecutionHistory sections.
+    assert record["error"] == {"$object": {}}
+    assert summary["error"] == {"$object": {}}
 
 
 @pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2"])

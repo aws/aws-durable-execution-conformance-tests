@@ -465,7 +465,7 @@ def test_validate_records_rejects_non_list_and_non_mapping_entry() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Expected-value rules: '*', ${/regex/}, $integer, nested mappings and sequences
+# Expected-value rules: '*', ${/regex/}, $integer, $object, nested mappings and sequences
 # ---------------------------------------------------------------------------
 
 
@@ -541,6 +541,43 @@ def test_integer_rejects_missing_field() -> None:
     del record["durationMs"]
     assert validate_record(record, _entry(durationMs=NON_NEGATIVE_INTEGER)) == [
         "durationMs: expected {'$integer': {'min': 0}}, got <missing>"
+    ]
+
+
+ANY_OBJECT: dict[str, Any] = {"$object": {}}
+
+
+@pytest.mark.parametrize("value", [{}, {"value": 42}, {"name": "Error", "message": "x", "cause": {"name": "E"}}])
+def test_object_accepts_any_mapping(value: dict[str, Any]) -> None:
+    record = _record()
+    record["output"] = value
+    assert validate_record(record, _entry(output=ANY_OBJECT)) == []
+
+
+@pytest.mark.parametrize("value", [None, "card declined", 1, True, [], [{"name": "Error"}]])
+def test_object_rejects_non_mapping(value: Any) -> None:
+    record = _record()
+    record["output"] = value
+    assert validate_record(record, _entry(output=ANY_OBJECT)) == [f"output: expected an object, got {value!r}"]
+
+
+def test_object_rejects_missing_field() -> None:
+    record = _record()
+    del record["output"]
+    assert validate_record(record, _entry(output=ANY_OBJECT)) == ["output: expected {'$object': {}}, got <missing>"]
+
+
+def test_object_with_null_constraints_accepts_a_mapping() -> None:
+    # YAML ``{$object: }`` loads as None. It means the same as ``{}``.
+    assert validate_record(_record(), _entry(output={"$object": None})) == []
+
+
+@pytest.mark.parametrize("constraints", [{"keys": ["value"]}, [], "any"])
+def test_object_rejects_constraints(constraints: Any) -> None:
+    # The rule takes no constraints. A constraint is reported, so that a typo
+    # or a rule from a later version does not pass silently.
+    assert validate_record(_record(), _entry(output={"$object": constraints})) == [
+        "output: $object constraints must be an empty mapping"
     ]
 
 
@@ -656,7 +693,7 @@ def _leaf_paths(mapping: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> lis
     for key, value in mapping.items():
         path = (*prefix, key)
         paths.append(path)
-        if isinstance(value, dict) and set(value) != {"$integer"}:
+        if isinstance(value, dict) and set(value) not in ({"$integer"}, {"$object"}):
             paths.extend(_leaf_paths(value, path))
     return paths
 
@@ -863,56 +900,58 @@ def test_telemetry_2_rejects_an_output_on_a_failed_record() -> None:
     assert validate_record(record, _telemetry_2_entry()) == ["unexpected keys ['output']"]
 
 
-# Every error level is `{name, message, cause?}`. These are the paths of every
-# level in the record: three on the execution error, two on the step error.
-_ERROR_LEVEL_PATHS: list[tuple[str, ...]] = [
-    ("error",),
-    ("error", "cause"),
-    ("error", "cause", "cause"),
-    ("operationsByName", "charge", "error"),
-    ("operationsByName", "charge", "error", "cause"),
-]
+# Error names and the depth of the cause chain differ per SDK by design. These
+# are the `error` and `operationsByName.charge.error` values each SDK writes for
+# the telemetry-2 handler. The requirement must accept every one of them.
+_ERRORS_BY_SDK: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "js": (
+        {
+            "name": "Error",
+            "message": "payment failed",
+            "cause": {
+                "name": "StepError",
+                "message": "card declined",
+                "cause": {"name": "Error", "message": "card declined"},
+            },
+        },
+        {
+            "name": "StepError",
+            "message": "card declined",
+            "cause": {"name": "Error", "message": "card declined"},
+        },
+    ),
+    "java": (
+        {
+            "name": "RuntimeException",
+            "message": "payment failed",
+            "cause": {"name": "RuntimeException", "message": "card declined"},
+        },
+        {"name": "RuntimeException", "message": "card declined"},
+    ),
+    "python": (
+        {"name": "RuntimeError", "message": "payment failed"},
+        {"name": "RuntimeError", "message": "card declined"},
+    ),
+}
 
 
-@pytest.mark.parametrize("path", _ERROR_LEVEL_PATHS, ids=".".join)
-@pytest.mark.parametrize("name", ["StepError", "StepFailedError", "java.lang.RuntimeException", ""])
-def test_telemetry_2_accepts_any_error_name_at_every_level(path: tuple[str, ...], name: str) -> None:
-    # Error names differ per language by design, so the requirement matches
-    # every name with the wildcard.
+@pytest.mark.parametrize("sdk", sorted(_ERRORS_BY_SDK))
+def test_telemetry_2_accepts_each_sdk_error_shape(sdk: str) -> None:
+    execution_error, step_error = _ERRORS_BY_SDK[sdk]
     record = _failed_record()
-    _set_path(record, (*path, "name"), name)
+    record["error"] = deepcopy(execution_error)
+    record["operationsByName"]["charge"]["error"] = deepcopy(step_error)
     assert validate_record(record, _telemetry_2_entry()) == []
 
 
-@pytest.mark.parametrize("path", _ERROR_LEVEL_PATHS, ids=".".join)
-def test_telemetry_2_rejects_a_different_message_at_every_level(path: tuple[str, ...]) -> None:
+_ERROR_PATHS: list[tuple[str, ...]] = [("error",), ("operationsByName", "charge", "error")]
+
+
+@pytest.mark.parametrize("path", _ERROR_PATHS, ids=".".join)
+@pytest.mark.parametrize("value", [None, "payment failed", ["payment failed"]])
+def test_telemetry_2_rejects_an_error_that_is_not_an_object(path: tuple[str, ...], value: Any) -> None:
+    # `'*'` would accept these. `$object` is used so that an exporter which
+    # writes a null or a string where an error object belongs fails.
     record = _failed_record()
-    _set_path(record, (*path, "message"), "other")
-    entry = _telemetry_2_entry()
-    expected = entry["record"]
-    for key in (*path, "message"):
-        expected = expected[key]
-    assert validate_record(record, entry) == [f"{'.'.join(path)}.message: expected {expected!r}, got 'other'"]
-
-
-@pytest.mark.parametrize(
-    "path", [("error", "cause", "cause"), ("operationsByName", "charge", "error", "cause")], ids=".".join
-)
-def test_telemetry_2_rejects_a_deeper_cause_chain(path: tuple[str, ...]) -> None:
-    # The chain depth is part of the shape. A fourth level on the execution
-    # error, or a third on the step error, is a cross-SDK difference.
-    record = _failed_record()
-    _set_path(record, (*path, "cause"), {"name": "Error", "message": "gateway 402"})
-    assert validate_record(record, _telemetry_2_entry()) == [f"{'.'.join(path)}: unexpected keys ['cause']"]
-
-
-def test_telemetry_2_rejects_a_cause_that_is_not_an_error_object() -> None:
-    record = _failed_record()
-    _set_path(record, ("error", "cause"), "card declined")
-    assert validate_record(record, _telemetry_2_entry()) == ["error.cause: expected mapping, got 'card declined'"]
-
-
-def test_telemetry_2_rejects_an_extra_key_on_an_error() -> None:
-    record = _failed_record()
-    _set_path(record, ("error", "stack"), "Error: payment failed\n    at handler")
-    assert validate_record(record, _telemetry_2_entry()) == ["error: unexpected keys ['stack']"]
+    _set_path(record, path, value)
+    assert validate_record(record, _telemetry_2_entry()) == [f"{'.'.join(path)}: expected an object, got {value!r}"]

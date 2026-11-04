@@ -94,6 +94,9 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
     - ``{$integer: {min: N}}``: ``actual`` must be a JSON integer, so a
       number with no fraction and not a boolean, string, or null. ``min``
       is optional and inclusive.
+    - ``{$object: {}}``: ``actual`` must be a mapping. Its keys are not
+      checked. Use it for a value whose keys differ per SDK by design, such
+      as an ``error``, where ``'*'`` would also accept ``null`` or a string.
     - mapping: ``actual`` must be a mapping with exactly the expected keys.
       Every key is compared recursively. Keys that ``actual`` carries but
       ``expected`` does not list are reported as ``unexpected keys``. Key
@@ -116,7 +119,9 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
             return []
         return [_at(path, f"value {actual!r} does not match regex pattern {pattern.pattern!r}")]
     if _is_rule(expected):
-        return _integer_errors(expected["$integer"], actual, path=path)
+        if "$integer" in expected:
+            return _integer_errors(expected["$integer"], actual, path=path)
+        return _object_errors(expected["$object"], actual, path=path)
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
             return [_at(path, f"expected mapping, got {actual!r}")]
@@ -141,9 +146,13 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
     return []
 
 
+_RULE_KEYS = ({"$integer"}, {"$object"})
+
+
 def _is_rule(expected: Any) -> bool:
-    # ``{$integer: ...}`` is a rule, not a mapping the record must carry.
-    return isinstance(expected, Mapping) and set(expected) == {"$integer"}
+    # ``{$integer: ...}`` and ``{$object: ...}`` are rules, not mappings the
+    # record must carry.
+    return isinstance(expected, Mapping) and set(expected) in _RULE_KEYS
 
 
 def _integer_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
@@ -157,6 +166,19 @@ def _integer_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
     minimum = constraints.get("min")
     if minimum is not None and actual < minimum:
         return [_at(path, f"expected an integer >= {minimum}, got {actual!r}")]
+    return []
+
+
+def _object_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
+    # The rule takes no constraints. A non-empty constraints mapping is reported
+    # as an error, so a misspelled or unsupported constraint fails instead of
+    # passing silently.
+    if constraints is None:
+        constraints = {}
+    if not isinstance(constraints, Mapping) or constraints:
+        return [_at(path, "$object constraints must be an empty mapping")]
+    if not isinstance(actual, Mapping):
+        return [_at(path, f"expected an object, got {actual!r}")]
     return []
 
 
