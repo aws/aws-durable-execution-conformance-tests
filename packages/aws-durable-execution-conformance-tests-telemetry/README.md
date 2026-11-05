@@ -175,19 +175,8 @@ Every error in a record has the shape `{name, message, cause?}`. The execution
 `error` and `operationsByName.<name>.error` use the same shape. `cause` is
 present only when the error has one, and has the same shape again.
 
-Error names and the depth of the cause chain differ per SDK by design. The
-name is the language's exception class name. The depth depends on how the SDK
-rebuilds a step error from its checkpoint and on what the plugin hooks hand the
-exporter. For a step that fails once and a handler that rethrows with the step
-error as its cause, the SDKs write:
-
-| SDK | Execution `error` levels | `operationsByName.<name>.error` levels |
-| --- | --- | --- |
-| JS | 3 | 2 |
-| Java | 2 | 1 |
-| Python | 1 | 1 |
-
-A closed mapping would turn each of these differences into a failure. So a
+Error names and the depth of the cause chain differ per SDK, so the suite does
+not check them. A closed mapping would turn each difference into a failure. So a
 requirement matches each `error` with `{$object: {}}`. The check then asserts
 that the error is present and is an object, and nothing about its keys. The
 error messages are asserted by the core `ExpectedResult` and

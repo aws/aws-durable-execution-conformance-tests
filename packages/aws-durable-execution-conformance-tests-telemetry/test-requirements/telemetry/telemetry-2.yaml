@@ -45,13 +45,10 @@ ExpectedExecutionHistory:
 # `record` is the complete expected record: exactly the listed keys at every
 # nesting level, in any order. A failed execution has no `output` key.
 #
-# Every error is `{name, message, cause?}`. Error names and the depth of the
-# cause chain differ per SDK by design. The JS SDK writes three levels on the
-# execution error and two on the step error; the Java SDK writes two and one;
-# the Python SDK writes one and one. So each `error` is matched with
-# `{$object: {}}`: it must be present and must be an object, and its keys are
-# not checked. The two messages are asserted by `ExpectedResult` and
-# `ExpectedExecutionHistory` above, which every SDK fills the same way.
+# Every error is `{name, message, cause?}`. Names and cause depth differ per
+# SDK, so the suite does not check them. Each `error` is matched with
+# `{$object: {}}`. The messages are asserted by `ExpectedResult` and
+# `ExpectedExecutionHistory` above.
 TelemetryAssertions:
   records:
     - record:

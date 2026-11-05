@@ -107,6 +107,13 @@ def _expectation_errors(expected: Any, actual: Any, *, path: str) -> list[str]:
       number matches only a number of the same JSON type, so ``1`` does not
       match ``1.0``.
     """
+    # A rule whose constraints are malformed cannot match any value. If the
+    # missing-field message came first, the author would see the malformed rule
+    # only after the SDK emitted the field. So the constraints are checked first.
+    if _is_rule(expected):
+        constraint_error = _rule_constraint_error(expected, path=path)
+        if constraint_error:
+            return [constraint_error]
     if actual is _MISSING:
         if isinstance(expected, Mapping) and not _is_rule(expected):
             return [_at(path, f"expected mapping with keys {list(expected)}, got <missing>")]
@@ -155,10 +162,22 @@ def _is_rule(expected: Any) -> bool:
     return isinstance(expected, Mapping) and set(expected) in _RULE_KEYS
 
 
+def _rule_constraint_error(rule: Mapping[str, Any], *, path: str) -> str | None:
+    if "$integer" in rule:
+        if rule["$integer"] and not isinstance(rule["$integer"], Mapping):
+            return _at(path, "$integer constraints must be a mapping")
+        return None
+    constraints = rule["$object"]
+    # The rule takes no constraints. A non-empty constraints mapping is reported
+    # as an error, so a misspelled or unsupported constraint fails instead of
+    # passing silently. YAML ``{$object: }`` loads as None and means ``{}``.
+    if constraints is not None and (not isinstance(constraints, Mapping) or constraints):
+        return _at(path, "$object constraints must be an empty mapping")
+    return None
+
+
 def _integer_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
     constraints = constraints or {}
-    if not isinstance(constraints, Mapping):
-        return [_at(path, "$integer constraints must be a mapping")]
     # json.loads yields int only for a JSON integer literal. bool is an int
     # subclass in Python, so it is excluded explicitly.
     if isinstance(actual, bool) or not isinstance(actual, int):
@@ -170,13 +189,7 @@ def _integer_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
 
 
 def _object_errors(constraints: Any, actual: Any, *, path: str) -> list[str]:
-    # The rule takes no constraints. A non-empty constraints mapping is reported
-    # as an error, so a misspelled or unsupported constraint fails instead of
-    # passing silently.
-    if constraints is None:
-        constraints = {}
-    if not isinstance(constraints, Mapping) or constraints:
-        return [_at(path, "$object constraints must be an empty mapping")]
+    # The caller has already validated the constraints.
     if not isinstance(actual, Mapping):
         return [_at(path, f"expected an object, got {actual!r}")]
     return []

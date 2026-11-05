@@ -581,6 +581,23 @@ def test_object_rejects_constraints(constraints: Any) -> None:
     ]
 
 
+def test_object_constraint_error_is_reported_for_a_missing_field() -> None:
+    # The constraint error is reported instead of `got <missing>`.
+    record = _record()
+    del record["output"]
+    assert validate_record(record, _entry(output={"$object": {"keys": ["value"]}})) == [
+        "output: $object constraints must be an empty mapping"
+    ]
+
+
+def test_integer_constraint_error_is_reported_for_a_missing_field() -> None:
+    record = _record()
+    del record["durationMs"]
+    assert validate_record(record, _entry(durationMs={"$integer": "x"})) == [
+        "durationMs: $integer constraints must be a mapping"
+    ]
+
+
 def test_wildcard_inside_nested_mapping() -> None:
     record = _record()
     record["output"] = {"value": 42, "generated": "anything"}
