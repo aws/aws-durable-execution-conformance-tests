@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from aws_durable_execution_conformance_tests.validate import (
     discover_test_files,
     load_yaml_file,
@@ -24,7 +26,7 @@ def _requirements() -> dict[str, str]:
 
 
 def test_requirement_set() -> None:
-    assert set(_requirements()) == {"telemetry-1"}
+    assert set(_requirements()) == {"telemetry-1", "telemetry-2"}
 
 
 def test_telemetry_1_loads_with_core_sections() -> None:
@@ -38,8 +40,28 @@ def test_telemetry_1_loads_with_core_sections() -> None:
     ]
 
 
-def test_telemetry_assertions_expect_one_complete_record() -> None:
-    requirement = load_yaml_file(_requirements()["telemetry-1"])
+def test_telemetry_2_loads_with_core_sections() -> None:
+    requirement = load_yaml_file(_requirements()["telemetry-2"])
+    assert requirement["Input"] == {"value": 41}
+    assert requirement["ExpectedResult"] == {
+        "ExecutionStatus": "FAILED",
+        "Error": {"ErrorType": "*", "ErrorMessage": "payment failed"},
+    }
+    assert [event["EventType"] for event in requirement["ExpectedExecutionHistory"]] == [
+        "StepStarted",
+        "StepFailed",
+        "InvocationCompleted",
+    ]
+    step_failed = requirement["ExpectedExecutionHistory"][1]
+    assert step_failed["StepFailedDetails"]["Error"]["Payload"]["ErrorMessage"] == "card declined"
+
+
+@pytest.mark.parametrize(
+    ("requirement_id", "operation_name"),
+    [("telemetry-1", "increment"), ("telemetry-2", "charge")],
+)
+def test_telemetry_assertions_expect_one_complete_record(requirement_id: str, operation_name: str) -> None:
+    requirement = load_yaml_file(_requirements()[requirement_id])
     assertions = requirement["TelemetryAssertions"]
     assert set(assertions) == {"records"}
     assert len(assertions["records"]) == 1
@@ -49,11 +71,26 @@ def test_telemetry_assertions_expect_one_complete_record() -> None:
     assert record["recordType"] == "DurableExecutionTelemetry"
     assert record["schemaVersion"] == "1.0"
     assert {"emittedAt", "startTime", "endTime", "durationMs"} <= set(record)
-    assert set(record["operationsByName"]) == {"increment"}
+    assert set(record["operationsByName"]) == {operation_name}
 
 
-def test_telemetry_1_names_identity_fields_through_placeholders() -> None:
-    record = load_yaml_file(_requirements()["telemetry-1"])["TelemetryAssertions"]["records"][0]["record"]
+def test_telemetry_2_describes_a_failure_record_without_output() -> None:
+    record = load_yaml_file(_requirements()["telemetry-2"])["TelemetryAssertions"]["records"][0]["record"]
+    assert record["status"] == "FAILED"
+    assert "output" not in record
+    summary = record["operationsByName"]["charge"]
+    assert summary["status"] == "FAILED"
+    assert summary["failedCount"] == 1
+    # Error names and cause depth differ per SDK by design. So both errors are
+    # asserted as present objects only; the messages are pinned by the core
+    # ExpectedResult and ExpectedExecutionHistory sections.
+    assert record["error"] == {"$object": {}}
+    assert summary["error"] == {"$object": {}}
+
+
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2"])
+def test_identity_fields_are_named_through_placeholders(requirement_id: str) -> None:
+    record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     assert {field: record[field] for field in ("executionArn", "executionName", "functionName")} == {
         "executionArn": "${EXECUTION_ARN}",
         "executionName": "${EXECUTION_NAME}",
@@ -66,7 +103,8 @@ def test_telemetry_1_names_identity_fields_through_placeholders() -> None:
     }
 
 
-def test_telemetry_1_pins_timestamps_to_three_fraction_digits() -> None:
-    record = load_yaml_file(_requirements()["telemetry-1"])["TelemetryAssertions"]["records"][0]["record"]
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2"])
+def test_timestamps_are_pinned_to_three_fraction_digits(requirement_id: str) -> None:
+    record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     pattern = "${/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/}"
     assert record["emittedAt"] == record["startTime"] == record["endTime"] == pattern

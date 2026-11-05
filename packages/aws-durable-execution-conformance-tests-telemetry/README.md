@@ -5,8 +5,9 @@ distribution adds the `telemetry` suite to the core runner through the
 `aws_durable_execution_conformance_tests.extensions` entry point.
 
 The suite checks that the SDK's Durable Execution Telemetry plugin, configured with the
-CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` record for a
-successful single-step execution.
+CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` record per
+execution. `telemetry-1` covers a successful single-step execution. `telemetry-2` covers
+a single-step execution whose step fails.
 
 The SDK handler and SAM template that exercises this suite live in each SDK repository, not here.
 
@@ -154,7 +155,7 @@ extension reports the collision as an error.
 ### Expected values
 
 Expected values follow the rules of the core execution-history matcher, plus
-`$integer`. Two rules are stricter here. A mapping is closed: the record must
+`$integer` and `$object`. Two rules are stricter here. A mapping is closed: the record must
 carry exactly the listed keys. A number matches only a number of the same JSON
 type.
 
@@ -163,9 +164,31 @@ type.
 | `'*'` | The field must be present. Any value passes, including `null`. Use it only for values whose type is not worth asserting. |
 | `'${/regex/}'` | `str(actual)` must match the regex. Use it for string formats, such as ISO-8601 timestamps. A number also matches when its decimal text does, so do not use it to assert a numeric type. |
 | `{$integer: {min: N}}` | `actual` must be a JSON integer: not a string, boolean, null, or fraction. `min` is optional and inclusive. Use it for per-run counts and durations, such as `durationMs: {$integer: {min: 0}}`. |
+| `{$object: {}}` | `actual` must be a JSON object. Its keys are not checked. Use it for a value whose keys differ per SDK by design, such as `error`. Unlike `'*'`, it rejects `null` and scalars. The constraints mapping must be empty. |
 | mapping | `actual` must be a mapping with exactly the listed keys, in any order. Every key is checked recursively. |
 | list | `actual` must be a list of the same length. Items are checked pairwise. |
 | anything else | Equality. A boolean matches only a boolean, so `count: 1` does not match `true`. A number matches only a number of the same JSON type, so `count: 1` does not match `1.0`. |
+
+### Errors
+
+Every error in a record has the shape `{name, message, cause?}`. The execution
+`error` and `operationsByName.<name>.error` use the same shape. `cause` is
+present only when the error has one, and has the same shape again.
+
+Error names and the depth of the cause chain differ per SDK, so the suite does
+not check them. A closed mapping would turn each difference into a failure. So a
+requirement matches each `error` with `{$object: {}}`. The check then asserts
+that the error is present and is an object, and nothing about its keys. The
+error messages are asserted by the core `ExpectedResult` and
+`ExpectedExecutionHistory` sections, which every SDK fills the same way.
+
+```yaml
+error: {$object: {}}
+operationsByName:
+  charge:
+    # ...
+    error: {$object: {}}
+```
 
 ### Timestamps
 
