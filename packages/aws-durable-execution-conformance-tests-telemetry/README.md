@@ -7,7 +7,9 @@ distribution adds the `telemetry` suite to the core runner through the
 The suite checks that the SDK's Durable Execution Telemetry plugin, configured with the
 CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` record per
 execution. `telemetry-1` covers a successful single-step execution. `telemetry-2` covers
-a single-step execution whose step fails.
+a single-step execution whose step fails. `telemetry-3` covers a successful single-step
+execution whose plugin exports only one selected key of the step result through a
+per-operation result transform, with execution input and output disabled.
 
 The SDK handler and SAM template that exercises this suite live in each SDK repository, not here.
 
@@ -120,9 +122,10 @@ For each `(record, entry)` pair the validator compares the record against
 `entry.record` as one nested mapping, on that record alone. At every mapping
 level, the record must carry exactly the listed keys, and every value is
 checked recursively. So `operationsByName` must have exactly the listed
-operation names, each summary must have exactly the listed keys, and `input`
-and `output` must have exactly the listed payload keys. A key the record
-carries but the entry does not list is reported as `unexpected keys`.
+operation names, each summary must have exactly the listed keys, and `input`,
+`output`, and each operation `result` must have exactly the listed payload
+keys. A key the record carries but the entry does not list is reported as
+`unexpected keys`.
 
 This check exists to detect a record that differs between SDKs. A key one SDK
 emits and another omits is such a difference. So is a different number format

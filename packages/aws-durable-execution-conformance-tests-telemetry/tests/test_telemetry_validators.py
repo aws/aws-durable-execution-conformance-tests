@@ -928,3 +928,174 @@ def test_telemetry_2_rejects_an_error_that_is_not_an_object(path: tuple[str, ...
     record = _failed_record()
     _set_path(record, path, value)
     assert validate_record(record, _telemetry_2_entry()) == [f"{'.'.join(path)}: expected an object, got {value!r}"]
+
+
+# ---------------------------------------------------------------------------
+# The shipped telemetry-3 requirement against the JS CloudWatch Logs record
+# ---------------------------------------------------------------------------
+
+SELECTED_ARN = (
+    "arn:aws:lambda:us-west-2:123456789012:function:conformance-tests-abc-telemetry-3:$LATEST"
+    "/durable-execution/8f1c2d3e-0000-4000-8000-000000000003/inv-1"
+)
+SELECTED_EXPECTED = ExpectedExecution(
+    execution_arn=SELECTED_ARN,
+    function_name="conformance-tests-abc-telemetry-3",
+    qualifier="$LATEST",
+    region="us-west-2",
+    account_id="123456789012",
+    execution_name="8f1c2d3e-0000-4000-8000-000000000003",
+)
+
+# The record in the shape the JS CloudWatch Logs exporter writes when
+# `content.input` and `content.output` are `false` and one override opts the
+# step result in through a transform. There is no `input` or `output`; the
+# summary carries `result` after `maxAttempt`.
+SELECTED_TOP_LEVEL_KEYS = [*TOP_LEVEL_KEYS[:-3], "operationsByName"]
+SELECTED_SUMMARY_KEYS = [*SUMMARY_KEYS, "result"]
+
+# The step returned all three keys. The transform kept only `userId`.
+FULL_STEP_RESULT = {"userId": "u-123", "email": "test@example.com", "token": "tok-456"}
+SELECTED_RESULT = {"userId": "u-123"}
+
+
+def _selected_record() -> dict[str, Any]:
+    return {
+        "recordType": "DurableExecutionTelemetry",
+        "schemaVersion": "1.0",
+        "emittedAt": "2026-11-09T20:00:00.000Z",
+        "executionArn": SELECTED_ARN,
+        "executionName": "8f1c2d3e-0000-4000-8000-000000000003",
+        "functionName": "conformance-tests-abc-telemetry-3",
+        "functionQualifier": "$LATEST",
+        "region": "us-west-2",
+        "accountId": "123456789012",
+        "status": "SUCCEEDED",
+        "startTime": "2026-11-09T19:59:59.000Z",
+        "endTime": "2026-11-09T20:00:00.000Z",
+        "durationMs": 1000,
+        "operationsByName": {
+            "fetch-user": {
+                "type": "STEP",
+                "count": 1,
+                "failedCount": 0,
+                "status": "SUCCEEDED",
+                "subType": "Step",
+                "minDurationMs": 3,
+                "maxDurationMs": 3,
+                "totalDurationMs": 3,
+                "maxAttempt": 1,
+                "result": dict(SELECTED_RESULT),
+            },
+        },
+    }
+
+
+def _telemetry_3_entry() -> dict[str, Any]:
+    return _shipped_entry("telemetry-3", SELECTED_EXPECTED)
+
+
+_RESULT_PATH: tuple[str, ...] = ("operationsByName", "fetch-user", "result")
+
+
+def test_selected_fixture_record_has_the_expected_shape() -> None:
+    record = _selected_record()
+    assert list(record) == SELECTED_TOP_LEVEL_KEYS
+    assert list(record["operationsByName"]["fetch-user"]) == SELECTED_SUMMARY_KEYS
+
+
+def test_telemetry_3_accepts_the_one_key_result() -> None:
+    assert validate_record(_selected_record(), _telemetry_3_entry()) == []
+
+
+@pytest.mark.parametrize("path", _leaf_paths(_telemetry_3_entry()["record"]), ids=".".join)
+def test_telemetry_3_rejects_record_missing_each_asserted_field(path: tuple[str, ...]) -> None:
+    record = _selected_record()
+    _del_path(record, path)
+    errors = validate_record(record, _telemetry_3_entry())
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{'.'.join(path)}: expected ")
+    assert errors[0].endswith(", got <missing>")
+
+
+def test_telemetry_3_rejects_the_full_step_result() -> None:
+    # Checking only that `userId` is present would also accept the full result.
+    # The closed mapping reports each unselected key.
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, dict(FULL_STEP_RESULT))
+    assert validate_record(record, _telemetry_3_entry()) == [
+        "operationsByName.fetch-user.result: unexpected keys ['email', 'token']"
+    ]
+
+
+@pytest.mark.parametrize("masked", [None, "", "***", "[REDACTED]"])
+def test_telemetry_3_rejects_a_masked_unselected_key(masked: Any) -> None:
+    # An unselected key must be absent. Keeping it with a null or masked value
+    # is a different record shape, so it fails.
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, {"userId": "u-123", "token": masked})
+    assert validate_record(record, _telemetry_3_entry()) == [
+        "operationsByName.fetch-user.result: unexpected keys ['token']"
+    ]
+
+
+def test_telemetry_3_rejects_a_missing_selected_key() -> None:
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, {})
+    assert validate_record(record, _telemetry_3_entry()) == [
+        "operationsByName.fetch-user.result.userId: expected 'u-123', got <missing>"
+    ]
+
+
+@pytest.mark.parametrize("value", ["u-999", 123, None, True, ["u-123"]])
+def test_telemetry_3_rejects_an_incorrect_selected_value(value: Any) -> None:
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, {"userId": value})
+    assert validate_record(record, _telemetry_3_entry()) == [
+        f"operationsByName.fetch-user.result.userId: expected 'u-123', got {value!r}"
+    ]
+
+
+def test_telemetry_3_rejects_an_absent_result() -> None:
+    # Every SDK omits `result` when the transform throws. A transform that
+    # receives an SDK serialization envelope instead of the plain object throws
+    # on the missing key. So this error is what an envelope leak looks like.
+    record = _selected_record()
+    _del_path(record, _RESULT_PATH)
+    assert validate_record(record, _telemetry_3_entry()) == [
+        "operationsByName.fetch-user.result: expected mapping with keys ['userId'], got <missing>"
+    ]
+
+
+@pytest.mark.parametrize("value", ['{"userId":"u-123"}', "u-123", None, 1, ["u-123"]])
+def test_telemetry_3_rejects_a_result_that_is_not_an_object(value: Any) -> None:
+    # The transform returns an object. An exporter that writes the serialized
+    # string, or anything else that is not a JSON object, fails.
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, value)
+    assert validate_record(record, _telemetry_3_entry()) == [
+        f"operationsByName.fetch-user.result: expected mapping, got {value!r}"
+    ]
+
+
+def test_telemetry_3_rejects_a_serialization_wrapper() -> None:
+    # A `{value: "<json>"}` wrapper is an object, so the mapping branch runs.
+    # It lacks `userId` and carries `value`, and both defects are reported.
+    record = _selected_record()
+    _set_path(record, _RESULT_PATH, {"value": '{"userId":"u-123"}'})
+    assert validate_record(record, _telemetry_3_entry()) == [
+        "operationsByName.fetch-user.result.userId: expected 'u-123', got <missing>",
+        "operationsByName.fetch-user.result: unexpected keys ['value']",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("input", {"userId": "u-123"}), ("output", dict(FULL_STEP_RESULT))],
+)
+def test_telemetry_3_rejects_an_exported_execution_payload(key: str, value: Any) -> None:
+    # `content.input` and `content.output` are disabled. A plugin that exports
+    # either one fails, because the full object could otherwise appear there.
+    record = _selected_record()
+    record[key] = value
+    assert validate_record(record, _telemetry_3_entry()) == [f"unexpected keys [{key!r}]"]

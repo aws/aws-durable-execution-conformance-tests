@@ -26,7 +26,7 @@ def _requirements() -> dict[str, str]:
 
 
 def test_requirement_set() -> None:
-    assert set(_requirements()) == {"telemetry-1", "telemetry-2"}
+    assert set(_requirements()) == {"telemetry-1", "telemetry-2", "telemetry-3"}
 
 
 def test_telemetry_1_loads_with_core_sections() -> None:
@@ -56,9 +56,26 @@ def test_telemetry_2_loads_with_core_sections() -> None:
     assert step_failed["StepFailedDetails"]["Error"]["Payload"]["ErrorMessage"] == "card declined"
 
 
+def test_telemetry_3_loads_with_core_sections() -> None:
+    requirement = load_yaml_file(_requirements()["telemetry-3"])
+    assert requirement["Input"] == {"userId": "u-123"}
+    # The workflow returns the step result unchanged. So the execution result
+    # carries every key, and only the telemetry record is filtered.
+    assert requirement["ExpectedResult"] == {
+        "ExecutionStatus": "SUCCEEDED",
+        "Result": {"userId": "u-123", "email": "test@example.com", "token": "tok-456"},
+    }
+    assert [event["EventType"] for event in requirement["ExpectedExecutionHistory"]] == [
+        "StepStarted",
+        "StepSucceeded",
+        "InvocationCompleted",
+    ]
+    assert requirement["ExpectedExecutionHistory"][0]["Name"] == "fetch-user"
+
+
 @pytest.mark.parametrize(
     ("requirement_id", "operation_name"),
-    [("telemetry-1", "increment"), ("telemetry-2", "charge")],
+    [("telemetry-1", "increment"), ("telemetry-2", "charge"), ("telemetry-3", "fetch-user")],
 )
 def test_telemetry_assertions_expect_one_complete_record(requirement_id: str, operation_name: str) -> None:
     requirement = load_yaml_file(_requirements()[requirement_id])
@@ -88,7 +105,22 @@ def test_telemetry_2_describes_a_failure_record_without_output() -> None:
     assert summary["error"] == {"$object": {}}
 
 
-@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2"])
+def test_telemetry_3_selects_one_result_key_and_disables_execution_payloads() -> None:
+    record = load_yaml_file(_requirements()["telemetry-3"])["TelemetryAssertions"]["records"][0]["record"]
+    assert record["status"] == "SUCCEEDED"
+    # Execution input and output are disabled in the plugin. The mapping is
+    # closed, so listing neither key makes an exported payload a failure.
+    assert "input" not in record
+    assert "output" not in record
+    summary = record["operationsByName"]["fetch-user"]
+    # The selected key is pinned as a one-key mapping, not a rule. So the full
+    # three-key result, a masked extra key, a JSON string, and a `{value: ...}`
+    # wrapper all fail the closed-mapping check.
+    assert summary["result"] == {"userId": "u-123"}
+    assert summary["maxAttempt"] == 1
+
+
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3"])
 def test_identity_fields_are_named_through_placeholders(requirement_id: str) -> None:
     record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     assert {field: record[field] for field in ("executionArn", "executionName", "functionName")} == {
@@ -103,7 +135,7 @@ def test_identity_fields_are_named_through_placeholders(requirement_id: str) -> 
     }
 
 
-@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2"])
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3"])
 def test_timestamps_are_pinned_to_three_fraction_digits(requirement_id: str) -> None:
     record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     pattern = "${/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/}"

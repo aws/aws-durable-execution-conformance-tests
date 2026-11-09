@@ -90,7 +90,7 @@ def main() -> None:
             *(f"otel-invocation-{case_number}" for case_number in range(1, 28)),
             *(f"otel-execution-{case_number}" for case_number in range(1, 28)),
             *(f"otel-long-running-{case_number}" for case_number in range(1, 5)),
-            *(f"telemetry-{case_number}" for case_number in range(1, 3)),
+            *(f"telemetry-{case_number}" for case_number in range(1, 4)),
         }
         assert all(str(case.path).startswith(str(target)) for case in requirements.values())
 
