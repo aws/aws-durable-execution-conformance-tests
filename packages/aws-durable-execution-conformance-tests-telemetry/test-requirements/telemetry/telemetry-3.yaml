@@ -1,0 +1,78 @@
+---
+# telemetry-3: Durable Execution Telemetry exports only the selected key of a step result
+description: The telemetry plugin's per-operation result transform exports exactly one selected key of a step's JSON result
+handler: |
+  A single step named `fetch-user` that returns
+  `{userId: "u-123", email: "test@example.com", token: "tok-456"}` through the
+  SDK's default serialization. The handler returns that object unchanged. The
+  Durable Execution Telemetry plugin is configured as in telemetry-1, except
+  `content: {input: false, output: false, operations: {overrides: [{operationName:
+  "fetch-user", result: r => ({userId: r.userId})}]}}`. The transform reads
+  `userId` from the value the plugin passes it. It must not unwrap any SDK
+  serialization envelope, and it must not be given one.
+invocations: |
+  - Handler invokes `context.step("fetch-user", ...)`, step succeeds on first attempt, returns the three-key object.
+  - Handler returns the step result unchanged. The execution succeeds with all three keys.
+  - The plugin emits one DurableExecutionTelemetry record with status SUCCEEDED
+    whose `operationsByName.fetch-user.result` is exactly `{userId: "u-123"}`.
+Input:
+  userId: u-123
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    userId: u-123
+    email: test@example.com
+    token: tok-456
+ExpectedExecutionHistory:
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 2
+    Id: ${ID1}
+    Name: fetch-user
+    EventTimestamp: '*'
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 3
+    Id: ${ID1}
+    Name: fetch-user
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+# `record` is the complete expected record: exactly the listed keys at every
+# nesting level, in any order. Execution `input` and `output` are disabled, so
+# the record has neither key. A plugin that exports them fails the check.
+#
+# `result` is a closed mapping with one key. So the check fails when the plugin
+# exports the full three-key object, keeps `email` or `token` with a null or
+# masked value, omits `result` because the transform threw, or exports the
+# result as a JSON string or as a `{value: ...}` wrapper instead of an object.
+TelemetryAssertions:
+  records:
+    - record:
+        recordType: DurableExecutionTelemetry
+        schemaVersion: '1.0'
+        emittedAt: &iso8601_ms '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/}'
+        executionArn: ${EXECUTION_ARN}
+        executionName: ${EXECUTION_NAME}
+        functionName: ${FUNCTION_NAME}
+        functionQualifier: ${FUNCTION_QUALIFIER}
+        region: ${REGION}
+        accountId: ${ACCOUNT_ID}
+        status: SUCCEEDED
+        startTime: *iso8601_ms
+        endTime: *iso8601_ms
+        durationMs: {$integer: {min: 0}}
+        operationsByName:
+          fetch-user:
+            type: STEP
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: Step
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+            maxAttempt: 1
+            result:
+              userId: u-123
