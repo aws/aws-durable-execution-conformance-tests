@@ -122,9 +122,10 @@ For each `(record, entry)` pair the validator compares the record against
 `entry.record` as one nested mapping, on that record alone. At every mapping
 level, the record must carry exactly the listed keys, and every value is
 checked recursively. So `operationsByName` must have exactly the listed
-operation names, each summary must have exactly the listed keys, and `input`
-and `output` must have exactly the listed payload keys. A key the record
-carries but the entry does not list is reported as `unexpected keys`.
+operation names, each summary must have exactly the listed keys, and `input`,
+`output`, and each operation `result` must have exactly the listed payload
+keys. A key the record carries but the entry does not list is reported as
+`unexpected keys`.
 
 This check exists to detect a record that differs between SDKs. A key one SDK
 emits and another omits is such a difference. So is a different number format
