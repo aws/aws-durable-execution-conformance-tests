@@ -9,7 +9,9 @@ CloudWatch Logs exporter, delivers one complete `DurableExecutionTelemetry` reco
 execution. `telemetry-1` covers a successful single-step execution. `telemetry-2` covers
 a single-step execution whose step fails. `telemetry-3` covers a successful single-step
 execution whose plugin exports only one selected key of the step result through a
-per-operation result transform, with execution input and output disabled.
+per-operation result transform, with execution input and output disabled. `telemetry-4`
+covers a successful map execution whose plugin uses `operationDetail: full-tree`, so the
+record carries the map, both named iteration contexts, and the step inside each iteration.
 
 The SDK handler and SAM template that exercises this suite live in each SDK repository, not here.
 

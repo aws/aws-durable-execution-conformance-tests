@@ -26,7 +26,7 @@ def _requirements() -> dict[str, str]:
 
 
 def test_requirement_set() -> None:
-    assert set(_requirements()) == {"telemetry-1", "telemetry-2", "telemetry-3"}
+    assert set(_requirements()) == {"telemetry-1", "telemetry-2", "telemetry-3", "telemetry-4"}
 
 
 def test_telemetry_1_loads_with_core_sections() -> None:
@@ -73,11 +73,46 @@ def test_telemetry_3_loads_with_core_sections() -> None:
     assert requirement["ExpectedExecutionHistory"][0]["Name"] == "fetch-user"
 
 
+def test_telemetry_4_loads_with_core_sections() -> None:
+    requirement = load_yaml_file(_requirements()["telemetry-4"])
+    assert requirement["Input"] == [1, 2]
+    assert requirement["ExpectedResult"] == {"ExecutionStatus": "SUCCEEDED", "Result": ["Hello, 1!", "Hello, 2!"]}
+    events = requirement["ExpectedExecutionHistory"]
+    # map/9-1's event sequence: the map, then per item an iteration that wraps one step.
+    assert [event["EventType"] for event in events] == [
+        "ContextStarted",
+        "ContextStarted",
+        "StepStarted",
+        "StepSucceeded",
+        "ContextSucceeded",
+        "ContextStarted",
+        "StepStarted",
+        "StepSucceeded",
+        "ContextSucceeded",
+        "ContextSucceeded",
+        "InvocationCompleted",
+    ]
+    by_id = {event["EventId"]: event for event in events}
+    # map/9-13's names: the map and both iterations are named, so each reaches the record.
+    assert by_id[2]["Name"] == by_id[11]["Name"] == "process-items"
+    assert (by_id[3]["Name"], by_id[7]["Name"]) == ("item-1", "item-2")
+    assert (by_id[4]["Name"], by_id[8]["Name"]) == ("greet-1", "greet-2")
+    # The two-layer parent chain: step -> iteration -> map.
+    assert by_id[4]["ParentId"] == by_id[5]["ParentId"] == by_id[3]["Id"]
+    assert by_id[8]["ParentId"] == by_id[9]["ParentId"] == by_id[7]["Id"]
+    assert by_id[3]["ParentId"] == by_id[7]["ParentId"] == by_id[2]["Id"]
+
+
 @pytest.mark.parametrize(
-    ("requirement_id", "operation_name"),
-    [("telemetry-1", "increment"), ("telemetry-2", "charge"), ("telemetry-3", "fetch-user")],
+    ("requirement_id", "operation_names"),
+    [
+        ("telemetry-1", {"increment"}),
+        ("telemetry-2", {"charge"}),
+        ("telemetry-3", {"fetch-user"}),
+        ("telemetry-4", {"process-items", "item-1", "item-2", "greet-1", "greet-2"}),
+    ],
 )
-def test_telemetry_assertions_expect_one_complete_record(requirement_id: str, operation_name: str) -> None:
+def test_telemetry_assertions_expect_one_complete_record(requirement_id: str, operation_names: set[str]) -> None:
     requirement = load_yaml_file(_requirements()[requirement_id])
     assertions = requirement["TelemetryAssertions"]
     assert set(assertions) == {"records"}
@@ -88,7 +123,7 @@ def test_telemetry_assertions_expect_one_complete_record(requirement_id: str, op
     assert record["recordType"] == "DurableExecutionTelemetry"
     assert record["schemaVersion"] == "1.0"
     assert {"emittedAt", "startTime", "endTime", "durationMs"} <= set(record)
-    assert set(record["operationsByName"]) == {operation_name}
+    assert set(record["operationsByName"]) == operation_names
 
 
 def test_telemetry_2_describes_a_failure_record_without_output() -> None:
@@ -120,7 +155,31 @@ def test_telemetry_3_selects_one_result_key_and_disables_execution_payloads() ->
     assert summary["maxAttempt"] == 1
 
 
-@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3"])
+def test_telemetry_4_describes_the_map_its_iterations_and_their_steps() -> None:
+    record = load_yaml_file(_requirements()["telemetry-4"])["TelemetryAssertions"]["records"][0]["record"]
+    assert record["status"] == "SUCCEEDED"
+    assert record["input"] == [1, 2]
+    assert record["output"] == ["Hello, 1!", "Hello, 2!"]
+    operations = record["operationsByName"]
+    assert (operations["process-items"]["type"], operations["process-items"]["subType"]) == ("CONTEXT", "Map")
+    for name in ("item-1", "item-2"):
+        assert (operations[name]["type"], operations[name]["subType"]) == ("CONTEXT", "MapIteration")
+    for name in ("greet-1", "greet-2"):
+        assert (operations[name]["type"], operations[name]["subType"]) == ("STEP", "Step")
+        assert operations[name]["maxAttempt"] == 1
+    # Every SDK reads `attempt` from the step details only. So a context has no
+    # `maxAttempt`, and the closed mapping fails a plugin that writes one.
+    for name in ("process-items", "item-1", "item-2"):
+        assert "maxAttempt" not in operations[name]
+    for summary in operations.values():
+        assert summary["count"] == 1
+        assert summary["failedCount"] == 0
+        assert {"minDurationMs", "maxDurationMs", "totalDurationMs"} <= set(summary)
+        assert "result" not in summary
+        assert "error" not in summary
+
+
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3", "telemetry-4"])
 def test_identity_fields_are_named_through_placeholders(requirement_id: str) -> None:
     record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     assert {field: record[field] for field in ("executionArn", "executionName", "functionName")} == {
@@ -135,7 +194,7 @@ def test_identity_fields_are_named_through_placeholders(requirement_id: str) -> 
     }
 
 
-@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3"])
+@pytest.mark.parametrize("requirement_id", ["telemetry-1", "telemetry-2", "telemetry-3", "telemetry-4"])
 def test_timestamps_are_pinned_to_three_fraction_digits(requirement_id: str) -> None:
     record = load_yaml_file(_requirements()[requirement_id])["TelemetryAssertions"]["records"][0]["record"]
     pattern = "${/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/}"
