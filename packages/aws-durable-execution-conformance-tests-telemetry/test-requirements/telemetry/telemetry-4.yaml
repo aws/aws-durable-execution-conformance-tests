@@ -1,0 +1,212 @@
+# telemetry-4: Durable Execution Telemetry full-tree detail exports map iteration contexts and their inner steps
+description: The telemetry plugin's full-tree operation detail exports a map, both of its named iteration contexts, and the step inside each iteration, each keyed by name
+handler: |
+  A map named `process-items` over the items `[1, 2]` with max-concurrency 1 and an
+  item namer that names each iteration from its item: `item-1`, `item-2`. Inside each
+  iteration runs one step named from the item, `greet-1` and `greet-2`, that returns
+  `"Hello, <item>!"`. The handler returns the ordered list of item results. The Durable
+  Execution Telemetry plugin is configured as in telemetry-1, except
+  `operationDetail: full-tree`. No wait, no retry, no result transform; the execution
+  completes in one invocation.
+invocations: |
+  - Handler invokes map(name="process-items", items=[1, 2], mapFunc, max-concurrency=1,
+    itemNamer set). The SDK checkpoints ContextStarted (SubType Map) named
+    `process-items`. For item 0 it checkpoints ContextStarted (SubType MapIteration)
+    named `item-1` with ParentId pointing to the map, runs the inner step `greet-1`
+    (StepStarted/StepSucceeded with ParentId pointing to the iteration), and checkpoints
+    ContextSucceeded for the iteration carrying `"Hello, 1!"`. It repeats for item 1
+    with `item-2` and `greet-2`, then checkpoints ContextSucceeded (SubType Map). The
+    invocation completes returning `["Hello, 1!", "Hello, 2!"]`.
+  - The plugin emits one DurableExecutionTelemetry record with status SUCCEEDED after
+    the invocation completes. `full-tree` turns off the plugin's parentId filter, so the
+    record keeps the two MapIteration contexts (children of the map) and the two steps
+    (children of each iteration), one key per name.
+Input:
+  - 1
+  - 2
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - Hello, 1!
+    - Hello, 2!
+# The event sequence is map/9-1 (one step per item) with the names of map/9-13 (item
+# namer). The step events carry ParentId = the iteration id, and the iteration events
+# carry ParentId = the map id. Those two links are the parent chain the record must
+# preserve.
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: Map
+    EventId: 2
+    Id: ${CTX_M}
+    Name: process-items
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 3
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    Name: item-1
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 4
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    Name: greet-1
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 5
+    Id: ${STEP0}
+    ParentId: ${ITER0}
+    Name: greet-1
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"Hello, 1!"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 6
+    Id: ${ITER0}
+    ParentId: ${CTX_M}
+    Name: item-1
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"Hello, 1!"'
+  - EventType: ContextStarted
+    SubType: MapIteration
+    EventId: 7
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    Name: item-2
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 8
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    Name: greet-2
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 9
+    Id: ${STEP1}
+    ParentId: ${ITER1}
+    Name: greet-2
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result:
+        Payload: '"Hello, 2!"'
+  - EventType: ContextSucceeded
+    SubType: MapIteration
+    EventId: 10
+    Id: ${ITER1}
+    ParentId: ${CTX_M}
+    Name: item-2
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"Hello, 2!"'
+  - EventType: ContextSucceeded
+    SubType: Map
+    EventId: 11
+    Id: ${CTX_M}
+    Name: process-items
+    EventTimestamp: '*'
+    ContextSucceededDetails: '*'
+  - EventType: InvocationCompleted
+    EventId: 12
+    EventTimestamp: '*'
+    InvocationCompletedDetails: {}
+# `record` is the complete expected record: exactly the listed keys at every
+# nesting level, in any order.
+#
+# `operationsByName` is a closed mapping with five keys. So the check fails when
+# the plugin still drops operations that have a parentId (only `process-items`
+# remains), drops the iteration contexts but keeps the steps (no `item-1`,
+# `item-2`), drops the depth-2 children (no `greet-1`, `greet-2`), merges the
+# two steps under one shared name (`greet` with `count: 2`), or keys an
+# iteration by its id instead of its name.
+#
+# Every SDK reads `attempt` from the step details only. So the two context
+# types carry no `maxAttempt`, and listing it on a context would fail the JS
+# reference record. `failedCount` is always written, and the three duration
+# fields are present because the service sets a start and an end timestamp on
+# every operation type. No result transform is configured, so no entry carries
+# `result`, and nothing failed, so no entry carries `error`.
+TelemetryAssertions:
+  records:
+    - record:
+        recordType: DurableExecutionTelemetry
+        schemaVersion: '1.0'
+        emittedAt: &iso8601_ms '${/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/}'
+        executionArn: ${EXECUTION_ARN}
+        executionName: ${EXECUTION_NAME}
+        functionName: ${FUNCTION_NAME}
+        functionQualifier: ${FUNCTION_QUALIFIER}
+        region: ${REGION}
+        accountId: ${ACCOUNT_ID}
+        status: SUCCEEDED
+        startTime: *iso8601_ms
+        endTime: *iso8601_ms
+        durationMs: {$integer: {min: 0}}
+        input:
+          - 1
+          - 2
+        output:
+          - Hello, 1!
+          - Hello, 2!
+        operationsByName:
+          process-items:
+            type: CONTEXT
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: Map
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+          item-1:
+            type: CONTEXT
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: MapIteration
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+          item-2:
+            type: CONTEXT
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: MapIteration
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+          greet-1:
+            type: STEP
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: Step
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+            maxAttempt: 1
+          greet-2:
+            type: STEP
+            count: 1
+            failedCount: 0
+            status: SUCCEEDED
+            subType: Step
+            minDurationMs: {$integer: {min: 0}}
+            maxDurationMs: {$integer: {min: 0}}
+            totalDurationMs: {$integer: {min: 0}}
+            maxAttempt: 1

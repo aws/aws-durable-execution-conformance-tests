@@ -1099,3 +1099,204 @@ def test_telemetry_3_rejects_an_exported_execution_payload(key: str, value: Any)
     record = _selected_record()
     record[key] = value
     assert validate_record(record, _telemetry_3_entry()) == [f"unexpected keys [{key!r}]"]
+
+
+# ---------------------------------------------------------------------------
+# The shipped telemetry-4 requirement against the JS CloudWatch Logs record
+# ---------------------------------------------------------------------------
+
+FULL_TREE_ARN = (
+    "arn:aws:lambda:us-west-2:123456789012:function:conformance-tests-abc-telemetry-4:$LATEST"
+    "/durable-execution/8f1c2d3e-0000-4000-8000-000000000004/inv-1"
+)
+FULL_TREE_EXPECTED = ExpectedExecution(
+    execution_arn=FULL_TREE_ARN,
+    function_name="conformance-tests-abc-telemetry-4",
+    qualifier="$LATEST",
+    region="us-west-2",
+    account_id="123456789012",
+    execution_name="8f1c2d3e-0000-4000-8000-000000000004",
+)
+
+# A context summary in the shape the JS CloudWatch Logs exporter writes. Every
+# SDK reads `attempt` from the step details only, so a context has no
+# `maxAttempt` and the summary ends at the duration fields.
+CONTEXT_SUMMARY_KEYS = SUMMARY_KEYS[:-1]
+
+FULL_TREE_OPERATION_NAMES = ["process-items", "item-1", "item-2", "greet-1", "greet-2"]
+
+
+def _context_summary(sub_type: str) -> dict[str, Any]:
+    return {
+        "type": "CONTEXT",
+        "count": 1,
+        "failedCount": 0,
+        "status": "SUCCEEDED",
+        "subType": sub_type,
+        "minDurationMs": 5,
+        "maxDurationMs": 5,
+        "totalDurationMs": 5,
+    }
+
+
+def _step_summary() -> dict[str, Any]:
+    return {
+        "type": "STEP",
+        "count": 1,
+        "failedCount": 0,
+        "status": "SUCCEEDED",
+        "subType": "Step",
+        "minDurationMs": 3,
+        "maxDurationMs": 3,
+        "totalDurationMs": 3,
+        "maxAttempt": 1,
+    }
+
+
+def _full_tree_record() -> dict[str, Any]:
+    # `full-tree` turns off the plugin's parentId filter. So the map, both
+    # iteration contexts (children of the map), and both steps (children of
+    # each iteration) reach the record, each under its own name.
+    return {
+        "recordType": "DurableExecutionTelemetry",
+        "schemaVersion": "1.0",
+        "emittedAt": "2026-11-09T20:00:00.000Z",
+        "executionArn": FULL_TREE_ARN,
+        "executionName": "8f1c2d3e-0000-4000-8000-000000000004",
+        "functionName": "conformance-tests-abc-telemetry-4",
+        "functionQualifier": "$LATEST",
+        "region": "us-west-2",
+        "accountId": "123456789012",
+        "status": "SUCCEEDED",
+        "startTime": "2026-11-09T19:59:59.000Z",
+        "endTime": "2026-11-09T20:00:00.000Z",
+        "durationMs": 1000,
+        "input": [1, 2],
+        "output": ["Hello, 1!", "Hello, 2!"],
+        "operationsByName": {
+            "process-items": _context_summary("Map"),
+            "item-1": _context_summary("MapIteration"),
+            "greet-1": _step_summary(),
+            "item-2": _context_summary("MapIteration"),
+            "greet-2": _step_summary(),
+        },
+    }
+
+
+def _telemetry_4_entry() -> dict[str, Any]:
+    return _shipped_entry("telemetry-4", FULL_TREE_EXPECTED)
+
+
+def test_full_tree_fixture_record_has_the_expected_shape() -> None:
+    record = _full_tree_record()
+    assert list(record) == TOP_LEVEL_KEYS
+    assert set(record["operationsByName"]) == set(FULL_TREE_OPERATION_NAMES)
+    for name in ("process-items", "item-1", "item-2"):
+        assert list(record["operationsByName"][name]) == CONTEXT_SUMMARY_KEYS
+    for name in ("greet-1", "greet-2"):
+        assert list(record["operationsByName"][name]) == SUMMARY_KEYS
+
+
+def test_telemetry_4_accepts_the_full_tree_record() -> None:
+    assert validate_record(_full_tree_record(), _telemetry_4_entry()) == []
+
+
+@pytest.mark.parametrize("path", _leaf_paths(_telemetry_4_entry()["record"]), ids=".".join)
+def test_telemetry_4_rejects_record_missing_each_asserted_field(path: tuple[str, ...]) -> None:
+    record = _full_tree_record()
+    _del_path(record, path)
+    errors = validate_record(record, _telemetry_4_entry())
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{'.'.join(path)}: expected ")
+    assert errors[0].endswith(", got <missing>")
+
+
+def _missing_name_error(name: str) -> str:
+    keys = list(_telemetry_4_entry()["record"]["operationsByName"][name])
+    return f"operationsByName.{name}: expected mapping with keys {keys}, got <missing>"
+
+
+def test_telemetry_4_rejects_a_top_level_only_record() -> None:
+    # A plugin that still drops every operation with a parentId exports the
+    # map alone. All four children are reported missing.
+    record = _full_tree_record()
+    record["operationsByName"] = {"process-items": _context_summary("Map")}
+    assert validate_record(record, _telemetry_4_entry()) == [
+        _missing_name_error("item-1"),
+        _missing_name_error("item-2"),
+        _missing_name_error("greet-1"),
+        _missing_name_error("greet-2"),
+    ]
+
+
+def test_telemetry_4_rejects_dropped_iteration_contexts() -> None:
+    # A plugin that exports only STEP-typed children keeps the steps and
+    # loses the MapIteration contexts between the map and the steps.
+    record = _full_tree_record()
+    del record["operationsByName"]["item-1"]
+    del record["operationsByName"]["item-2"]
+    assert validate_record(record, _telemetry_4_entry()) == [
+        _missing_name_error("item-1"),
+        _missing_name_error("item-2"),
+    ]
+
+
+def test_telemetry_4_rejects_dropped_depth_two_children() -> None:
+    # A plugin that filters on depth instead of on parentId keeps the direct
+    # children of the map and loses the steps inside each iteration.
+    record = _full_tree_record()
+    del record["operationsByName"]["greet-1"]
+    del record["operationsByName"]["greet-2"]
+    assert validate_record(record, _telemetry_4_entry()) == [
+        _missing_name_error("greet-1"),
+        _missing_name_error("greet-2"),
+    ]
+
+
+def test_telemetry_4_rejects_steps_merged_under_a_shared_name() -> None:
+    # The two steps have distinct names. A handler or plugin that names them
+    # both `greet` aggregates them into one summary with `count: 2`. The
+    # closed mapping reports both missing names and the unexpected one.
+    record = _full_tree_record()
+    del record["operationsByName"]["greet-1"]
+    del record["operationsByName"]["greet-2"]
+    merged = _step_summary()
+    merged["count"] = 2
+    merged["totalDurationMs"] = 6
+    record["operationsByName"]["greet"] = merged
+    assert validate_record(record, _telemetry_4_entry()) == [
+        _missing_name_error("greet-1"),
+        _missing_name_error("greet-2"),
+        "operationsByName: unexpected keys ['greet']",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("result", "Hello, 1!"), ("error", {"name": "Error", "message": "boom"})],
+)
+def test_telemetry_4_rejects_a_step_payload(key: str, value: Any) -> None:
+    # No result transform is configured and nothing failed. So a step summary
+    # that carries `result` or `error` is a different record shape.
+    record = _full_tree_record()
+    record["operationsByName"]["greet-1"][key] = value
+    assert validate_record(record, _telemetry_4_entry()) == [f"operationsByName.greet-1: unexpected keys [{key!r}]"]
+
+
+def test_telemetry_4_rejects_an_iteration_keyed_by_id() -> None:
+    # The record keys operations by name. A plugin that keys by id loses the
+    # `item-1` key and adds one the requirement does not list.
+    record = _full_tree_record()
+    record["operationsByName"]["01K9ITER0"] = record["operationsByName"].pop("item-1")
+    assert validate_record(record, _telemetry_4_entry()) == [
+        _missing_name_error("item-1"),
+        "operationsByName: unexpected keys ['01K9ITER0']",
+    ]
+
+
+def test_telemetry_4_rejects_a_max_attempt_on_a_context() -> None:
+    # Every SDK reads `attempt` from the step details only. A plugin that
+    # writes `maxAttempt` on a context differs from the reference record.
+    record = _full_tree_record()
+    record["operationsByName"]["item-1"]["maxAttempt"] = 1
+    assert validate_record(record, _telemetry_4_entry()) == ["operationsByName.item-1: unexpected keys ['maxAttempt']"]
