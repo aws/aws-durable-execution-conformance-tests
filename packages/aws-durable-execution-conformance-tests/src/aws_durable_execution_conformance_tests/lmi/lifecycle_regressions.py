@@ -194,11 +194,12 @@ class _Observations:
                 self.fail("lifecycle sequence is duplicated or contradicts the normalized clock", "INCOMPLETE")
             entry = self.one("wrapper_enter", request)
             baseline = self.resources(entry)
+            if request.get("outcome") == "TIMED_OUT":
+                self.one("platform_timeout", request, source="platform")
             exits = self.select(ENDINGS, request)
             if not exits:
                 if request.get("outcome") != "TIMED_OUT":
                     self.fail("non-timeout invocation has no actual wrapper exit", "INCOMPLETE")
-                self.one("platform_timeout", request, source="platform")
                 retirement = self.select("worker_retired", request, source="platform")
                 task_exit = self.select("task_exit", request, taskId="root")
                 if not retirement and not task_exit:
@@ -209,8 +210,14 @@ class _Observations:
                     self.fail("worker retirement requires the declared runtime replacement policy")
                 continue
             end = self.one(ENDINGS, request)
-            if end.get("outcome") != request.get("outcome"):
+            wrapper_outcome = end.get("outcome")
+            if wrapper_outcome not in ("SUCCEEDED", "FAILED", "PENDING", "TIMED_OUT"):
+                self.fail("actual wrapper outcome is missing or unrecognized", "INCOMPLETE")
+            elif request.get("outcome") != "TIMED_OUT" and wrapper_outcome != request.get("outcome"):
                 self.fail("actual wrapper outcome differs from its original request")
+            # A platform timeout does not stop the process. A later SDK return
+            # or exception is a separate boundary, still subject to settlement
+            # and stale-activity checks below.
             user_exit = self.one("user_exit", request)
             if not self.ordered(entry, user_exit, end):
                 self.fail("wrapper exited before actual user-scope exit")
@@ -582,7 +589,8 @@ class _Observations:
         if not self.ordered(self.one("io_exit", victim, gateId=gate_id), attempted):
             self.fail("late operation fixture did not follow settlement of the held losing step")
         if (
-            not self.ordered(selected, closed, attempted, rejected)
+            not self.ordered(closed, attempted, rejected)
+            or not self.ordered(selected, attempted)
             or rejected.get("scopeId") != attempted.get("scopeId")
             or rejected.get("error") != {"type": "OrphanedChildException"}
         ):

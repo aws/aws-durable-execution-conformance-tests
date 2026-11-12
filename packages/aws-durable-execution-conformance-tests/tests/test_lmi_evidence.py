@@ -541,3 +541,95 @@ def test_malformed_or_unknown_history_status_cannot_match_its_way_to_a_pass(stat
         history["status"] = status
         value["expectedHistories"][history["executionArn"]]["status"] = status
     assert any("recognized execution status" in error for error in validate_evidence(value))
+
+
+def test_unnamed_context_preserves_actual_identity_without_inventing_a_name() -> None:
+    value = evidence()
+    operation = {"id": "actual-context", "type": "CONTEXT", "name": None, "parentId": None, "status": "SUCCEEDED"}
+    value["histories"][0]["operations"].append(operation)
+    assert validate_evidence(value) == []
+    assert operation == {
+        "id": "actual-context",
+        "type": "CONTEXT",
+        "name": None,
+        "parentId": None,
+        "status": "SUCCEEDED",
+    }
+
+
+@pytest.mark.parametrize("name", ["", False, {}, []])
+def test_unnamed_operation_support_does_not_accept_invalid_names(name: Any) -> None:
+    value = evidence()
+    value["histories"][0]["operations"] = [
+        {"id": "context", "type": "CONTEXT", "name": name, "parentId": None, "status": "SUCCEEDED"}
+    ]
+    assert any("operation.name" in error for error in validate_evidence(value))
+
+
+def test_operation_name_and_parent_still_require_explicit_fields() -> None:
+    for missing in ("name", "parentId"):
+        value = evidence()
+        operation = {"id": "context", "type": "CONTEXT", "name": None, "parentId": None, "status": "SUCCEEDED"}
+        del operation[missing]
+        value["histories"][0]["operations"] = [operation]
+        assert any(missing in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"])
+def test_held_execution_has_an_independent_explicit_status_allowance(status: str) -> None:
+    value = evidence()
+    history = value["histories"][0]
+    history["status"] = status
+    history.pop("result")
+    value["expectedHistories"][history["executionArn"]] = {
+        "allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]
+    }
+    assert validate_evidence(value) == []
+
+
+@pytest.mark.parametrize("allowed", [None, "RUNNING", [], ["RUNNING", "RUNNING"], ["UNKNOWN"], [False], [{}]])
+def test_history_status_allowance_rejects_malformed_or_unknown_choices(allowed: Any) -> None:
+    value = evidence()
+    arn = value["histories"][0]["executionArn"]
+    value["expectedHistories"][arn] = {"allowedStatuses": allowed}
+    assert any("allowedStatuses" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
+    "expectation",
+    [{}, {"status": "SUCCEEDED", "allowedStatuses": ["RUNNING", "SUCCEEDED"], "result": {"marker": "victim"}}],
+)
+def test_history_expectations_require_one_unambiguous_status_contract(expectation: dict[str, Any]) -> None:
+    value = evidence()
+    arn = value["histories"][0]["executionArn"]
+    value["expectedHistories"][arn] = expectation
+    assert any("exactly one" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("expectation", [{"status": "SUCCEEDED"}, {"allowedStatuses": ["FAILED", "STOPPED"]}])
+def test_fixed_terminal_expectations_still_require_result_or_error(expectation: dict[str, Any]) -> None:
+    value = evidence()
+    arn = value["histories"][0]["executionArn"]
+    value["expectedHistories"][arn] = expectation
+    assert any("result/error" in error for error in validate_evidence(value))
+
+
+def test_allowed_statuses_do_not_accept_success_or_ignore_declared_output() -> None:
+    value = evidence()
+    history = value["histories"][0]
+    value["expectedHistories"][history["executionArn"]] = {"allowedStatuses": ["RUNNING", "FAILED"], "result": None}
+    assert any("outside the declared" in error for error in validate_evidence(value))
+    history["status"] = "RUNNING"
+    assert any("fixture expectation" in error for error in validate_evidence(value))
+    history["result"] = None
+    assert validate_evidence(value) == []
+
+
+def test_running_history_allowance_does_not_establish_execution_retirement() -> None:
+    value = evidence()
+    history = value["histories"][0]
+    history["status"] = "RUNNING"
+    value["expectedHistories"][history["executionArn"]] = {"allowedStatuses": ["RUNNING"]}
+    retired = next(item for item in value["retirement"]["resources"] if item["kind"] == "execution")
+    retired["outcome"] = "RUNNING"
+    assert any("still resume" in error for error in validate_evidence(value))

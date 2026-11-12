@@ -59,7 +59,7 @@ and identified reuse. No invocation may shut it down during the measurement.
 | `flush_wait_completed` | Same `flushId`, `outcome: completed | timeout | error`, and observed `pendingExportIds` when the SDK's bounded wait returns. An error includes observed `error` details. |
 | `flush_completed` | Same `flushId`, `outcome: succeeded | failed`, and `pendingExportIds` when the underlying flush work actually settles. This may occur after a timed-out wait and wrapper return. |
 | `export_held` | `exportId` and case-owned `gateId` observed while that work is held. |
-| `export_released` | Same IDs and `mode: normal`; the time must match `faultsCreated[].releasedAtMs`. Emergency release cannot satisfy measurement assertions. |
+| `export_released` | Same IDs and `mode: normal`; `atMs` is this exporter call's actual receipt of the released gate. Match it to the driver release interval below, or the legacy exact timestamp. Emergency release cannot satisfy measurement assertions. |
 
 Flush completion is an observable operation result, not a prescribed future,
 promise or Java object type. Its pending IDs describe known case-owned exports;
@@ -75,10 +75,37 @@ interrupt that earlier call.
 Async mode records both the bounded wait and actual flush completion. A
 successful wait cannot report completion while its known work remains pending.
 A timed-out wait leaves ownership intact until actual completion is observed.
-For `held-export`, the SDK wait must time out and the wrapper return while the
-original export remains held. Only then does the case release its gate, observe
-successful export completion, and observe the underlying flush work settle.
-This same policy applies to asynchronous configurations in every runtime.
+For `held-export`, at least one batch owned by the selected victim must have
+paired `export_held` and `export_released` observations. Other batches may never
+block: a synchronous processor can make another call after the gate opens, and
+an asynchronous processor can accept queued work whose exporter body starts
+later. Every admitted batch still needs actual completion, canonical spans and
+retirement evidence, whether or not it was held. Unknown held/released IDs also
+remain subject to the independent retirement audit.
+
+In async mode, at least one selected held batch must be pending and actually
+held during the timed-out wait and through wrapper return. Only then does the
+case request gate release, observe successful export completion, and observe
+underlying flush work settle. It is not necessary for every queued batch to
+have reached the gate before the wrapper returns. This policy applies to
+asynchronous configurations in every runtime.
+
+A case-owned gate in `faultsCreated` may record `releaseRequestedAtMs` immediately
+before the driver's release write and `releaseAcknowledgedAtMs` after that write
+returns successfully. Both values must be finite and ordered. Each corresponding
+`export_released.atMs` must be at or after `releaseRequestedAtMs`; worker receipts
+may fall between the request and acknowledgement or after acknowledgement, and
+need not be equal across calls sharing a gate. In async held-export cases, the
+release request itself must follow actual wrapper return. A late worker receipt
+cannot hide a release write that started before the wrapper returned. Normalize
+clocks finely enough to establish this order.
+
+If either interval field is present, both are required and the interval is
+validated; an invalid interval cannot fall back to a legacy timestamp. Existing
+evidence without interval fields retains its exact comparison between
+`faultsCreated[].releasedAtMs` and each paired `export_released.atMs`. With explicit
+interval fields, any legacy `releasedAtMs` is not used as a substitute for the
+separate driver and worker observations.
 
 For `export-failure-recovery`, the victim's exports actually fail, while its
 handler still succeeds. A later distinct invocation in the original process and

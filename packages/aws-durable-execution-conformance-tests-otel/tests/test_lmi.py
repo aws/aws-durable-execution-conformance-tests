@@ -501,3 +501,61 @@ def test_late_probe_does_not_impose_exactly_once_export() -> None:
     spans = data["telemetry"]["views"]["invocation"]["spans"]
     spans.append(deepcopy(next(record for record in spans if record["span"]["name"] == "delayed task")))
     assert validate_lmi_telemetry(data, phase="observations") == []
+
+
+def _workflow_before_admission() -> dict[str, Any]:
+    data = evidence()
+    workflow = data["telemetry"]["views"]["execution"]["spans"][0]
+    workflow["span"]["start_time"] = datetime.fromtimestamp(0.5, UTC).isoformat()
+    data["histories"] = [{"executionArn": data["attempts"][0]["executionArn"], "startedAtMs": 500}]
+    return data
+
+
+def test_workflow_uses_actual_service_start_before_cold_native_admission() -> None:
+    data = _workflow_before_admission()
+    assert data["attempts"][0]["startedAtMs"] == 1000
+    assert validate_lmi_telemetry(data) == []
+
+
+def test_early_workflow_without_service_start_proof_retains_native_floor() -> None:
+    data = _workflow_before_admission()
+    data["histories"] = []
+    assert any("outside its lifecycle observation window" in error for error in validate_lmi_telemetry(data))
+
+
+def test_workflow_cannot_borrow_a_peer_executions_start() -> None:
+    data = _workflow_before_admission()
+    data["histories"][0]["executionArn"] = data["attempts"][1]["executionArn"]
+    assert any("outside its lifecycle observation window" in error for error in validate_lmi_telemetry(data))
+    data["histories"][0]["executionArn"] = "arn:execution:unobserved"
+    assert any("unobserved execution" in error for error in validate_lmi_telemetry(data))
+
+
+def test_workflow_cannot_predate_its_actual_execution_start() -> None:
+    data = _workflow_before_admission()
+    data["telemetry"]["views"]["execution"]["spans"][0]["span"]["start_time"] = datetime.fromtimestamp(
+        0.499, UTC
+    ).isoformat()
+    assert any("outside its lifecycle observation window" in error for error in validate_lmi_telemetry(data))
+
+
+@pytest.mark.parametrize("start", [-1, None, True, float("nan"), float("inf"), "500", 1001])
+def test_declared_service_start_must_be_finite_and_precede_first_native_admission(start: Any) -> None:
+    data = _workflow_before_admission()
+    data["histories"][0]["startedAtMs"] = start
+    assert validate_lmi_telemetry(data)
+
+
+def test_duplicate_service_start_evidence_is_not_silently_overwritten() -> None:
+    data = _workflow_before_admission()
+    data["histories"].append(deepcopy(data["histories"][0]))
+    assert any("unique execution ARNs" in error for error in validate_lmi_telemetry(data))
+
+
+@pytest.mark.parametrize("name", ["Invocation", "Step"])
+def test_service_start_does_not_relax_native_owned_span_boundaries(name: str) -> None:
+    data = _workflow_before_admission()
+    native_span = data["telemetry"]["views"]["invocation"]["spans"][0]["span"]
+    native_span["name"] = name
+    native_span["start_time"] = datetime.fromtimestamp(0.5, UTC).isoformat()
+    assert any("outside its lifecycle observation window" in error for error in validate_lmi_telemetry(data))

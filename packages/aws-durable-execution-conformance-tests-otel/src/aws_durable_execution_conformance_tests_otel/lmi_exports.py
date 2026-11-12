@@ -14,7 +14,13 @@ from collections.abc import Mapping
 from itertools import pairwise
 from typing import Any
 
-from aws_durable_execution_conformance_tests_otel.lmi import _number, _records, _span, _view_errors
+from aws_durable_execution_conformance_tests_otel.lmi import (
+    _number,
+    _records,
+    _service_execution_starts,
+    _span,
+    _view_errors,
+)
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
@@ -309,11 +315,26 @@ class _Exports:
         held = self.index("export_held", "exportId")
         released = self.index("export_released", "exportId")
         owned = {key for key, event in self.starts.items() if event["requestId"] == victim}
-        if set(held) != owned or set(released) != owned:
-            raise ValueError("every held export must retain its exact gate and release observations")
+        if not held or not set(held) <= owned or set(released) != set(held):
+            raise ValueError("a nonempty victim-owned held subset must retain its exact gate and release observations")
         created = _records(self.value.get("faultsCreated"), "faultsCreated")
-        for identity in owned:
-            start, release = held[identity], released[identity]
+        wrapper = self.wrappers[victim]
+        wait = None
+        pending: set[str] = set()
+        if self.mode == "async-bounded-flush":
+            waits = [
+                event
+                for event in self.events
+                if event.get("kind") == "flush_wait_completed" and event["requestId"] == victim
+            ]
+            if len(waits) != 1 or waits[0].get("outcome") != "timeout":
+                self.fail("async held export needs an actual timed-out wait with original export work still pending")
+            else:
+                wait = waits[0]
+                pending = self.pending(wait)
+        held_across_return = False
+        for identity, start in held.items():
+            release = released[identity]
             self.identity(self.starts[identity], start)
             self.identity(self.starts[identity], release)
             gates = [
@@ -325,30 +346,45 @@ class _Exports:
                 len(gates) != 1
                 or not start.get("gateId")
                 or start.get("gateId") != release.get("gateId")
-                or gates[0].get("releasedAtMs") != release.get("atMs")
                 or release.get("mode") != "normal"
             ):
                 raise ValueError("held export needs a case-owned normal measurement release")
+            gate = gates[0]
+            requested = None
+            if "releaseRequestedAtMs" in gate or "releaseAcknowledgedAtMs" in gate:
+                # The driver observes PUT intent/acknowledgement; each worker
+                # independently observes GET receipt. A receipt can be visible
+                # before the PUT acknowledgement, or arrive substantially later.
+                requested = _number(gate.get("releaseRequestedAtMs"))
+                acknowledged = _number(gate.get("releaseAcknowledgedAtMs"))
+                if requested > acknowledged or _number(release["atMs"]) < requested:
+                    raise ValueError("gate release interval is reversed or its receipt precedes the release request")
+            elif _number(gate.get("releasedAtMs")) != _number(release["atMs"]):
+                raise ValueError("legacy held export needs its exact normal measurement release timestamp")
             if not (
                 _compare_events(self.starts[identity], start) <= 0
                 and _compare_events(start, release) < 0
                 and _compare_events(release, self.ends[identity]) <= 0
             ):
                 self.fail("export hold and release were not inside the original export work")
-            wrapper = self.wrappers[victim]
             if self.mode == "sync":
                 if _compare_events(self.ends[identity], wrapper) > 0:
                     self.fail("sync wrapper returned while its export was held")
             else:
-                waits = [
-                    event
-                    for event in self.events
-                    if event.get("kind") == "flush_wait_completed" and event["requestId"] == victim
-                ]
-                if len(waits) != 1 or waits[0].get("outcome") != "timeout" or identity not in self.pending(waits[0]):
-                    self.fail("async held export needs an actual timed-out wait with the original export still pending")
-                if not (_compare_events(start, wrapper) < 0 and _compare_events(wrapper, release) < 0):
-                    self.fail("async bounded flush did not return the wrapper while the original export remained held")
+                if requested is not None and requested <= _number(wrapper["atMs"]):
+                    self.fail("async gate release request did not follow actual wrapper return")
+                if (
+                    wait is not None
+                    and identity in pending
+                    and _compare_events(start, wait) <= 0
+                    and _compare_events(start, wrapper) < 0
+                    and _compare_events(wrapper, release) < 0
+                ):
+                    held_across_return = True
+        if self.mode == "async-bounded-flush" and not held_across_return:
+            self.fail(
+                "async bounded flush did not return while an original export remained held across its wait and wrapper"
+            )
 
     def spans(self) -> None:
         views = self.value.get("telemetry", {}).get("views", {})
@@ -428,6 +464,7 @@ class _Exports:
                 self.attempts,
                 str(self.value["runtime"]),
                 self.observed_until,
+                execution_starts=_service_execution_starts(self.value.get("histories", [])),
             )
         )
 
@@ -442,12 +479,11 @@ def _retirement_errors(evidence: Mapping[str, Any]) -> list[str]:
         retired = _number(retirement.get("retiredAtMs"))
         events = _records(evidence.get("events"), "events")
         for kind in ("export", "flush"):
+            observed_kinds = {f"{kind}_started", f"{kind}_completed", f"{kind}_wait_completed"}
+            if kind == "export":
+                observed_kinds.update(("export_held", "export_released"))
             identities = {item.get("id") for item in created if item.get("kind") == kind}
-            identities.update(
-                event.get(f"{kind}Id")
-                for event in events
-                if event.get("kind") in {f"{kind}_started", f"{kind}_completed", f"{kind}_wait_completed"}
-            )
+            identities.update(event.get(f"{kind}Id") for event in events if event.get("kind") in observed_kinds)
             for identity in identities:
                 owned = [item for item in created if item.get("kind") == kind and item.get("id") == identity]
                 finished = [item for item in settled if item.get("kind") == kind and item.get("id") == identity]

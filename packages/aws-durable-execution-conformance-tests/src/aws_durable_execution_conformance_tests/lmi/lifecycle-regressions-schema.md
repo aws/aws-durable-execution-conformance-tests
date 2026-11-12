@@ -35,7 +35,12 @@ boundary was quiescent. OTel envelopes use UTC Unix epoch milliseconds.
 
 Each request needs `wrapper_enter`, `user_exit`, and exactly one `wrapper_return`
 or `wrapper_raise`, with the actual observed `outcome`. User exit must precede
-wrapper exit. Wrapper entry and exit carry `resources` snapshots:
+wrapper exit. The native platform outcome and SDK wrapper outcome remain
+independent after a proven `platform_timeout`: a process can later return or
+raise (normalized wrapper outcome `FAILED`) after its native request timed out.
+Retain that actual wrapper outcome and its error; do not relabel it `TIMED_OUT`.
+Non-timeout requests still require matching outcomes. Task/request settlement,
+clock, collection, and stale-activity assertions apply to both paths. Wrapper entry and exit carry `resources` snapshots:
 
 ```json
 {"threads": [{"id": "thread-id", "name": "MainThread"}], "fds": 12, "rssBytes": 1048576}
@@ -109,7 +114,7 @@ placement, execution, collection and retirement budgets remain independent.
 | 9, `early-completion-parallel/map/nested` | `regression.gateId` selects the held loser. An effect precedes `winner_ready`, with no prior loser exit; `winner_selected` follows. Wrapper return and cessation of activity occur within `cleanupMs`, before any driver release. Actual service history contains `race-parallel`, `race-map`, or nested `outer-map`/`nested-child`/`race-parallel` scopes respectively. |
 | 10, `checkpoint-settlement` | A real `checkpoint_call` receives `checkpoint_ack` (`source: service`, `operationIds`) for the actual `checkpoint-loser` operation. `ack_held` carries the matching `callId`, `operationId`, and gate. After positive `blocked`, normal release precedes `checkpoint_exit`, then `branch_join` of the actual `checkpoint-pool` context, then wrapper exit. An unrelated acknowledgment cannot establish this precondition. |
 | 11, `timeout-retry` | Actual selected timeout is followed within `retryMs` by selected `retry` on the same execution ARN. `service_retry` is observed from the platform and binds `previousRequestId` to the original request. The original successful step body occurs exactly once across all retained requests. Interrupted I/O effects are not given an exactly-once requirement. |
-| 12, `late-operation` | After winner selection, `scope_closed` and `late_attempt` identify the same actual service child-context ID. The losing I/O settles before the late attempt. `late_rejected` binds the same scope with normalized `OrphanedChildException`. No `late_accepted`, late body, late checkpoint dispatch or `late-work` service operation is allowed. The invocation may still be open: child closure is a separate boundary. |
+| 12, `late-operation` | `scope_closed` and `late_attempt` identify the same actual service child-context ID. Both observed closure and `winner_selected` precede the late attempt; their relative order is not prescribed. In particular, Python's public operation-end hook runs before the SDK call returns and the fixture emits `winner_selected`. The losing I/O settles before the late attempt. `late_rejected` binds the same scope with normalized `OrphanedChildException`. No `late_accepted`, late body, late checkpoint dispatch or `late-work` service operation is allowed. The invocation may still be open: child closure is a separate boundary. |
 | 13, `return-inflight` / `failure-inflight` | Root `user_exit` occurs after winner selection while losing I/O is still held. Normal release/IO settlement precedes the actual wrapper exit. c2 positively observes peer progress during this interval. Preserve success or the original normalized `ValueError`/marker failure after settlement. |
 | 14, `pending-cleanup` | Root `cleanup_enter` precedes the held gate; normal release and IO exit precede `cleanup_exit`, `user_exit`, then PENDING wrapper return. A later request resumes the same execution, completes a real WAIT, and does not repeat the completed success body. c2 peer progress is observed while cleanup is held. |
 | 15, `nested-progress` | All native workers establish live overlap, then `progress_begin`/`progress` bound the nested operation budget. Each request returns its own `[[marker:0, marker:1], marker]` result. Actual `outer-parallel`, `inner-map`, and `progress-child` operations succeed. `operation_config` records the public fixture's integer `maxConcurrency: 1` for the two pool operations, bound by operation ID and `source: public-fixture`; this is not invented service-history metadata. |

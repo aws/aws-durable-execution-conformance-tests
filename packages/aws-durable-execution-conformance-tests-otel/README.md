@@ -479,9 +479,10 @@ controls, never substitutes for genuine runtime coverage.
 The validators require one logical Invocation span per sampled request and one
 terminal Workflow with its actual success/failure status in terminal fixtures.
 Logical identities are counted across replay; identical transport re-exports are
-retained without promising exactly-once export. A Workflow can start in the
-original request and export from its terminal request, retaining the original
-runtime parent. Export failure must be followed by a successful invocation in the
+retained without promising exactly-once export. A Workflow may start at the
+service execution boundary before native admission and export from a terminal
+invocation, retaining its original runtime parent. Its recorded service history
+must establish that earlier boundary. Export failure must be followed by a successful invocation in the
 same worker/process with the same provider. Held peers must remain active and
 make progress after another request ends.
 
@@ -499,3 +500,13 @@ The `export-lifecycle` coverage profile exercises both `sync` and
 `async-bounded-flush` modes independently of language, with explicit mode-specific
 budgets and completion evidence. See the [shared profile guide](../aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/export-lifecycle.md).
 Java handler-owner/thread, HandlerScoped forwarding and MDC checks remain SDK-owned.
+
+The LMI history envelope may include `startedAtMs` from the actual service
+execution start (`GetDurableExecution.StartTimestamp` or the
+`ExecutionStarted.EventTimestamp`). The execution ARN binds that timestamp to
+its Workflow. This allows a Workflow to begin before first native admission,
+such as during cold start, and to be exported by a later replay. A missing service
+start retains the first-native lower bound; an invalid or inconsistent start
+fails validation. Invocation and operation spans still belong to their original
+native invocation window. Preserve actual span times rather than clamping them
+to handler entry.

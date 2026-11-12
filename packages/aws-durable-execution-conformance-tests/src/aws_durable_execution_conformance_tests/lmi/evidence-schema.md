@@ -60,14 +60,34 @@ REJECTED`; both probes must be observed after closure.
 
 `histories` contains every launched execution's service history, with
 `executionArn`, `ownerCaseId`, `status`, `result` or `error`, and `operations`.
+Optional `startedAtMs` is the actual service execution start from
+`GetDurableExecution.StartTimestamp` or `ExecutionStarted.EventTimestamp`,
+normalized to UTC Unix epoch milliseconds. When supplied, it must be finite,
+nonnegative, belong to that history's execution ARN, and precede or equal that
+execution's first native admission. OTel Workflow spans may start at this service
+boundary, including during cold start before the first invocation. Without that
+proof, their lower bound remains first native admission. Invocation and operation
+spans retain their own native-owner lower bound; do not clamp span timestamps.
 Each operation retains `id`, static `name`, `type`, `parentId` (null at root),
-`status`, and its stored result/error. Execution history status and its fixture
+`status`, and its stored result/error. `name` is explicitly null for a genuinely
+unnamed operation, including SDK-supported unnamed child contexts; missing names
+are incomplete evidence. Preserve its actual ID and parent instead of inventing
+a name. Execution history status and its fixture
 expectation must be recognized `SUCCEEDED`, `FAILED`, `TIMED_OUT`, `STOPPED`,
 `RUNNING`, or `PENDING` values; nonterminal observations cannot establish final
 retirement. `expectedHistories` is keyed by execution
 ARN and declares the fixture's expected `status` and `result`/`error` independently
-of the fetched service output. All declared expected fields are compared. Do not
-generate expectations by copying the observed history.
+of the fetched service output. A fixture whose execution can remain active while
+its fault is held may instead declare `allowedStatuses`, a nonempty list of
+unique recognized statuses. Exactly one of `status` or `allowedStatuses` is
+required. Only a list containing `RUNNING` permits omission of `result`/`error`;
+any declared output expectation is still compared. For example,
+`{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"], "result": null}`
+permits an active timeout victim without accepting a successful outcome. This
+observation allowance does not establish retirement: every owned execution still
+needs a terminal retirement record. All declared expected fields are compared;
+`allowedStatuses` itself is expectation metadata, not a service-history field.
+Never generate expectations by copying the observed status or output.
 
 `collection.watermarks` contains independently confirmed `lifecycle`,
 `sdkRequests`, and `history` coverage through `observationEndedAtMs`.

@@ -15,7 +15,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from aws_durable_execution_conformance_tests_otel.chained_invoke import execution_trace_context
-from aws_durable_execution_conformance_tests_otel.lmi import _identifier, _number, _records, _span, _view_errors
+from aws_durable_execution_conformance_tests_otel.lmi import (
+    _identifier,
+    _number,
+    _records,
+    _service_execution_starts,
+    _span,
+    _view_errors,
+)
 from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
@@ -260,7 +267,12 @@ class _Telemetry:
         strict_view = {**self.view, "spans": observed, "assertions": assertions}
         self.errors.extend(
             _view_errors(
-                self.view_name, strict_view, self.attempts, "python", _number(self.evidence.get("observationEndedAtMs"))
+                self.view_name,
+                strict_view,
+                self.attempts,
+                "python",
+                _number(self.evidence.get("observationEndedAtMs")),
+                execution_starts=_service_execution_starts(self.evidence.get("histories", [])),
             )
         )
         outcomes = {

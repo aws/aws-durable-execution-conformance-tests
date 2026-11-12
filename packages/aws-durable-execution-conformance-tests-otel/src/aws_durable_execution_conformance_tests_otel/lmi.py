@@ -78,14 +78,45 @@ def _span(raw: Any) -> Span:
     )
 
 
+def _service_execution_starts(histories: Any) -> dict[str, float]:
+    """Preserve optional starts observed from each execution's service history."""
+    starts: dict[str, float] = {}
+    for history in _records(histories, "histories"):
+        if "startedAtMs" not in history:
+            continue
+        arn = history.get("executionArn")
+        if not isinstance(arn, str) or not arn or arn in starts:
+            raise ValueError("service execution starts require unique execution ARNs")
+        start = _number(history["startedAtMs"])
+        if start < 0:
+            raise ValueError("service execution start must be nonnegative")
+        starts[arn] = start
+    return starts
+
+
 def _view_errors(
     name: str,
     view: Mapping[str, Any],
     attempts: Mapping[str, Mapping[str, Any]],
     runtime: str,
     observation_end: float,
+    *,
+    execution_starts: Mapping[str, float] | None = None,
 ) -> list[str]:
     errors: list[str] = []
+    native_starts: dict[str, float] = {}
+    for attempt in attempts.values():
+        arn = attempt["executionArn"]
+        start = _number(attempt["startedAtMs"])
+        native_starts[arn] = min(start, native_starts.get(arn, start))
+    service_starts: dict[str, float] = {}
+    for arn, raw_start in (execution_starts or {}).items():
+        if arn not in native_starts:
+            raise ValueError("service execution start belongs to an unobserved execution")
+        start = _number(raw_start)
+        if start < 0 or start > native_starts[arn]:
+            raise ValueError("service execution start must not follow its first native admission")
+        service_starts[arn] = start
     collection = view.get("collection", {})
     if not isinstance(collection, Mapping) or collection.get("status") != "complete":
         return [f"INCOMPLETE: {name} collection did not complete (absence is not unsampled evidence)"]
@@ -139,13 +170,12 @@ def _view_errors(
         span = _span(record.get("span"))
         earliest_start = _number(attempts[request_id]["startedAtMs"])
         if span.name == "Workflow":
-            # A logical Workflow starts at the original invocation and may be
-            # exported by a later terminal invocation of that same execution.
-            earliest_start = min(
-                _number(attempt["startedAtMs"])
-                for attempt in attempts.values()
-                if attempt["executionArn"] == attempts[request_id]["executionArn"]
-            )
+            # The service execution can begin before Lambda admission (for
+            # example during cold start), and its Workflow can be exported on
+            # a later resume. Only that execution's observed service start
+            # relaxes the old first-native floor; missing proof stays strict.
+            arn = attempts[request_id]["executionArn"]
+            earliest_start = service_starts.get(arn, native_starts[arn])
         if span.start_time.timestamp() * 1000 < earliest_start or span.end_time.timestamp() * 1000 > observation_end:
             errors.append(f"INCOMPLETE: {name}/{request_id} span lies outside its lifecycle observation window")
         previous = owners.setdefault((span.trace_id, span.span_id), request_id)
@@ -440,13 +470,16 @@ def validate_lmi_telemetry(evidence: Mapping[str, Any], *, phase: str = "final")
         if any(not isinstance(view, Mapping) for view in telemetry["views"].values()):
             return ["INCOMPLETE: telemetry views must be objects"]
         observation_end = _number(evidence.get("observationEndedAtMs"))
+        execution_starts = _service_execution_starts(evidence.get("histories", []))
         errors = []
         for name in ("invocation", "execution"):
             view = telemetry["views"].get(name)
             if not isinstance(view, Mapping):
                 errors.append(f"INCOMPLETE: missing {name} view")
                 continue
-            errors.extend(_view_errors(name, view, attempts, runtime, observation_end))
+            errors.extend(
+                _view_errors(name, view, attempts, runtime, observation_end, execution_starts=execution_starts)
+            )
             if evidence.get("requirementId") == "lmi-lifecycle-7":
                 errors.extend(_late_activity_errors(evidence, name, view))
                 if any(

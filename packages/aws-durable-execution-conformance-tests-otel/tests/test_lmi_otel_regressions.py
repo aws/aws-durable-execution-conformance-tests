@@ -636,3 +636,22 @@ def test_same_logical_span_reexport_does_not_claim_exactly_once_transport() -> N
     spans = value["telemetry"]["views"]["invocation"]["spans"]
     spans.append(deepcopy(spans[0]))
     assert validate_lifecycle_telemetry(value) == []
+
+
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_replayed_workflow_uses_its_original_service_execution_start(view: str) -> None:
+    value = build_evidence("otel-warm-lifecycle", view=view)
+    workflow = next(
+        record
+        for record in value["telemetry"]["views"][view]["spans"]
+        if record["span"]["name"] == "Workflow" and record["requestId"] == "request-warm-2-resume"
+    )
+    original = next(attempt for attempt in value["attempts"] if attempt["requestId"] == "request-warm-2")
+    service_start = original["startedAtMs"] - 25
+    next(history for history in value["histories"] if history["executionArn"] == original["executionArn"])[
+        "startedAtMs"
+    ] = service_start
+    workflow["span"]["start_time"] = datetime.fromtimestamp(service_start / 1000, UTC).isoformat()
+    assert validate_lifecycle_telemetry(value) == []
+    workflow["span"]["start_time"] = datetime.fromtimestamp((service_start - 1) / 1000, UTC).isoformat()
+    assert any("outside its lifecycle observation window" in error for error in validate_lifecycle_telemetry(value))

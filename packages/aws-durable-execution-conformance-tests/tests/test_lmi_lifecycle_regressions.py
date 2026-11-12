@@ -594,3 +594,79 @@ def test_counterfeit_or_inconsistent_runtime_deadline_is_rejected(change: str) -
     else:
         observation["remainingTimeMs"] = True
     assert validate_lifecycle_regressions(value)
+
+
+def _resequence(value: dict[str, Any]) -> None:
+    for request in value["attempts"]:
+        events = sorted(
+            (item for item in value["events"] if item["requestId"] == request["requestId"]),
+            key=lambda item: item["atMs"],
+        )
+        for sequence, item in enumerate(events):
+            item["sequence"] = sequence
+
+
+def _timeout_wrapper(outcome: str = "FAILED", kind: str = "wrapper_raise") -> dict[str, Any]:
+    value = build_evidence("timeout-retry")
+    owner = {key: value["events"][0][key] for key in ("requestId", "ownerRequestId", "executionArn")}
+    value["events"].extend(
+        [
+            {**owner, "kind": "task_start", "atMs": 101, "taskId": "root"},
+            {**owner, "kind": "user_exit", "atMs": 645},
+            {**owner, "kind": kind, "atMs": 660, "outcome": outcome, "resources": resources()},
+        ]
+    )
+    _resequence(value)
+    return value
+
+
+@pytest.mark.parametrize(
+    "outcome,kind", [("FAILED", "wrapper_raise"), ("SUCCEEDED", "wrapper_return"), ("PENDING", "wrapper_return")]
+)
+def test_actual_sdk_wrapper_outcome_remains_independent_after_platform_timeout(outcome: str, kind: str) -> None:
+    value = _timeout_wrapper(outcome, kind)
+    assert value["attempts"][0]["outcome"] == "TIMED_OUT"
+    assert validate_lifecycle_regressions(value) == []
+    assert find(value, kind)["outcome"] == outcome
+
+
+def test_timeout_wrapper_exception_does_not_erase_task_settlement_checks() -> None:
+    value = _timeout_wrapper()
+    find(value, "io_exit")["atMs"] = 670
+    _resequence(value)
+    assert any("unsettled" in error for error in validate_lifecycle_regressions(value))
+
+
+def test_timeout_wrapper_does_not_erase_platform_or_late_activity_evidence() -> None:
+    value = _timeout_wrapper()
+    value["events"] = [item for item in value["events"] if item["kind"] != "platform_timeout"]
+    assert any("platform_timeout" in error for error in validate_lifecycle_regressions(value))
+    value = _timeout_wrapper()
+    find(value, "body")["atMs"] = 680
+    _resequence(value)
+    assert any("after wrapper exit" in error for error in validate_lifecycle_regressions(value))
+
+
+def test_wrapper_outcomes_remain_required_and_exact_without_platform_timeout() -> None:
+    value = _timeout_wrapper()
+    find(value, "wrapper_raise")["outcome"] = "invented"
+    assert any("unrecognized" in error for error in validate_lifecycle_regressions(value))
+    value = build_evidence("native-concurrency")
+    find(value, "wrapper_return")["outcome"] = "FAILED"
+    assert any("differs" in error for error in validate_lifecycle_regressions(value))
+
+
+def test_public_operation_end_can_close_parent_before_winner_result_returns() -> None:
+    value = build_evidence("late-operation")
+    find(value, "scope_closed")["atMs"] = 255
+    assert find(value, "winner_selected")["atMs"] == 260
+    _resequence(value)
+    assert validate_lifecycle_regressions(value) == []
+
+
+@pytest.mark.parametrize("boundary", ["scope_closed", "winner_selected"])
+def test_both_parent_closure_and_winner_selection_must_precede_late_attempt(boundary: str) -> None:
+    value = build_evidence("late-operation")
+    find(value, boundary)["atMs"] = 835
+    _resequence(value)
+    assert any("completed child scope" in error for error in validate_lifecycle_regressions(value))

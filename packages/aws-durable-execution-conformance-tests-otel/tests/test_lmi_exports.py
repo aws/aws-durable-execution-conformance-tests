@@ -471,3 +471,156 @@ def test_async_export_can_complete_after_wrapper_when_spans_end_before_completio
     for record in value["telemetry"]["views"]["invocation"]["spans"]:
         record["span"]["end_time"] = datetime.fromtimestamp(completed / 1000, UTC).isoformat()
     assert validate_export_lifecycle(value) == []
+
+
+def add_export_batch(
+    value: dict[str, Any],
+    identity: str,
+    *,
+    accepted: float,
+    completed: float,
+    held: float | None = None,
+    released: float | None = None,
+) -> None:
+    """Add an independently observed batch, preserving every resource and span."""
+    started_event = {**deepcopy(find(value, "export_started")), "exportId": identity, "atMs": accepted}
+    completed_event = {**deepcopy(find(value, "export_completed")), "exportId": identity, "atMs": completed}
+    value["events"].extend((started_event, completed_event))
+    if held is not None:
+        value["events"].append({**deepcopy(find(value, "export_held")), "exportId": identity, "atMs": held})
+    if released is not None:
+        value["events"].append({**deepcopy(find(value, "export_released")), "exportId": identity, "atMs": released})
+    resource = {"id": identity, "kind": "export", "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {
+            **resource,
+            "settledAtMs": 410,
+            "outcome": completed_event["outcome"],
+            "evidenceUri": "s3://example/run-1/case-1/settled",
+        }
+    )
+    spans = value["telemetry"]["views"][value["otelView"]]["spans"]
+    spans.append({**deepcopy(spans[0]), "exportId": identity})
+    if value["exportMode"] == "async-bounded-flush":
+        flush_completed = find(value, "flush_completed")
+        flush_completed["atMs"] = max(flush_completed["atMs"], completed + 1)
+        starts = {event["exportId"]: event["atMs"] for event in value["events"] if event["kind"] == "export_started"}
+        ends = {event["exportId"]: event["atMs"] for event in value["events"] if event["kind"] == "export_completed"}
+        for event in value["events"]:
+            if event["kind"] in {"flush_started", "flush_wait_completed", "flush_completed"}:
+                event["pendingExportIds"] = [key for key, time in starts.items() if time <= event["atMs"] < ends[key]]
+    sequence_events(value)
+
+
+@pytest.mark.parametrize("mode", EXPORT_MODES)
+def test_held_scenario_accepts_later_batches_that_never_blocked_on_the_gate(mode: str) -> None:
+    value = build_evidence("held-export", export_mode=mode)
+    # A synchronous processor makes its next call after release. An async
+    # processor already admitted this queued batch before starting final flush;
+    # its exporter body need not have reached the gate before release.
+    add_export_batch(value, "unheld-batch", accepted=152 if mode == "sync" else 121.5, completed=155)
+    assert validate_export_lifecycle(value) == []
+
+
+@pytest.mark.parametrize("mode", EXPORT_MODES)
+def test_one_driver_release_can_have_distinct_worker_receipt_times(mode: str) -> None:
+    value = build_evidence("held-export", export_mode=mode)
+    value["faultsCreated"][0].update(releaseRequestedAtMs=144, releaseAcknowledgedAtMs=146)
+    add_export_batch(value, "second-held", accepted=120.5, held=121.5, released=147, completed=150.5)
+    # The first worker's receipt (145) is between PUT and acknowledgement; the
+    # other worker sees the released gate later. Neither receipt is an ACK.
+    assert validate_export_lifecycle(value) == []
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing-request", "missing-ack", "reverse", "nonfinite", "receipt-before-request"]
+)
+def test_release_interval_requires_both_ordered_finite_driver_boundaries(mutation: str) -> None:
+    value = build_evidence("held-export")
+    gate = value["faultsCreated"][0]
+    gate.update(releaseRequestedAtMs=144, releaseAcknowledgedAtMs=146)
+    if mutation == "missing-request":
+        gate.pop("releaseRequestedAtMs")
+    elif mutation == "missing-ack":
+        gate.pop("releaseAcknowledgedAtMs")
+    elif mutation == "reverse":
+        gate["releaseAcknowledgedAtMs"] = 143
+    elif mutation == "nonfinite":
+        gate["releaseRequestedAtMs"] = float("nan")
+    else:
+        gate.update(releaseRequestedAtMs=146, releaseAcknowledgedAtMs=147)
+    assert validate_export_lifecycle(value)
+
+
+def test_async_early_release_intent_cannot_be_hidden_by_a_late_worker_receipt() -> None:
+    value = build_evidence("held-export", export_mode="async-bounded-flush")
+    value["faultsCreated"][0].update(releaseRequestedAtMs=135, releaseAcknowledgedAtMs=146)
+    assert any("release request" in error for error in validate_export_lifecycle(value))
+
+
+def test_async_requires_one_batch_actually_held_during_the_bounded_wait() -> None:
+    value = build_evidence("held-export", export_mode="async-bounded-flush")
+    find(value, "export_held")["atMs"] = 133  # The wait already returned at 132.
+    sequence_events(value)
+    assert any("remained held" in error for error in validate_export_lifecycle(value))
+
+
+def test_an_unknown_held_batch_cannot_escape_independent_retirement_checks() -> None:
+    value = build_evidence("held-export")
+    find(value, "export_held")["exportId"] = "untracked"
+    find(value, "export_released")["exportId"] = "untracked"
+    assert validate_export_lifecycle(value, phase="observations")
+    assert any("retirement" in error and "untracked" in error for error in validate_export_lifecycle(value))
+
+
+def test_held_subset_still_requires_its_own_paired_release() -> None:
+    value = build_evidence("held-export")
+    value["events"] = [event for event in value["events"] if event["kind"] != "export_released"]
+    assert validate_export_lifecycle(value)
+
+
+def test_unheld_later_batch_still_needs_actual_completion_and_retirement() -> None:
+    value = build_evidence("held-export")
+    add_export_batch(value, "unheld-batch", accepted=152, completed=155)
+    value["events"] = [
+        event
+        for event in value["events"]
+        if not (event["kind"] == "export_completed" and event.get("exportId") == "unheld-batch")
+    ]
+    assert validate_export_lifecycle(value, phase="observations")
+    assert any("retirement" in error and "unheld-batch" in error for error in validate_export_lifecycle(value))
+
+
+@pytest.mark.parametrize("kind", ["export_held", "export_released"])
+def test_held_gate_events_cannot_change_invocation_ownership(kind: str) -> None:
+    value = build_evidence("held-export")
+    find(value, kind)["ownerRequestId"] = "another-request"
+    assert any("attributed" in error for error in validate_export_lifecycle(value))
+
+
+def test_held_scenario_cannot_pass_without_any_actually_held_export() -> None:
+    value = build_evidence("held-export")
+    value["events"] = [event for event in value["events"] if event["kind"] not in {"export_held", "export_released"}]
+    assert validate_export_lifecycle(value)
+
+
+def test_async_only_one_of_multiple_held_batches_must_span_wait_and_wrapper() -> None:
+    value = build_evidence("held-export", export_mode="async-bounded-flush")
+    value["faultsCreated"][0].update(releaseRequestedAtMs=144, releaseAcknowledgedAtMs=146)
+    add_export_batch(value, "later-held", accepted=121.5, held=142, released=147, completed=155)
+    assert validate_export_lifecycle(value) == []
+
+
+@pytest.mark.parametrize("mode", EXPORT_MODES)
+@pytest.mark.parametrize("view", ["invocation", "execution"])
+def test_exported_workflow_retains_real_execution_start_before_native_admission(mode: str, view: str) -> None:
+    value = build_evidence("export-success", view=view, export_mode=mode)
+    value["histories"][0]["startedAtMs"] = 50
+    workflow = next(
+        record for record in value["telemetry"]["views"][view]["spans"] if record["span"]["name"] == "Workflow"
+    )
+    workflow["span"]["start_time"] = datetime.fromtimestamp(0.05, UTC).isoformat()
+    assert validate_export_lifecycle(value) == []
+    del value["histories"][0]["startedAtMs"]
+    assert any("outside its lifecycle observation window" in error for error in validate_export_lifecycle(value))

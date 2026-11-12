@@ -190,8 +190,12 @@ class _Evidence:
             operations = self.records(history.get("operations"), "history.operations")
             ids: set[str] = set()
             for operation in operations:
-                for key in ("id", "type", "name", "status"):
+                for key in ("id", "type", "status"):
                     self.string(operation.get(key), f"history operation.{key}")
+                if "name" not in operation:
+                    self.error("history operation.name is required (null for an unnamed operation)")
+                elif operation["name"] is not None:
+                    self.string(operation["name"], "history operation.name")
                 if "parentId" not in operation:
                     self.error("history operation.parentId is required (null for the root)")
                 operation_id = operation.get("id")
@@ -200,12 +204,30 @@ class _Evidence:
                 if isinstance(operation_id, str):
                     ids.add(operation_id)
             expectation = self.mapping(expected.get(arn), f"expectedHistories.{arn}")
-            if expectation.get("status") not in HISTORY_STATUSES:
+            allow_running = False
+            if ("status" in expectation) == ("allowedStatuses" in expectation):
+                self.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
+            if "allowedStatuses" in expectation:
+                allowed = expectation["allowedStatuses"]
+                if (
+                    not isinstance(allowed, list)
+                    or not allowed
+                    or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
+                    or len(set(allowed)) != len(allowed)
+                ):
+                    self.error(
+                        f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
+                    )
+                else:
+                    allow_running = "RUNNING" in allowed
+                    if history.get("status") not in allowed:
+                        self.error(f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION")
+            elif expectation.get("status") not in HISTORY_STATUSES:
                 self.error(f"expectedHistories.{arn}.status must be a recognized execution status")
-            if "status" not in expectation or ("result" not in expectation and "error" not in expectation):
-                self.error(f"history {arn} needs an independently declared expected status and result/error")
+            if not allow_running and "result" not in expectation and "error" not in expectation:
+                self.error(f"history {arn} needs an independently declared expected result/error")
             for key, item in expectation.items():
-                if history.get(key) != item:
+                if key != "allowedStatuses" and history.get(key) != item:
                     self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
         if set(actual) != arns or set(expected) != arns:
