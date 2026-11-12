@@ -10,7 +10,8 @@ import yaml
 
 RUNTIMES = ("javascript", "java", "python")
 CAPABILITIES = ("lifecycle", "lifecycle-otel")
-COVERAGE_PROFILES = ("standard", "python-lifecycle")
+COVERAGE_PROFILES = ("standard", "python-lifecycle", "export-lifecycle")
+EXPORT_MODES = ("sync", "async-bounded-flush")
 
 
 def requirements(
@@ -30,6 +31,8 @@ def requirements(
         raise ValueError(f"Unknown coverage profile: {coverage_profile}")
     if coverage_profile == "python-lifecycle" and runtime != "python":
         raise ValueError("python-lifecycle coverage requires runtime python")
+    if coverage_profile == "export-lifecycle" and capability != "lifecycle-otel":
+        raise ValueError("export-lifecycle coverage requires lifecycle-otel capability")
     root = files(__package__).joinpath("requirements/lmi-lifecycle")
     result = {}
     for resource in sorted(root.iterdir(), key=lambda path: path.name):

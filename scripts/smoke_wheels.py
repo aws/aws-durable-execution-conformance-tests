@@ -74,6 +74,10 @@ def main() -> None:
         lmi_matrix = importlib.import_module("aws_durable_execution_conformance_tests.lmi.matrix")
         assert len(lmi_matrix.required_cases("python", "lifecycle", "python-lifecycle")) == 28
         assert len(lmi_matrix.required_cases("python", "lifecycle-otel", "python-lifecycle")) == 76
+        for runtime in ("javascript", "java", "python"):
+            cases = lmi_matrix.required_cases(runtime, "lifecycle-otel", "export-lifecycle")
+            assert len(cases) == 24
+            assert {case.export_mode for case in cases} == {"sync", "async-bounded-flush"}
         assert "lmi-lifecycle" not in registry.suites
         assert files("aws_durable_execution_conformance_tests.lmi").joinpath("evidence-schema.json").is_file()
 

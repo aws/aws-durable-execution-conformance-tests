@@ -492,3 +492,10 @@ same stored-result, stored-failure, callback/wait and retry proof used by the co
 lifecycle validator. Warm process/provider identity is observed rather than
 assumed from consecutive requests. These object-allocation and fixture details
 belong to this explicit Python profile, not the language-neutral generic suite.
+
+### Language-neutral export lifecycle
+
+The `export-lifecycle` coverage profile exercises both `sync` and
+`async-bounded-flush` modes independently of language, with explicit mode-specific
+budgets and completion evidence. See the [shared profile guide](../aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/export-lifecycle.md).
+Java handler-owner/thread, HandlerScoped forwarding and MDC checks remain SDK-owned.

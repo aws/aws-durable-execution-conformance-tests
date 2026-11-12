@@ -272,3 +272,8 @@ for manifests, SDK adapter contracts, persistent deployment profiles, OTel reuse
 and the remaining real-LMI adoption gates. The new
 [Python lifecycle coverage profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/python-lifecycle.md)
 maps Python SDK #743 to 28 lifecycle or 76 lifecycle/OTel mandatory test slots.
+
+The language-neutral [export lifecycle profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/export-lifecycle.md)
+requires synchronous export and asynchronous export with bounded flush waiting
+for every supported runtime. Java implementation-specific hook, thread and MDC
+tests remain in the Java SDK repository.

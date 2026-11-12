@@ -44,7 +44,8 @@
         "lmi-lifecycle-12",
         "lmi-lifecycle-13",
         "lmi-lifecycle-14",
-        "lmi-lifecycle-15"
+        "lmi-lifecycle-15",
+        "lmi-lifecycle-16"
       ]
     },
     "runtime": {
@@ -321,7 +322,8 @@
     "coverageProfile": {
       "enum": [
         "standard",
-        "python-lifecycle"
+        "python-lifecycle",
+        "export-lifecycle"
       ],
       "default": "standard"
     },
@@ -339,6 +341,42 @@
     "regression": {
       "type": "object",
       "description": "Runtime-profile scenario observations; validated by lifecycle_regressions.py."
+    },
+    "exportMode": {
+      "enum": [
+        "sync",
+        "async-bounded-flush",
+        null
+      ]
+    },
+    "exportLifecycle": {
+      "type": "object",
+      "required": [
+        "budgets"
+      ],
+      "properties": {
+        "budgets": {
+          "type": "object",
+          "required": [
+            "observationGraceMs",
+            "exportCompletionMs"
+          ],
+          "properties": {
+            "observationGraceMs": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "exportCompletionMs": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "flushWaitMs": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -378,14 +416,6 @@
           "minLength": 1
         },
         "role": {
-          "type": "string",
-          "minLength": 1
-        },
-        "handlerOwnerId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "threadId": {
           "type": "string",
           "minLength": 1
         },
@@ -615,18 +645,55 @@
         }
       },
       "else": {
-        "properties": {
-          "requirementId": {
-            "enum": [
-              "lmi-lifecycle-1",
-              "lmi-lifecycle-2",
-              "lmi-lifecycle-3",
-              "lmi-lifecycle-4",
-              "lmi-lifecycle-5",
-              "lmi-lifecycle-6",
-              "lmi-lifecycle-7",
-              "lmi-lifecycle-8"
-            ]
+        "if": {
+          "required": [
+            "coverageProfile"
+          ],
+          "properties": {
+            "coverageProfile": {
+              "const": "export-lifecycle"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "scenario",
+            "otelView",
+            "exportMode",
+            "exportLifecycle"
+          ],
+          "properties": {
+            "requirementId": {
+              "const": "lmi-lifecycle-16"
+            },
+            "otelView": {
+              "enum": [
+                "invocation",
+                "execution"
+              ]
+            },
+            "exportMode": {
+              "enum": [
+                "sync",
+                "async-bounded-flush"
+              ]
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "requirementId": {
+              "enum": [
+                "lmi-lifecycle-1",
+                "lmi-lifecycle-2",
+                "lmi-lifecycle-3",
+                "lmi-lifecycle-4",
+                "lmi-lifecycle-5",
+                "lmi-lifecycle-6",
+                "lmi-lifecycle-7",
+                "lmi-lifecycle-8"
+              ]
+            }
           }
         }
       }

@@ -59,13 +59,17 @@ def _case_definition(
     for required in _required(manifest):
         if required.requirement_id != scenario["requirement_id"] or required.scenario != scenario["scenario"]:
             continue
+        if required.export_mode != scenario.get("export_mode"):
+            continue
         if required.native_concurrency is not None and (
             required.native_concurrency != profile["native_concurrency"]
             or required.otel_view != scenario.get("otel_view")
         ):
             continue
         return required
-    raise ValueError("scenario, native concurrency and OTel view do not match the selected coverage matrix")
+    raise ValueError(
+        "scenario, native concurrency, OTel view and export mode do not match the selected coverage matrix"
+    )
 
 
 def coverage_inventory(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -76,6 +80,7 @@ def coverage_inventory(manifest: Mapping[str, Any]) -> dict[str, Any]:
             case["scenario"],
             profiles[case["profile_id"]]["native_concurrency"],
             case.get("otel_view") if manifest.get("coverageProfile", "standard") != "standard" else None,
+            case.get("export_mode"),
         )
         for case in manifest["scenarios"]
     ]
@@ -228,6 +233,13 @@ def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
         )
         errors.extend(validate_lifecycle_regressions(evidence, phase=phase))
         needs_otel = evidence.get("otelView") is not None
+    elif profile == "export-lifecycle":
+        errors = validate_common_evidence(
+            evidence,
+            phase="observations" if phase == "observations" else "final",
+            requirement_ids=("lmi-lifecycle-16",),
+        )
+        needs_otel = True
     elif profile == "standard":
         errors = validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
         needs_otel = evidence.get("requirementId") in ("lmi-lifecycle-7", "lmi-lifecycle-8")
@@ -239,6 +251,10 @@ def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
                 from aws_durable_execution_conformance_tests_otel.lmi_regressions import validate_lifecycle_telemetry
 
                 errors.extend(validate_lifecycle_telemetry(evidence, phase=phase))
+            elif profile == "export-lifecycle":
+                from aws_durable_execution_conformance_tests_otel.lmi_exports import validate_export_lifecycle
+
+                errors.extend(validate_export_lifecycle(evidence, phase=phase))
             else:
                 from aws_durable_execution_conformance_tests_otel.lmi import validate_lmi_telemetry
 
@@ -265,13 +281,16 @@ def _identity_errors(
     coverage_profile = manifest.get("coverageProfile", "standard")
     if evidence.get("coverageProfile", "standard") != coverage_profile:
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
-    if coverage_profile == "python-lifecycle":
+    if evidence.get("exportMode") != scenario.get("export_mode"):
+        errors.append("INCOMPLETE: observed export mode does not match the admitted matrix slot")
+    if coverage_profile in ("python-lifecycle", "export-lifecycle"):
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")
         if evidence.get("otelView") != scenario.get("otel_view"):
             errors.append("INCOMPLETE: evidence OTel view does not match the admitted matrix slot")
-        regression = evidence.get("regression")
-        if not isinstance(regression, Mapping) or regression.get("budgets") != scenario.get("behavior_budgets", {}):
+        policy_key = "regression" if coverage_profile == "python-lifecycle" else "exportLifecycle"
+        policy = evidence.get(policy_key)
+        if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
             errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
     if scenario["scenario"] in ("normal-return", "normal-failure"):
         outcome = "SUCCEEDED" if scenario["scenario"] == "normal-return" else "FAILED"
@@ -474,7 +493,7 @@ def build_report(manifest: Mapping[str, Any], results: list[dict[str, Any]]) -> 
         if missing:
             errors.extend(
                 f"Missing mandatory matrix slot: {case['scenario']} / native={case['native_concurrency']} / "
-                f"OTel={case['otel_view'] or 'disabled'}"
+                f"OTel={case['otel_view'] or 'disabled'} / export={case['export_mode'] or 'profile-default'}"
                 for case in missing
             )
             if status == ReportStatus.PASSED:

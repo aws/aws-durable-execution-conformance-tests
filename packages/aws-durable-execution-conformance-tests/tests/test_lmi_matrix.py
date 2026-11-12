@@ -182,10 +182,10 @@ def test_unknown_applicability_options_fail_closed(option, value):
 
 def test_standard_profile_keeps_existing_minimum_native_concurrency_semantics():
     overlap = next(case for case in required_cases("python", "lifecycle") if case.scenario == "native-overlap")
-    assert overlap.matches((overlap.requirement_id, overlap.scenario, 2, None))
-    assert overlap.matches((overlap.requirement_id, overlap.scenario, 8, None))
-    assert not overlap.matches((overlap.requirement_id, overlap.scenario, 1, None))
-    assert not overlap.matches((overlap.requirement_id, overlap.scenario, True, None))
+    assert overlap.matches((overlap.requirement_id, overlap.scenario, 2, None, None))
+    assert overlap.matches((overlap.requirement_id, overlap.scenario, 8, None, None))
+    assert not overlap.matches((overlap.requirement_id, overlap.scenario, 1, None, None))
+    assert not overlap.matches((overlap.requirement_id, overlap.scenario, True, None, None))
 
 
 def test_every_expanded_slot_declares_the_validator_behavior_budget_names():

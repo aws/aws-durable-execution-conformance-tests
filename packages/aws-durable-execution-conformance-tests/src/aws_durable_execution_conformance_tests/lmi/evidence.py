@@ -112,9 +112,6 @@ class _Evidence:
             self.attempts[request_id] = attempt
             for key in ("executionArn", "environmentId", "workerId", "processId", "role"):
                 self.string(attempt.get(key), f"attempt {request_id}.{key}")
-            if value.get("runtime") == "java":
-                for key in ("handlerOwnerId", "threadId"):
-                    self.string(attempt.get(key), f"attempt {request_id}.{key}")
             if type(attempt.get("attempt")) is not int or attempt["attempt"] < 1:
                 self.error(f"attempt {request_id}.attempt must be a positive integer")
             start = self.number(attempt.get("startedAtMs"), f"attempt {request_id}.startedAtMs")
@@ -247,13 +244,8 @@ class _Evidence:
         runtime = self.value.get("runtime")
         if runtime == "javascript" and any(victim.get(key) != peer.get(key) for key in ("workerId", "processId")):
             self.error("JavaScript overlap requires the same Node.js worker and process", "PLACEMENT")
-        if runtime == "java":
-            if victim.get("processId") != peer.get("processId"):
-                self.error("Java overlap requires the same JVM process", "PLACEMENT")
-            if victim.get("handlerOwnerId") != peer.get("handlerOwnerId"):
-                self.error("Java overlap requires the same handler owner", "PLACEMENT")
-            if victim.get("threadId") == peer.get("threadId"):
-                self.error("Java native overlap requires distinct request threads", "PLACEMENT")
+        if runtime == "java" and victim.get("processId") != peer.get("processId"):
+            self.error("Java overlap requires the same JVM process", "PLACEMENT")
         if runtime == "python" and victim.get("processId") == peer.get("processId"):
             self.error("Python native overlap requires different processes", "PLACEMENT")
         if self.profile.get("nativeConcurrency", 0) < 2:

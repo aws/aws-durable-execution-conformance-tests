@@ -58,6 +58,7 @@ class Scenario:
     otel_view: str | None = None
     coverage_profile: str = "standard"
     behavior_budgets: Mapping[str, float] = field(default_factory=dict)
+    export_mode: str | None = None
 
     def __post_init__(self) -> None:
         if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario, self.cohort_id)):
@@ -68,8 +69,12 @@ class Scenario:
             raise ValueError("Scenario slots must be a positive integer")
         if self.otel_view not in (None, "invocation", "execution"):
             raise ValueError("otel_view must be invocation or execution")
-        if self.coverage_profile not in ("standard", "python-lifecycle"):
+        if self.coverage_profile not in ("standard", "python-lifecycle", "export-lifecycle"):
             raise ValueError("Unknown scenario coverage profile")
+        if self.export_mode not in (None, "sync", "async-bounded-flush"):
+            raise ValueError("Unknown export mode")
+        if (self.coverage_profile == "export-lifecycle") != (self.export_mode is not None):
+            raise ValueError("Only the export-lifecycle profile takes an explicit export mode")
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,8 @@ class ScenarioContext:
         }
         if self.scenario.otel_view is not None:
             payload["otelView"] = self.scenario.otel_view
+        if self.scenario.export_mode is not None:
+            payload["exportMode"] = self.scenario.export_mode
         if self.scenario.coverage_profile != "standard":
             payload["coverageProfile"] = self.scenario.coverage_profile
             payload["behaviorBudgets"] = dict(self.scenario.behavior_budgets)

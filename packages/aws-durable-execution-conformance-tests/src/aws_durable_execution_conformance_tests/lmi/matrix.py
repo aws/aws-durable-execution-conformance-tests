@@ -8,9 +8,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from aws_durable_execution_conformance_tests.lmi.catalog import requirements
+from aws_durable_execution_conformance_tests.lmi.catalog import EXPORT_MODES, requirements
 
-CaseKey = tuple[str, str, int | None, str | None]
+CaseKey = tuple[str, str, int | None, str | None, str | None]
 
 
 @dataclass(frozen=True)
@@ -26,18 +26,20 @@ class CaseRequirement:
     minimum_native_concurrency: int
     source_tests: tuple[str, ...] = ()
     budget_names: tuple[str, ...] = ()
+    export_mode: str | None = None
 
     @property
     def key(self) -> CaseKey:
-        return self.requirement_id, self.scenario, self.native_concurrency, self.otel_view
+        return self.requirement_id, self.scenario, self.native_concurrency, self.otel_view, self.export_mode
 
     def matches(self, observed: CaseKey) -> bool:
-        """A c2/c8 result cannot fill a required c1 slot, nor a different view."""
-        requirement_id, scenario, concurrency, view = observed
+        """Native configuration, OTel view and exporter mode are independent slots."""
+        requirement_id, scenario, concurrency, view, mode = observed
         return (
             requirement_id == self.requirement_id
             and scenario == self.scenario
             and view == self.otel_view
+            and mode == self.export_mode
             and type(concurrency) is int
             and (
                 concurrency == self.native_concurrency
@@ -53,6 +55,8 @@ def required_cases(runtime: str, capability: str, coverage_profile: str = "stand
     python-lifecycle includes fourteen lifecycle variants on c1 and c2. Its OTel
     capability adds twelve variants in each view on both native configurations.
     Instrumented variants do not replace the uninstrumented baseline slots.
+    export-lifecycle separately requires both exporter modes on every supported
+    runtime, across three scenarios, two views and two native configurations.
     """
     catalog = requirements(capability, runtime=runtime, coverage_profile=coverage_profile)
     result: list[CaseRequirement] = []
@@ -70,6 +74,28 @@ def required_cases(runtime: str, capability: str, coverage_profile: str = "stand
                 )
                 for scenario in requirement["requiredScenarios"]
             )
+            continue
+        if coverage_profile == "export-lifecycle":
+            export = requirement["exportLifecycle"]
+            for definition in export["scenarios"]:
+                for concurrency in (1, 2):
+                    for export_view in ("invocation", "execution"):
+                        for mode in EXPORT_MODES:
+                            result.append(
+                                CaseRequirement(
+                                    requirement_id=requirement_id,
+                                    scenario=definition["scenario"],
+                                    native_concurrency=concurrency,
+                                    otel_view=export_view,
+                                    roles=tuple(definition["roles"]),
+                                    exclusive=definition["exclusive"],
+                                    minimum_native_concurrency=definition["minimumNativeConcurrency"],
+                                    source_tests=tuple(definition.get("sourceTests", ())),
+                                    budget_names=tuple(definition["budgetNames"])
+                                    + tuple(export.get("modeBudgetNames", {}).get(mode, ())),
+                                    export_mode=mode,
+                                )
+                            )
             continue
         regression = requirement["pythonLifecycle"]
         groups: list[tuple[list[dict[str, Any]], tuple[str | None, ...]]] = [(regression["scenarios"], (None,))]
@@ -121,4 +147,5 @@ def duplicate_coverage(observed_keys: Iterable[CaseKey]) -> set[CaseKey]:
 
 def describe_case(case: CaseRequirement) -> str:
     concurrency = str(case.native_concurrency) if case.native_concurrency is not None else "any-applicable"
-    return f"{case.requirement_id}/{case.scenario}/native-{concurrency}/{case.otel_view or 'no-otel'}"
+    description = f"{case.requirement_id}/{case.scenario}/native-{concurrency}/{case.otel_view or 'no-otel'}"
+    return f"{description}/export={case.export_mode}" if case.export_mode is not None else description

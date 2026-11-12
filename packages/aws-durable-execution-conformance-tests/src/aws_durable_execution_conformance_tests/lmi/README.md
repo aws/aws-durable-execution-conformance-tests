@@ -16,6 +16,10 @@ For the complete Python SDK #743 cloud behavior matrix, use the opt-in
 76 lifecycle-plus-OTel slots, including exact c1/c2/view coverage and declared
 behavior budgets. The original `standard` profile below remains compatible.
 
+For language-neutral synchronous and asynchronous export lifecycle checks, use
+[`export-lifecycle`](export-lifecycle.md). Both modes are selectable for every
+supported runtime; neither mode is inferred from the SDK language.
+
 ## Contracts and applicability
 
 | ID | Mandatory scenario selectors | Measurement ownership |
@@ -40,8 +44,13 @@ supported behavior and test budget have been agreed.
 | Runtime | Positive native overlap evidence | Warm reuse |
 | --- | --- | --- |
 | `javascript` | Same environment, process and Node.js worker; overlapping requests | Same identified worker |
-| `java` | Same environment/JVM and handler owner; distinct caller threads | Same identified JVM/worker |
+| `java` | Same environment/JVM process; distinct overlapping requests | Same identified JVM/worker |
 | `python` | Same environment, different worker processes | Sequential requests in the same identified process |
+
+Java-specific handler ownership, worker-thread identity, HandlerScoped opener
+forwarding, same-thread End, and MDC restoration remain in the Java SDK's tests.
+They do not determine shared conformance acceptance. Runtime environment/process
+identity is retained only to establish the required placement and attribution.
 
 A Python worker is not required to run simultaneous native invocations. Scheduler
 capacity reservations do not prove placement. An SDK handler must use its real

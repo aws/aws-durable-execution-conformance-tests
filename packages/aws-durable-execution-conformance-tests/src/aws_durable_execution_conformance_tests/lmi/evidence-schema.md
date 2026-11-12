@@ -36,8 +36,12 @@ Each attempt records:
 - `requestId`, `executionArn`, `environmentId`, `workerId`, `processId`, `role`;
 - `attempt` (positive ordinal within the fixture role; selected requests use 1);
 - `startedAtMs`, `endedAtMs`, and independently observed invocation `outcome`
-  (`SUCCEEDED`, `FAILED`, `PENDING`, or `TIMED_OUT`);
-- Java `handlerOwnerId` and `threadId`, retaining both ownership boundaries.
+  (`SUCCEEDED`, `FAILED`, `PENDING`, or `TIMED_OUT`).
+
+Runtime-specific diagnostics may accompany these records but do not determine
+shared conformance. Java handler-owner/thread affinity, `HandlerScoped` openers,
+and MDC behavior remain Java SDK tests. Java placement still requires observed
+environment and process identity proving overlap in the same JVM.
 
 `events` is an array of observations. Every event records `kind`, `requestId`,
 `ownerRequestId`, `executionArn`, and `atMs`. The invocation and execution owner
@@ -75,7 +79,7 @@ Collector/exporter failure and incomplete collection must remain visible.
 
 | ID | Required observations |
 | --- | --- |
-| `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM and handler owner with distinct request threads, or distinct Python processes. Histories and fixture expectations preserve attribution. |
+| `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM process, or distinct Python processes. Histories and fixture expectations preserve attribution. |
 | `lmi-lifecycle-2` | `victim` with `root_completed` (outcome agrees with invocation), subsequent `wrapper_return`, both rejected admission probes, and separate `task_exit`. Run success and failure fixtures to cover both paths. |
 | `lmi-lifecycle-3` | `victim` with `work_in_flight`, actual `platform_timeout` (`source: platform`) at or beyond the configured timeout, `admission_closed`, both rejected probes, and cooperative `task_exit` after timeout. `budgets.admissionMs` and `budgets.cleanupMs` are agreed fixture limits, not product SLAs. |
 | `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. The recovery request must succeed. |

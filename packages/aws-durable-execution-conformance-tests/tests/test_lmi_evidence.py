@@ -18,8 +18,6 @@ def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "proces
         "environmentId": "environment-1",
         "workerId": process,
         "processId": process,
-        "handlerOwnerId": "handler-1",
-        "threadId": f"thread-{role}",
         "role": role,
         "attempt": 1,
         "startedAtMs": start,
@@ -461,10 +459,19 @@ def test_retirement_cannot_omit_suspended_executions_or_invocations() -> None:
     assert any("still resume" in error for error in validate_evidence(value))
 
 
-def test_java_same_thread_does_not_prove_native_concurrency() -> None:
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        {"handlerOwnerId": "another-handler", "threadId": "same-thread"},
+        {"handlerOwnerId": "same-handler", "threadId": "different-thread"},
+        {"handlerOwnerId": None, "threadId": {"runtime": "opaque-diagnostic"}},
+    ],
+)
+def test_java_optional_owner_diagnostics_do_not_determine_shared_conformance(diagnostics: dict[str, Any]) -> None:
     value = evidence(runtime="java")
-    value["attempts"][1]["threadId"] = value["attempts"][0]["threadId"]
-    assert any("distinct request threads" in error for error in validate_evidence(value))
+    value["attempts"][0].update(handlerOwnerId="same-handler", threadId="same-thread")
+    value["attempts"][1].update(diagnostics)
+    assert validate_evidence(value) == []
 
 
 def test_explicit_worker_replacement_policy_stays_bound_to_original_capacity() -> None:
@@ -477,10 +484,19 @@ def test_explicit_worker_replacement_policy_stays_bound_to_original_capacity() -
     assert any("original failed worker" in error for error in validate_evidence(value))
 
 
-def test_java_overlap_preserves_the_handler_owner_boundary() -> None:
+@pytest.mark.parametrize("identity", ["environmentId", "processId", "workerId"])
+def test_java_still_requires_observed_runtime_placement(identity: str) -> None:
     value = evidence(runtime="java")
-    value["attempts"][1]["handlerOwnerId"] = "another-handler"
-    assert any("same handler owner" in error for error in validate_evidence(value))
+    del value["attempts"][1][identity]
+    assert any(identity in error for error in validate_evidence(value))
+
+
+def test_java_shared_conformance_does_not_require_owner_or_thread_diagnostics() -> None:
+    value = evidence(runtime="java")
+    assert all("handlerOwnerId" not in item and "threadId" not in item for item in value["attempts"])
+    assert validate_evidence(value) == []
+    value["attempts"][1]["environmentId"] = "replacement-environment"
+    assert any(error.startswith("PLACEMENT:") for error in validate_evidence(value))
 
 
 @pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
