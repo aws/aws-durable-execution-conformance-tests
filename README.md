@@ -260,3 +260,13 @@ through the [AWS vulnerability reporting page](https://aws.amazon.com/security/v
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Optional LMI lifecycle suite
+
+Use `durable-execution-conformance lmi-lifecycle` for coordinated multi-invocation
+Lambda Managed Instances checks. The suite has runtime-specific placement rules,
+versioned evidence, shared/exclusive resource ownership, and strict coverage.
+It is separate from ordinary `--suite all` runs. See the
+[LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
+for manifests, SDK adapter contracts, persistent deployment profiles, OTel reuse,
+and the remaining real-LMI adoption gates.

@@ -66,7 +66,7 @@ dependencies = [
 ]
 
 [tool.hatch.envs.yaml.scripts]
-lint = "yamllint {args:packages/aws-durable-execution-conformance-tests/test-requirements packages/aws-durable-execution-conformance-tests-otel/test-requirements packages/aws-durable-execution-conformance-tests-telemetry/test-requirements}"
+lint = "yamllint {args:packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/requirements packages/aws-durable-execution-conformance-tests/test-requirements packages/aws-durable-execution-conformance-tests-otel/test-requirements packages/aws-durable-execution-conformance-tests-telemetry/test-requirements}"
 fix = "yamlfix {args:packages/aws-durable-execution-conformance-tests/test-requirements packages/aws-durable-execution-conformance-tests-otel/test-requirements packages/aws-durable-execution-conformance-tests-telemetry/test-requirements}"
 fmt = ["fix", "lint"]
 

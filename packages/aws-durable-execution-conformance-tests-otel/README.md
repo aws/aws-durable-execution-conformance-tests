@@ -348,3 +348,80 @@ performs a one-second durable wait and then returns its original input. Both
 views require exactly two caller and two child invocations, child trace
 correlation, and the appropriate wait parentage and continuation links.
 The ordinary short suite runs this case; the long-running workflow remains disabled.
+
+## LMI cohort evidence
+
+The optional core `lmi-lifecycle` runner calls
+`validate_lmi_telemetry(evidence, phase="observations" | "final")` for requirements
+7 and 8. Both phases run the same telemetry checks, so releasing a fault cannot
+turn missing pre-release telemetry into an attribution pass. The envelope must
+identify the exact plugin artifact in `artifact.plugin`.
+
+For OTel-enabled evidence, normalize lifecycle timestamps to UTC Unix epoch
+milliseconds. Canonical spans retain UTC datetime timestamps; their observed
+intervals must lie between the originating request entry and
+`observationEndedAtMs`. Late spans may outlive wrapper return, but must retain
+their original request and execution attribution. Flush observations use the
+same clock and window.
+
+The `telemetry.views.invocation` and `telemetry.views.execution` objects each
+contain the following records. Collect both through invocation-local plugin
+configuration or immutable handler variants; do not mutate a shared provider to
+switch views.
+
+| Field | Evidence |
+| --- | --- |
+| `collection` | `status: complete`, `scope: cohort`, and `requestIds` containing every launched request, including retries. Incomplete collection is a failure, even for unsampled requests. |
+| `carriers` | One record per request containing `requestId`, `environmentId`, `workerId`, `processId`, `source`, the actual X-Ray `header`, and boolean `expectedSampled`. |
+| `spans` | Records containing an independently observed origin `requestId` and `span`, serialized with the existing `span_to_dict`. Origin IDs must come from fixture observations, not the SDK attributes being checked. |
+| `infrastructureSpans` | Optional canonical backend infrastructure spans needed to establish the runtime-parent path. SDK spans cannot be moved here. |
+| `exportOutcomes` | One `requestId` and `status` per request: `delivered`, `unsampled`, `export-error`, or `timeout-loss`. Export failure additionally records the observed `error` and controlled `fixture`. |
+| `assertions` | A mapping from execution ARN to the ordinary `TelemetryAssertions` schema, including `span_assertions`. The existing validator runs these after checking attribution across the whole cohort. |
+
+The genuine carrier sources are `invocation-context` for Node.js,
+`runtime-caller-context` for Java before worker dispatch, and `process-environment`
+for Python. Identity must match the actual request and process. Keep injected
+missing, empty, malformed and compatibility carriers in separately labeled
+diagnostic fixtures; they cannot satisfy these genuine-runtime cases. `Root`,
+`Parent` and explicit sampling are parsed by the existing strict X-Ray parser.
+An ambient auto-instrumentation parent requires an observed path to the genuine
+runtime parent; a missing path remains incomplete evidence.
+
+`CollectorBackend.collect_cohort()` reuses the S3 backend's object parsing and
+normalization but retains all traces under an explicitly owned prefix. Ordinary
+execution-filtered queries cannot establish absence of wrongly attributed spans.
+This method returns one snapshot, not a quiescence verdict: the SDK adapter owns
+the bounded export/collection window and must retain all observations. It must
+not label an incomplete listing or interrupted collection as `complete`. Other
+backends can adopt the same evidence contract when their resource-scoped queries
+can establish equivalent completeness.
+
+Requirement 7 requires sampled delivery for the originally selected victim,
+peer and warm-reuse request in both views. Each lifecycle `late_activity` event
+also contains `telemetry.invocation` and `telemetry.execution` with the actual
+`traceId` and `spanId` observed through the public tracer. The collected span must
+retain that event's original request ownership and contain its observation time.
+A span emitted earlier or attributed to the warm invocation cannot substitute.
+Duplicate exports of the same correlated span remain permitted. An intentional unsampled fixture may demonstrate sampling,
+but cannot substitute for their attribution coverage. Requirement 8 permits
+`export-error` with fixture `bounded-export-error`, or `timeout-loss` with fixture
+`bounded-flush-timeout`, provided there is a matching observed flush outcome and
+healthy-peer delivery. Neither state means telemetry was delivered after timeout.
+
+Requirement 8 also records these fields under `telemetry`:
+
+- `providers`: `providerId`, `exporterId`, `environmentId`, `processId`,
+  `createdAtMs`, and optional `shutdownAtMs`.
+- `providerBindings`: one `requestId` and `providerId` per launched request.
+- `flushes`: one `requestId`, `startedAtMs`, `finishedAtMs`, positive `budgetMs`,
+  and `outcome` (`completed`, `error`, or `timeout`) per request. Failed outcomes
+  also carry the observed `error`.
+
+Providers must precede their invocations, remain alive while owners are active,
+and retain their identity across requests in the same process. Include an
+identified sequential reuse of the same worker/process; overlap alone cannot
+establish provider survival after invocation completion. Flush budgets
+come from the configured test profile; they are not a product SLA. These checks
+do not promise hard termination of non-cooperative I/O, unconditional export
+after timeout, or exactly-once export. SDK fixtures and real-LMI adoption remain
+tracked in the core suite's adoption table.

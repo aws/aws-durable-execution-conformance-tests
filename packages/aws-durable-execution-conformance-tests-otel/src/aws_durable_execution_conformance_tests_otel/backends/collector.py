@@ -132,6 +132,20 @@ class CollectorBackend(PollingBackend):
         self._trace_cache: dict[str, list[Trace]] = {}
 
     def _lookup(self, query: TelemetryQuery) -> Trace | None:
+        return matching_trace(self._load_traces(), query)
+
+    def collect_cohort(self) -> list[Trace]:
+        """Read a case-owned prefix without execution-attribute filtering.
+
+        A snapshot is not evidence of collection quiescence. The scenario
+        adapter must repeat it within its bounded collection window and retain
+        every observation until the case's expected export boundaries settle.
+        """
+        if not self._prefix:
+            raise BackendError("LMI cohort collection requires an explicit owned S3 prefix")
+        return self._load_traces()
+
+    def _load_traces(self) -> list[Trace]:
         try:
             keys = self._list_keys()
             for key in keys:
@@ -141,12 +155,9 @@ class CollectorBackend(PollingBackend):
             raise
         except (BotoCoreError, ClientError) as exc:
             raise BackendError(f"S3 telemetry query failed: {type(exc).__name__}") from exc
-        return matching_trace(
-            _merge_trace_files(
-                ((key, self._trace_cache[key]) for key in keys),
-                bucket=self._bucket,
-            ),
-            query,
+        return _merge_trace_files(
+            ((key, self._trace_cache[key]) for key in keys),
+            bucket=self._bucket,
         )
 
     def _list_keys(self) -> list[str]:

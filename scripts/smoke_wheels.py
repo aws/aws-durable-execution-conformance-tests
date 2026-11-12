@@ -7,6 +7,7 @@ import sys
 import tempfile
 import zipfile
 from importlib import metadata
+from importlib.resources import files
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -66,6 +67,12 @@ def main() -> None:
             pass
         else:
             raise AssertionError("OTel extension accepted core 1.0.0 without required catalog controls")
+
+        lmi_catalog = importlib.import_module("aws_durable_execution_conformance_tests.lmi.catalog")
+        assert len(lmi_catalog.requirements("lifecycle")) == 6
+        assert len(lmi_catalog.requirements("lifecycle-otel")) == 8
+        assert "lmi-lifecycle" not in registry.suites
+        assert files("aws_durable_execution_conformance_tests.lmi").joinpath("evidence-schema.json").is_file()
 
         callback = importlib.import_module("aws_durable_execution_conformance_tests.callback")
         action = callback.CallbackAction.from_dict(

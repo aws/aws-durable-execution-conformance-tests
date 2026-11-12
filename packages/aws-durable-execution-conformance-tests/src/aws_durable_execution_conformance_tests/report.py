@@ -40,8 +40,10 @@ class ReportStatus(str, Enum):
 
 FAIL_ON_FAILED = "failed"
 FAIL_ON_FAILED_UNCOVERED = "failed+uncovered"
+FAIL_ON_STRICT = "strict"
 
 _BLOCKING_BY_POLICY: dict[str, frozenset[ReportStatus]] = {
+    FAIL_ON_STRICT: frozenset({ReportStatus.FAILED, ReportStatus.NOT_IMPLEMENTED, ReportStatus.UNCOVERED}),
     FAIL_ON_FAILED: frozenset({ReportStatus.FAILED}),
     FAIL_ON_FAILED_UNCOVERED: frozenset({ReportStatus.FAILED, ReportStatus.UNCOVERED}),
 }

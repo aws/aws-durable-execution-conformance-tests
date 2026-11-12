@@ -1,0 +1,23 @@
+---
+id: lmi-lifecycle-1
+description: Native overlap and execution isolation
+capability: lifecycle
+mandatory: true
+runtimes:
+  - javascript
+  - java
+  - python
+requiredScenarios:
+  - native-overlap
+scheduling: shared-cohort
+minimumNativeConcurrency: 2
+contract: Establish overlapping distinct original requests in the runtime sharing boundary before releasing
+  the bounded barrier. Check results, failures, service histories, SDK requests and invocation-owned state
+  against independently captured request ownership. A replacement environment or retry is not evidence
+  for the selected cohort.
+limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
+  user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
+  is NOT_IMPLEMENTED, never not applicable.
+roles:
+  - victim
+  - peer

@@ -1,0 +1,23 @@
+---
+id: lmi-lifecycle-6
+description: Identified warm reuse and late activity
+capability: lifecycle
+mandatory: true
+runtimes:
+  - javascript
+  - java
+  - python
+requiredScenarios:
+  - warm-reuse
+scheduling: shared-cohort
+minimumNativeConcurrency: 1
+contract: Identify sequential reuse of the same original worker/process and observe delayed callbacks,
+  requests and tasks. Attribute every late observation to its original request and execution, with no
+  stale invocation state admitted into the reused worker. Retain resource ownership until late work and
+  retries are quiescent.
+limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
+  user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
+  is NOT_IMPLEMENTED, never not applicable.
+roles:
+  - victim
+  - warm
