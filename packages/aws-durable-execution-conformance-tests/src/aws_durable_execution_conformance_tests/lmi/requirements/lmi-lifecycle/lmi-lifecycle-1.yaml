@@ -21,3 +21,31 @@ limits: Budgets are agreed test configuration, not product SLAs. Hard terminatio
 roles:
   - victim
   - peer
+coverageProfiles:
+  - standard
+  - python-lifecycle
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: native-concurrency
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_actual_environment_process_concurrency
+      budgetNames:
+        - observationGraceMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+      slotsAtConcurrencyTwo: 2
+  otelScenarios: []
+  description: Configured native worker capacity and execution isolation
+  contract: Verify genuine native concurrency one and two deployments independently. Establish one original
+    request per configured worker under a bounded barrier; at concurrency two require distinct worker
+    processes overlapping in the same environment. Preserve the selected original requests, results and
+    service histories. A single request to a concurrency-two deployment cannot replace the concurrency-one
+    baseline.

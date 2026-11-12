@@ -11,6 +11,11 @@ conformance, including `--suite all`, does not discover these multi-invocation
 requirements or deploy LMI functions. The dedicated requirement catalog is
 [`requirements/lmi-lifecycle`](requirements/lmi-lifecycle).
 
+For the complete Python SDK #743 cloud behavior matrix, use the opt-in
+[`python-lifecycle` coverage profile](python-lifecycle.md): 28 lifecycle slots or
+76 lifecycle-plus-OTel slots, including exact c1/c2/view coverage and declared
+behavior budgets. The original `standard` profile below remains compatible.
+
 ## Contracts and applicability
 
 | ID | Mandatory scenario selectors | Measurement ownership |

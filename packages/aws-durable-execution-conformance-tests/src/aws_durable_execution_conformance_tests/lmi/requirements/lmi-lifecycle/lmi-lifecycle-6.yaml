@@ -21,3 +21,40 @@ limits: Budgets are agreed test configuration, not product SLAs. Hard terminatio
 roles:
   - victim
   - warm
+coverageProfiles:
+  - standard
+  - python-lifecycle
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: warm-lifecycle
+      roles:
+        - victim
+        - warm
+        - warm-2
+        - warm-2-resume
+        - warm-3
+        - warm-4
+        - warm-5
+        - warm-5-resume
+        - warm-6
+        - warm-7
+        - warm-8
+        - warm-8-resume
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_warm_success_failure_and_suspension_cleanup
+      budgetNames:
+        - observationGraceMs
+        - maxThreadGrowth
+        - maxFdGrowth
+        - maxRssGrowthBytes
+  otelScenarios: []
+  description: Warm success, failure and suspension resource cleanup
+  contract: Exercise a repeated sequence of successful, failed and suspended/resumed public handlers.
+    Identify actual process reuse and compare invocation-owned state and process resource baselines over
+    the sequence. Verify branch/thread ownership and cleanup, preserving failure and replay outcomes;
+    an unrelated process cannot replace the observed warm worker.

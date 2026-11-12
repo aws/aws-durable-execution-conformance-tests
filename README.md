@@ -269,4 +269,6 @@ versioned evidence, shared/exclusive resource ownership, and strict coverage.
 It is separate from ordinary `--suite all` runs. See the
 [LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
 for manifests, SDK adapter contracts, persistent deployment profiles, OTel reuse,
-and the remaining real-LMI adoption gates.
+and the remaining real-LMI adoption gates. The new
+[Python lifecycle coverage profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/python-lifecycle.md)
+maps Python SDK #743 to 28 lifecycle or 76 lifecycle/OTel mandatory test slots.

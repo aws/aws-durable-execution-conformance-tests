@@ -1,0 +1,37 @@
+---
+id: lmi-lifecycle-10
+description: Synchronous checkpoint settlement at the branch boundary
+capability: lifecycle
+mandatory: true
+runtimes:
+  - python
+coverageProfiles:
+  - python-lifecycle
+requiredScenarios:
+  - checkpoint-settlement
+scheduling: exclusive
+minimumNativeConcurrency: 1
+contract: Hold an actual SDK checkpoint request in flight while a child branch completes. The durable
+  wrapper must preserve the supported checkpoint and child-scope settlement boundary. Require independently
+  observed request entry, held interval, service response and wrapper exit; a mocked checkpoint flag or
+  a callback without a real dispatch is insufficient.
+limits: Budgets are explicit test configuration, not product SLAs. Do not require hard termination of
+  non-cooperative I/O or exactly-once interrupted steps. Missing placement, dispatch, settlement or retirement
+  evidence cannot pass.
+roles:
+  - victim
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: checkpoint-settlement
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_real_synchronous_checkpoint_settles_before_branch_join
+      budgetNames:
+        - observationGraceMs
+  otelScenarios: []

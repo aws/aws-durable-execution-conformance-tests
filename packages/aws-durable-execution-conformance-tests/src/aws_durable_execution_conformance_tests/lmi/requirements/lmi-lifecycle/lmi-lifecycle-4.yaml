@@ -23,3 +23,56 @@ roles:
   - victim
   - peer
   - recovery
+coverageProfiles:
+  - standard
+  - python-lifecycle
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: deadline-recovery
+      roles:
+        - victim
+        - recovery
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_invocation_deadline_isolation_and_capacity_recovery
+      budgetNames:
+        - observationGraceMs
+        - cleanupMs
+        - recoveryMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+        - recovery
+        - recovery-peer
+      slotsAtConcurrencyTwo: 2
+  otelScenarios:
+    - scenario: deadline-recovery
+      roles:
+        - victim
+        - recovery
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_invocation_deadline_isolation_and_capacity_recovery
+        - lmi_tests/tests/e2e/test_observability.py::test_plugin_enabled_lifecycle_boundaries
+      budgetNames:
+        - observationGraceMs
+        - cleanupMs
+        - recoveryMs
+        - exportMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+        - recovery
+        - recovery-peer
+      slotsAtConcurrencyTwo: 2
+  description: Deadline admission and original environment capacity recovery
+  contract: Observe a real platform timeout of the original victim with controlled work in flight. At
+    native concurrency two, establish a healthy peer in the same environment and verify its progress and
+    successful completion. Before fault release, demand every configured worker slot in the original environment
+    and prove full capacity recovers within the declared deadline-relative cleanup budget. Preserve victim
+    admission and stale-side-effect assertions independently of recovery and final retirement.

@@ -1,0 +1,85 @@
+---
+id: lmi-lifecycle-13
+description: Root return and failure settle in-flight work
+capability: lifecycle
+mandatory: true
+runtimes:
+  - python
+coverageProfiles:
+  - python-lifecycle
+requiredScenarios:
+  - return-inflight
+  - failure-inflight
+scheduling: exclusive
+minimumNativeConcurrency: 1
+contract: Exercise successful root return and root failure while an admitted child operation remains in
+  flight. Observe root completion, child cleanup, request settlement and wrapper exit independently, preserving
+  the original returned result or failure. At native concurrency two, keep a selected healthy peer progressing
+  in the same environment without inheriting the victim scope.
+limits: Budgets are explicit test configuration, not product SLAs. Do not require hard termination of
+  non-cooperative I/O or exactly-once interrupted steps. Missing placement, dispatch, settlement or retirement
+  evidence cannot pass.
+roles:
+  - victim
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: return-inflight
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_root_return_or_failure_settles_inflight_work
+      budgetNames:
+        - observationGraceMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+      slotsAtConcurrencyTwo: 2
+    - scenario: failure-inflight
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_root_return_or_failure_settles_inflight_work
+      budgetNames:
+        - observationGraceMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+      slotsAtConcurrencyTwo: 2
+  otelScenarios:
+    - scenario: return-inflight
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_root_return_or_failure_settles_inflight_work
+        - lmi_tests/tests/e2e/test_observability.py::test_plugin_enabled_lifecycle_boundaries
+      budgetNames:
+        - observationGraceMs
+        - exportMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+      slotsAtConcurrencyTwo: 2
+    - scenario: failure-inflight
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_root_return_or_failure_settles_inflight_work
+        - lmi_tests/tests/e2e/test_observability.py::test_plugin_enabled_lifecycle_boundaries
+      budgetNames:
+        - observationGraceMs
+        - exportMs
+      rolesAtConcurrencyTwo:
+        - victim
+        - peer
+      slotsAtConcurrencyTwo: 2

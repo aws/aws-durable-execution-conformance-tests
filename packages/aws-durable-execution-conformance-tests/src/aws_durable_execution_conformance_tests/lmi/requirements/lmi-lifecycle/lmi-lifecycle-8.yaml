@@ -23,3 +23,38 @@ roles:
   - victim
   - peer
   - warm
+coverageProfiles:
+  - standard
+  - python-lifecycle
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios: []
+  otelScenarios:
+    - scenario: export-error-recovery
+      roles:
+        - victim
+        - warm
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_observability.py::test_export_failure_then_healthy_invocation
+      budgetNames:
+        - observationGraceMs
+        - exportMs
+    - scenario: held-export
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_observability.py::test_held_export_must_settle_before_successful_cleanup
+      budgetNames:
+        - observationGraceMs
+        - exportMs
+  description: Exporter failure recovery and held-export settlement
+  contract: In both OTel views and both native configurations, separately observe an exporter failure
+    followed by a healthy invocation and an intentionally held export. Record provider/exporter ownership
+    and all export outcomes. Successful wrapper/OTel cleanup cannot precede the held export settlement;
+    driver release does not turn an earlier failure or incomplete collection into a pass.

@@ -1,0 +1,48 @@
+---
+id: lmi-lifecycle-12
+description: Abandoned child rejects a late durable operation
+capability: lifecycle
+mandatory: true
+runtimes:
+  - python
+coverageProfiles:
+  - python-lifecycle
+requiredScenarios:
+  - late-operation
+scheduling: exclusive
+minimumNativeConcurrency: 1
+contract: After a parent or sibling result abandons a child, allow that residual child to attempt another
+  public durable operation. Prove the attempt was rejected before its user body and checkpoint dispatch;
+  keep the operation absent from service history. Retain the original invocation and scope identities
+  and distinguish fault release from the assertion boundary.
+limits: Budgets are explicit test configuration, not product SLAs. Do not require hard termination of
+  non-cooperative I/O or exactly-once interrupted steps. Missing placement, dispatch, settlement or retirement
+  evidence cannot pass.
+roles:
+  - victim
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: late-operation
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_abandoned_child_rejects_late_durable_operation
+      budgetNames:
+        - observationGraceMs
+  otelScenarios:
+    - scenario: late-operation
+      roles:
+        - victim
+      minimumNativeConcurrency: 1
+      exclusive: true
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_abandoned_child_rejects_late_durable_operation
+        - lmi_tests/tests/e2e/test_observability.py::test_plugin_enabled_lifecycle_boundaries
+      budgetNames:
+        - observationGraceMs
+        - exportMs

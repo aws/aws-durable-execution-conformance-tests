@@ -22,3 +22,27 @@ limits: Budgets are agreed test configuration, not product SLAs. Hard terminatio
 roles:
   - victim
   - resume
+coverageProfiles:
+  - standard
+  - python-lifecycle
+pythonLifecycle:
+  sourceRepository: aws/aws-durable-execution-sdk-python
+  sourcePullRequest: 743
+  sourceRevision: 2179e011cc6a5c0d3620b11cbe8eec77ed1ff24f
+  scenarios:
+    - scenario: replay-callback-retry
+      roles:
+        - victim
+        - resume
+      minimumNativeConcurrency: 1
+      exclusive: false
+      sourceTests:
+        - lmi_tests/tests/e2e/test_lifecycle.py::test_checkpoint_replay_callback_and_retry
+      budgetNames:
+        - observationGraceMs
+  otelScenarios: []
+  description: Callback suspension and retry preserve checkpointed work
+  contract: Exercise real durable callback suspension, operation retry and stored success and failure
+    results. Resume the same durable execution through the service callback path, retaining every invocation
+    and checkpoint history. Completed user bodies and side effects must not repeat on replay, and retry
+    effects follow the configured per-attempt contract.

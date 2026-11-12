@@ -37,7 +37,14 @@
         "lmi-lifecycle-5",
         "lmi-lifecycle-6",
         "lmi-lifecycle-7",
-        "lmi-lifecycle-8"
+        "lmi-lifecycle-8",
+        "lmi-lifecycle-9",
+        "lmi-lifecycle-10",
+        "lmi-lifecycle-11",
+        "lmi-lifecycle-12",
+        "lmi-lifecycle-13",
+        "lmi-lifecycle-14",
+        "lmi-lifecycle-15"
       ]
     },
     "runtime": {
@@ -310,6 +317,28 @@
           }
         }
       }
+    },
+    "coverageProfile": {
+      "enum": [
+        "standard",
+        "python-lifecycle"
+      ],
+      "default": "standard"
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 1
+    },
+    "otelView": {
+      "enum": [
+        "invocation",
+        "execution",
+        null
+      ]
+    },
+    "regression": {
+      "type": "object",
+      "description": "Runtime-profile scenario observations; validated by lifecycle_regressions.py."
     }
   },
   "$defs": {
@@ -561,5 +590,46 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "coverageProfile"
+        ],
+        "properties": {
+          "coverageProfile": {
+            "const": "python-lifecycle"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "scenario",
+          "regression"
+        ],
+        "properties": {
+          "runtime": {
+            "const": "python"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "requirementId": {
+            "enum": [
+              "lmi-lifecycle-1",
+              "lmi-lifecycle-2",
+              "lmi-lifecycle-3",
+              "lmi-lifecycle-4",
+              "lmi-lifecycle-5",
+              "lmi-lifecycle-6",
+              "lmi-lifecycle-7",
+              "lmi-lifecycle-8"
+            ]
+          }
+        }
+      }
+    }
+  ]
 }

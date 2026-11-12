@@ -21,3 +21,5 @@ limits: Budgets are agreed test configuration, not product SLAs. Hard terminatio
   is NOT_IMPLEMENTED, never not applicable.
 roles:
   - victim
+coverageProfiles:
+  - standard

@@ -21,8 +21,16 @@ HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "P
 
 
 class _Evidence:
-    def __init__(self, value: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        requirement_ids: tuple[str, ...] = REQUIREMENT_IDS,
+        *,
+        standard_behavior: bool = True,
+    ) -> None:
         self.value = value
+        self.requirement_ids = requirement_ids
+        self.standard_behavior = standard_behavior
         self.errors: list[str] = []
         self.attempts: dict[str, Mapping[str, Any]] = {}
         self.selected: dict[str, Mapping[str, Any]] = {}
@@ -83,7 +91,7 @@ class _Evidence:
             self.string(value.get(key), key)
         if value.get("runtime") not in RUNTIMES:
             self.error(f"runtime must be one of {RUNTIMES}")
-        if value.get("requirementId") not in REQUIREMENT_IDS:
+        if value.get("requirementId") not in self.requirement_ids:
             self.error("unknown requirementId")
         artifact = self.mapping(value.get("artifact"), "artifact")
         for key in ("sdk", "conformance"):
@@ -508,7 +516,10 @@ class _Evidence:
                 if settled_key == "faults":
                     if item.get("mode") not in ("normal", "emergency"):
                         self.error("fault release must record normal or emergency mode")
-                    if self.value.get("requirementId") in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
+                    if self.standard_behavior and self.value.get("requirementId") in (
+                        "lmi-lifecycle-3",
+                        "lmi-lifecycle-4",
+                    ):
                         asserted = [
                             event.get("atMs", 0)
                             for event in self.events
@@ -543,6 +554,34 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
             _validate_observations(validator, evidence)
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             validator.error(f"malformed evidence: {error}")
+    if phase == "final":
+        try:
+            validator.retirement()
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            validator.error(f"malformed retirement evidence: {error}")
+    return validator.errors
+
+
+def validate_common_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    phase: Literal["observations", "final"] = "final",
+    requirement_ids: tuple[str, ...] = REQUIREMENT_IDS,
+) -> list[str]:
+    """Validate shared ownership and retirement for an explicit scenario catalog.
+
+    Callers must also invoke their catalog's behavior validator. This helper does
+    not validate a scenario merely because its ownership envelope is complete.
+    """
+    if not isinstance(evidence, Mapping):
+        return ["INCOMPLETE: evidence must be an object"]
+    if phase not in ("observations", "final"):
+        return ["INCOMPLETE: unknown evidence validation phase"]
+    validator = _Evidence(evidence, requirement_ids, standard_behavior=False)
+    try:
+        validator.common()
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        validator.error(f"malformed evidence: {error}")
     if phase == "final":
         try:
             validator.retirement()

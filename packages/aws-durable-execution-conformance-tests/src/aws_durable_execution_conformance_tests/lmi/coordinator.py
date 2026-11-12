@@ -32,12 +32,15 @@ class Profile:
     native_concurrency: int
     artifact_id: str
     configuration_id: str
+    recovery_policy: str | None = None
 
     def __post_init__(self) -> None:
         if not all((self.profile_id, self.resource_id, self.artifact_id, self.configuration_id)):
             raise ValueError("Profile identity, artifact and configuration must be nonempty")
         if any(type(value) is not int or value < 1 for value in (self.capacity, self.native_concurrency)):
             raise ValueError("Profile capacity and native_concurrency must be positive integers")
+        if self.recovery_policy not in (None, "reuse-worker", "replace-worker"):
+            raise ValueError("Unknown recovery policy")
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class Scenario:
     slots: int = 1
     exclusive: bool = False
     otel_view: str | None = None
+    coverage_profile: str = "standard"
+    behavior_budgets: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario, self.cohort_id)):
@@ -63,6 +68,8 @@ class Scenario:
             raise ValueError("Scenario slots must be a positive integer")
         if self.otel_view not in (None, "invocation", "execution"):
             raise ValueError("otel_view must be invocation or execution")
+        if self.coverage_profile not in ("standard", "python-lifecycle"):
+            raise ValueError("Unknown scenario coverage profile")
 
 
 @dataclass(frozen=True)
@@ -267,10 +274,10 @@ class ScenarioContext:
             raise RuntimeError("Scenario has no active lease")
         await self._lease.reserve_capacity(timeout=timeout)
 
-    def dispatcher(self, role: str) -> dict[str, str]:
+    def dispatcher(self, role: str) -> dict[str, Any]:
         if role not in self.scenario.roles:
             raise ValueError(f"Unknown cohort role {role}")
-        payload = {
+        payload: dict[str, Any] = {
             "scenario": self.scenario.scenario,
             "runId": self.run_id,
             "caseId": self.scenario.case_id,
@@ -279,6 +286,9 @@ class ScenarioContext:
         }
         if self.scenario.otel_view is not None:
             payload["otelView"] = self.scenario.otel_view
+        if self.scenario.coverage_profile != "standard":
+            payload["coverageProfile"] = self.scenario.coverage_profile
+            payload["behaviorBudgets"] = dict(self.scenario.behavior_budgets)
         return payload
 
     def record_attempt(self, attempt_id: str, **diagnostics: Any) -> None:

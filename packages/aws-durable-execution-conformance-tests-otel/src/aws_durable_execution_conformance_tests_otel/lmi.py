@@ -137,10 +137,16 @@ def _view_errors(
             errors.append(f"INCOMPLETE: {name} span has no independent cohort origin request {request_id!r}")
             continue
         span = _span(record.get("span"))
-        if (
-            span.start_time.timestamp() * 1000 < _number(attempts[request_id]["startedAtMs"])
-            or span.end_time.timestamp() * 1000 > observation_end
-        ):
+        earliest_start = _number(attempts[request_id]["startedAtMs"])
+        if span.name == "Workflow":
+            # A logical Workflow starts at the original invocation and may be
+            # exported by a later terminal invocation of that same execution.
+            earliest_start = min(
+                _number(attempt["startedAtMs"])
+                for attempt in attempts.values()
+                if attempt["executionArn"] == attempts[request_id]["executionArn"]
+            )
+        if span.start_time.timestamp() * 1000 < earliest_start or span.end_time.timestamp() * 1000 > observation_end:
             errors.append(f"INCOMPLETE: {name}/{request_id} span lies outside its lifecycle observation window")
         previous = owners.setdefault((span.trace_id, span.span_id), request_id)
         if previous != request_id:
@@ -224,11 +230,22 @@ def _view_errors(
         if not roots:
             errors.append(f"INCOMPLETE: {name}/{request_id} has no SDK root to correlate to the runtime parent")
         for root in roots:
+            root_carrier = carrier
+            if root.name == "Workflow":
+                first_request = min(
+                    (
+                        owner
+                        for owner in attempts
+                        if attempts[owner]["executionArn"] == attempts[request_id]["executionArn"]
+                    ),
+                    key=lambda owner: attempts[owner]["startedAtMs"],
+                )
+                root_carrier = carriers.get(first_request, carrier)
             # A runtime auto-instrumentation parent is accepted only with its
             # observed ancestry. Omitted intermediates cannot prove correlation.
             seen: set[str] = set()
             parent = root.parent_span_id
-            while parent and parent != carrier.parent_span_id and parent not in seen:
+            while parent and parent != root_carrier.parent_span_id and parent not in seen:
                 seen.add(parent)
                 ancestors = [
                     span
@@ -236,7 +253,7 @@ def _view_errors(
                     if span.trace_id == root.trace_id and span.span_id == parent
                 ]
                 parent = ancestors[0].parent_span_id if ancestors else None
-            if parent != carrier.parent_span_id:
+            if parent != root_carrier.parent_span_id:
                 errors.append(f"ASSERTION: {name}/{request_id} SDK root does not reach the runtime parent")
 
     # Scope only after checking the complete cohort's independent attribution.
@@ -396,6 +413,10 @@ def validate_lmi_telemetry(evidence: Mapping[str, Any], *, phase: str = "final")
     distinct states. Compatibility fixtures cannot satisfy genuine carriers.
     This function is called *in addition to* the core lifecycle validator.
     """
+    if evidence.get("coverageProfile") == "python-lifecycle":
+        from aws_durable_execution_conformance_tests_otel.lmi_regressions import validate_lifecycle_telemetry
+
+        return validate_lifecycle_telemetry(evidence, phase=phase)
     try:
         if phase not in {"observations", "final"}:
             return ["INCOMPLETE: unknown telemetry validation phase"]

@@ -71,6 +71,9 @@ def main() -> None:
         lmi_catalog = importlib.import_module("aws_durable_execution_conformance_tests.lmi.catalog")
         assert len(lmi_catalog.requirements("lifecycle")) == 6
         assert len(lmi_catalog.requirements("lifecycle-otel")) == 8
+        lmi_matrix = importlib.import_module("aws_durable_execution_conformance_tests.lmi.matrix")
+        assert len(lmi_matrix.required_cases("python", "lifecycle", "python-lifecycle")) == 28
+        assert len(lmi_matrix.required_cases("python", "lifecycle-otel", "python-lifecycle")) == 76
         assert "lmi-lifecycle" not in registry.suites
         assert files("aws_durable_execution_conformance_tests.lmi").joinpath("evidence-schema.json").is_file()
 
