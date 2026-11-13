@@ -2,7 +2,7 @@
 id: lmi-lifecycle-3
 description: Real invocation deadline and admission
 scenario: deadline-during-step
-scheduling: shared-cohort
+scheduling: shared
 minimumNativeConcurrency: 1
 contract: Keep controlled work in flight across the configured platform timeout. Record actual platform
   timeout independently of root, wrapper and task exit. Verify subsequent operation admission and dispatch

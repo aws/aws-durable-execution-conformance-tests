@@ -2,7 +2,7 @@
 id: lmi-lifecycle-1
 description: Native overlap and execution isolation
 scenario: native-overlap
-scheduling: shared-cohort
+scheduling: shared
 minimumNativeConcurrency: 2
 contract: Establish overlapping distinct original requests in the runtime sharing boundary before releasing
   the bounded barrier. Check results, failures, service histories, SDK requests and invocation-owned state

@@ -2,7 +2,7 @@
 id: lmi-lifecycle-6
 description: Identified warm reuse and late activity
 scenario: warm-reuse
-scheduling: shared-cohort
+scheduling: shared
 minimumNativeConcurrency: 1
 contract: Identify sequential reuse of the same original worker/process and observe delayed callbacks,
   requests and tasks. Attribute every late observation to its original request and execution, with no
