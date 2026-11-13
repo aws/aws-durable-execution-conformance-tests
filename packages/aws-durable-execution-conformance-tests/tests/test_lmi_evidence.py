@@ -236,6 +236,29 @@ def replay_evidence() -> dict[str, Any]:
     return value
 
 
+def unnamed_context_replay_evidence() -> dict[str, Any]:
+    """A public unnamed child context with a completed, named step inside it."""
+    value = replay_evidence()
+    context = {
+        "id": "context",
+        "name": None,
+        "type": "CONTEXT",
+        "parentId": None,
+        "status": "SUCCEEDED",
+        "result": {"value": 1},
+    }
+    for operations in (value["replay"]["before"], value["replay"]["after"]):
+        operations[0]["parentId"] = context["id"]
+        operations.insert(0, deepcopy(context))
+    victim = value["attempts"][0]
+    next(history for history in value["histories"] if history["executionArn"] == victim["executionArn"])[
+        "operations"
+    ] = deepcopy(value["replay"]["after"])
+    value["replay"]["operationExecutions"].append({"requestId": victim["requestId"], "operationId": context["id"]})
+    value["replay"]["sideEffects"].append({"operationId": context["id"], "count": 0, "expectedCount": 0})
+    return value
+
+
 def warm_evidence(runtime: str = "python") -> dict[str, Any]:
     value = evidence(6, runtime)
     victim = value["attempts"][0]
@@ -674,3 +697,32 @@ def test_empty_optional_collection_errors_preserves_complete_evidence() -> None:
     value = evidence(2)
     value["collectionErrors"] = []
     assert validate_evidence(value) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_replay_preserves_unnamed_context_and_its_completed_child(phase: Any) -> None:
+    value = unnamed_context_replay_evidence()
+    assert validate_evidence(value, phase=phase) == []
+    before = value["replay"]["before"]
+    assert before[0]["name"] is None
+    assert before[1]["parentId"] == before[0]["id"]
+
+
+@pytest.mark.parametrize("invalid", ["", " ", False, {}, []])
+def test_replay_unnamed_context_does_not_accept_invalid_names(invalid: Any) -> None:
+    value = unnamed_context_replay_evidence()
+    value["replay"]["before"][0]["name"] = invalid
+    assert any("replay.before.name" in error for error in validate_evidence(value))
+
+
+def test_replay_unnamed_context_requires_explicit_null_name() -> None:
+    value = unnamed_context_replay_evidence()
+    del value["replay"]["before"][0]["name"]
+    assert any("replay.before.name" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("operation_id", ["context", "done"])
+def test_unnamed_context_replay_still_rejects_completed_user_code(operation_id: str) -> None:
+    value = unnamed_context_replay_evidence()
+    value["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": operation_id})
+    assert any("repeated completed" in error for error in validate_evidence(value))

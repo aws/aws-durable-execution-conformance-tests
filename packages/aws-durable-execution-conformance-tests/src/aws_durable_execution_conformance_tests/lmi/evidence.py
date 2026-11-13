@@ -419,8 +419,12 @@ class _Evidence:
             self.error("replay changed completed operation identity, result, or failure", "ASSERTION")
         ids: set[str] = set()
         for operation in before:
-            for field in ("id", "name", "type", "status"):
+            for field in ("id", "type", "status"):
                 self.string(operation.get(field), f"replay.before.{field}")
+            if "name" not in operation:
+                self.error("replay.before.name is required (null for an unnamed operation)")
+            elif operation["name"] is not None:
+                self.string(operation["name"], "replay.before.name")
             if "parentId" not in operation:
                 self.error("replay.before requires stable parentId")
             operation_id = operation.get("id")
