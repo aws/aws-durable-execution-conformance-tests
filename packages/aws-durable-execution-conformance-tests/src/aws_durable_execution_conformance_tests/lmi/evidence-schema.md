@@ -85,6 +85,12 @@ Never generate expectations by copying the observed status or output.
 `collection.evidenceUris` references retained raw records under this case's
 namespace. An empty query without a collection watermark cannot prove absence.
 Source collection failures and incomplete observations must remain visible.
+The optional `collectionErrors` array retains non-empty source error messages;
+omit it or use an empty array when collection succeeded. Owned lifecycle events
+with kind `observation_error` or `control_error` retain failed observation or
+control publication. Any reported source or publication failure makes the
+evidence incomplete in both observation and final validation, even when source
+watermarks cover the full window. Independent retirement applies the same rule.
 
 ## Scenario observations
 

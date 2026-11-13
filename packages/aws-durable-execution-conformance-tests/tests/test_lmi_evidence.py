@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence, validate_evidence
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:
@@ -648,3 +648,29 @@ def test_running_history_allowance_does_not_establish_execution_retirement() -> 
     retired = next(item for item in value["retirement"]["resources"] if item["kind"] == "execution")
     retired["outcome"] = "RUNNING"
     assert any("still resume" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("failure", ["collectionErrors", "observation_error", "control_error"])
+def test_complete_watermarks_do_not_override_source_failures(phase: Any, failure: str) -> None:
+    value = evidence(2)
+    if failure == "collectionErrors":
+        value[failure] = ["SDK request source collection failed"]
+    else:
+        value["events"].append(event(value["attempts"][0], failure, 38))
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any(failure in error for error in errors), errors
+
+
+@pytest.mark.parametrize("invalid", [None, False, 0, "", {}, [""]])
+def test_malformed_collection_errors_cannot_hide_source_failures(invalid: Any) -> None:
+    value = evidence(2)
+    value["collectionErrors"] = invalid
+    assert any("collectionErrors" in error for error in validate_evidence(value))
+
+
+def test_empty_optional_collection_errors_preserves_complete_evidence() -> None:
+    value = evidence(2)
+    value["collectionErrors"] = []
+    assert validate_evidence(value) == []

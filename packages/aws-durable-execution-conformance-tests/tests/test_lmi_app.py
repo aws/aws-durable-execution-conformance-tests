@@ -222,8 +222,10 @@ def test_normal_failure_cannot_reuse_success_evidence():
     )
 
 
-@pytest.mark.parametrize("complete", [True, False])
-def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, complete):
+@pytest.mark.parametrize(
+    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error"]
+)
+def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
     import asyncio
     import sys
     from copy import deepcopy
@@ -233,12 +235,15 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
 
     from aws_durable_execution_conformance_tests.lmi.app import live_results
 
-    evidence = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["evidence"]
-
-    value = evidence()
-    if not complete:
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"]()
+    if failure == "missing-evidence":
         value.pop("collection")
         value.pop("retirement")
+    elif failure == "collectionErrors":
+        value["collectionErrors"] = ["SDK request source collection failed"]
+    elif failure is not None:
+        value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
     finished = []
     plan = manifest()
     plan["runtime"] = value["runtime"]
@@ -280,17 +285,19 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
             pass
 
         async def retire(self, context):
-            if complete:
+            if "retirement" in value:
                 context.evidence["retirement"] = deepcopy(value["retirement"])
             return True
 
     with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda manifest: Adapter())}):
         results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
-    expected_status = "PASSED" if complete else "FAILED"
+    expected_status = "PASSED" if failure is None else "FAILED"
     assert results[0]["status"] == expected_status, results
-    assert finished == [complete]
-    if not complete:
+    assert finished == [failure is None]
+    if failure is not None:
         assert any("retirement" in error for error in results[0]["errors"])
+    if failure in {"collectionErrors", "observation_error", "control_error"}:
+        assert any(failure in error for error in results[0]["errors"])
     audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
     assert audit[-1]["status"] == expected_status
     assert len(audit[-1]["attempts"]) == 2

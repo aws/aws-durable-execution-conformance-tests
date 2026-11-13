@@ -138,14 +138,24 @@ class _Evidence:
             self.selected[role] = attempt
         self.events = self.records(value.get("events"), "events", nonempty=True)
         for event in self.events:
-            self.string(event.get("kind"), "event.kind")
+            kind = self.string(event.get("kind"), "event.kind")
             self.owned_record(event, "event", observation_end)
+            if kind in {"observation_error", "control_error"}:
+                self.error(f"{kind} reports failed observation or control publication")
         for request in self.records(value.get("sdkRequests"), "sdkRequests"):
             self.owned_record(request, "sdkRequest", observation_end)
             self.string(request.get("method"), "sdkRequest.method")
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
         self.histories(check_expectations=validate_behavior)
+        collection_errors = value.get("collectionErrors", [])
+        if not isinstance(collection_errors, list):
+            self.error("collectionErrors must be an array of non-empty strings")
+        else:
+            for index, error in enumerate(collection_errors):
+                message = self.string(error, f"collectionErrors[{index}]")
+                if message:
+                    self.error(f"collectionErrors[{index}]: {message}")
         collection = self.mapping(value.get("collection"), "collection")
         watermarks = self.mapping(collection.get("watermarks"), "collection.watermarks")
         for source in ("lifecycle", "sdkRequests", "history"):
@@ -648,8 +658,6 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
         validator.string(requirement, "requirementId")
         validator.common(validate_behavior=False)
         validator.retirement()
-        if evidence.get("collectionErrors"):
-            validator.error("retirement source collection is incomplete")
         if validator.errors:
             return validator.errors
         retirement = evidence["retirement"]
@@ -698,8 +706,6 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 (event["atMs"] for event in local), default=0
             ):
                 validator.error("invocation retirement precedes its last actual activity")
-            if any(event["kind"] in {"observation_error", "control_error"} for event in local):
-                validator.error("retirement contains failed observation or control publication")
             for start_kind, end_kind, identity in pairs:
                 started = [event for event in local if event["kind"] == start_kind]
                 ended = [event for event in local if event["kind"] == end_kind]
