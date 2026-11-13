@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-2
 description: Normal return, failure and disposal
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - normal-return
   - normal-failure

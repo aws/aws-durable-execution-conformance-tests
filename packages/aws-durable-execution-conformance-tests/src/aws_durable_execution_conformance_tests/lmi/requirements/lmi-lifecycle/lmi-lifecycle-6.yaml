@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-6
 description: Identified warm reuse and late activity
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - warm-reuse
 scheduling: shared-cohort

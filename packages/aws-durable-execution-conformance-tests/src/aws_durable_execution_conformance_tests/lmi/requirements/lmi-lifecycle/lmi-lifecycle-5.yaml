@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-5
 description: Real suspension, replay and retry
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - suspension-retry
 scheduling: shared

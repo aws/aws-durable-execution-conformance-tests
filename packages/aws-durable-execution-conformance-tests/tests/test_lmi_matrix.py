@@ -37,9 +37,7 @@ def test_every_packaged_requirement_is_shared_and_retains_its_stable_id():
         resource.name.removesuffix(".yaml") for resource in root.iterdir() if resource.name.endswith(".yaml")
     } == expected
     for definition in catalog.values():
-        assert set(definition["runtimes"]) == set(RUNTIMES)
-        assert "pythonLifecycle" not in definition
-        assert definition["mandatory"] is True
+        assert not {"capability", "runtimes", "coverageProfiles", "mandatory", "pythonLifecycle"} & definition.keys()
 
 
 @pytest.mark.parametrize("profile", COVERAGE_PROFILES)

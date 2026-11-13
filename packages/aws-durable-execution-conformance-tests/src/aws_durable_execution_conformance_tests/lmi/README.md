@@ -24,8 +24,12 @@ requirements or deploy LMI functions. The dedicated requirement catalog is
 The `standard` coverage profile supports the `lifecycle` capability and requires
 IDs 1–6, covering seven scenarios because normal return and normal failure are
 separate cases. OTel and plugin conformance are deferred to a later change.
-Every applicable ID and every listed scenario must be present and pass. Missing
-SDK APIs or fixtures are `NOT_IMPLEMENTED`, not exclusions. Language-specific
+Every ID and every listed scenario must be present and pass for every supported
+runtime. Requirement files contain only the ID, description, contract, limits,
+scenario selectors, roles, scheduling and minimum native concurrency. Mandatory
+coverage and runtime applicability are suite-wide rules rather than repeated
+`mandatory`, `capability`, `runtimes` or `coverageProfiles` fields. Missing SDK APIs
+or fixtures are `NOT_IMPLEMENTED`, not exclusions. Language-specific
 starvation and non-cooperative fault fixtures remain diagnostic unless a
 supported behavior and test budget have been agreed.
 

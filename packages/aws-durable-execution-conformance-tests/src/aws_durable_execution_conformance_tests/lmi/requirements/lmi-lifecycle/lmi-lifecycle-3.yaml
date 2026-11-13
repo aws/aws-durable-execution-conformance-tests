@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-3
 description: Real invocation deadline and admission
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - deadline-during-step
 scheduling: shared-cohort

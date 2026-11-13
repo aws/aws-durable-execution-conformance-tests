@@ -16,10 +16,11 @@ COVERAGE_PROFILES = ("standard",)
 def requirements(
     capability: str, *, runtime: str | None = None, coverage_profile: str = "standard"
 ) -> dict[str, dict[str, Any]]:
-    """Read only the contracts applicable to the selected coverage profile.
+    """Validate the run selection and load every shared lifecycle contract.
 
-    Every bundled requirement applies to all supported runtimes. SDK-specific
-    regression suites belong to their SDK repositories, not this catalog.
+    All bundled requirements are mandatory for every supported runtime. These
+    suite-wide rules do not need per-requirement applicability metadata.
+    SDK-specific regression suites belong to their SDK repositories.
     """
     if capability not in CAPABILITIES:
         raise ValueError(f"Unknown capability profile: {capability}")
@@ -33,11 +34,5 @@ def requirements(
         if not resource.name.endswith(".yaml"):
             continue
         requirement = yaml.safe_load(resource.read_text())
-        if coverage_profile not in requirement.get("coverageProfiles", ("standard",)):
-            continue
-        if runtime is not None and runtime not in requirement["runtimes"]:
-            continue
-        if requirement["capability"] != capability:
-            continue
         result[requirement["id"]] = requirement
     return result

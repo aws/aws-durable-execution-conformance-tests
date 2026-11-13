@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-4
 description: Healthy peer progress and original worker recovery
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - peer-recovery
 scheduling: exclusive

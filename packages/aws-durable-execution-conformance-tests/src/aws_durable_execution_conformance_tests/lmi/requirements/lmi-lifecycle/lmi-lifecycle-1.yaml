@@ -1,12 +1,6 @@
 ---
 id: lmi-lifecycle-1
 description: Native overlap and execution isolation
-capability: lifecycle
-mandatory: true
-runtimes:
-  - javascript
-  - java
-  - python
 requiredScenarios:
   - native-overlap
 scheduling: shared-cohort
