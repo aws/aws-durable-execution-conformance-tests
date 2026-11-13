@@ -643,19 +643,26 @@ async def run_scenarios(
                 )
             )
         try:
-            lease = await _bounded(
-                leases.acquire(
+            lease_started = time.time() * 1000
+            lease_monotonic_started = time.monotonic()
+            try:
+                # Acquisition already has a timeout. Await it in this task so
+                # cancellation cannot strand a lease in a completed child task.
+                lease = await leases.acquire(
                     context.profile.resource_id,
                     f"{run_id}:{case.case_id}",
                     slots=case.slots,
                     exclusive=case.exclusive,
                     timeout=limits.lease,
-                ),
-                "lease",
-                limits.lease,
-                context,
-                residual,
-            )
+                )
+            except TimeoutError as exc:
+                raise PhaseTimeout(f"lease exceeded its {limits.lease:g}s harness budget") from exc
+            finally:
+                context.timings["lease"] = {
+                    "startedAtMs": lease_started,
+                    "finishedAtMs": time.time() * 1000,
+                    "durationMs": (time.monotonic() - lease_monotonic_started) * 1000,
+                }
             context._lease = lease
             # Waiting for a busy target must not consume global slots needed
             # by unrelated profiles. Count active work only after its lease.

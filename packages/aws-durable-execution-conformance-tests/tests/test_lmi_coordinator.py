@@ -17,6 +17,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ResourceScheduler,
     Scenario,
     ScenarioContext,
+    ScenarioResult,
     run_scenarios,
 )
 
@@ -399,6 +400,89 @@ def test_cancelling_run_retires_owners_before_finishing_profile():
         assert adapter.retired == ["victim"]
         assert adapter.finished == [(PROFILE.profile_id, False)]
         assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+    asyncio.run(exercise())
+
+
+def test_cancellation_at_lease_acquisition_does_not_strand_resource_ownership():
+    async def exercise():
+        class UnstartedAdapter(Adapter):
+            async def start(self, context):
+                await asyncio.Event().wait()
+
+        adapter = UnstartedAdapter()
+        scheduler = ResourceScheduler()
+        emitted: list[ScenarioResult] = []
+        running = asyncio.create_task(
+            run_scenarios(
+                [case("victim")],
+                [PROFILE],
+                adapter,
+                run_id="cancelled",
+                validator=validator,
+                scheduler=scheduler,
+                on_result=emitted.append,
+            )
+        )
+        # Observe the real scheduler's handoff without changing its behavior.
+        # The old child-task wrapper left this owner behind when cancelled here.
+        async with asyncio.timeout(1):
+            while (
+                PROFILE.resource_id not in scheduler._resources
+                or "cancelled:victim" not in scheduler._resources[PROFILE.resource_id].owners
+            ):
+                await asyncio.sleep(0)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        assert adapter.started == []
+        assert adapter.released == adapter.retired == ["victim"]
+        assert emitted[-1].status == "INFRASTRUCTURE_ERROR"
+        assert "lease" in emitted[-1].timings
+
+        async def verify_no_launched_work():
+            return True
+
+        await scheduler.recover(PROFILE.resource_id, verify_no_launched_work)
+        following = await run_scenarios(
+            [case("following")], [PROFILE], Adapter(), run_id="next", validator=validator, scheduler=scheduler
+        )
+        assert following[0].status == "PASSED", following[0].errors
+
+    asyncio.run(exercise())
+
+
+def test_case_lease_timeout_retains_phase_error_and_timing_without_quarantine():
+    async def exercise():
+        waiter_finished = asyncio.Event()
+
+        class HoldingAdapter(Adapter):
+            async def execute(self, context):
+                await waiter_finished.wait()
+
+        def on_result(result):
+            if result.case_id == "waiting":
+                waiter_finished.set()
+
+        adapter = HoldingAdapter()
+        results = await run_scenarios(
+            [case("holding", exclusive=True), case("waiting")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=validator,
+            budgets=Budgets(lease=0.01, execution=1),
+            on_result=on_result,
+        )
+        assert results[0].status == "PASSED", results[0].errors
+        assert results[1].status == "INFRASTRUCTURE_ERROR"
+        assert results[1].errors == ["PhaseTimeout: lease exceeded its 0.01s harness budget"]
+        assert adapter.started == ["holding"]
+        assert adapter.finished == [(PROFILE.profile_id, True)]
+        for result in results:
+            timing = result.timings["lease"]
+            assert timing["finishedAtMs"] >= timing["startedAtMs"]
+            assert timing["durationMs"] >= 0
 
     asyncio.run(exercise())
 
