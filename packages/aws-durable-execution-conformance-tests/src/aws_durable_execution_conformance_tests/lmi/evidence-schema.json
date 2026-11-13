@@ -312,6 +312,50 @@
                     "minLength": 1
                   }
                 }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "callback"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "outcome": {
+                      "enum": [
+                        "SUCCEEDED",
+                        "FAILED",
+                        "TIMED_OUT"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "control"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "outcome": {
+                      "enum": [
+                        "DELETED"
+                      ]
+                    }
+                  }
+                }
               }
             ]
           }

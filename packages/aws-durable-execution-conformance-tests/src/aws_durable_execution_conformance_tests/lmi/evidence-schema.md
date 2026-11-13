@@ -117,6 +117,14 @@ In `final` validation, `retirement.retiredAtMs` follows observation completion.
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
 be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,
 or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle ownership.
+Durable callbacks use `kind: callback` and require an observed `SUCCEEDED`,
+`FAILED`, or `TIMED_OUT` outcome; their `evidenceUri` retains the service completion
+record. Case-owned control objects use `kind: control` and require `DELETED`,
+with `evidenceUri` retaining the provider's deletion acknowledgment or a read
+confirming absence. A requested cleanup or a locally declared success is not
+completion evidence. Both final validation and independent failed-case audits
+enforce these outcomes. Other retained resource kinds need an explicit completion
+contract before the independent audit can permit target reuse.
 `retirement.faults` likewise matches every created fault and records `releasedAtMs`
 and `mode: normal | emergency`. Releasing a fault before the asserted cleanup or
 recovery is a failure regardless of release mode.

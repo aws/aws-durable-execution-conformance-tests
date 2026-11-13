@@ -534,6 +534,10 @@ class _Evidence:
                         self.error("an execution may still resume after retirement")
                     if kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
+                    if kind == "callback" and item.get("outcome") not in ("SUCCEEDED", "FAILED", "TIMED_OUT"):
+                        self.error("callback completion is not established")
+                    if kind == "control" and item.get("outcome") != "DELETED":
+                        self.error("control object deletion is not established")
                 if settled_key == "faults":
                     if item.get("mode") not in ("normal", "emergency"):
                         self.error("fault release must record normal or emergency mode")
@@ -653,7 +657,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
         histories = {item["executionArn"]: item for item in evidence["histories"]}
         for resource in evidence["resourcesCreated"]:
             kind = resource["kind"]
-            if kind not in {"invocation", "execution"}:
+            if kind not in {"invocation", "execution", "callback", "control"}:
                 validator.error(f"retirement has no completion contract for resource kind {kind}")
         for arn, history in histories.items():
             if history["status"] not in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}:

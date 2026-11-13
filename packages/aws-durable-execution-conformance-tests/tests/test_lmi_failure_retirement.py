@@ -19,7 +19,10 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ScenarioResult,
     run_scenarios,
 )
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    validate_common_evidence,
+    validate_retirement_evidence,
+)
 
 PROFILE = Profile("native-1", "arn:function:c1", 1, 1, "sdk@sha256:tested", "sha256:configuration")
 ORIGINAL_FAILURE = "ASSERTION: original SDK behavior failed"
@@ -247,6 +250,58 @@ def _run(adapter: FailureAdapter, *, retry: bool = False) -> tuple[list[Scenario
         run_scenarios(cases, [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler)
     )
     return results, scheduler
+
+
+def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> None:
+    resource = {"id": f"{kind}:{value['caseId']}", "kind": kind, "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {**resource, "settledAtMs": 20900, "outcome": outcome, "evidenceUri": "memory://provider-completion"}
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,outcome",
+    [("callback", "SUCCEEDED"), ("callback", "FAILED"), ("callback", "TIMED_OUT"), ("control", "DELETED")],
+)
+def test_settled_callback_and_control_resources_allow_failed_target_reuse(kind: str, outcome: str) -> None:
+    class RetainedResourceAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            _add_retained_resource(self.snapshots[context.scenario.case_id], kind, outcome)
+
+    adapter = RetainedResourceAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status == "FAILED"
+    assert ORIGINAL_FAILURE in failed.errors
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert following.status == "PASSED", following.errors
+    assert adapter.started == ["failed", "next"]
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("kind,outcome", [("callback", "PENDING"), ("callback", "QUIESCENT"), ("control", "CREATED")])
+def test_retained_resources_require_terminal_outcomes_in_both_audits(kind: str, outcome: str) -> None:
+    value = _snapshot(ScenarioContext("run", _case("failed"), PROFILE))
+    _add_retained_resource(value, kind, outcome)
+    value["expectedHistories"] = {"arn:execution:failed:victim": {"status": "SUCCEEDED", "result": None}}
+    assert any(kind in error for error in validate_retirement_evidence(value))
+    assert any(kind in error for error in validate_common_evidence(value, requirement_ids=("fixture-check",)))
+
+
+@pytest.mark.parametrize("kind,outcome", [("callback", "SUCCEEDED"), ("control", "DELETED")])
+def test_additional_resource_completion_still_requires_retained_provider_evidence(kind: str, outcome: str) -> None:
+    value = _snapshot(ScenarioContext("run", _case("failed"), PROFILE))
+    _add_retained_resource(value, kind, outcome)
+    value["retirement"]["resources"][-1].pop("evidenceUri")
+    assert any("evidenceUri" in error for error in validate_retirement_evidence(value))
+
+
+def test_unknown_resource_kind_cannot_claim_independent_retirement() -> None:
+    value = _snapshot(ScenarioContext("run", _case("failed"), PROFILE))
+    _add_retained_resource(value, "unrecognized", "SUCCEEDED")
+    assert any("no completion contract" in error for error in validate_retirement_evidence(value))
 
 
 @pytest.mark.parametrize("phase", ["placement", "execute", "collection", "assertion"])
