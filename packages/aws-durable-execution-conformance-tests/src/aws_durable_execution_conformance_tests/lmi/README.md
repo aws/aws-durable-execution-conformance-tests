@@ -11,11 +11,6 @@ conformance, including `--suite all`, does not discover these multi-invocation
 requirements or deploy LMI functions. The dedicated requirement catalog is
 [`requirements/lmi-lifecycle`](requirements/lmi-lifecycle).
 
-For the complete Python SDK #743 cloud behavior matrix, use the opt-in
-[`python-lifecycle` coverage profile](python-lifecycle.md): 28 lifecycle slots or
-76 lifecycle-plus-OTel slots, including exact c1/c2/view coverage and declared
-behavior budgets. The original `standard` profile below remains compatible.
-
 For language-neutral synchronous and asynchronous export lifecycle checks, use
 [`export-lifecycle`](export-lifecycle.md). Both modes are selectable for every
 supported runtime; neither mode is inferred from the SDK language.
@@ -278,7 +273,7 @@ scheduled; run accounts and compatible cases concurrently.
 | --- | --- | --- |
 | JavaScript | [#1017](https://github.com/aws/aws-durable-execution-sdk-js/issues/1017) | [#928](https://github.com/aws/aws-durable-execution-sdk-js/pull/928) closed without merging; map final fixtures to IDs 1–8 |
 | Java | [#727](https://github.com/aws/aws-durable-execution-sdk-java/issues/727) | Base harness incorporated by [#782](https://github.com/aws/aws-durable-execution-sdk-java/pull/782); adapt its driver/evidence and validate IDs 1–8 |
-| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#743](https://github.com/aws/aws-durable-execution-sdk-python/pull/743) is proposed; adapt process-specific fixtures and validate IDs 1–8 |
+| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931) owns Python regression rules and adopts the common exporter profile; standard IDs 1–8 remain separate acceptance |
 
 These are migration mappings, not accepted results for any requirement. At least
 two distinct real runtime models with retained evidence and regression-sensitivity
@@ -319,3 +314,26 @@ retirement can succeed when every actual launch is independently proven settled.
 This distinction lets later cases use a safely retired target while preserving
 all earlier test failures. Existing adapters without independent failed-case
 retirement evidence remain conservatively quarantined after a failure.
+
+## SDK-owned suites
+
+The shared catalog contains only `standard` and `export-lifecycle`; all packaged
+requirements apply to JavaScript, Java and Python. Language-specific operation,
+cleanup, thread, exception and plugin assertions belong in the SDK repository.
+They must not be added as runtime-exclusive requirement files here.
+
+An SDK-owned controller can pass a `SuiteDefinition` to the programmatic
+`load_manifest`, `live_results`, `evidence_results`, `coverage_inventory` and
+`build_report` functions. The definition supplies its own requirement metadata,
+case matrix, validator and report suite name. The common engine retains bounded
+scheduling, launch journals, immutable manifest snapshots, evidence identity,
+strict coverage and independent retirement auditing. An optional evidence policy
+key binds the caller's declared behavior budgets; the caller explicitly declares
+any budget names that permit zero. SDK-specific applicability is checked by that
+SDK's loader and validator.
+
+Definitions are not loaded from evidence and are not passed to adapters. The
+shared CLI continues to recognize only its packaged catalog. A local suite uses
+its own requirement/report namespace and cannot fill missing shared conformance
+coverage. Selecting a local SDK suite does not establish standard-profile
+acceptance.

@@ -559,3 +559,164 @@ def test_service_start_does_not_relax_native_owned_span_boundaries(name: str) ->
     native_span["name"] = name
     native_span["start_time"] = datetime.fromtimestamp(0.5, UTC).isoformat()
     assert any("outside its lifecycle observation window" in error for error in validate_lmi_telemetry(data))
+
+
+def _resumed_operation(runtime: str = "javascript", operation_type: str = "WAIT") -> dict[str, Any]:
+    """A logical operation exported on resume retains its actual service lifetime."""
+    attempts = [
+        {
+            "requestId": request_id,
+            "executionArn": "arn:execution:resumed",
+            "environmentId": "environment-1",
+            "workerId": "worker-1",
+            "processId": "process-1",
+            "startedAtMs": start,
+            "endedAtMs": start + 1000,
+        }
+        for request_id, start in (("original", 1000), ("resume", 7000))
+    ]
+    data = evidence(runtime, supplied_attempts=attempts)
+    view = data["telemetry"]["views"]["execution"]
+    for index, (record, carrier) in enumerate(zip(view["spans"], view["carriers"], strict=True)):
+        record["span"].update(name="Invocation", trace_id="1" * 32)
+        record["span"]["attributes"]["durable.invocation.first"] = index == 0
+        carrier["header"] = f"Root=1-11111111-{'1' * 24};Parent={'a' * 16};Sampled=1"
+    operation: dict[str, Any] = {
+        "id": "operation-1",
+        "name": "pause",
+        "type": operation_type,
+        "status": "SUCCEEDED",
+        "startedAtMs": 1500,
+        "endedAtMs": 6500,
+    }
+    span = Span(
+        trace_id="1" * 32,
+        span_id="f" * 16,
+        name=operation["name"],
+        start_time=datetime.fromtimestamp(1.5, UTC),
+        end_time=datetime.fromtimestamp(6.5, UTC),
+        parent_span_id="a" * 16,
+        status="OK",
+        attributes={
+            "durable.execution.arn": attempts[0]["executionArn"],
+            "durable.operation.id": operation["id"],
+            "durable.operation.name": operation["name"],
+            "durable.operation.type": operation["type"],
+            "durable.operation.status": operation["status"],
+        },
+    )
+    view["spans"].append({"requestId": "resume", "span": span_to_dict(span)})
+    view["assertions"] = {
+        attempts[0]["executionArn"]: {"span_assertions": [{"select": {"name": "Invocation"}, "count": 2, "expect": {}}]}
+    }
+    data["telemetry"]["views"]["invocation"]["assertions"] = deepcopy(view["assertions"])
+    data["histories"] = [{"executionArn": attempts[0]["executionArn"], "operations": [operation]}]
+    return data
+
+
+def _resumed_view_errors(data: dict[str, Any], view_name: str = "execution") -> list[str]:
+    from aws_durable_execution_conformance_tests_otel.lmi import _view_errors
+
+    return _view_errors(
+        view_name,
+        data["telemetry"]["views"]["execution"],
+        {attempt["requestId"]: attempt for attempt in data["attempts"]},
+        data["runtime"],
+        data["observationEndedAtMs"],
+        operation_histories=data["histories"],
+    )
+
+
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("operation_type", ["STEP", "WAIT", "CALLBACK", "CONTEXT", "CHAINED_INVOKE"])
+def test_resumed_logical_operation_uses_matching_service_lifetime(runtime: str, operation_type: str) -> None:
+    assert validate_lmi_telemetry(_resumed_operation(runtime, operation_type)) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing-start",
+        "missing-end",
+        "wrong-id",
+        "wrong-type",
+        "wrong-name",
+        "wrong-status",
+        "open",
+        "reversed",
+        "nonfinite",
+        "duplicate",
+    ],
+)
+def test_resumed_logical_operation_requires_complete_matching_history(change: str) -> None:
+    data = _resumed_operation()
+    history = data["histories"][0]
+    operation = history["operations"][0]
+    if change == "missing-start":
+        del operation["startedAtMs"]
+    elif change == "missing-end":
+        del operation["endedAtMs"]
+    elif change == "wrong-id":
+        operation["id"] = "another-operation"
+    elif change == "wrong-type":
+        operation["type"] = "STEP"
+    elif change == "wrong-name":
+        operation["name"] = "another-wait"
+    elif change == "wrong-status":
+        operation["status"] = "FAILED"
+    elif change == "open":
+        operation["status"] = "STARTED"
+        data["telemetry"]["views"]["execution"]["spans"][-1]["span"]["attributes"]["durable.operation.status"] = (
+            "STARTED"
+        )
+    elif change == "reversed":
+        operation["endedAtMs"] = 1400
+    elif change == "nonfinite":
+        operation["startedAtMs"] = float("nan")
+    else:
+        history["operations"].append(deepcopy(operation))
+    if change == "nonfinite":
+        with pytest.raises(ValueError, match="finite"):
+            _resumed_view_errors(data)
+    else:
+        assert any("observation window" in error for error in _resumed_view_errors(data))
+
+
+@pytest.mark.parametrize(
+    "change", ["invocation-view", "attempt", "user-span", "unknown-type", "too-early", "too-late", "wrong-execution"]
+)
+def test_service_lifetime_does_not_relax_unrelated_span_windows(change: str) -> None:
+    data = _resumed_operation()
+    span = data["telemetry"]["views"]["execution"]["spans"][-1]["span"]
+    if change == "attempt":
+        span["attributes"]["durable.attempt.outcome"] = "SUCCEEDED"
+    elif change == "user-span":
+        del span["attributes"]["durable.operation.id"]
+    elif change == "unknown-type":
+        span["attributes"]["durable.operation.type"] = "USER"
+        data["histories"][0]["operations"][0]["type"] = "USER"
+    elif change == "too-early":
+        span["start_time"] = datetime.fromtimestamp(1.499, UTC).isoformat()
+    elif change == "too-late":
+        span["end_time"] = datetime.fromtimestamp(6.501, UTC).isoformat()
+    elif change == "wrong-execution":
+        data["histories"][0]["executionArn"] = "arn:execution:unrelated"
+    assert any(
+        "observation window" in error
+        for error in _resumed_view_errors(data, "invocation" if change == "invocation-view" else "execution")
+    )
+
+
+@pytest.mark.parametrize("name_missing", [False, True])
+def test_unnamed_historical_operation_requires_explicit_unnamed_service_record(name_missing: bool) -> None:
+    data = _resumed_operation(operation_type="CONTEXT")
+    operation = data["histories"][0]["operations"][0]
+    operation["name"] = None
+    span = data["telemetry"]["views"]["execution"]["spans"][-1]["span"]
+    span["name"] = operation["id"]
+    span["attributes"].pop("durable.operation.name")
+    if name_missing:
+        del operation["name"]
+        assert _resumed_view_errors(data)
+    else:
+        assert _resumed_view_errors(data) == []

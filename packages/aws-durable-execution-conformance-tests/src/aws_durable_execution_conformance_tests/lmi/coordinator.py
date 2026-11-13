@@ -71,8 +71,10 @@ class Scenario:
             raise ValueError("Scenario slots must be a positive integer")
         if self.otel_view not in (None, "invocation", "execution"):
             raise ValueError("otel_view must be invocation or execution")
-        if self.coverage_profile not in ("standard", "python-lifecycle", "export-lifecycle"):
-            raise ValueError("Unknown scenario coverage profile")
+        # Catalog applicability belongs to the suite owner. The coordinator
+        # also serves SDK-local suites supplied through the programmatic API.
+        if not isinstance(self.coverage_profile, str) or not self.coverage_profile.strip():
+            raise ValueError("Scenario coverage profile must be a nonempty string")
         if self.export_mode not in (None, "sync", "async-bounded-flush"):
             raise ValueError("Unknown export mode")
         if (self.coverage_profile == "export-lifecycle") != (self.export_mode is not None):

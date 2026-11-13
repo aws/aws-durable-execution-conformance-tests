@@ -94,13 +94,11 @@ def test_export_profile_is_opt_in_and_cannot_disable_otel(runtime):
         required_cases(runtime, "lifecycle", "export-lifecycle")
 
 
-def test_existing_profiles_keep_their_coverage_counts_and_no_export_mode_obligation():
-    assert len(requirements("lifecycle")) == 6
-    assert len(requirements("lifecycle-otel")) == 8
-    for capability, count in (("lifecycle", 28), ("lifecycle-otel", 76)):
-        cells = required_cases("python", capability, "python-lifecycle")
+@pytest.mark.parametrize("runtime", RUNTIMES)
+def test_standard_contracts_keep_their_counts_without_an_export_mode_obligation(runtime):
+    assert len(requirements("lifecycle", runtime=runtime)) == 6
+    assert len(requirements("lifecycle-otel", runtime=runtime)) == 8
+    for capability, count in (("lifecycle", 7), ("lifecycle-otel", 9)):
+        cells = required_cases(runtime, capability)
         assert len(cells) == count
         assert all(cell.export_mode is None and cell.key[-1] is None for cell in cells)
-        assert missing_cases(cells, [cell.key for cell in cells]) == []
-    standard = required_cases("java", "lifecycle")
-    assert all(cell.export_mode is None for cell in standard)

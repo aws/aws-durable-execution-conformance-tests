@@ -269,9 +269,10 @@ versioned evidence, shared/exclusive resource ownership, and strict coverage.
 It is separate from ordinary `--suite all` runs. See the
 [LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
 for manifests, SDK adapter contracts, persistent deployment profiles, OTel reuse,
-and the remaining real-LMI adoption gates. The new
-[Python lifecycle coverage profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/python-lifecycle.md)
-maps Python SDK #743 to 28 lifecycle or 76 lifecycle/OTel mandatory test slots.
+and the remaining real-LMI adoption gates. Packaged requirements apply to every
+supported SDK runtime. SDK-specific regression suites, their case matrices and
+validators live in the corresponding SDK repository; they can reuse the common
+coordination and reporting APIs without entering this catalog.
 
 The language-neutral [export lifecycle profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/export-lifecycle.md)
 requires synchronous export and asynchronous export with bounded flush waiting

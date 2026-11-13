@@ -72,14 +72,24 @@ def main() -> None:
         assert len(lmi_catalog.requirements("lifecycle")) == 6
         assert len(lmi_catalog.requirements("lifecycle-otel")) == 8
         lmi_matrix = importlib.import_module("aws_durable_execution_conformance_tests.lmi.matrix")
-        assert len(lmi_matrix.required_cases("python", "lifecycle", "python-lifecycle")) == 28
-        assert len(lmi_matrix.required_cases("python", "lifecycle-otel", "python-lifecycle")) == 76
+        assert set(lmi_catalog.COVERAGE_PROFILES) == {"standard", "export-lifecycle"}
         for runtime in ("javascript", "java", "python"):
+            assert len(lmi_matrix.required_cases(runtime, "lifecycle")) == 7
+            assert len(lmi_matrix.required_cases(runtime, "lifecycle-otel")) == 9
+            assert set(lmi_catalog.requirements("lifecycle-otel", runtime=runtime)) == {
+                f"lmi-lifecycle-{index}" for index in range(1, 9)
+            }
             cases = lmi_matrix.required_cases(runtime, "lifecycle-otel", "export-lifecycle")
             assert len(cases) == 24
             assert {case.export_mode for case in cases} == {"sync", "async-bounded-flush"}
         assert "lmi-lifecycle" not in registry.suites
-        assert files("aws_durable_execution_conformance_tests.lmi").joinpath("evidence-schema.json").is_file()
+        lmi_resources = files("aws_durable_execution_conformance_tests.lmi")
+        assert lmi_resources.joinpath("evidence-schema.json").is_file()
+        assert not lmi_resources.joinpath("lifecycle_regressions.py").is_file()
+        assert not lmi_resources.joinpath("python-lifecycle.md").is_file()
+        for number in range(9, 16):
+            assert not lmi_resources.joinpath(f"requirements/lmi-lifecycle/lmi-lifecycle-{number}.yaml").is_file()
+        assert not files("aws_durable_execution_conformance_tests_otel").joinpath("lmi_regressions.py").is_file()
 
         callback = importlib.import_module("aws_durable_execution_conformance_tests.callback")
         action = callback.CallbackAction.from_dict(

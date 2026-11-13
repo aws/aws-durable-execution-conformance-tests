@@ -287,3 +287,14 @@ def test_output_reuse_preserves_previous_run(tmp_path):
         run(["--manifest", str(path), "--output", str(output)])
     assert error.value.code == 2
     assert original.read_text() == "retained original evidence"
+
+
+def test_python_regressions_are_not_a_builtin_shared_profile(tmp_path):
+    plan = manifest()
+    plan.update(coverageProfile="python-lifecycle", scenarios=[])
+    for profile in plan["profiles"]:
+        profile["recovery_policy"] = "reuse-worker"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="coverage profile"):
+        load_manifest(path)

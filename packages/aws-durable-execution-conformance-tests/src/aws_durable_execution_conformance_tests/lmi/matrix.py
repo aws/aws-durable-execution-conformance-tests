@@ -6,7 +6,6 @@
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.catalog import EXPORT_MODES, requirements
 
@@ -52,11 +51,9 @@ class CaseRequirement:
 def required_cases(runtime: str, capability: str, coverage_profile: str = "standard") -> list[CaseRequirement]:
     """Expand requirement metadata into mandatory scenario/configuration slots.
 
-    python-lifecycle includes fourteen lifecycle variants on c1 and c2. Its OTel
-    capability adds twelve variants in each view on both native configurations.
-    Instrumented variants do not replace the uninstrumented baseline slots.
-    export-lifecycle separately requires both exporter modes on every supported
-    runtime, across three scenarios, two views and two native configurations.
+    Standard contracts use the same minimum-capacity cases for every runtime.
+    Export lifecycle coverage requires both exporter modes across three scenarios,
+    two views and two native configurations, independently of runtime language.
     """
     catalog = requirements(capability, runtime=runtime, coverage_profile=coverage_profile)
     result: list[CaseRequirement] = []
@@ -97,37 +94,6 @@ def required_cases(runtime: str, capability: str, coverage_profile: str = "stand
                                 )
                             )
             continue
-        regression = requirement["pythonLifecycle"]
-        groups: list[tuple[list[dict[str, Any]], tuple[str | None, ...]]] = [(regression["scenarios"], (None,))]
-        if capability == "lifecycle-otel":
-            groups.append((regression["otelScenarios"], ("invocation", "execution")))
-        for definitions, views in groups:
-            for definition in definitions:
-                for concurrency in (1, 2):
-                    roles = (
-                        definition.get("rolesAtConcurrencyTwo", definition["roles"])
-                        if concurrency == 2
-                        else definition["roles"]
-                    )
-                    slots = (
-                        definition.get("slotsAtConcurrencyTwo", definition["minimumNativeConcurrency"])
-                        if concurrency == 2
-                        else definition["minimumNativeConcurrency"]
-                    )
-                    for view in views:
-                        result.append(
-                            CaseRequirement(
-                                requirement_id,
-                                definition["scenario"],
-                                concurrency,
-                                view,
-                                tuple(roles),
-                                definition["exclusive"],
-                                slots,
-                                tuple(definition["sourceTests"]),
-                                tuple(definition.get("budgetNames", ())),
-                            )
-                        )
     keys = [case.key for case in result]
     if len(keys) != len(set(keys)):
         raise ValueError("Requirement metadata contains duplicate coverage slots")

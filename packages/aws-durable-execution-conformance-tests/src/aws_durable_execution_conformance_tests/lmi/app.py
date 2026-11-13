@@ -14,12 +14,13 @@ import os
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, RUNTIMES, requirements
+from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
+from aws_durable_execution_conformance_tests.lmi.coordinator import EvidenceValidator
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_STRICT,
@@ -31,7 +32,41 @@ from aws_durable_execution_conformance_tests.report import (
 from aws_durable_execution_conformance_tests.reporters import render_console, write_report
 
 
-def _catalog(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+@dataclass(frozen=True)
+class SuiteDefinition:
+    """Caller-owned rules using the common coordinator, evidence and reporting.
+
+    Passing a definition is an explicit programmatic API operation. It does not add
+    requirements or a coverage profile to the shared CLI/catalog or its wheels.
+    The adapter only receives a separate copy of the run manifest.
+    """
+
+    coverage_profile: str
+    suite_name: str
+    requirements: Mapping[str, Mapping[str, Any]]
+    cases: tuple[CaseRequirement, ...]
+    validator: EvidenceValidator
+    evidence_policy_key: str | None = None
+    nonnegative_budgets: frozenset[str] = frozenset()
+
+
+def _check_suite(manifest: Mapping[str, Any], suite: SuiteDefinition) -> None:
+    if not suite.coverage_profile or manifest.get("coverageProfile", "standard") != suite.coverage_profile:
+        raise ValueError("suite definition does not match the declared coverageProfile")
+    if not suite.suite_name:
+        raise ValueError("suite definition must have a report suite name")
+    if suite.coverage_profile in COVERAGE_PROFILES:
+        raise ValueError("caller-owned rules cannot replace a shared coverage profile")
+    if suite.suite_name == "lmi-lifecycle" or any(
+        not isinstance(name, str) or name.startswith("lmi-lifecycle-") for name in suite.requirements
+    ):
+        raise ValueError("caller-owned rules must use their own report and requirement namespace")
+
+
+def _catalog(manifest: Mapping[str, Any], suite: SuiteDefinition | None = None) -> dict[str, dict[str, Any]]:
+    if suite is not None:
+        _check_suite(manifest, suite)
+        return {key: deepcopy(dict(value)) for key, value in suite.requirements.items()}
     return requirements(
         manifest["capabilityProfile"],
         runtime=manifest["runtime"],
@@ -45,7 +80,10 @@ def _profile_cases(runtime: str, capability: str, profile: str) -> tuple[CaseReq
     return tuple(required_cases(runtime, capability, profile))
 
 
-def _required(manifest: Mapping[str, Any]) -> list[CaseRequirement]:
+def _required(manifest: Mapping[str, Any], suite: SuiteDefinition | None = None) -> list[CaseRequirement]:
+    if suite is not None:
+        _check_suite(manifest, suite)
+        return list(suite.cases)
     return list(
         _profile_cases(manifest["runtime"], manifest["capabilityProfile"], manifest.get("coverageProfile", "standard"))
     )
@@ -55,8 +93,9 @@ def _case_definition(
     manifest: Mapping[str, Any],
     scenario: Mapping[str, Any],
     profile: Mapping[str, Any],
+    suite: SuiteDefinition | None = None,
 ) -> CaseRequirement:
-    for required in _required(manifest):
+    for required in _required(manifest, suite):
         if required.requirement_id != scenario["requirement_id"] or required.scenario != scenario["scenario"]:
             continue
         if required.export_mode != scenario.get("export_mode"):
@@ -72,7 +111,7 @@ def _case_definition(
     )
 
 
-def coverage_inventory(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def coverage_inventory(manifest: Mapping[str, Any], *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     profiles = {profile["profile_id"]: profile for profile in manifest["profiles"]}
     observed = [
         (
@@ -84,7 +123,7 @@ def coverage_inventory(manifest: Mapping[str, Any]) -> dict[str, Any]:
         )
         for case in manifest["scenarios"]
     ]
-    required = _required(manifest)
+    required = _required(manifest, suite)
     missing = missing_cases(required, observed)
     return {
         "coverageProfile": manifest.get("coverageProfile", "standard"),
@@ -93,7 +132,7 @@ def coverage_inventory(manifest: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
+def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
     manifest = json.loads(path.read_text())
     if (
@@ -109,7 +148,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(manifest.get("runId"), str) or not manifest["runId"].strip():
         raise ValueError("runId must be a non-empty string")
     # Resolve the profile before any adapter import, deployment or admission.
-    _required(manifest)
+    _required(manifest, suite)
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) < 2:
         raise ValueError("profiles must include persistent native concurrency 1 and 2 targets")
@@ -125,11 +164,6 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise ValueError("profile IDs and function resources must be unique")
         ids.add(profile["profile_id"])
         resources.add(profile["resource_id"])
-        if manifest.get("coverageProfile", "standard") == "python-lifecycle" and profile.get("recovery_policy") not in (
-            "reuse-worker",
-            "replace-worker",
-        ):
-            raise ValueError("Python lifecycle profiles require an explicit recovery_policy")
         for key in ("capacity", "native_concurrency"):
             if type(profile.get(key)) is not int or profile[key] < 1:
                 raise ValueError(f"profile.{key} must be a positive integer")
@@ -158,7 +192,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     scenarios = manifest.get("scenarios")
     if not isinstance(scenarios, list):
         raise ValueError("scenarios must be a list (empty means uncovered)")
-    catalog = _catalog(manifest)
+    catalog = _catalog(manifest, suite)
     case_ids: set[str] = set()
     for scenario in scenarios:
         if not isinstance(scenario, dict):
@@ -174,7 +208,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         if scenario["profile_id"] not in ids:
             raise ValueError(f"unknown profile: {scenario['profile_id']}")
         profile = next(profile for profile in profiles if profile["profile_id"] == scenario["profile_id"])
-        definition = _case_definition(manifest, scenario, profile)
+        definition = _case_definition(manifest, scenario, profile, suite)
         if profile["native_concurrency"] < definition.minimum_native_concurrency:
             raise ValueError("scenario requires a higher deployed native concurrency")
         if "exclusive" in scenario and type(scenario["exclusive"]) is not bool:
@@ -202,7 +236,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         if not set(definition.budget_names) <= set(behavior_budgets):
             raise ValueError(f"scenario must declare behavior budgets: {', '.join(definition.budget_names)}")
         for name, value in behavior_budgets.items():
-            nonnegative = name in {"maxThreadGrowth", "maxFdGrowth", "maxRssGrowthBytes"}
+            nonnegative = suite is not None and name in suite.nonnegative_budgets
             if (
                 type(value) not in (int, float)
                 or not math.isfinite(value)
@@ -223,17 +257,7 @@ def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
     if phase not in ("observations", "final"):
         return ["INCOMPLETE: unknown evidence validation phase"]
     profile = evidence.get("coverageProfile", "standard")
-    if profile == "python-lifecycle":
-        from aws_durable_execution_conformance_tests.lmi.lifecycle_regressions import validate_lifecycle_regressions
-
-        errors = validate_common_evidence(
-            evidence,
-            phase="observations" if phase == "observations" else "final",
-            requirement_ids=tuple(f"lmi-lifecycle-{index}" for index in range(1, 16)),
-        )
-        errors.extend(validate_lifecycle_regressions(evidence, phase=phase))
-        needs_otel = evidence.get("otelView") is not None
-    elif profile == "export-lifecycle":
+    if profile == "export-lifecycle":
         errors = validate_common_evidence(
             evidence,
             phase="observations" if phase == "observations" else "final",
@@ -247,11 +271,7 @@ def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
         return ["INCOMPLETE: unknown evidence coverage profile"]
     if needs_otel:
         try:
-            if profile == "python-lifecycle":
-                from aws_durable_execution_conformance_tests_otel.lmi_regressions import validate_lifecycle_telemetry
-
-                errors.extend(validate_lifecycle_telemetry(evidence, phase=phase))
-            elif profile == "export-lifecycle":
+            if profile == "export-lifecycle":
                 from aws_durable_execution_conformance_tests_otel.lmi_exports import validate_export_lifecycle
 
                 errors.extend(validate_export_lifecycle(evidence, phase=phase))
@@ -265,7 +285,11 @@ def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
 
 
 def _identity_errors(
-    manifest: Mapping[str, Any], scenario: Mapping[str, Any], evidence: Mapping[str, Any]
+    manifest: Mapping[str, Any],
+    scenario: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    suite: SuiteDefinition | None = None,
 ) -> list[str]:
     errors = []
     expected = {
@@ -283,16 +307,17 @@ def _identity_errors(
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     if evidence.get("exportMode") != scenario.get("export_mode"):
         errors.append("INCOMPLETE: observed export mode does not match the admitted matrix slot")
-    if coverage_profile in ("python-lifecycle", "export-lifecycle"):
+    if suite is not None or coverage_profile == "export-lifecycle":
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")
         if evidence.get("otelView") != scenario.get("otel_view"):
             errors.append("INCOMPLETE: evidence OTel view does not match the admitted matrix slot")
-        policy_key = "regression" if coverage_profile == "python-lifecycle" else "exportLifecycle"
-        policy = evidence.get(policy_key)
-        if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
-            errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
-    if scenario["scenario"] in ("normal-return", "normal-failure"):
+        policy_key = suite.evidence_policy_key if suite is not None else "exportLifecycle"
+        if policy_key is not None:
+            policy = evidence.get(policy_key)
+            if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
+                errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
+    if suite is None and coverage_profile == "standard" and scenario["scenario"] in ("normal-return", "normal-failure"):
         outcome = "SUCCEEDED" if scenario["scenario"] == "normal-return" else "FAILED"
         selected = evidence.get("selectedRequests", {})
         attempts = evidence.get("attempts", [])
@@ -321,12 +346,15 @@ def _identity_errors(
             errors.append(f"INCOMPLETE: evidence profile.{key} does not match the deployed profile")
     if artifact.get("sdk") != profile["artifact_id"]:
         errors.append("INCOMPLETE: evidence SDK artifact does not match the deployed revision")
-    if coverage_profile == "python-lifecycle" and observed.get("recoveryPolicy") != profile.get("recovery_policy"):
+    if profile.get("recovery_policy") is not None and observed.get("recoveryPolicy") != profile["recovery_policy"]:
         errors.append("INCOMPLETE: observed recovery policy does not match the declared profile")
     return errors
 
 
-def evidence_results(manifest: Mapping[str, Any], base: Path) -> list[dict[str, Any]]:
+def evidence_results(
+    manifest: Mapping[str, Any], base: Path, *, suite: SuiteDefinition | None = None
+) -> list[dict[str, Any]]:
+    _required(manifest, suite)
     results = []
     for scenario in manifest["scenarios"]:
         result: dict[str, Any] = {
@@ -343,7 +371,9 @@ def evidence_results(manifest: Mapping[str, Any], base: Path) -> list[dict[str, 
                 evidence = json.loads((base / scenario["evidence_file"]).read_text())
                 if not isinstance(evidence, dict):
                     raise ValueError("evidence must be an object")
-                errors = _identity_errors(manifest, scenario, evidence) + validate(evidence)
+                errors = _identity_errors(manifest, scenario, evidence, suite=suite) + list(
+                    (suite.validator if suite else validate)(evidence)
+                )
                 result.update(evidence=evidence, errors=errors, status="FAILED" if errors else "PASSED")
             except (OSError, ValueError, TypeError) as exc:
                 result.update(status="INCOMPLETE_EVIDENCE", errors=[f"INCOMPLETE: {exc}"])
@@ -359,12 +389,16 @@ def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
-async def live_results(manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path) -> list[dict[str, Any]]:
+async def live_results(
+    manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
+) -> list[dict[str, Any]]:
     from aws_durable_execution_conformance_tests.lmi.coordinator import Budgets, Profile, Scenario, run_scenarios
 
     # Validation keeps its own snapshot. Adapter and Scenario objects must not
     # be able to change the expected budgets, profile, or coverage after admission.
     manifest = deepcopy(dict(manifest))
+    suite = deepcopy(suite)
+    _required(manifest, suite)
     module_name, separator, factory_name = adapter_name.partition(":")
     if not separator or not factory_name:
         raise ValueError("--adapter must be a local Python module:factory")
@@ -378,7 +412,7 @@ async def live_results(manifest: Mapping[str, Any], adapter_name: str, *, audit_
     profile_map = {profile["profile_id"]: profile for profile in manifest["profiles"]}
     scenarios = []
     for scenario in active:
-        definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]])
+        definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
         configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
         configured.setdefault("exclusive", definition.exclusive)
         configured.setdefault("slots", definition.minimum_native_concurrency)
@@ -391,7 +425,9 @@ async def live_results(manifest: Mapping[str, Any], adapter_name: str, *, audit_
         scenario = expected.get(evidence.get("caseId", ""))
         if scenario is None:
             return ["INCOMPLETE: adapter returned evidence for an unadmitted case"]
-        return _identity_errors(manifest, scenario, evidence) + validate(evidence, phase=phase)
+        return _identity_errors(manifest, scenario, evidence, suite=suite) + list(
+            (suite.validator if suite else validate)(evidence, phase=phase)
+        )
 
     outcomes = await run_scenarios(
         scenarios,
@@ -426,14 +462,17 @@ async def live_results(manifest: Mapping[str, Any], adapter_name: str, *, audit_
     return results
 
 
-def build_report(manifest: Mapping[str, Any], results: list[dict[str, Any]]) -> Report:
+def build_report(
+    manifest: Mapping[str, Any], results: list[dict[str, Any]], *, suite: SuiteDefinition | None = None
+) -> Report:
+    suite_name = suite.suite_name if suite is not None else "lmi-lifecycle"
     report = Report(
         run=RunMetadata(
             name=manifest["runId"],
             template="LMI persistent profiles",
             region=manifest.get("region", ""),
             language=manifest["runtime"],
-            suites=["lmi-lifecycle"],
+            suites=[suite_name],
         ),
         fail_on=FAIL_ON_STRICT,
     )
@@ -458,14 +497,14 @@ def build_report(manifest: Mapping[str, Any], results: list[dict[str, Any]]) -> 
         report.add(
             ReportEntry(
                 id="lmi-run",
-                suite="lmi-lifecycle",
+                suite=suite_name,
                 status=ReportStatus.FAILED,
                 description="Run result ownership and consistency",
                 errors=integrity_errors,
             )
         )
-    inventory = coverage_inventory(manifest)
-    for requirement_id, requirement in _catalog(manifest).items():
+    inventory = coverage_inventory(manifest, suite=suite)
+    for requirement_id, requirement in _catalog(manifest, suite).items():
         cases = [result for result in results if result.get("requirement_id") == requirement_id]
         status = ReportStatus.PASSED
         errors: list[str] = []
@@ -501,7 +540,7 @@ def build_report(manifest: Mapping[str, Any], results: list[dict[str, Any]]) -> 
         report.add(
             ReportEntry(
                 id=requirement_id,
-                suite="lmi-lifecycle",
+                suite=suite_name,
                 status=status,
                 description=requirement["description"],
                 errors=errors,
@@ -514,7 +553,7 @@ def build_report(manifest: Mapping[str, Any], results: list[dict[str, Any]]) -> 
     )
     if manifest["capabilityProfile"] == "lifecycle":
         report.warnings.append(
-            "lmi-lifecycle-7 and -8 are not applicable to the lifecycle-only profile; OTel is not accepted."
+            "Telemetry checks are not applicable to the lifecycle-only capability; OTel is not accepted."
         )
     return report
 

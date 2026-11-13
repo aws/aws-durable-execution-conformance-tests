@@ -6,9 +6,6 @@
 import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
-from functools import lru_cache
-from pathlib import Path
-from runpy import run_path
 from typing import Any
 
 import pytest
@@ -26,79 +23,130 @@ from aws_durable_execution_conformance_tests.lmi.evidence import validate_retire
 
 PROFILE = Profile("native-1", "arn:function:c1", 1, 1, "sdk@sha256:tested", "sha256:configuration")
 ORIGINAL_FAILURE = "ASSERTION: original SDK behavior failed"
-PHASE_FAILURE = "No real service retry of the original execution was observed"
+PHASE_FAILURE = "An expected cohort member was not observed"
 
 
-@lru_cache(maxsize=1)
-def _fixtures() -> dict[str, Any]:
-    return run_path(str(Path(__file__).with_name("test_lmi_lifecycle_regressions.py")))
+def _resequence(value: dict[str, Any]) -> None:
+    for request in value["attempts"]:
+        local = sorted(
+            (event for event in value["events"] if event["requestId"] == request["requestId"]),
+            key=lambda event: event["atMs"],
+        )
+        for sequence, event in enumerate(local):
+            event["sequence"] = sequence
 
 
 def _snapshot(context: ScenarioContext) -> dict[str, Any]:
-    """A complete cleanup ledger with actual lifecycle and I/O completion pairs."""
-    builder = _fixtures()["_Builder"](context.scenario.scenario, 1)
-    timed_out = context.scenario.scenario == "timeout-retry"
-    builder.request("victim", outcome="TIMED_OUT" if timed_out else "SUCCEEDED")
-    builder.event("victim", "task_start", 101, taskId="root")
-    if timed_out:
-        builder.event("victim", "user_exit", 645)
-        builder.event("victim", "wrapper_raise", 660, outcome="FAILED", resources=_fixtures()["resources"]())
-    else:
-        builder.event("victim", "task_exit", 999, taskId="root")
-    builder.block("victim", 200, 640 if timed_out else 800, release=630 if timed_out else 790)
-    if context.scenario.otel_view:
-        builder.data["otelView"] = context.scenario.otel_view
-        for kind, started, completed in (("export", 300, 350), ("flush", 310, 360)):
-            identity = f"{kind}:victim"
-            owner = {f"{kind}Id": identity, "providerId": "provider", "exporterId": "exporter"}
-            builder.event("victim", f"{kind}_started", started, **owner)
-            builder.event("victim", f"{kind}_completed", completed, outcome="succeeded", **owner)
-            builder.data["resourcesCreated"].append({"id": identity, "kind": kind, "ownerCaseId": "case"})
-        builder.event(
-            "victim",
-            "export_quiescence",
-            661 if timed_out else 1001,
-            pendingExportIds=[],
-            pendingFlushIds=[],
-            publicationCount=0,
-        )
-    data = builder.finish()
-    for resource in data["retirement"]["resources"]:
-        if resource["kind"] in {"export", "flush"}:
-            resource["outcome"] = "succeeded"
-    data["runId"] = context.run_id
-    data["cohortId"] = context.scenario.cohort_id
-    data["requirementId"] = context.scenario.requirement_id
-    data["profile"]["functionArn"] = context.profile.resource_id
-    data["profile"]["configurationDigest"] = context.profile.configuration_id
-    data["artifact"]["sdk"] = context.profile.artifact_id
+    """Language-neutral physical retirement evidence, independent of SDK rules."""
     name = context.scenario.case_id
+    request_id, arn, gate = f"request:{name}:victim", f"arn:execution:{name}:victim", f"gate:{name}"
+    timed_out = context.scenario.scenario == "timed-out-cohort"
+    wrapper_end = 660 if timed_out else 1000
+    status = "TIMED_OUT" if timed_out else "SUCCEEDED"
+    owner = {"requestId": request_id, "ownerRequestId": request_id, "executionArn": arn}
+    events: list[dict[str, Any]] = []
 
-    def bind(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: name if key in {"caseId", "ownerCaseId"} else bind(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [bind(item) for item in value]
-        if isinstance(value, str):
-            return value.replace("request:victim", f"request:{name}:victim").replace(
-                "arn:execution:victim", f"arn:execution:{name}:victim"
-            )
-        return value
+    def event(kind: str, when: int, **details: Any) -> None:
+        events.append({**owner, "kind": kind, "atMs": when, **details})
 
-    bound: dict[str, Any] = bind(data)
-    _fixtures()["_resequence"](bound)
-    return bound
+    event("wrapper_enter", 100)
+    event("task_start", 101, taskId="root")
+    event("io_start", 190, taskId=gate, gateId=gate)
+    event("blocked", 200, gateId=gate)
+    event("effect", 220, gateId=gate)
+    event("fault_released", 630 if timed_out else 790, gateId=gate, mode="normal")
+    event("io_exit", 640 if timed_out else 800, taskId=gate, gateId=gate)
+    event("task_exit", 650 if timed_out else 999, taskId="root")
+    event(
+        "wrapper_raise" if timed_out else "wrapper_return", wrapper_end, outcome="FAILED" if timed_out else "SUCCEEDED"
+    )
+    if timed_out:
+        event("platform_timeout", 600, source="platform")
+    resources = [
+        {"id": request_id, "kind": "invocation", "ownerCaseId": name},
+        {"id": arn, "kind": "execution", "ownerCaseId": name},
+    ]
+    if context.scenario.otel_view:
+        for kind, started, completed in (("export", 300, 350), ("flush", 310, 360)):
+            identity = f"{kind}:{name}:victim"
+            details = {f"{kind}Id": identity, "providerId": "provider", "exporterId": "exporter"}
+            event(f"{kind}_started", started, **details)
+            event(f"{kind}_completed", completed, outcome="succeeded", **details)
+            resources.append({"id": identity, "kind": kind, "ownerCaseId": name})
+        event("export_quiescence", wrapper_end + 1, pendingExportIds=[], pendingFlushIds=[], publicationCount=0)
+    value = {
+        "schemaVersion": 1,
+        "runId": context.run_id,
+        "caseId": name,
+        "cohortId": context.scenario.cohort_id,
+        "requirementId": context.scenario.requirement_id,
+        "coverageProfile": context.scenario.coverage_profile,
+        "runtime": "javascript",
+        "artifact": {"sdk": context.profile.artifact_id, "conformance": "tested-validator"},
+        "profile": {
+            "functionArn": context.profile.resource_id,
+            "configurationDigest": context.profile.configuration_id,
+            "nativeConcurrency": 1,
+            "timeoutMs": 500,
+        },
+        "attempts": [
+            {
+                "requestId": request_id,
+                "executionArn": arn,
+                "environmentId": "environment",
+                "workerId": "worker",
+                "processId": "process",
+                "role": "victim",
+                "attempt": 1,
+                "startedAtMs": 100,
+                "endedAtMs": 600 if timed_out else wrapper_end,
+                "outcome": status,
+            }
+        ],
+        "selectedRequests": {"victim": request_id},
+        "events": events,
+        "sdkRequests": [],
+        "histories": [{"executionArn": arn, "ownerCaseId": name, "status": status, "operations": []}],
+        "observationEndedAtMs": 20000,
+        "collection": {
+            "watermarks": {key: 20000 for key in ("lifecycle", "sdkRequests", "history")},
+            "evidenceUris": ["memory://retained-raw-evidence"],
+        },
+        "resourcesCreated": resources,
+        "faultsCreated": [{"id": gate, "ownerCaseId": name}],
+        "retirement": {
+            "retiredAtMs": 21000,
+            "resources": [
+                {
+                    **resource,
+                    "settledAtMs": 20900,
+                    "evidenceUri": "memory://retirement-source",
+                    "outcome": "QUIESCENT"
+                    if resource["kind"] == "invocation"
+                    else status
+                    if resource["kind"] == "execution"
+                    else "succeeded",
+                }
+                for resource in resources
+            ],
+            "faults": [{"id": gate, "ownerCaseId": name, "releasedAtMs": 630 if timed_out else 790, "mode": "normal"}],
+        },
+    }
+    if context.scenario.otel_view:
+        value["otelView"] = context.scenario.otel_view
+    _resequence(value)
+    return value
 
 
 def _case(name: str, *, retry: bool = False, telemetry: bool = False) -> Scenario:
     return Scenario(
         name,
-        "lmi-lifecycle-11" if retry else "lmi-lifecycle-1",
+        "fixture-check",
         PROFILE.profile_id,
-        "timeout-retry" if retry else "native-concurrency",
+        "timed-out-cohort" if retry else "completed-cohort",
         roles=("victim", "retry") if retry else ("victim",),
         exclusive=True,
-        coverage_profile="python-lifecycle",
+        coverage_profile="fixture-suite",
         otel_view="invocation" if telemetry else None,
     )
 
@@ -212,7 +260,7 @@ class FailureAdapter:
             start = next(event for event in final["events"] if event["kind"] == "io_start")
             end = next(event for event in final["events"] if event["kind"] == "io_exit")
             end["atMs"] = start["atMs"]
-            _fixtures()["_resequence"](final)
+            _resequence(final)
             start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
 
 

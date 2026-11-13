@@ -122,9 +122,8 @@ openers, same-thread End and MDC tests remain in the Java SDK repository. Option
 owner/thread diagnostics are retained as evidence but do not affect common
 acceptance. No Java-specific regression profile is introduced here.
 
-The original `standard` and `python-lifecycle` profiles remain separate. The
-Python #743 mapping preserves its existing synchronous-fixture expectations;
-use this generic profile to test either SDK with both exporter configurations.
-The complete ordinary SDK/OTel requirement catalogs still use their existing
-runner path. SDK adapters/handlers and real-LMI validation remain necessary; the
-local positive controls validate the harness, not a deployed SDK implementation.
+The `standard` profile remains separate. SDK-specific regression suites live in
+their SDK repositories and do not add requirements to this shared catalog. The
+complete ordinary SDK/OTel catalogs still use their existing runner path. SDK
+adapters/handlers and real-LMI validation remain necessary; local positive
+controls validate the harness, not a deployed SDK implementation.

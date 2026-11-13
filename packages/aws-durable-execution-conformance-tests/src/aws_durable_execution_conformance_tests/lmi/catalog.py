@@ -10,7 +10,7 @@ import yaml
 
 RUNTIMES = ("javascript", "java", "python")
 CAPABILITIES = ("lifecycle", "lifecycle-otel")
-COVERAGE_PROFILES = ("standard", "python-lifecycle", "export-lifecycle")
+COVERAGE_PROFILES = ("standard", "export-lifecycle")
 EXPORT_MODES = ("sync", "async-bounded-flush")
 
 
@@ -19,9 +19,8 @@ def requirements(
 ) -> dict[str, dict[str, Any]]:
     """Read only the contracts applicable to the selected coverage profile.
 
-    Default callers keep the original six/eight requirement catalog. The Python
-    regression profile explicitly replaces generic scenarios with the mapped SDK
-    variants, while keeping the same stable IDs for contracts already present.
+    Every bundled requirement applies to all supported runtimes. SDK-specific
+    regression suites belong to their SDK repositories, not this catalog.
     """
     if capability not in CAPABILITIES:
         raise ValueError(f"Unknown capability profile: {capability}")
@@ -29,8 +28,6 @@ def requirements(
         raise ValueError(f"Unknown runtime: {runtime}")
     if coverage_profile not in COVERAGE_PROFILES:
         raise ValueError(f"Unknown coverage profile: {coverage_profile}")
-    if coverage_profile == "python-lifecycle" and runtime != "python":
-        raise ValueError("python-lifecycle coverage requires runtime python")
     if coverage_profile == "export-lifecycle" and capability != "lifecycle-otel":
         raise ValueError("export-lifecycle coverage requires lifecycle-otel capability")
     root = files(__package__).joinpath("requirements/lmi-lifecycle")
@@ -45,18 +42,5 @@ def requirements(
             continue
         if capability != "lifecycle-otel" and requirement["capability"] != "lifecycle":
             continue
-        if coverage_profile == "python-lifecycle":
-            regression = requirement["pythonLifecycle"]
-            for field in ("description", "contract"):
-                if field in regression:
-                    requirement[field] = regression[field]
-            definitions = list(regression["scenarios"])
-            if capability == "lifecycle-otel":
-                definitions.extend(requirement["pythonLifecycle"]["otelScenarios"])
-            requirement["requiredScenarios"] = list(dict.fromkeys(item["scenario"] for item in definitions))
-            # Matrix entries supply the exact roles and capacity for c1/c2. The
-            # catalog describes the intersection, not an invented c2-only rule.
-            requirement["minimumNativeConcurrency"] = 1
-            requirement["roles"] = ["victim"]
         result[requirement["id"]] = requirement
     return result

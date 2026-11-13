@@ -510,10 +510,6 @@ def validate_lmi_telemetry(evidence: Mapping[str, Any], *, phase: str = "final")
     distinct states. Compatibility fixtures cannot satisfy genuine carriers.
     This function is called *in addition to* the core lifecycle validator.
     """
-    if evidence.get("coverageProfile") == "python-lifecycle":
-        from aws_durable_execution_conformance_tests_otel.lmi_regressions import validate_lifecycle_telemetry
-
-        return validate_lifecycle_telemetry(evidence, phase=phase)
     try:
         if phase not in {"observations", "final"}:
             return ["INCOMPLETE: unknown telemetry validation phase"]
