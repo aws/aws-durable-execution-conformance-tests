@@ -11,5 +11,8 @@ contract: Keep controlled work in flight across the configured platform timeout.
 limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
   user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
   is NOT_IMPLEMENTED, never not applicable.
+behaviorBudgets:
+  - admissionMs
+  - cleanupMs
 roles:
   - victim

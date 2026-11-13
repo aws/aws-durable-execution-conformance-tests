@@ -28,8 +28,9 @@ seven independent test cases. Normal return is requirement 2 and normal failure
 is requirement 7. OTel and plugin conformance are deferred to a later change.
 Every ID and every listed scenario must be present and pass for every supported
 runtime. Requirement files contain only the ID, description, contract, limits,
-a scenario selector, roles, scheduling and minimum native concurrency. Mandatory
-coverage and runtime applicability are suite-wide rules rather than repeated
+a scenario selector, roles, scheduling, minimum native concurrency and any required
+behavior budget names. Mandatory coverage and runtime applicability are
+suite-wide rules rather than repeated
 `mandatory`, `capability`, `runtimes` or `coverageProfiles` fields. Missing SDK APIs
 or fixtures are `NOT_IMPLEMENTED`, not exclusions. Language-specific
 starvation and non-cooperative fault fixtures remain diagnostic unless a
@@ -119,7 +120,17 @@ An `evidence_file` is resolved relative to the manifest. Missing files, unknown
 schema versions, mismatched artifact/configuration/case identities and absent
 observations fail acceptance. To record an intentional SDK gap, replace
 `evidence_file` with `"not_implemented": "missing public deadline admission API"`.
-This remains blocking. A retry stays in the original evidence attempt list;
+This remains blocking. `deadline-during-step` and `peer-recovery` cases must also
+set `"behavior_budgets": {"admissionMs": 5, "cleanupMs": 10}` in the manifest,
+using the finite positive millisecond limits agreed for that fixture (these
+example values are not product SLAs). The matching evidence `budgets` must retain
+exactly those values. Declare the limits before launching work; adapter changes
+to the manifest copy, scenario or evidence cannot replace the admitted limits.
+Older adapters that supplied these limits only in evidence must add them to the
+manifest. The run-level `budgets` above separately limits controller phases in
+seconds.
+
+A retry stays in the original evidence attempt list;
 never replace the original case with a successful retry.
 
 Use a fresh output directory for every run. The output contains the input manifest, complete case evidence/attempts/timings,

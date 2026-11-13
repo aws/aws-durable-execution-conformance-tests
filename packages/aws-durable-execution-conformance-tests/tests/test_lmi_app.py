@@ -3,12 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
+import asyncio
 import json
+from copy import deepcopy
+from pathlib import Path
+from runpy import run_path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.app import build_report, evidence_results, load_manifest, run
+from aws_durable_execution_conformance_tests.lmi.app import (
+    build_report,
+    evidence_results,
+    live_results,
+    load_manifest,
+    run,
+)
 from aws_durable_execution_conformance_tests.lmi.catalog import requirements
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_FAILED,
@@ -43,6 +55,11 @@ def manifest():
                 "requirement_id": req,
                 "profile_id": "native-2",
                 "scenario": definition["scenario"],
+                **(
+                    {"behavior_budgets": {"admissionMs": 5, "cleanupMs": 10}}
+                    if definition["scenario"] in ("deadline-during-step", "peer-recovery")
+                    else {}
+                ),
             }
             for req, definition in requirements("lifecycle").items()
         ],
@@ -325,3 +342,110 @@ def test_python_regressions_are_not_a_builtin_shared_profile(tmp_path):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="coverage profile"):
         load_manifest(path)
+
+
+def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["deadline_evidence" if requirement == 3 else "recovery_evidence"]()
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    plan["scenarios"] = [case for case in plan["scenarios"] if case["requirement_id"] == value["requirementId"]]
+    case = plan["scenarios"][0]
+    case.update(
+        case_id=value["caseId"],
+        evidence_file="evidence.json",
+        behavior_budgets=deepcopy(value["budgets"]),
+        roles=list(value["selectedRequests"]),
+        slots=2,
+    )
+    plan["profiles"][1].update(
+        resource_id=value["profile"]["functionArn"],
+        artifact_id=value["artifact"]["sdk"],
+        configuration_id=value["profile"]["configurationDigest"],
+    )
+    return plan, value
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("missing", ["all", "admissionMs", "cleanupMs"])
+def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requirement, missing):
+    plan, _ = timed_plan(requirement)
+    if missing == "all":
+        plan["scenarios"][0].pop("behavior_budgets")
+    else:
+        plan["scenarios"][0]["behavior_budgets"].pop(missing)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+        load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib.import_module") as load_adapter:
+        with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("tightened", [None, "admissionMs", "cleanupMs"])
+def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requirement, tightened):
+    plan, value = timed_plan(requirement)
+    if tightened is not None:
+        plan["scenarios"][0]["behavior_budgets"][tightened] = 0.5
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+    assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
+    if tightened is not None:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("source", ["matching", "evidence", "factory", "scenario"])
+def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
+    plan, value = timed_plan(requirement)
+    if source != "matching":
+        plan["scenarios"][0]["behavior_budgets"] = {"admissionMs": 0.5, "cleanupMs": 1}
+    original = deepcopy(plan)
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            pass
+
+        async def start(self, context):
+            if source == "scenario":
+                context.scenario.behavior_budgets.update(value["budgets"])
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(received):
+        if source == "factory":
+            received["scenarios"][0]["behavior_budgets"].update(value["budgets"])
+        return Adapter()
+
+    with patch.dict("sys.modules", {"fixture": SimpleNamespace(create=factory)}):
+        result = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))[0]
+    assert plan == original
+    if source == "matching":
+        assert result["status"] == "PASSED", result
+    else:
+        assert result["status"] != "PASSED", result
+        assert any("behavior budgets" in error for error in result["errors"])

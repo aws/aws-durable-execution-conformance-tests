@@ -60,6 +60,7 @@ def required_cases(runtime: str, capability: str, coverage_profile: str = "stand
                 tuple(requirement["roles"]),
                 requirement["scheduling"] == "exclusive",
                 requirement["minimumNativeConcurrency"],
+                budget_names=tuple(requirement.get("behaviorBudgets", ())),
             )
         )
     keys = [case.key for case in result]

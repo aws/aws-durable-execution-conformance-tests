@@ -123,6 +123,20 @@ def coverage_inventory(manifest: Mapping[str, Any], *, suite: SuiteDefinition | 
     }
 
 
+def _validate_behavior_budgets(
+    scenario: Mapping[str, Any], definition: CaseRequirement, suite: SuiteDefinition | None
+) -> None:
+    behavior_budgets = scenario.get("behavior_budgets", {})
+    if not isinstance(behavior_budgets, dict):
+        raise ValueError("behavior_budgets must be an object")
+    if not set(definition.budget_names) <= set(behavior_budgets):
+        raise ValueError(f"scenario must declare behavior budgets: {', '.join(definition.budget_names)}")
+    for name, value in behavior_budgets.items():
+        nonnegative = suite is not None and name in suite.nonnegative_budgets
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or (not nonnegative and value == 0):
+            raise ValueError("behavior budgets must be finite positive numbers (resource growth may be zero)")
+
+
 def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
     manifest = json.loads(path.read_text())
@@ -221,20 +235,7 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
             raise ValueError("telemetry options are not supported by the LMI lifecycle runner")
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
-        behavior_budgets = scenario.get("behavior_budgets", {})
-        if not isinstance(behavior_budgets, dict):
-            raise ValueError("behavior_budgets must be an object")
-        if not set(definition.budget_names) <= set(behavior_budgets):
-            raise ValueError(f"scenario must declare behavior budgets: {', '.join(definition.budget_names)}")
-        for name, value in behavior_budgets.items():
-            nonnegative = suite is not None and name in suite.nonnegative_budgets
-            if (
-                type(value) not in (int, float)
-                or not math.isfinite(value)
-                or value < 0
-                or (not nonnegative and value == 0)
-            ):
-                raise ValueError("behavior budgets must be finite positive numbers (resource growth may be zero)")
+        _validate_behavior_budgets(scenario, definition, suite)
         if "not_implemented" in scenario and (
             not isinstance(scenario["not_implemented"], str) or not scenario["not_implemented"].strip()
         ):
@@ -272,7 +273,14 @@ def _identity_errors(
     coverage_profile = manifest.get("coverageProfile", "standard")
     if evidence.get("coverageProfile", "standard") != coverage_profile:
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
-    if suite is not None:
+    profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
+    if suite is None:
+        definition = _case_definition(manifest, scenario, profile)
+        if (definition.budget_names or "behavior_budgets" in scenario) and evidence.get("budgets") != scenario.get(
+            "behavior_budgets", {}
+        ):
+            errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
+    else:
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")
         policy_key = suite.evidence_policy_key
@@ -295,7 +303,6 @@ def _identity_errors(
             )
         ):
             errors.append(f"ASSERTION: {scenario['scenario']} requires the selected victim outcome {outcome}")
-    profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
     observed = evidence.get("profile", {})
     artifact = evidence.get("artifact", {})
     if not isinstance(observed, Mapping) or not isinstance(artifact, Mapping):
@@ -365,8 +372,6 @@ async def live_results(
     module_name, separator, factory_name = adapter_name.partition(":")
     if not separator or not factory_name:
         raise ValueError("--adapter must be a local Python module:factory")
-    factory = getattr(importlib.import_module(module_name), factory_name)
-    adapter = factory(deepcopy(manifest))
     profiles = [
         Profile(**{key: value for key, value in profile.items() if key != "incompatibilityReason"})
         for profile in manifest["profiles"]
@@ -376,6 +381,7 @@ async def live_results(
     scenarios = []
     for scenario in active:
         definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
+        _validate_behavior_budgets(scenario, definition, suite)
         configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
         configured.setdefault("exclusive", definition.exclusive)
         configured.setdefault("slots", definition.minimum_native_concurrency)
@@ -383,6 +389,8 @@ async def live_results(
         configured["coverage_profile"] = manifest.get("coverageProfile", "standard")
         scenarios.append(Scenario(**configured))
     expected = {scenario["case_id"]: scenario for scenario in active}
+    factory = getattr(importlib.import_module(module_name), factory_name)
+    adapter = factory(deepcopy(manifest))
 
     def bound_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
         scenario = expected.get(evidence.get("caseId", ""))
