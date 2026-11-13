@@ -264,7 +264,6 @@ def _identity_errors(
         "runId": manifest["runId"],
         "runtime": manifest["runtime"],
         "caseId": scenario["case_id"],
-        "cohortId": scenario.get("cohort_id", "cohort-1"),
         "requirementId": scenario["requirement_id"],
     }
     for key, value in expected.items():

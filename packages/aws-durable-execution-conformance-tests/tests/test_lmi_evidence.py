@@ -46,7 +46,6 @@ def evidence(requirement: int = 1, runtime: str = "javascript") -> dict[str, Any
         "requirementId": f"lmi-lifecycle-{requirement}",
         "runId": "run-1",
         "caseId": "case-1",
-        "cohortId": "cohort-1",
         "artifact": {"sdk": "sdk@commit-123", "conformance": "conformance@commit-456"},
         "profile": {
             "functionArn": "arn:function:profile-2",
@@ -71,7 +70,7 @@ def evidence(requirement: int = 1, runtime: str = "javascript") -> dict[str, Any
         "sdkRequests": [event(victim, "request", 25, method="CheckpointDurableExecution", outcome="DISPATCHED")],
         "collection": {
             "watermarks": {"lifecycle": 200, "sdkRequests": 200, "history": 200},
-            "evidenceUris": ["s3://evidence/run-1/case-1/cohort-1/raw.json"],
+            "evidenceUris": ["s3://evidence/run-1/case-1/raw.json"],
         },
         "resourcesCreated": [],
         "faultsCreated": [],

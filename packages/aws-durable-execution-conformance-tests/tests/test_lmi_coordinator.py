@@ -68,7 +68,6 @@ class Adapter:
         return {
             "runId": context.run_id,
             "caseId": context.scenario.case_id,
-            "cohortId": context.scenario.cohort_id,
             "requirementId": context.scenario.requirement_id,
             "profile": {
                 "functionArn": context.profile.resource_id,
@@ -322,7 +321,6 @@ def test_original_request_cannot_be_rebound_and_dispatch_is_stable():
         "scenario": "overlap",
         "runId": "run",
         "caseId": "victim",
-        "cohortId": "cohort-1",
         "role": "victim",
     }
     context.record_attempt("launch")

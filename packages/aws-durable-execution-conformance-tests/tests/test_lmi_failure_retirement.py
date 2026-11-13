@@ -70,7 +70,6 @@ def _snapshot(context: ScenarioContext) -> dict[str, Any]:
         "schemaVersion": 1,
         "runId": context.run_id,
         "caseId": name,
-        "cohortId": context.scenario.cohort_id,
         "requirementId": context.scenario.requirement_id,
         "coverageProfile": context.scenario.coverage_profile,
         "runtime": "javascript",

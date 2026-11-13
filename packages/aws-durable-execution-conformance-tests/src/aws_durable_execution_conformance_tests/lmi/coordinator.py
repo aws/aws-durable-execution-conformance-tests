@@ -53,7 +53,6 @@ class Scenario:
     requirement_id: str
     profile_id: str
     scenario: str
-    cohort_id: str = "cohort-1"
     roles: tuple[str, ...] = ("victim",)
     slots: int = 1
     exclusive: bool = False
@@ -61,7 +60,7 @@ class Scenario:
     behavior_budgets: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario, self.cohort_id)):
+        if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario)):
             raise ValueError("Scenario identities must be nonempty")
         if not self.roles or len(set(self.roles)) != len(self.roles) or not all(self.roles):
             raise ValueError("Scenario roles must be nonempty and unique")
@@ -283,7 +282,6 @@ class ScenarioContext:
             "scenario": self.scenario.scenario,
             "runId": self.run_id,
             "caseId": self.scenario.case_id,
-            "cohortId": self.scenario.cohort_id,
             "role": role,
         }
         if self.scenario.coverage_profile != "standard":
@@ -419,7 +417,6 @@ def _ownership_errors(
     expected = {
         "runId": context.run_id,
         "caseId": context.scenario.case_id,
-        "cohortId": context.scenario.cohort_id,
         "requirementId": context.scenario.requirement_id,
     }
     errors = [

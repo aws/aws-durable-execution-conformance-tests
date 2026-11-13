@@ -14,7 +14,7 @@ client timestamp is not proof of a runtime boundary. Collect wrapper return and
 platform timeout through the actual wrapper/platform observation path. A root
 handler return, a PENDING response, and task exit are separate events.
 
-The envelope identifies `schemaVersion: 1`, `runId`, `caseId`, `cohortId`,
+The envelope identifies `schemaVersion: 1`, `runId`, `caseId`,
 `requirementId` (`lmi-lifecycle-1` through `lmi-lifecycle-7`), and `runtime`
 (`javascript`, `java`, or `python`). `artifact.sdk` and `artifact.conformance`
 identify exact immutable tested artifacts. `profile` includes `functionArn`,
@@ -22,6 +22,9 @@ identify exact immutable tested artifacts. `profile` includes `functionArn`,
 `configurationDigest` covers runtime, architecture, layers, environment, IAM,
 timeout, and concurrency. Native concurrency describes deployment configuration,
 not the number of requests sent.
+
+`runId` and the run-unique `caseId` identify the scenario and its evidence.
+There is no additional cohort identifier; roles bind its original invocations.
 
 `selectedRequests` maps fixture roles to original invocation request IDs. The
 coordinator must bind this map to its launch journal, before interpreting results.
@@ -96,7 +99,7 @@ Source collection failures and incomplete observations must remain visible.
 | `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, both rejected admission probes, and separate `task_exit`. |
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
-handler inputs. Run, case, and cohort identifiers isolate evidence and controls;
+handler inputs. Run and case identifiers isolate evidence and controls;
 they do not change durable names, branching, or concurrency topology on replay.
 
 ## Retirement

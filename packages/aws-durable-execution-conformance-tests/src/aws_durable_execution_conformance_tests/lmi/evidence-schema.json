@@ -9,7 +9,6 @@
     "runtime",
     "runId",
     "caseId",
-    "cohortId",
     "artifact",
     "profile",
     "selectedRequests",
@@ -51,10 +50,6 @@
       "minLength": 1
     },
     "caseId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "cohortId": {
       "type": "string",
       "minLength": 1
     },

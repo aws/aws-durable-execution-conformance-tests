@@ -88,7 +88,7 @@ class _Evidence:
         value = self.value
         if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION:
             self.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
-        for key in ("runId", "caseId", "cohortId"):
+        for key in ("runId", "caseId"):
             self.string(value.get(key), key)
         if value.get("runtime") not in RUNTIMES:
             self.error(f"runtime must be one of {RUNTIMES}")

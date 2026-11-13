@@ -144,7 +144,7 @@ durable-execution-conformance lmi-lifecycle --manifest manifest.json \
 
 `create_adapter(manifest)` returns the async `ScenarioAdapter` defined in
 [`coordinator.py`](coordinator.py). The same dispatcher sends `scenario`,
-`runId`, `caseId`, `cohortId` and `role`. Route through the real public handler
+`runId`, `caseId` and `role`. Route through the real public handler
 API. Choose fault fixtures through invocation-local configuration or immutable
 handler variants. Never mutate environment variables, shared clients or
 process-global settings to switch concurrent scenarios. Keep names and routing
@@ -219,7 +219,7 @@ clearing quarantine. Unaffected targets remain usable.
 
 Never clear a shared bucket, remove another case's evidence, stop another case's
 execution or reset shared runtime state. All controls, callbacks, logs,
-requests and service histories must carry run/case/cohort ownership. Preserve
+requests and service histories must carry run/case ownership. Preserve
 failed evidence after emergency release.
 
 ## Supported limits
