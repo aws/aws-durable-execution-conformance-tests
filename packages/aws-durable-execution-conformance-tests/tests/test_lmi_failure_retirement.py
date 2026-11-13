@@ -66,14 +66,6 @@ def _snapshot(context: ScenarioContext) -> dict[str, Any]:
         {"id": request_id, "kind": "invocation", "ownerCaseId": name},
         {"id": arn, "kind": "execution", "ownerCaseId": name},
     ]
-    if context.scenario.otel_view:
-        for kind, started, completed in (("export", 300, 350), ("flush", 310, 360)):
-            identity = f"{kind}:{name}:victim"
-            details = {f"{kind}Id": identity, "providerId": "provider", "exporterId": "exporter"}
-            event(f"{kind}_started", started, **details)
-            event(f"{kind}_completed", completed, outcome="succeeded", **details)
-            resources.append({"id": identity, "kind": kind, "ownerCaseId": name})
-        event("export_quiescence", wrapper_end + 1, pendingExportIds=[], pendingFlushIds=[], publicationCount=0)
     value = {
         "schemaVersion": 1,
         "runId": context.run_id,
@@ -132,13 +124,11 @@ def _snapshot(context: ScenarioContext) -> dict[str, Any]:
             "faults": [{"id": gate, "ownerCaseId": name, "releasedAtMs": 630 if timed_out else 790, "mode": "normal"}],
         },
     }
-    if context.scenario.otel_view:
-        value["otelView"] = context.scenario.otel_view
     _resequence(value)
     return value
 
 
-def _case(name: str, *, retry: bool = False, telemetry: bool = False) -> Scenario:
+def _case(name: str, *, retry: bool = False) -> Scenario:
     return Scenario(
         name,
         "fixture-check",
@@ -147,7 +137,6 @@ def _case(name: str, *, retry: bool = False, telemetry: bool = False) -> Scenari
         roles=("victim", "retry") if retry else ("victim",),
         exclusive=True,
         coverage_profile="fixture-suite",
-        otel_view="invocation" if telemetry else None,
     )
 
 
@@ -231,12 +220,10 @@ class FailureAdapter:
         return True
 
     def damage_retirement(self, final: dict[str, Any]) -> None:
-        if self.damage in {"missing-io-exit", "missing-root-exit", "pending-export", "pending-flush"}:
+        if self.damage in {"missing-io-exit", "missing-root-exit"}:
             kind = {
                 "missing-io-exit": "io_exit",
                 "missing-root-exit": "task_exit",
-                "pending-export": "export_completed",
-                "pending-flush": "flush_completed",
             }[self.damage]
             final["events"] = [event for event in final["events"] if event["kind"] != kind]
         elif self.damage == "dropped-known-start":
@@ -244,18 +231,8 @@ class FailureAdapter:
         elif self.damage == "dropped-known-fault":
             final["faultsCreated"] = []
             final["retirement"]["faults"] = []
-        elif self.damage == "dropped-known-export":
-            final["resourcesCreated"] = [item for item in final["resourcesCreated"] if item["kind"] != "export"]
-            final["retirement"]["resources"] = [
-                item for item in final["retirement"]["resources"] if item["kind"] != "export"
-            ]
-            final["events"] = [
-                event for event in final["events"] if event["kind"] not in {"export_started", "export_completed"}
-            ]
         elif self.damage == "active-execution":
             final["histories"][0]["status"] = "RUNNING"
-        elif self.damage == "unpublished-observations":
-            next(event for event in final["events"] if event["kind"] == "export_quiescence")["publicationCount"] = 1
         elif self.damage == "reversed-equal-time-pair":
             start = next(event for event in final["events"] if event["kind"] == "io_start")
             end = next(event for event in final["events"] if event["kind"] == "io_exit")
@@ -264,11 +241,9 @@ class FailureAdapter:
             start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
 
 
-def _run(
-    adapter: FailureAdapter, *, retry: bool = False, telemetry: bool = False
-) -> tuple[list[ScenarioResult], ResourceScheduler]:
+def _run(adapter: FailureAdapter, *, retry: bool = False) -> tuple[list[ScenarioResult], ResourceScheduler]:
     scheduler = ResourceScheduler()
-    cases = [_case("failed", retry=retry, telemetry=telemetry), _case("next", telemetry=telemetry)]
+    cases = [_case("failed", retry=retry), _case("next")]
     results = asyncio.run(
         run_scenarios(cases, [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler)
     )
@@ -350,29 +325,6 @@ def test_malformed_partial_evidence_cannot_release_the_target(damage: str) -> No
     assert adapter.started == ["failed"]
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)
-
-
-@pytest.mark.parametrize(
-    "damage", ["pending-export", "pending-flush", "unpublished-observations", "dropped-known-export"]
-)
-def test_failed_case_retains_telemetry_ownership_until_work_and_publication_complete(damage: str) -> None:
-    adapter = FailureAdapter(phase="assertion", damage=damage)
-    results, scheduler = _run(adapter, telemetry=True)
-    assert ORIGINAL_FAILURE in results[0].errors
-    assert results[1].status == "INFRASTRUCTURE_ERROR"
-    assert adapter.started == ["failed"]
-    assert adapter.finished == [False]
-    assert scheduler.quarantine_reason(PROFILE.resource_id)
-
-
-def test_settled_telemetry_does_not_turn_the_original_failure_into_success() -> None:
-    adapter = FailureAdapter(phase="assertion")
-    results, scheduler = _run(adapter, telemetry=True)
-    assert results[0].status == "FAILED"
-    assert ORIGINAL_FAILURE in results[0].errors
-    assert results[1].status == "PASSED", results[1].errors
-    assert adapter.finished == [True]
-    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
 
 
 @pytest.mark.parametrize("cancel_run", [False, True])

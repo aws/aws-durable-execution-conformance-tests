@@ -78,15 +78,26 @@ def test_missing_success_or_failure_variant_is_uncovered():
     assert build_report(plan, passed_results(plan)).exit_code() == 1
 
 
-def test_otel_profile_has_separate_mandatory_coverage():
+@pytest.mark.parametrize(
+    "scope,key,value",
+    [
+        ("run", "capabilityProfile", "lifecycle-otel"),
+        ("run", "coverageProfile", "export-lifecycle"),
+        ("case", "requirement_id", "lmi-lifecycle-7"),
+        ("case", "requirement_id", "lmi-lifecycle-8"),
+        ("case", "requirement_id", "lmi-lifecycle-16"),
+        ("case", "otel_view", "invocation"),
+        ("case", "export_mode", "sync"),
+    ],
+)
+def test_deferred_telemetry_configuration_cannot_claim_lifecycle_acceptance(tmp_path, scope, key, value):
     plan = manifest()
-    plan["capabilityProfile"] = "lifecycle-otel"
-    report = build_report(plan, passed_results(plan))
-    assert report.exit_code() == 1
-    assert {entry.id for entry in report.entries if entry.status == ReportStatus.UNCOVERED} == {
-        "lmi-lifecycle-7",
-        "lmi-lifecycle-8",
-    }
+    target = plan if scope == "run" else plan["scenarios"][0]
+    target[key] = value
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(path)
 
 
 def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():

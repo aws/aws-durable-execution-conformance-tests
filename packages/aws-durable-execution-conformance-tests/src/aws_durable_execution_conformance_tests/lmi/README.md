@@ -2,18 +2,13 @@
 
 This optional suite coordinates multiple invocations against persistent Lambda
 Managed Instances targets. It uses the core JSON/JUnit/console report writers
-and the existing OTel span model, backend adapters and assertion engine. SDK
-handlers, public plugin registration, AWS deployment templates and control-plane
-adapters stay in each SDK repository.
+for six language-neutral lifecycle requirements. SDK handlers, AWS deployment
+templates and control-plane adapters stay in each SDK repository.
 
 Run it explicitly with `durable-execution-conformance lmi-lifecycle`. Ordinary
 conformance, including `--suite all`, does not discover these multi-invocation
 requirements or deploy LMI functions. The dedicated requirement catalog is
 [`requirements/lmi-lifecycle`](requirements/lmi-lifecycle).
-
-For language-neutral synchronous and asynchronous export lifecycle checks, use
-[`export-lifecycle`](export-lifecycle.md). Both modes are selectable for every
-supported runtime; neither mode is inferred from the SDK language.
 
 ## Contracts and applicability
 
@@ -25,12 +20,10 @@ supported runtime; neither mode is inferred from the SDK language.
 | lmi-lifecycle-4 | `peer-recovery` | Exclusive original-environment capacity measurement |
 | lmi-lifecycle-5 | `suspension-retry` | Shared, ownership retained through resume/retry |
 | lmi-lifecycle-6 | `warm-reuse` | Identified sequential reuse; cohort ownership |
-| lmi-lifecycle-7 | `otel-attribution` | Shared for invocation-local fixtures |
-| lmi-lifecycle-8 | `otel-provider` | Exclusive provider/resource fault measurement |
 
-The `lifecycle` capability profile requires IDs 1–6. `lifecycle-otel` requires all
-eight, including both Invocation and Execution views. OTel IDs are genuinely not
-applicable to a declared lifecycle-only run; this does not accept OTel support.
+The `standard` coverage profile supports the `lifecycle` capability and requires
+IDs 1–6, covering seven scenarios because normal return and normal failure are
+separate cases. OTel and plugin conformance are deferred to a later change.
 Every applicable ID and every listed scenario must be present and pass. Missing
 SDK APIs or fixtures are `NOT_IMPLEMENTED`, not exclusions. Language-specific
 starvation and non-cooperative fault fixtures remain diagnostic unless a
@@ -42,11 +35,6 @@ supported behavior and test budget have been agreed.
 | `java` | Same environment/JVM process; distinct overlapping requests | Same identified JVM/worker |
 | `python` | Same environment, different worker processes | Sequential requests in the same identified process |
 
-Java-specific handler ownership, worker-thread identity, HandlerScoped opener
-forwarding, same-thread End, and MDC restoration remain in the Java SDK's tests.
-They do not determine shared conformance acceptance. Runtime environment/process
-identity is retained only to establish the required placement and attribution.
-
 A Python worker is not required to run simultaneous native invocations. Scheduler
 capacity reservations do not prove placement. An SDK handler must use its real
 public API and preserve its suspension model. Do not artificially unwind a
@@ -55,10 +43,10 @@ handler, or manufacture PENDING/success for an unacknowledged checkpoint.
 
 ## Run manifests and retained evidence
 
-Python 3.14 and the core package are required. Install the OTel package for the
-`lifecycle-otel` capability. From this repository, `hatch env create` installs the
-workspace packages. A minimal inventory looks like this; expand `scenarios` to
-cover the selected catalog before expecting acceptance:
+Python 3.14 and the core package are required. From this repository,
+`hatch env create` installs the workspace packages. A minimal inventory looks
+like this; expand `scenarios` to cover the selected catalog before expecting
+acceptance:
 
 ```json
 {
@@ -145,12 +133,12 @@ durable-execution-conformance lmi-lifecycle --manifest manifest.json \
 
 `create_adapter(manifest)` returns the async `ScenarioAdapter` defined in
 [`coordinator.py`](coordinator.py). The same dispatcher sends `scenario`,
-`otelView` when selected, `runId`, `caseId`, `cohortId` and `role`. Route through
-real public handler/plugin registration. Choose views and fault fixtures through
-invocation-local configuration or immutable handler variants. Never mutate
-environment variables, shared clients or process-global plugin settings to
-switch concurrent scenarios. Keep names and routing deterministic across replay;
-checkpoint nondeterministic control reads in durable operations.
+`runId`, `caseId`, `cohortId` and `role`. Route through the real public handler
+API. Choose fault fixtures through invocation-local configuration or immutable
+handler variants. Never mutate environment variables, shared clients or
+process-global settings to switch concurrent scenarios. Keep names and routing
+deterministic across replay; checkpoint nondeterministic control reads in durable
+operations.
 
 The catalog supplies default cohort roles, slot reservations and mandatory exclusive
 measurement windows. Manifests cannot weaken them or substitute a success fixture
@@ -191,7 +179,7 @@ Use two persistent functions per SDK/account with native environment concurrency
 deployment. Reuse each unchanged profile across all compatible scenarios. A third
 profile needs `incompatibilityReason` explaining the actual runtime, architecture,
 layers, IAM, timeout or configuration difference. Do not deploy once per scenario,
-operation, view or case. Pin SDK, plugin, conformance, layer and handler artifacts;
+operation or case. Pin SDK, conformance, layer and handler artifacts;
 retain the resolved deployment configuration with the evidence URI/digest.
 
 `capacity` is the account/profile's configured active cohort reservation budget;
@@ -206,9 +194,8 @@ Shared cases use independent control/evidence namespaces. An exclusive waiter
 stops new shared admission on its target and waits for all existing owners to
 retire. PENDING, wrapper return or a completed primary result is insufficient.
 Other profiles and SDK accounts continue. There is no cross-SDK lock. Capacity,
-provider stalls, process-wide resource baselines and global fault controls require
-exclusive windows; ordinary steps, waits, callbacks and invocation-local OTel
-fixtures can overlap.
+process-wide resource baselines and global fault controls require exclusive
+windows; ordinary steps, waits, callbacks and invocation-local faults can overlap.
 
 The in-process scheduler is not a distributed lock. SDK adapters must implement
 external target ownership in `prepare`/`finish`, including reconciliation after a
@@ -220,27 +207,16 @@ recovery must prove residual work is settled and the artifact is correct before
 clearing quarantine. Unaffected targets remain usable.
 
 Never clear a shared bucket, remove another case's evidence, stop another case's
-execution or reset a shared provider. All controls, callbacks, logs, traces,
+execution or reset shared runtime state. All controls, callbacks, logs,
 requests and service histories must carry run/case/cohort ownership. Preserve
 failed evidence after emergency release.
 
-## OTel and supported limits
-
-The OTel extension's [LMI guidance](../../../../aws-durable-execution-conformance-tests-otel/README.md)
-describes canonical span evidence and cohort collection. Capture Java's runtime
-carrier before worker dispatch, JavaScript's invocation-context carrier and
-Python's process-local environment carrier. Input-injected trace headers do not
-prove runtime propagation. Check independent request provenance before filtering
-spans by execution, then reuse ordinary view assertions. Collect both views,
-explicit sampling, warm reuse, late activity and controlled exporter outcomes.
+## Supported limits
 
 No fixed five/eight-second recovery target is a product SLA. Each run records its
 agreed harness budgets and supported cleanup/recovery policy. Arbitrary
 non-cooperative I/O need not terminate. Already accepted side effects may finish;
 retries remain at least once unless the SDK's supported policy says otherwise.
-Timeouts and export errors can lose telemetry, so do not require unconditional
-export or describe export/execution as exactly once. Expected unsampled output,
-exporter failure and missing collection are different observations.
 
 ## Local checks, cloud prerequisites and adoption
 
@@ -264,16 +240,16 @@ speedup threshold.
 
 Real runs need SDK-owned public-API handlers, LMI deployment templates, capacity
 and IAM in each SDK's isolated AWS test account, a case-owned control/evidence
-store, runtime identity instrumentation, genuine X-Ray propagation and the
-selected OTel backend. Start with one architecture/runtime configuration and the
-two native-concurrency profiles per SDK. Keep LMI execution opt-in and separately
+store and runtime identity instrumentation. Start with one architecture/runtime
+configuration and the two native-concurrency profiles per SDK. Keep LMI execution
+opt-in and separately
 scheduled; run accounts and compatible cases concurrently.
 
 | SDK | Adoption tracker | Existing work and remaining evidence |
 | --- | --- | --- |
-| JavaScript | [#1017](https://github.com/aws/aws-durable-execution-sdk-js/issues/1017) | [#928](https://github.com/aws/aws-durable-execution-sdk-js/pull/928) closed without merging; map final fixtures to IDs 1–8 |
-| Java | [#727](https://github.com/aws/aws-durable-execution-sdk-java/issues/727) | Base harness incorporated by [#782](https://github.com/aws/aws-durable-execution-sdk-java/pull/782); adapt its driver/evidence and validate IDs 1–8 |
-| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931) owns Python regression rules and adopts the common exporter profile; standard IDs 1–8 remain separate acceptance |
+| JavaScript | [#1017](https://github.com/aws/aws-durable-execution-sdk-js/issues/1017) | [#928](https://github.com/aws/aws-durable-execution-sdk-js/pull/928) closed without merging; map final fixtures to IDs 1–6 |
+| Java | [#727](https://github.com/aws/aws-durable-execution-sdk-java/issues/727) | Base harness incorporated by [#782](https://github.com/aws/aws-durable-execution-sdk-java/pull/782); adapt its driver/evidence and validate IDs 1–6 |
+| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931) owns Python regression rules; adopting this six-requirement catalog remains separate work |
 
 These are migration mappings, not accepted results for any requirement. At least
 two distinct real runtime models with retained evidence and regression-sensitivity
@@ -302,10 +278,9 @@ insufficient to release a failed case's target.
 
 The independent retirement audit binds the final snapshot to the admitted
 artifact, target and every actual journaled launch. It requires terminal service
-execution histories, retained resource inventories, completed task/request and
-export/flush intervals, source coverage, and actual invocation exit/publication
-observations. Known resources cannot disappear between snapshots. Unknown launch
-identities, missing completion pairs, outstanding work, malformed evidence or
+execution histories, retained resource inventories, completed task/request
+intervals, source coverage, and actual invocation exit observations. Known
+resources cannot disappear between snapshots. Unknown launch identities, missing completion pairs, outstanding work, malformed evidence or
 interrupted controller work retain quarantine.
 
 A role that was required by the scenario but never actually launched still makes
@@ -317,9 +292,9 @@ retirement evidence remain conservatively quarantined after a failure.
 
 ## SDK-owned suites
 
-The shared catalog contains only `standard` and `export-lifecycle`; all packaged
-requirements apply to JavaScript, Java and Python. Language-specific operation,
-cleanup, thread, exception and plugin assertions belong in the SDK repository.
+The shared catalog contains only `standard`; all packaged requirements apply to
+JavaScript, Java and Python. Language-specific operation,
+cleanup, thread and exception assertions belong in the SDK repository.
 They must not be added as runtime-exclusive requirement files here.
 
 An SDK-owned controller can pass a `SuiteDefinition` to the programmatic

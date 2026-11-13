@@ -499,15 +499,6 @@ def test_java_shared_conformance_does_not_require_owner_or_thread_diagnostics() 
     assert any(error.startswith("PLACEMENT:") for error in validate_evidence(value))
 
 
-@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
-def test_telemetry_cohort_requires_overlap_and_identified_warm_reuse(runtime: str) -> None:
-    value = warm_evidence(runtime)
-    value["requirementId"] = "lmi-lifecycle-7"
-    assert validate_evidence(value) == []
-    del value["selectedRequests"]["warm"]
-    assert any("warm" in error for error in validate_evidence(value))
-
-
 def test_disposal_task_exit_cannot_precede_the_root_boundary() -> None:
     value = evidence(2)
     next(item for item in value["events"] if item["kind"] == "task_exit")["atMs"] = 34

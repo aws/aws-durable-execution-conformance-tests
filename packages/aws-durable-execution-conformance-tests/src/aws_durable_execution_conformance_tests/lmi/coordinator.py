@@ -57,10 +57,8 @@ class Scenario:
     roles: tuple[str, ...] = ("victim",)
     slots: int = 1
     exclusive: bool = False
-    otel_view: str | None = None
     coverage_profile: str = "standard"
     behavior_budgets: Mapping[str, float] = field(default_factory=dict)
-    export_mode: str | None = None
 
     def __post_init__(self) -> None:
         if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario, self.cohort_id)):
@@ -69,16 +67,10 @@ class Scenario:
             raise ValueError("Scenario roles must be nonempty and unique")
         if type(self.slots) is not int or self.slots < 1:
             raise ValueError("Scenario slots must be a positive integer")
-        if self.otel_view not in (None, "invocation", "execution"):
-            raise ValueError("otel_view must be invocation or execution")
         # Catalog applicability belongs to the suite owner. The coordinator
         # also serves SDK-local suites supplied through the programmatic API.
         if not isinstance(self.coverage_profile, str) or not self.coverage_profile.strip():
             raise ValueError("Scenario coverage profile must be a nonempty string")
-        if self.export_mode not in (None, "sync", "async-bounded-flush"):
-            raise ValueError("Unknown export mode")
-        if (self.coverage_profile == "export-lifecycle") != (self.export_mode is not None):
-            raise ValueError("Only the export-lifecycle profile takes an explicit export mode")
 
 
 @dataclass(frozen=True)
@@ -294,10 +286,6 @@ class ScenarioContext:
             "cohortId": self.scenario.cohort_id,
             "role": role,
         }
-        if self.scenario.otel_view is not None:
-            payload["otelView"] = self.scenario.otel_view
-        if self.scenario.export_mode is not None:
-            payload["exportMode"] = self.scenario.export_mode
         if self.scenario.coverage_profile != "standard":
             payload["coverageProfile"] = self.scenario.coverage_profile
             payload["behaviorBudgets"] = dict(self.scenario.behavior_budgets)
@@ -493,13 +481,8 @@ def _retirement_ownership_errors(
     context: ScenarioContext, original: Mapping[str, Any], final: Mapping[str, Any]
 ) -> list[str]:
     errors = _ownership_errors(context, final, complete_cohort=False)
-    for key, value in (
-        ("coverageProfile", context.scenario.coverage_profile),
-        ("otelView", context.scenario.otel_view),
-        ("exportMode", context.scenario.export_mode),
-    ):
-        if final.get(key, "standard" if key == "coverageProfile" else None) != value:
-            errors.append(f"Retirement {key} changed the admitted case")
+    if final.get("coverageProfile", "standard") != context.scenario.coverage_profile:
+        errors.append("Retirement coverageProfile changed the admitted case")
     for key in ("runtime", "artifact"):
         if key in original and original[key] != final.get(key):
             errors.append(f"Retirement {key} differs from the original observations")
@@ -536,9 +519,6 @@ def _retirement_ownership_errors(
         "io_start",
         "checkpoint_call",
         "poll_call",
-        "export_started",
-        "export_held",
-        "flush_started",
     }
     fields = (
         "kind",
@@ -548,11 +528,7 @@ def _retirement_ownership_errors(
         "atMs",
         "taskId",
         "callId",
-        "exportId",
-        "flushId",
         "gateId",
-        "providerId",
-        "exporterId",
     )
 
     def starts(events: list[Any]) -> Counter[tuple[Any, ...]]:

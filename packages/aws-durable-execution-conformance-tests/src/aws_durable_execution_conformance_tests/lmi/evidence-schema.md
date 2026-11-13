@@ -8,9 +8,6 @@ describes the structural wire format; the Python validator also checks ownership
 ordering, placement, outcomes, and coverage.
 
 All times are finite, nonnegative milliseconds on a single observation clock.
-For envelopes containing OTel evidence, this clock is normalized UTC Unix epoch
-milliseconds so lifecycle windows align with canonical span ISO timestamps.
-Relative clocks are suitable only for local controls without OTel evidence.
 Adapters must reconcile clocks before producing this document and preserve raw
 source times and correlation records in `collection.evidenceUris`. An arbitrary
 client timestamp is not proof of a runtime boundary. Collect wrapper return and
@@ -18,10 +15,9 @@ platform timeout through the actual wrapper/platform observation path. A root
 handler return, a PENDING response, and task exit are separate events.
 
 The envelope identifies `schemaVersion: 1`, `runId`, `caseId`, `cohortId`,
-`requirementId` (`lmi-lifecycle-1` through `lmi-lifecycle-8`), and `runtime`
+`requirementId` (`lmi-lifecycle-1` through `lmi-lifecycle-6`), and `runtime`
 (`javascript`, `java`, or `python`). `artifact.sdk` and `artifact.conformance`
-identify exact immutable tested artifacts; `artifact.plugin` is also required for
-OTel cases by the OTel validator. `profile` includes `functionArn`,
+identify exact immutable tested artifacts. `profile` includes `functionArn`,
 `configurationDigest`, `nativeConcurrency`, and the deployed `timeoutMs`.
 `configurationDigest` covers runtime, architecture, layers, environment, IAM,
 timeout, and concurrency. Native concurrency describes deployment configuration,
@@ -37,11 +33,6 @@ Each attempt records:
 - `attempt` (positive ordinal within the fixture role; selected requests use 1);
 - `startedAtMs`, `endedAtMs`, and independently observed invocation `outcome`
   (`SUCCEEDED`, `FAILED`, `PENDING`, or `TIMED_OUT`).
-
-Runtime-specific diagnostics may accompany these records but do not determine
-shared conformance. Java handler-owner/thread affinity, `HandlerScoped` openers,
-and MDC behavior remain Java SDK tests. Java placement still requires observed
-environment and process identity proving overlap in the same JVM.
 
 `events` is an array of observations. Every event records `kind`, `requestId`,
 `ownerRequestId`, `executionArn`, and `atMs`. The invocation and execution owner
@@ -64,16 +55,7 @@ Optional `startedAtMs` is the actual service execution start from
 `GetDurableExecution.StartTimestamp` or `ExecutionStarted.EventTimestamp`,
 normalized to UTC Unix epoch milliseconds. When supplied, it must be finite,
 nonnegative, belong to that history's execution ARN, and precede or equal that
-execution's first native admission. OTel Workflow spans may start at this service
-boundary, including during cold start before the first invocation. Without that
-proof, their lower bound remains first native admission. Invocation, user and
-attempt spans retain their own native-owner lower bound; do not clamp timestamps.
-Execution-view logical operation spans may span native invocations only when the
-same execution's service operation ID, type, name and terminal status match, and
-their interval fits the operation's recorded `startedAtMs` and `endedAtMs`.
-These optional operation fields come from the original service start and actual
-terminal event, not from span timestamps or a later retry's attempt start. Missing
-operation bounds cannot establish that longer lifetime.
+execution's first native admission.
 Each operation retains `id`, static `name`, `type`, `parentId` (null at root),
 `status`, and its stored result/error. `name` is explicitly null for a genuinely
 unnamed operation, including SDK-supported unnamed child contexts; missing names
@@ -99,7 +81,7 @@ Never generate expectations by copying the observed status or output.
 `sdkRequests`, and `history` coverage through `observationEndedAtMs`.
 `collection.evidenceUris` references retained raw records under this case's
 namespace. An empty query without a collection watermark cannot prove absence.
-Collector/exporter failure and incomplete collection must remain visible.
+Source collection failures and incomplete observations must remain visible.
 
 ## Scenario observations
 
@@ -111,8 +93,6 @@ Collector/exporter failure and incomplete collection must remain visible.
 | `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. The recovery request must succeed. |
 | `lmi-lifecycle-5` | Original `victim` returns PENDING with `pending` and `wrapper_return`; selected `resume` starts later against the same execution. `replay.before` stores completed success and failure operations. `replay.after` retains that exact prefix and matches collected final history. `replay.operationExecutions` records actual user-code entries by request/operation (and `attemptId` for retries), proving completed code did not run again. `replay.retry` identifies an incomplete operation and at least two distinct observed attempts, first failed and last successful. `replay.sideEffects` records `operationId`, actual `count`, and fixture-defined `expectedCount` for completed operations and retries. |
 | `lmi-lifecycle-6` | Original `victim` and sequential `warm` request reuse the same environment, worker, and process. `late_activity` retains victim ownership and identifies the warm request in `observedDuringRequestId`. Separate `task_exit` follows the late activity; no stale SDK dispatch is permitted. |
-| `lmi-lifecycle-7` | Core envelope, overlap, and identified warm-reuse observations in one cohort; the OTel extension additionally validates cohort-level spans, both views, carriers, sampling, and warm reuse. |
-| `lmi-lifecycle-8` | Core envelope and the OTel extension's provider/export ownership and outcome observations. The core validator alone never establishes OTel acceptance. |
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run, case, and cohort identifiers isolate evidence and controls;
@@ -146,6 +126,6 @@ profile; other profiles remain independent. A blanket `passed` or `cleanedUp`
 boolean is not evidence for any requirement.
 
 The SDK adapter is responsible for faithful instrumentation through the real
-public handler/plugin registration paths. This schema detects inconsistent or
+public handler registration paths. This schema detects inconsistent or
 incomplete evidence; it cannot authenticate observations supplied by a dishonest
 adapter or substitute local synthetic controls for real LMI validation.

@@ -317,14 +317,13 @@ def test_collected_evidence_must_match_admitted_originals(mutation):
 
 
 def test_original_request_cannot_be_rebound_and_dispatch_is_stable():
-    context = ScenarioContext("run", case("victim", otel_view="invocation"), PROFILE)
+    context = ScenarioContext("run", case("victim"), PROFILE)
     assert context.dispatcher("victim") == {
         "scenario": "overlap",
         "runId": "run",
         "caseId": "victim",
         "cohortId": "cohort-1",
         "role": "victim",
-        "otelView": "invocation",
     }
     context.record_attempt("launch")
     context.update_attempt("launch", requestId="original")

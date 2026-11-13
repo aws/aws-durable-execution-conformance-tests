@@ -98,17 +98,10 @@ def _case_definition(
     for required in _required(manifest, suite):
         if required.requirement_id != scenario["requirement_id"] or required.scenario != scenario["scenario"]:
             continue
-        if required.export_mode != scenario.get("export_mode"):
-            continue
-        if required.native_concurrency is not None and (
-            required.native_concurrency != profile["native_concurrency"]
-            or required.otel_view != scenario.get("otel_view")
-        ):
+        if required.native_concurrency is not None and required.native_concurrency != profile["native_concurrency"]:
             continue
         return required
-    raise ValueError(
-        "scenario, native concurrency, OTel view and export mode do not match the selected coverage matrix"
-    )
+    raise ValueError("scenario and native concurrency do not match the selected coverage matrix")
 
 
 def coverage_inventory(manifest: Mapping[str, Any], *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
@@ -118,8 +111,6 @@ def coverage_inventory(manifest: Mapping[str, Any], *, suite: SuiteDefinition | 
             case["requirement_id"],
             case["scenario"],
             profiles[case["profile_id"]]["native_concurrency"],
-            case.get("otel_view") if manifest.get("coverageProfile", "standard") != "standard" else None,
-            case.get("export_mode"),
         )
         for case in manifest["scenarios"]
     ]
@@ -226,8 +217,8 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
             or not set(definition.roles) <= set(roles)
         ):
             raise ValueError("scenario must include distinct required cohort roles")
-        if scenario.get("otel_view") not in (None, "invocation", "execution"):
-            raise ValueError("otel_view must be invocation or execution")
+        if "otel_view" in scenario or "export_mode" in scenario:
+            raise ValueError("telemetry options are not supported by the LMI lifecycle runner")
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         behavior_budgets = scenario.get("behavior_budgets", {})
@@ -252,36 +243,13 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
 
 
 def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
-    from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence, validate_evidence
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
 
+    if evidence.get("coverageProfile", "standard") != "standard":
+        return ["INCOMPLETE: unknown evidence coverage profile"]
     if phase not in ("observations", "final"):
         return ["INCOMPLETE: unknown evidence validation phase"]
-    profile = evidence.get("coverageProfile", "standard")
-    if profile == "export-lifecycle":
-        errors = validate_common_evidence(
-            evidence,
-            phase="observations" if phase == "observations" else "final",
-            requirement_ids=("lmi-lifecycle-16",),
-        )
-        needs_otel = True
-    elif profile == "standard":
-        errors = validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
-        needs_otel = evidence.get("requirementId") in ("lmi-lifecycle-7", "lmi-lifecycle-8")
-    else:
-        return ["INCOMPLETE: unknown evidence coverage profile"]
-    if needs_otel:
-        try:
-            if profile == "export-lifecycle":
-                from aws_durable_execution_conformance_tests_otel.lmi_exports import validate_export_lifecycle
-
-                errors.extend(validate_export_lifecycle(evidence, phase=phase))
-            else:
-                from aws_durable_execution_conformance_tests_otel.lmi import validate_lmi_telemetry
-
-                errors.extend(validate_lmi_telemetry(evidence, phase=phase))
-        except ImportError:
-            errors.append("INCOMPLETE: install the OTel extension to validate this capability profile")
-    return errors
+    return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
 
 
 def _identity_errors(
@@ -305,14 +273,10 @@ def _identity_errors(
     coverage_profile = manifest.get("coverageProfile", "standard")
     if evidence.get("coverageProfile", "standard") != coverage_profile:
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
-    if evidence.get("exportMode") != scenario.get("export_mode"):
-        errors.append("INCOMPLETE: observed export mode does not match the admitted matrix slot")
-    if suite is not None or coverage_profile == "export-lifecycle":
+    if suite is not None:
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")
-        if evidence.get("otelView") != scenario.get("otel_view"):
-            errors.append("INCOMPLETE: evidence OTel view does not match the admitted matrix slot")
-        policy_key = suite.evidence_policy_key if suite is not None else "exportLifecycle"
+        policy_key = suite.evidence_policy_key
         if policy_key is not None:
             policy = evidence.get(policy_key)
             if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
@@ -531,8 +495,7 @@ def build_report(
         missing = [case for case in inventory["missing"] if case["requirement_id"] == requirement_id]
         if missing:
             errors.extend(
-                f"Missing mandatory matrix slot: {case['scenario']} / native={case['native_concurrency']} / "
-                f"OTel={case['otel_view'] or 'disabled'} / export={case['export_mode'] or 'profile-default'}"
+                f"Missing mandatory matrix slot: {case['scenario']} / native={case['native_concurrency']}"
                 for case in missing
             )
             if status == ReportStatus.PASSED:
@@ -551,10 +514,6 @@ def build_report(
         f"Coverage profile: {inventory['coverageProfile']}; "
         f"{len(inventory['required'])} mandatory matrix slots, {len(inventory['missing'])} absent from the manifest."
     )
-    if manifest["capabilityProfile"] == "lifecycle":
-        report.warnings.append(
-            "Telemetry checks are not applicable to the lifecycle-only capability; OTel is not accepted."
-        )
     return report
 
 

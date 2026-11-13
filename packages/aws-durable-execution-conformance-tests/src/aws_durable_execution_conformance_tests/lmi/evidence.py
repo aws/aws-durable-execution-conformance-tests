@@ -16,7 +16,7 @@ from itertools import pairwise
 from typing import Any, Literal
 
 SCHEMA_VERSION = 1
-REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 9))
+REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 7))
 RUNTIMES = ("javascript", "java", "python")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
 
@@ -553,8 +553,7 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
 
     The coordinator calls ``observations`` before releasing faults and retains
     those errors even if emergency release later succeeds. ``final`` additionally
-    requires complete retirement evidence. Neither phase validates OTel spans;
-    requirements 7/8 also require the existing OTel extension's LMI validator.
+    requires complete retirement evidence.
     """
     if not isinstance(evidence, Mapping):
         return ["INCOMPLETE: evidence must be an object"]
@@ -618,12 +617,9 @@ def _validate_observations(validator: _Evidence, evidence: Mapping[str, Any]) ->
         "lmi-lifecycle-4": validator.recovery,
         "lmi-lifecycle-5": validator.replay,
         "lmi-lifecycle-6": validator.warm_reuse,
-        "lmi-lifecycle-7": validator.overlap,
     }
     if requirement in checks:
         checks[requirement]()
-    if requirement == "lmi-lifecycle-7":
-        validator.warm_reuse()
 
 
 def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
@@ -632,7 +628,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
     Failed cases may lack mandatory scenario roles, but every actual launch must
     still be accounted for by the coordinator. This audit reuses common source
     ownership, history shape and resource-inventory checks, then independently
-    requires actual wrapper/task/request/export completion. Neither expected
+    requires actual wrapper/task/request completion. Neither expected
     business outcomes nor cleanup-time recovery can turn the failed case green.
     """
     if not isinstance(evidence, Mapping):
@@ -654,18 +650,8 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
         histories = {item["executionArn"]: item for item in evidence["histories"]}
         for resource in evidence["resourcesCreated"]:
             kind = resource["kind"]
-            if kind not in {"invocation", "execution", "export", "flush"}:
+            if kind not in {"invocation", "execution"}:
                 validator.error(f"retirement has no completion contract for resource kind {kind}")
-            if kind in {"export", "flush"}:
-                for ending in ("started", "completed"):
-                    if (
-                        sum(
-                            event["kind"] == f"{kind}_{ending}" and event.get(f"{kind}Id") == resource["id"]
-                            for event in validator.events
-                        )
-                        != 1
-                    ):
-                        validator.error("retirement inventory lacks its actual export/flush work observations")
         for arn, history in histories.items():
             if history["status"] not in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}:
                 validator.error("retirement service history still permits execution resume")
@@ -676,8 +662,6 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
             ("io_start", "io_exit", "taskId"),
             ("checkpoint_call", "checkpoint_exit", "callId"),
             ("poll_call", "poll_exit", "callId"),
-            ("export_started", "export_completed", "exportId"),
-            ("flush_started", "flush_completed", "flushId"),
         )
         for request_id in validator.attempts:
             local = [event for event in validator.events if event["requestId"] == request_id]
@@ -707,9 +691,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 (event["atMs"] for event in local), default=0
             ):
                 validator.error("invocation retirement precedes its last actual activity")
-            if any(
-                event["kind"] in {"observation_error", "control_error", "export_publication_error"} for event in local
-            ):
+            if any(event["kind"] in {"observation_error", "control_error"} for event in local):
                 validator.error("retirement contains failed observation or control publication")
             for start_kind, end_kind, identity in pairs:
                 started = [event for event in local if event["kind"] == start_kind]
@@ -726,46 +708,6 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                     start, end = starts[0], ends[0]
                     if boundary(start) > boundary(end):
                         validator.error("retirement reverses an observed work interval")
-                    if identity in {"exportId", "flushId"}:
-                        kind = "export" if identity == "exportId" else "flush"
-                        settled = records.get(identifier, {})
-                        if (
-                            settled.get("kind") != kind
-                            or settled.get("outcome") != end.get("outcome")
-                            or end.get("outcome") not in {"succeeded", "failed"}
-                            or validator.number(settled.get("settledAtMs"), "work.settledAtMs") < end["atMs"]
-                        ):
-                            validator.error("retirement does not retain actual export/flush completion")
-                        for owner in ("providerId", "exporterId"):
-                            validator.string(start.get(owner), f"{start_kind}.{owner}")
-                            if start.get(owner) != end.get(owner):
-                                validator.error("retirement substitutes an export/flush owner")
-            if evidence.get("otelView") is not None:
-                completions = [
-                    boundary(event)
-                    for event in local
-                    if event["kind"]
-                    in {
-                        "wrapper_return",
-                        "wrapper_raise",
-                        "task_exit",
-                        "io_exit",
-                        "checkpoint_exit",
-                        "poll_exit",
-                        "export_completed",
-                        "flush_completed",
-                    }
-                ]
-                snapshots = [event for event in local if event["kind"] == "export_quiescence"]
-                latest = max(snapshots, key=boundary) if snapshots else {}
-                if not (
-                    latest.get("pendingExportIds") == []
-                    and latest.get("pendingFlushIds") == []
-                    and type(latest.get("publicationCount")) is int
-                    and latest.get("publicationCount") == 0
-                    and boundary(latest) >= max(completions, default=(0, 0))
-                ):
-                    validator.error("retirement lacks final settled export/publication evidence for the invocation")
 
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
         validator.error(f"malformed independent retirement evidence: {error}")

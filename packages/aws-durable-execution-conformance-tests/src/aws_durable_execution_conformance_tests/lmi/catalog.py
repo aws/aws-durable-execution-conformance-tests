@@ -9,9 +9,8 @@ from typing import Any
 import yaml
 
 RUNTIMES = ("javascript", "java", "python")
-CAPABILITIES = ("lifecycle", "lifecycle-otel")
-COVERAGE_PROFILES = ("standard", "export-lifecycle")
-EXPORT_MODES = ("sync", "async-bounded-flush")
+CAPABILITIES = ("lifecycle",)
+COVERAGE_PROFILES = ("standard",)
 
 
 def requirements(
@@ -28,8 +27,6 @@ def requirements(
         raise ValueError(f"Unknown runtime: {runtime}")
     if coverage_profile not in COVERAGE_PROFILES:
         raise ValueError(f"Unknown coverage profile: {coverage_profile}")
-    if coverage_profile == "export-lifecycle" and capability != "lifecycle-otel":
-        raise ValueError("export-lifecycle coverage requires lifecycle-otel capability")
     root = files(__package__).joinpath("requirements/lmi-lifecycle")
     result = {}
     for resource in sorted(root.iterdir(), key=lambda path: path.name):
@@ -40,7 +37,7 @@ def requirements(
             continue
         if runtime is not None and runtime not in requirement["runtimes"]:
             continue
-        if capability != "lifecycle-otel" and requirement["capability"] != "lifecycle":
+        if requirement["capability"] != capability:
             continue
         result[requirement["id"]] = requirement
     return result

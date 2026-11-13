@@ -35,10 +35,7 @@
         "lmi-lifecycle-3",
         "lmi-lifecycle-4",
         "lmi-lifecycle-5",
-        "lmi-lifecycle-6",
-        "lmi-lifecycle-7",
-        "lmi-lifecycle-8",
-        "lmi-lifecycle-16"
+        "lmi-lifecycle-6"
       ]
     },
     "runtime": {
@@ -72,10 +69,6 @@
           "minLength": 1
         },
         "conformance": {
-          "type": "string",
-          "minLength": 1
-        },
-        "plugin": {
           "type": "string",
           "minLength": 1
         }
@@ -360,57 +353,13 @@
     },
     "coverageProfile": {
       "enum": [
-        "standard",
-        "export-lifecycle"
+        "standard"
       ],
       "default": "standard"
     },
     "scenario": {
       "type": "string",
       "minLength": 1
-    },
-    "otelView": {
-      "enum": [
-        "invocation",
-        "execution",
-        null
-      ]
-    },
-    "exportMode": {
-      "enum": [
-        "sync",
-        "async-bounded-flush",
-        null
-      ]
-    },
-    "exportLifecycle": {
-      "type": "object",
-      "required": [
-        "budgets"
-      ],
-      "properties": {
-        "budgets": {
-          "type": "object",
-          "required": [
-            "observationGraceMs",
-            "exportCompletionMs"
-          ],
-          "properties": {
-            "observationGraceMs": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "exportCompletionMs": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "flushWaitMs": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            }
-          }
-        }
-      }
     }
   },
   "$defs": {
@@ -669,60 +618,5 @@
         }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": {
-        "required": [
-          "coverageProfile"
-        ],
-        "properties": {
-          "coverageProfile": {
-            "const": "export-lifecycle"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "scenario",
-          "otelView",
-          "exportMode",
-          "exportLifecycle"
-        ],
-        "properties": {
-          "requirementId": {
-            "const": "lmi-lifecycle-16"
-          },
-          "otelView": {
-            "enum": [
-              "invocation",
-              "execution"
-            ]
-          },
-          "exportMode": {
-            "enum": [
-              "sync",
-              "async-bounded-flush"
-            ]
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "requirementId": {
-            "enum": [
-              "lmi-lifecycle-1",
-              "lmi-lifecycle-2",
-              "lmi-lifecycle-3",
-              "lmi-lifecycle-4",
-              "lmi-lifecycle-5",
-              "lmi-lifecycle-6",
-              "lmi-lifecycle-7",
-              "lmi-lifecycle-8"
-            ]
-          }
-        }
-      }
-    }
-  ]
+  }
 }

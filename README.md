@@ -268,13 +268,8 @@ Lambda Managed Instances checks. The suite has runtime-specific placement rules,
 versioned evidence, shared/exclusive resource ownership, and strict coverage.
 It is separate from ordinary `--suite all` runs. See the
 [LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
-for manifests, SDK adapter contracts, persistent deployment profiles, OTel reuse,
+for manifests, SDK adapter contracts, persistent deployment profiles,
 and the remaining real-LMI adoption gates. Packaged requirements apply to every
 supported SDK runtime. SDK-specific regression suites, their case matrices and
 validators live in the corresponding SDK repository; they can reuse the common
 coordination and reporting APIs without entering this catalog.
-
-The language-neutral [export lifecycle profile](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/export-lifecycle.md)
-requires synchronous export and asynchronous export with bounded flush waiting
-for every supported runtime. Java implementation-specific hook, thread and MDC
-tests remain in the Java SDK repository.

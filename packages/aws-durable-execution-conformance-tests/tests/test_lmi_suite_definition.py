@@ -48,7 +48,6 @@ def definition() -> SuiteDefinition:
                 LOCAL_ID,
                 "sdk-observation",
                 2,
-                None,
                 ("victim", "peer"),
                 False,
                 2,
