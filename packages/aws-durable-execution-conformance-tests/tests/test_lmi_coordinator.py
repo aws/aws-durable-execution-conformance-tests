@@ -289,8 +289,9 @@ def test_emergency_release_cannot_overwrite_observed_failure():
 
     result = run([case("victim")], CleanupAdapter())[0]
     assert result.status == "FAILED"
-    assert result.errors == ["Worker did not recover before fault release"]
-    assert result.evidence["assertionErrors"] == result.errors
+    assert "Worker did not recover before fault release" in result.errors
+    assert "Launched work has no independent retirement evidence" in result.errors
+    assert result.evidence["assertionErrors"] == ["Worker did not recover before fault release"]
 
 
 @pytest.mark.parametrize("mutation", ["request", "case", "artifact", "profile", "missing-launch"])

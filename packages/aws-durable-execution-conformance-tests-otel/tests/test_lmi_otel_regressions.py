@@ -655,3 +655,197 @@ def test_replayed_workflow_uses_its_original_service_execution_start(view: str) 
     assert validate_lifecycle_telemetry(value) == []
     workflow["span"]["start_time"] = datetime.fromtimestamp((service_start - 1) / 1000, UTC).isoformat()
     assert any("outside its lifecycle observation window" in error for error in validate_lifecycle_telemetry(value))
+
+
+def resumed_operation_evidence(*, duplicate: bool = False) -> dict[str, Any]:
+    """Minimal, sanitized versions of run 43331709913's execution-view spans.
+
+    The wait finishes before resume but is exported on resume. The timeout case
+    re-exports one logical step identity from two native requests, changing its
+    start and invocation link. Neither case re-runs the completed step body.
+    """
+    value = build_evidence("timeout-retry" if duplicate else "pending-cleanup", 2, "execution")
+    owner = value["selectedRequests"]["retry" if duplicate else "resume"]
+    original = value["selectedRequests"]["victim"]
+    attempt = next(item for item in value["attempts"] if item["requestId"] == owner)
+    history = next(item for item in value["histories"] if item["executionArn"] == attempt["executionArn"])
+    operation = next(item for item in history["operations"] if item["name"] == ("success" if duplicate else "pause"))
+    operation.update(startedAtMs=110 if duplicate else 250, endedAtMs=130 if duplicate else 550)
+    view = value["telemetry"]["views"]["execution"]
+    workflow = next(item for item in view["spans"] if item["requestId"] == owner and item["span"]["name"] == "Workflow")
+
+    def append(request_id: str, start: float, exported: float) -> None:
+        record = deepcopy(workflow)
+        record["requestId"] = request_id
+        invocation = next(
+            item["span"]
+            for item in view["spans"]
+            if item["requestId"] == request_id and item["span"]["name"] == "Invocation"
+        )
+        record["span"].update(
+            name=operation["name"],
+            span_id="f" * 16,
+            parent_span_id=workflow["span"]["span_id"],
+            start_time=datetime.fromtimestamp(start / 1000, UTC).isoformat(),
+            end_time=datetime.fromtimestamp(operation["endedAtMs"] / 1000, UTC).isoformat(),
+            attributes={
+                "durable.execution.arn": attempt["executionArn"],
+                "durable.operation.id": operation["id"],
+                "durable.operation.name": operation["name"],
+                "durable.operation.type": operation["type"],
+                "durable.operation.status": "SUCCEEDED",
+            },
+            links=[{"trace_id": invocation["trace_id"], "span_id": invocation["span_id"]}],
+        )
+        if duplicate:
+            record["span"]["attributes"]["durable.attempt.number"] = 1  # A logical STEP may carry this attribute.
+        view["spans"].append(record)
+        for kind, when in (("otel_export_started", exported), ("otel_export", exported + 1)):
+            value["events"].append(
+                {
+                    "requestId": request_id,
+                    "ownerRequestId": request_id,
+                    "executionArn": attempt["executionArn"],
+                    "kind": kind,
+                    "atMs": when,
+                    "traceId": invocation["trace_id"],
+                    "spanId": "f" * 16,
+                    "outcome": "success",
+                }
+            )
+
+    if duplicate:
+        append(original, 105, 350)
+    append(owner, operation["startedAtMs"], 800)
+    for request in value["attempts"]:
+        events = sorted(
+            (item for item in value["events"] if item["requestId"] == request["requestId"]),
+            key=lambda item: item["atMs"],
+        )
+        for sequence, event in enumerate(events, 1):
+            event["sequence"] = sequence
+    return value
+
+
+def test_resumed_logical_wait_uses_its_actual_service_operation_interval() -> None:
+    assert validate_lifecycle_telemetry(resumed_operation_evidence()) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing-start",
+        "missing-end",
+        "wrong-id",
+        "wrong-type",
+        "wrong-name",
+        "wrong-status",
+        "open",
+        "reversed",
+        "nonfinite",
+        "duplicate",
+    ],
+)
+def test_early_logical_span_requires_matching_complete_operation_history(change: str) -> None:
+    value = resumed_operation_evidence()
+    history = next(item for item in value["histories"] if any(op["name"] == "pause" for op in item["operations"]))
+    operation = next(item for item in history["operations"] if item["name"] == "pause")
+    if change == "missing-start":
+        del operation["startedAtMs"]
+    elif change == "missing-end":
+        del operation["endedAtMs"]
+    elif change == "wrong-id":
+        operation["id"] = "different-operation"
+    elif change == "wrong-type":
+        operation["type"] = "STEP"
+    elif change == "wrong-name":
+        operation["name"] = "other-wait"
+    elif change == "wrong-status":
+        operation["status"] = "FAILED"
+    elif change == "open":
+        operation["status"] = "STARTED"
+        value["telemetry"]["views"]["execution"]["spans"][-1]["span"]["attributes"]["durable.operation.status"] = (
+            "STARTED"
+        )
+    elif change == "reversed":
+        operation["endedAtMs"] = 200
+    elif change == "nonfinite":
+        operation["startedAtMs"] = float("nan")
+    else:
+        history["operations"].append(deepcopy(operation))
+    assert validate_lifecycle_telemetry(value)
+
+
+@pytest.mark.parametrize(
+    "change", ["invocation-view", "attempt", "user-span", "too-early", "too-late", "wrong-execution"]
+)
+def test_operation_history_does_not_relax_unrelated_span_windows(change: str) -> None:
+    value = resumed_operation_evidence()
+    view = value["telemetry"]["views"]["execution"]
+    span = view["spans"][-1]["span"]
+    if change == "invocation-view":
+        value["otelView"] = "invocation"
+        value["telemetry"]["views"] = {"invocation": view}
+    elif change == "attempt":
+        span["attributes"]["durable.attempt.outcome"] = "SUCCEEDED"
+    elif change == "user-span":
+        del span["attributes"]["durable.operation.id"]
+    elif change == "too-early":
+        span["start_time"] = datetime.fromtimestamp(0.249, UTC).isoformat()
+    elif change == "too-late":
+        span["end_time"] = datetime.fromtimestamp(0.551, UTC).isoformat()
+    else:
+        history = next(item for item in value["histories"] if any(op["name"] == "pause" for op in item["operations"]))
+        history["executionArn"] = "arn:execution:unrelated"
+    assert any("observation window" in error for error in validate_lifecycle_telemetry(value))
+
+
+def test_inconsistent_cross_request_span_does_not_corrupt_either_export_ledger() -> None:
+    value = resumed_operation_evidence(duplicate=True)
+    before = deepcopy(value)
+    errors = validate_lifecycle_telemetry(value)
+    assert any("duplicate span identity" in error for error in errors)
+    assert not any("omit or add canonical spans" in error for error in errors)
+    assert not any("observation window" in error for error in errors)
+    assert value == before
+
+
+def test_per_request_ledger_still_rejects_an_actually_missing_canonical_span() -> None:
+    value = resumed_operation_evidence(duplicate=True)
+    view = value["telemetry"]["views"]["execution"]
+    original = value["selectedRequests"]["victim"]
+    view["spans"] = [
+        item for item in view["spans"] if not (item["requestId"] == original and item["span"]["span_id"] == "f" * 16)
+    ]
+    assert any("omit or add canonical spans" in error for error in validate_lifecycle_telemetry(value))
+
+
+def test_identical_same_request_reexport_may_have_another_transport_receipt() -> None:
+    value = build_evidence("runtime-carrier-sampled", 1, "execution")
+    spans = value["telemetry"]["views"]["execution"]["spans"]
+    repeated = {**deepcopy(spans[0]), "exportId": "another-observed-export-receipt"}
+    spans.append(repeated)
+    assert validate_lifecycle_telemetry(value) == []
+
+
+def test_historical_span_proof_does_not_hide_sdk_exporter_shutdown_failure() -> None:
+    value = resumed_operation_evidence()
+    next(event for event in value["events"] if event["kind"] == "otel_exit")["exporterShutdowns"] = 1
+    assert any("shut down" in error for error in validate_lifecycle_telemetry(value))
+
+
+@pytest.mark.parametrize("name_missing", [False, True])
+def test_historical_unnamed_operation_uses_its_actual_id_without_inventing_a_name(name_missing: bool) -> None:
+    value = resumed_operation_evidence()
+    history = next(item for item in value["histories"] if any(op["name"] == "pause" for op in item["operations"]))
+    operation = next(item for item in history["operations"] if item["name"] == "pause")
+    operation.update(name=None, type="CONTEXT")
+    span = value["telemetry"]["views"]["execution"]["spans"][-1]["span"]
+    span["name"] = operation["id"]
+    span["attributes"].pop("durable.operation.name")
+    span["attributes"]["durable.operation.type"] = "CONTEXT"
+    if name_missing:
+        del operation["name"]
+        assert validate_lifecycle_telemetry(value)
+    else:
+        assert validate_lifecycle_telemetry(value) == []

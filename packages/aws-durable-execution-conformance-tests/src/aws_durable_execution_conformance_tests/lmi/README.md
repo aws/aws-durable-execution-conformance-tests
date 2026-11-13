@@ -289,3 +289,33 @@ Review the initial contracts and supported policies with SDK owners; land adapte
 handler/template and workflow adoption through coordinated SDK PRs. Existing
 language-specific regressions remain useful while common coordination and
 validation move here.
+
+## Failed-case observations and retirement
+
+A phase failure remains a failed result even when cleanup succeeds. Adapters can
+implement optional `collect_partial(context)` to retain one bounded, read-only
+snapshot before fault release when an earlier phase failed. This hook reads the
+available observations without waiting for runtime work to become quiescent. It
+uses the collection budget; cancelled cases and interrupted controller work do
+not gain a new opportunity to claim complete observations.
+
+For a failed or incomplete case, `retire(context)` can separately populate
+`context.retirement_evidence` with a full post-cleanup snapshot. The coordinator
+retains it as `ScenarioResult.retirement_evidence`; it never replaces the original
+behavior evidence or removes its errors. Returning `True` from `retire` alone is
+insufficient to release a failed case's target.
+
+The independent retirement audit binds the final snapshot to the admitted
+artifact, target and every actual journaled launch. It requires terminal service
+execution histories, retained resource inventories, completed task/request and
+export/flush intervals, source coverage, and actual invocation exit/publication
+observations. Known resources cannot disappear between snapshots. Unknown launch
+identities, missing completion pairs, outstanding work, malformed evidence or
+interrupted controller work retain quarantine.
+
+A role that was required by the scenario but never actually launched still makes
+the scenario incomplete. It does not represent an invented outstanding request:
+retirement can succeed when every actual launch is independently proven settled.
+This distinction lets later cases use a safely retired target while preserving
+all earlier test failures. Existing adapters without independent failed-case
+retirement evidence remain conservatively quarantined after a failure.

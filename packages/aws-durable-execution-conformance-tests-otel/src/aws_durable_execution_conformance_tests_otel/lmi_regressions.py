@@ -23,7 +23,7 @@ from aws_durable_execution_conformance_tests_otel.lmi import (
     _span,
     _view_errors,
 )
-from aws_durable_execution_conformance_tests_otel.model import TelemetryQuery, Trace
+from aws_durable_execution_conformance_tests_otel.model import Span, TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
 SCENARIOS = (
@@ -201,18 +201,24 @@ class _Telemetry:
                 if actual.trace_id != caller.trace_id or actual.sampled != caller.sampled:
                     self.fail(f"{request_id} runtime carrier did not preserve the caller Root and explicit sampling")
         records = _records(self.view.get("spans"), "spans")
-        unique: dict[tuple[str, str], Mapping[str, Any]] = {}
+        first_observation: dict[tuple[str, str], tuple[Any, Span]] = {}
+        occurrences: list[tuple[Any, Span]] = []
+        observed: list[Mapping[str, Any]] = []
         for record in records:
             span = _span(record.get("span"))
             key = (span.trace_id, span.span_id)
-            if key in unique and unique[key] != record:
+            occurrence = (record.get("requestId"), span)
+            if first_observation.setdefault(key, occurrence) != occurrence:
                 self.fail("duplicate span identity has inconsistent export observations")
-            unique[key] = record
+            # Collapse identical transport receipts only. Preserve contradictory
+            # data and every native owner for attribution checks and diagnostics.
+            if occurrence not in occurrences:
+                occurrences.append(occurrence)
+                observed.append(record)
             if record.get("sampled") is not True:
                 self.fail("recording exporter span has no sampled SpanContext")
         # Preserve raw duplicates, but assert logical span identity/counts rather
         # than promising exactly-once transport delivery.
-        observed = list(unique.values())
         assertions: dict[str, dict[str, Any]] = {}
         histories = {item["executionArn"]: item for item in _records(self.evidence.get("histories"), "histories")}
         for arn in {attempt["executionArn"] for attempt in self.attempts.values()}:
@@ -273,6 +279,7 @@ class _Telemetry:
                 "python",
                 _number(self.evidence.get("observationEndedAtMs")),
                 execution_starts=_service_execution_starts(self.evidence.get("histories", [])),
+                operation_histories=_records(self.evidence.get("histories", []), "histories"),
             )
         )
         outcomes = {
@@ -298,7 +305,7 @@ class _Telemetry:
                 self.fail(f"{request_id} export start/completion observations disagree", "INCOMPLETE")
             emitted = {
                 (record["span"]["trace_id"], record["span"]["span_id"])
-                for record in observed
+                for record in records
                 if record.get("requestId") == request_id
             }
             if {(event.get("traceId"), event.get("spanId")) for event in exports} != emitted:

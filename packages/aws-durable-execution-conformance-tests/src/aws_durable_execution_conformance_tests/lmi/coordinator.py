@@ -15,11 +15,13 @@ import asyncio
 import copy
 import math
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,7 @@ class ScenarioContext:
     scenario: Scenario
     profile: Profile
     evidence: dict[str, Any] = field(default_factory=dict)
+    retirement_evidence: dict[str, Any] = field(default_factory=dict, kw_only=True)
     attempts: list[dict[str, Any]] = field(default_factory=list)
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
@@ -360,6 +363,13 @@ class ScenarioAdapter(Protocol):
     are settled. ``finish`` releases external run ownership only when quiescent
     is True; otherwise it must preserve quarantine until external recovery.
     Every attempted launch is journaled before transport dispatch.
+
+    An optional ``collect_partial(context)`` captures a bounded read-only snapshot
+    after a non-cancelled phase failure, before fault release. It must not wait for
+    cleanup or invent missing observations. A failed case can release its lease
+    only when ``retire`` additionally supplies ``context.retirement_evidence``:
+    independently auditable post-cleanup facts. That snapshot never replaces the
+    original behavior evidence or makes its result pass.
     """
 
     async def prepare(self, profile: Profile) -> None: ...
@@ -386,6 +396,7 @@ class ScenarioResult:
     evidence: dict[str, Any]
     attempts: list[dict[str, Any]]
     timings: dict[str, dict[str, float]]
+    retirement_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 async def _bounded(
@@ -412,7 +423,9 @@ async def _bounded(
             task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
 
 
-def _ownership_errors(context: ScenarioContext, evidence: Mapping[str, Any]) -> list[str]:
+def _ownership_errors(
+    context: ScenarioContext, evidence: Mapping[str, Any], *, complete_cohort: bool = True
+) -> list[str]:
     expected = {
         "runId": context.run_id,
         "caseId": context.scenario.case_id,
@@ -466,11 +479,87 @@ def _ownership_errors(context: ScenarioContext, evidence: Mapping[str, Any]) -> 
         originals = {item["role"]: item.get("requestId") for item in context.attempts if item["attempt"] == 1}
         if (
             not isinstance(selected, Mapping)
-            or set(selected) != set(context.scenario.roles)
-            or set(originals) != set(context.scenario.roles)
+            or set(selected) != set(originals)
+            or (complete_cohort and set(originals) != set(context.scenario.roles))
             or any(selected.get(role) != request_id for role, request_id in originals.items())
         ):
             errors.append("Selected requests must be the first journaled invocation for every admitted role")
+    return errors
+
+
+def _retirement_ownership_errors(
+    context: ScenarioContext, original: Mapping[str, Any], final: Mapping[str, Any]
+) -> list[str]:
+    errors = _ownership_errors(context, final, complete_cohort=False)
+    for key, value in (
+        ("coverageProfile", context.scenario.coverage_profile),
+        ("otelView", context.scenario.otel_view),
+        ("exportMode", context.scenario.export_mode),
+    ):
+        if final.get(key, "standard" if key == "coverageProfile" else None) != value:
+            errors.append(f"Retirement {key} changed the admitted case")
+    for key in ("runtime", "artifact"):
+        if key in original and original[key] != final.get(key):
+            errors.append(f"Retirement {key} differs from the original observations")
+    original_attempts = original.get("attempts", [])
+    observed = final.get("attempts", [])
+    if not isinstance(original_attempts, list) or not isinstance(observed, list):
+        raise ValueError("Retirement invocation inventories must be lists")
+    indexed = {item.get("requestId"): item for item in observed if isinstance(item, Mapping)}
+    for attempt in original_attempts:
+        if not isinstance(attempt, Mapping):
+            raise ValueError("Original invocation inventory is malformed")
+        settled = indexed.get(attempt.get("requestId"), {})
+        for key in ("executionArn", "environmentId", "workerId", "processId", "role", "attempt"):
+            if key in attempt and attempt[key] != settled.get(key):
+                errors.append(f"Retirement changed an original invocation's {key}")
+    for name, identity_fields in (
+        ("resourcesCreated", ("kind", "id", "ownerCaseId")),
+        ("faultsCreated", ("id", "ownerCaseId")),
+    ):
+        before, after = original.get(name, []), final.get(name, [])
+        if not isinstance(before, list) or not isinstance(after, list):
+            raise ValueError("Retirement resource inventories must be lists")
+        for resource in before:
+            if not isinstance(resource, Mapping) or not any(
+                isinstance(item, Mapping) and all(item.get(key) == resource.get(key) for key in identity_fields)
+                for item in after
+            ):
+                errors.append(f"Retirement omitted or changed an original {name} entry")
+    before_events, after_events = original.get("events", []), final.get("events", [])
+    if not isinstance(before_events, list) or not isinstance(after_events, list):
+        raise ValueError("Retirement observation inventories must be lists")
+    start_kinds = {
+        "task_start",
+        "io_start",
+        "checkpoint_call",
+        "poll_call",
+        "export_started",
+        "export_held",
+        "flush_started",
+    }
+    fields = (
+        "kind",
+        "requestId",
+        "ownerRequestId",
+        "executionArn",
+        "atMs",
+        "taskId",
+        "callId",
+        "exportId",
+        "flushId",
+        "gateId",
+        "providerId",
+        "exporterId",
+    )
+
+    def starts(events: list[Any]) -> Counter[tuple[Any, ...]]:
+        if any(not isinstance(event, Mapping) for event in events):
+            raise ValueError("Retirement observations must be objects")
+        return Counter(tuple(event.get(key) for key in fields) for event in events if event.get("kind") in start_kinds)
+
+    if starts(before_events) - starts(after_events):
+        errors.append("Retirement omitted or changed previously observed work")
     return errors
 
 
@@ -489,8 +578,9 @@ async def run_scenarios(
 ) -> list[ScenarioResult]:
     """Prepare each profile once, then run compatible cases concurrently.
 
-    Results preserve pre-release failures. Final collection can only add the
-    retirement record, so emergency cleanup cannot rewrite observed recovery.
+    Results preserve pre-release failures. Normal final collection can only add
+    the retirement record. Failed cases retain a separate audited retirement
+    snapshot, so cleanup cannot rewrite their original behavior observations.
     Missing handlers, infrastructure failures and evidence gaps are never passes.
     ``on_attempt`` is a synchronous durable journal sink called before transport
     dispatch. ``on_result`` receives case retirement and final profile-retirement
@@ -552,6 +642,8 @@ async def run_scenarios(
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
         evidence: dict[str, Any] = {}
+        retirement_evidence: dict[str, Any] = {}
+        collected_normally = False
         errors: list[str] = []
         status = "PASSED"
         residual: list[asyncio.Task[Any]] = []
@@ -609,6 +701,7 @@ async def run_scenarios(
                 raise ValueError("Adapter collection must return an evidence object")
             evidence = copy.deepcopy(dict(collected))
             context.evidence = copy.deepcopy(evidence)
+            collected_normally = True
             ownership_errors = _ownership_errors(context, evidence)
             errors.extend(ownership_errors)
             errors.extend(validator(evidence, phase="observations"))
@@ -628,6 +721,21 @@ async def run_scenarios(
             if lease is not None:
                 retired = False
                 cleanup_errors: list[str] = []
+                partial = getattr(adapter, "collect_partial", None)
+                if not collected_normally and context.attempts and not cancelled and not residual and callable(partial):
+                    try:
+                        captured = await _bounded(
+                            partial(context), "partialCollection", limits.collection, context, residual
+                        )
+                        if not isinstance(captured, Mapping):
+                            raise ValueError("Partial collection must return an evidence object")
+                        evidence = copy.deepcopy(dict(captured))
+                        context.evidence = copy.deepcopy(evidence)
+                        errors.extend(_ownership_errors(context, evidence))
+                        errors.extend(validator(evidence, phase="observations"))
+                    except (Exception, asyncio.CancelledError) as exc:
+                        errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
+                        cleanup_errors.append("Partial collection did not retain trustworthy observations")
                 try:
                     await _bounded(adapter.release(context), "release", limits.release, context, residual)
                 except (Exception, asyncio.CancelledError) as exc:
@@ -647,7 +755,22 @@ async def run_scenarios(
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 if evidence and "retirement" in context.evidence:
                     evidence["retirement"] = copy.deepcopy(context.evidence["retirement"])
-                if evidence:
+                if context.attempts and (status != "PASSED" or context.retirement_evidence):
+                    try:
+                        if not isinstance(context.retirement_evidence, Mapping):
+                            raise ValueError("Independent retirement snapshot must be an object")
+                        retirement_evidence = copy.deepcopy(dict(context.retirement_evidence))
+                        if not retirement_evidence:
+                            cleanup_errors.append("Launched work has no independent retirement evidence")
+                        else:
+                            audit = _retirement_ownership_errors(context, evidence, retirement_evidence)
+                            audit.extend(validate_retirement_evidence(retirement_evidence))
+                            if audit:
+                                errors.extend(error for error in audit if error not in errors)
+                                cleanup_errors.append("Independent retirement evidence did not establish quiescence")
+                    except (Exception, asyncio.CancelledError) as exc:
+                        cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
+                if evidence and status == "PASSED":
                     try:
                         final_errors = _ownership_errors(context, evidence) + list(validator(evidence, phase="final"))
                         new_errors = [error for error in final_errors if error not in errors]
@@ -659,10 +782,9 @@ async def run_scenarios(
                             cleanup_errors.append("Final retirement evidence did not establish quiescence")
                     except Exception as exc:
                         cleanup_errors.append(f"Final evidence validation: {type(exc).__name__}: {exc}")
-                elif context.attempts:
-                    cleanup_errors.append("Launched work has no complete evidence for retirement validation")
                 if cleanup_errors:
-                    status = "INFRASTRUCTURE_ERROR"
+                    if status == "PASSED":
+                        status = "INFRASTRUCTURE_ERROR"
                     errors.extend(cleanup_errors)
                 await lease.release(quiescent=retired and not cleanup_errors)
             if acquired_semaphore:
@@ -680,6 +802,7 @@ async def run_scenarios(
                 evidence,
                 copy.deepcopy(context.attempts),
                 context.timings,
+                retirement_evidence=retirement_evidence,
             )
         )
         if cancelled:
@@ -710,7 +833,8 @@ async def run_scenarios(
                 await leases.quarantine(profile.resource_id, f"Run ownership release failed: {exc}")
                 for result in completed.values():
                     if result.profile_id == profile_id:
-                        result.status = "INFRASTRUCTURE_ERROR"
+                        if result.status == "PASSED":
+                            result.status = "INFRASTRUCTURE_ERROR"
                         result.errors.append(f"Run ownership release failed: {type(exc).__name__}: {exc}")
             finally:
                 # The target's case resource remains quarantined independently;

@@ -66,8 +66,14 @@ normalized to UTC Unix epoch milliseconds. When supplied, it must be finite,
 nonnegative, belong to that history's execution ARN, and precede or equal that
 execution's first native admission. OTel Workflow spans may start at this service
 boundary, including during cold start before the first invocation. Without that
-proof, their lower bound remains first native admission. Invocation and operation
-spans retain their own native-owner lower bound; do not clamp span timestamps.
+proof, their lower bound remains first native admission. Invocation, user and
+attempt spans retain their own native-owner lower bound; do not clamp timestamps.
+Execution-view logical operation spans may span native invocations only when the
+same execution's service operation ID, type, name and terminal status match, and
+their interval fits the operation's recorded `startedAtMs` and `endedAtMs`.
+These optional operation fields come from the original service start and actual
+terminal event, not from span timestamps or a later retry's attempt start. Missing
+operation bounds cannot establish that longer lifetime.
 Each operation retains `id`, static `name`, `type`, `parentId` (null at root),
 `status`, and its stored result/error. `name` is explicitly null for a genuinely
 unnamed operation, including SDK-supported unnamed child contexts; missing names

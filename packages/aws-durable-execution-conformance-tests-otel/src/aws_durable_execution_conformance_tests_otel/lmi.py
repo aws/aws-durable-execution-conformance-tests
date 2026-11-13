@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests_otel.chained_invoke import execution_trace_context
@@ -94,6 +94,67 @@ def _service_execution_starts(histories: Any) -> dict[str, float]:
     return starts
 
 
+def _matches_operation_history_window(
+    span: Span,
+    execution_arn: str,
+    histories: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Only a matching completed service operation can explain an early span.
+
+    Execution-view logical operations can span suspension or retry. Native
+    invocation, user and attempt spans do not acquire that longer lifetime.
+    """
+    attributes = span.attributes
+    operation_id = attributes.get("durable.operation.id")
+    operation_type = attributes.get("durable.operation.type")
+    status = attributes.get("durable.operation.status")
+    if (
+        not isinstance(operation_id, str)
+        or not operation_id
+        or not isinstance(operation_type, str)
+        or not operation_type
+        or not isinstance(status, str)
+        or not status
+    ):
+        return False
+    if "durable.attempt.outcome" in attributes:
+        return False
+    if operation_type.upper() not in {
+        "STEP",
+        "WAIT",
+        "CALLBACK",
+        "CONTEXT",
+        "CHAINED_INVOKE",
+    } or status.upper() not in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "CANCELLED"}:
+        return False
+    matches = [
+        operation
+        for history in histories
+        if history.get("executionArn") == execution_arn
+        for operation in _records(history.get("operations", []), "history.operations")
+        if operation.get("id") == operation_id
+    ]
+    if len(matches) != 1:
+        return False
+    operation = matches[0]
+    recorded_type, recorded_status = operation.get("type"), operation.get("status")
+    if (
+        not isinstance(recorded_type, str)
+        or recorded_type.upper() != operation_type.upper()
+        or not isinstance(recorded_status, str)
+        or recorded_status.upper() != status.upper()
+        or "name" not in operation
+        or span.name != (operation["name"] if operation["name"] is not None else operation_id)
+        or attributes.get("durable.operation.name", operation.get("name")) != operation.get("name")
+        or "startedAtMs" not in operation
+        or "endedAtMs" not in operation
+    ):
+        return False
+    start = _number(operation["startedAtMs"])
+    end = _number(operation["endedAtMs"])
+    return 0 <= start <= span.start_time.timestamp() * 1000 <= span.end_time.timestamp() * 1000 <= end
+
+
 def _view_errors(
     name: str,
     view: Mapping[str, Any],
@@ -102,6 +163,7 @@ def _view_errors(
     observation_end: float,
     *,
     execution_starts: Mapping[str, float] | None = None,
+    operation_histories: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
     errors: list[str] = []
     native_starts: dict[str, float] = {}
@@ -176,7 +238,12 @@ def _view_errors(
             # relaxes the old first-native floor; missing proof stays strict.
             arn = attempts[request_id]["executionArn"]
             earliest_start = service_starts.get(arn, native_starts[arn])
-        if span.start_time.timestamp() * 1000 < earliest_start or span.end_time.timestamp() * 1000 > observation_end:
+        early = span.start_time.timestamp() * 1000 < earliest_start
+        if early and name == "execution" and span.name not in {"Invocation", "Workflow"}:
+            early = not _matches_operation_history_window(
+                span, attempts[request_id]["executionArn"], operation_histories
+            )
+        if early or span.end_time.timestamp() * 1000 > observation_end:
             errors.append(f"INCOMPLETE: {name}/{request_id} span lies outside its lifecycle observation window")
         previous = owners.setdefault((span.trace_id, span.span_id), request_id)
         if previous != request_id:
@@ -478,7 +545,15 @@ def validate_lmi_telemetry(evidence: Mapping[str, Any], *, phase: str = "final")
                 errors.append(f"INCOMPLETE: missing {name} view")
                 continue
             errors.extend(
-                _view_errors(name, view, attempts, runtime, observation_end, execution_starts=execution_starts)
+                _view_errors(
+                    name,
+                    view,
+                    attempts,
+                    runtime,
+                    observation_end,
+                    execution_starts=execution_starts,
+                    operation_histories=_records(evidence.get("histories", []), "histories"),
+                )
             )
             if evidence.get("requirementId") == "lmi-lifecycle-7":
                 errors.extend(_late_activity_errors(evidence, name, view))

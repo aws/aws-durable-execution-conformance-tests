@@ -266,7 +266,7 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
 
     with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda manifest: Adapter())}):
         results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
-    expected_status = "PASSED" if complete else "INFRASTRUCTURE_ERROR"
+    expected_status = "PASSED" if complete else "FAILED"
     assert results[0]["status"] == expected_status, results
     assert finished == [complete]
     if not complete:

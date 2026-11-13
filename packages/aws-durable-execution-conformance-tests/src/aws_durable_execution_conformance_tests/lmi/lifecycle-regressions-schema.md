@@ -126,3 +126,28 @@ and delegate their remaining assertions to the OTel extension. The SDK adapter
 must implement these fixtures through real public APIs and preserve raw source
 evidence. Synthetic positive controls validate the harness; they do not count as
 real LMI SDK acceptance or authorize replacing Python-specific regression tests.
+
+For in-flight return/failure and root-cleanup peer measurements,
+`regression.gateId` selects the victim's actual held-work gate. A separate
+winner-admission handshake may produce additional `blocked` events, but cannot
+supply that gate's liveness or prevent its early exit from being detected. Peer
+and other native cohort roles still require one unambiguous blocked gate.
+
+A deadline fixture that normally releases its held work after measurement can
+retain `regression.deadlineMeasurement`: `selectedRequests`, `deadlineAtMs`,
+`cleanupCutoffAtMs`, `observationCutoffAtMs`, `observedAtMs`, and
+`sourceEvidenceUri`. The selected requests and cutoffs must match the actual
+runtime deadline and immutable case budgets. Its source URI must be retained in
+`collection.evidenceUris`, and capture must cover the full cleanup-plus-grace
+window before the fault's `releaseRequestedAtMs`.
+
+Only a valid snapshot permits the stale-activity window to end when the
+controller begins normal release. Activity between capture and release is still
+checked. New user bodies and SDK dispatch after the cutoff remain failures even
+after release; only paired completion of already dispatched I/O is cleanup.
+All events remain in the main ledger, including later normal cleanup, and task,
+request, wrapper and retirement checks still inspect that complete ledger.
+Missing snapshots retain the legacy full-window check; inconsistent snapshots
+fail rather than shorten the observation window. This separates deliberately
+released cleanup from the measured deadline behavior without removing actual
+pre-release late effects.

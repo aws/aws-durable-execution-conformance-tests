@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from itertools import pairwise
 from typing import Any, Literal
 
 SCHEMA_VERSION = 1
@@ -83,7 +84,7 @@ class _Evidence:
             self.error(f"selectedRequests is missing roles: {', '.join(missing)}")
         return not missing
 
-    def common(self) -> None:
+    def common(self, *, validate_behavior: bool = True) -> None:
         value = self.value
         if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION:
             self.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
@@ -144,7 +145,7 @@ class _Evidence:
             self.string(request.get("method"), "sdkRequest.method")
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
-        self.histories()
+        self.histories(check_expectations=validate_behavior)
         collection = self.mapping(value.get("collection"), "collection")
         watermarks = self.mapping(collection.get("watermarks"), "collection.watermarks")
         for source in ("lifecycle", "sdkRequests", "history"):
@@ -157,7 +158,8 @@ class _Evidence:
             or any(not isinstance(uri, str) or not uri for uri in references)
         ):
             self.error("collection.evidenceUris must retain the raw evidence references")
-        self.no_late_dispatch()
+        if validate_behavior:
+            self.no_late_dispatch()
 
     def owned_record(self, record: Mapping[str, Any], kind: str, end: float) -> None:
         request_id = record.get("requestId")
@@ -175,8 +177,8 @@ class _Evidence:
         if observed_during is not None and observed_during not in self.attempts:
             self.error(f"{kind}.observedDuringRequestId references an unrecorded request")
 
-    def histories(self) -> None:
-        expected = self.mapping(self.value.get("expectedHistories"), "expectedHistories")
+    def histories(self, *, check_expectations: bool = True) -> None:
+        expected = self.mapping(self.value.get("expectedHistories"), "expectedHistories") if check_expectations else {}
         actual: dict[str, Mapping[str, Any]] = {}
         for history in self.records(self.value.get("histories"), "histories", nonempty=True):
             arn = self.string(history.get("executionArn"), "history.executionArn")
@@ -203,34 +205,37 @@ class _Evidence:
                     self.error("duplicate operation identity in service history")
                 if isinstance(operation_id, str):
                     ids.add(operation_id)
-            expectation = self.mapping(expected.get(arn), f"expectedHistories.{arn}")
-            allow_running = False
-            if ("status" in expectation) == ("allowedStatuses" in expectation):
-                self.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
-            if "allowedStatuses" in expectation:
-                allowed = expectation["allowedStatuses"]
-                if (
-                    not isinstance(allowed, list)
-                    or not allowed
-                    or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
-                    or len(set(allowed)) != len(allowed)
-                ):
-                    self.error(
-                        f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
-                    )
-                else:
-                    allow_running = "RUNNING" in allowed
-                    if history.get("status") not in allowed:
-                        self.error(f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION")
-            elif expectation.get("status") not in HISTORY_STATUSES:
-                self.error(f"expectedHistories.{arn}.status must be a recognized execution status")
-            if not allow_running and "result" not in expectation and "error" not in expectation:
-                self.error(f"history {arn} needs an independently declared expected result/error")
-            for key, item in expectation.items():
-                if key != "allowedStatuses" and history.get(key) != item:
-                    self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
+            if check_expectations:
+                expectation = self.mapping(expected.get(arn), f"expectedHistories.{arn}")
+                allow_running = False
+                if ("status" in expectation) == ("allowedStatuses" in expectation):
+                    self.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
+                if "allowedStatuses" in expectation:
+                    allowed = expectation["allowedStatuses"]
+                    if (
+                        not isinstance(allowed, list)
+                        or not allowed
+                        or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
+                        or len(set(allowed)) != len(allowed)
+                    ):
+                        self.error(
+                            f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
+                        )
+                    else:
+                        allow_running = "RUNNING" in allowed
+                        if history.get("status") not in allowed:
+                            self.error(
+                                f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION"
+                            )
+                elif expectation.get("status") not in HISTORY_STATUSES:
+                    self.error(f"expectedHistories.{arn}.status must be a recognized execution status")
+                if not allow_running and "result" not in expectation and "error" not in expectation:
+                    self.error(f"history {arn} needs an independently declared expected result/error")
+                for key, item in expectation.items():
+                    if key != "allowedStatuses" and history.get(key) != item:
+                        self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
-        if set(actual) != arns or set(expected) != arns:
+        if set(actual) != arns or (check_expectations and set(expected) != arns):
             self.error("histories and expectedHistories must cover every launched execution exactly")
 
     def no_late_dispatch(self) -> None:
@@ -619,3 +624,149 @@ def _validate_observations(validator: _Evidence, evidence: Mapping[str, Any]) ->
         checks[requirement]()
     if requirement == "lmi-lifecycle-7":
         validator.warm_reuse()
+
+
+def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
+    """Audit a separate post-cleanup snapshot without accepting its behavior.
+
+    Failed cases may lack mandatory scenario roles, but every actual launch must
+    still be accounted for by the coordinator. This audit reuses common source
+    ownership, history shape and resource-inventory checks, then independently
+    requires actual wrapper/task/request/export completion. Neither expected
+    business outcomes nor cleanup-time recovery can turn the failed case green.
+    """
+    if not isinstance(evidence, Mapping):
+        return ["INCOMPLETE: retirement evidence must be an object"]
+    requirement = evidence.get("requirementId")
+    validator = _Evidence(
+        evidence, requirement_ids=(requirement,) if isinstance(requirement, str) else (), standard_behavior=False
+    )
+    try:
+        validator.string(requirement, "requirementId")
+        validator.common(validate_behavior=False)
+        validator.retirement()
+        if evidence.get("collectionErrors"):
+            validator.error("retirement source collection is incomplete")
+        if validator.errors:
+            return validator.errors
+        retirement = evidence["retirement"]
+        records = {item["id"]: item for item in retirement["resources"]}
+        histories = {item["executionArn"]: item for item in evidence["histories"]}
+        for resource in evidence["resourcesCreated"]:
+            kind = resource["kind"]
+            if kind not in {"invocation", "execution", "export", "flush"}:
+                validator.error(f"retirement has no completion contract for resource kind {kind}")
+            if kind in {"export", "flush"}:
+                for ending in ("started", "completed"):
+                    if (
+                        sum(
+                            event["kind"] == f"{kind}_{ending}" and event.get(f"{kind}Id") == resource["id"]
+                            for event in validator.events
+                        )
+                        != 1
+                    ):
+                        validator.error("retirement inventory lacks its actual export/flush work observations")
+        for arn, history in histories.items():
+            if history["status"] not in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}:
+                validator.error("retirement service history still permits execution resume")
+            if records[arn].get("outcome") != history["status"]:
+                validator.error("retirement execution outcome differs from actual service history")
+        pairs = (
+            ("task_start", "task_exit", "taskId"),
+            ("io_start", "io_exit", "taskId"),
+            ("checkpoint_call", "checkpoint_exit", "callId"),
+            ("poll_call", "poll_exit", "callId"),
+            ("export_started", "export_completed", "exportId"),
+            ("flush_started", "flush_completed", "flushId"),
+        )
+        for request_id in validator.attempts:
+            local = [event for event in validator.events if event["requestId"] == request_id]
+            sequences = [event.get("sequence") for event in local]
+            if any(type(sequence) is not int or sequence < 0 for sequence in sequences) or len(sequences) != len(
+                set(sequences)
+            ):
+                validator.error("retirement requires unique per-request semantic sequence numbers")
+                continue
+            ordered = sorted(local, key=lambda event: event["sequence"])
+            if any(first["atMs"] > second["atMs"] for first, second in pairwise(ordered)):
+                validator.error("retirement sequence contradicts its normalized timestamps")
+
+            def boundary(event: Mapping[str, Any]) -> tuple[float, int]:
+                return event["atMs"], event["sequence"]
+
+            wrappers = [event for event in local if event["kind"] in {"wrapper_return", "wrapper_raise"}]
+            entries = [event for event in local if event["kind"] == "wrapper_enter"]
+            roots = [event for event in local if event["kind"] == "task_exit" and event.get("taskId") == "root"]
+            if len(entries) != 1 or len(wrappers) != 1 or len(roots) != 1:
+                validator.error(
+                    "retirement requires actual entry, wrapper exit and root-task exit for every native request"
+                )
+            elif any(boundary(entries[0]) > boundary(end) for end in (wrappers[0], roots[0])):
+                validator.error("retirement completion precedes actual invocation entry")
+            if validator.number(records[request_id].get("settledAtMs"), "invocation.settledAtMs") < max(
+                (event["atMs"] for event in local), default=0
+            ):
+                validator.error("invocation retirement precedes its last actual activity")
+            if any(
+                event["kind"] in {"observation_error", "control_error", "export_publication_error"} for event in local
+            ):
+                validator.error("retirement contains failed observation or control publication")
+            for start_kind, end_kind, identity in pairs:
+                started = [event for event in local if event["kind"] == start_kind]
+                ended = [event for event in local if event["kind"] == end_kind]
+                identifiers = {
+                    validator.string(event.get(identity), f"{start_kind}.{identity}") for event in started + ended
+                }
+                for identifier in identifiers:
+                    starts = [event for event in started if event.get(identity) == identifier]
+                    ends = [event for event in ended if event.get(identity) == identifier]
+                    if len(starts) != 1 or len(ends) != 1:
+                        validator.error(f"retirement lacks the unique {start_kind}/{end_kind} completion pair")
+                        continue
+                    start, end = starts[0], ends[0]
+                    if boundary(start) > boundary(end):
+                        validator.error("retirement reverses an observed work interval")
+                    if identity in {"exportId", "flushId"}:
+                        kind = "export" if identity == "exportId" else "flush"
+                        settled = records.get(identifier, {})
+                        if (
+                            settled.get("kind") != kind
+                            or settled.get("outcome") != end.get("outcome")
+                            or end.get("outcome") not in {"succeeded", "failed"}
+                            or validator.number(settled.get("settledAtMs"), "work.settledAtMs") < end["atMs"]
+                        ):
+                            validator.error("retirement does not retain actual export/flush completion")
+                        for owner in ("providerId", "exporterId"):
+                            validator.string(start.get(owner), f"{start_kind}.{owner}")
+                            if start.get(owner) != end.get(owner):
+                                validator.error("retirement substitutes an export/flush owner")
+            if evidence.get("otelView") is not None:
+                completions = [
+                    boundary(event)
+                    for event in local
+                    if event["kind"]
+                    in {
+                        "wrapper_return",
+                        "wrapper_raise",
+                        "task_exit",
+                        "io_exit",
+                        "checkpoint_exit",
+                        "poll_exit",
+                        "export_completed",
+                        "flush_completed",
+                    }
+                ]
+                snapshots = [event for event in local if event["kind"] == "export_quiescence"]
+                latest = max(snapshots, key=boundary) if snapshots else {}
+                if not (
+                    latest.get("pendingExportIds") == []
+                    and latest.get("pendingFlushIds") == []
+                    and type(latest.get("publicationCount")) is int
+                    and latest.get("publicationCount") == 0
+                    and boundary(latest) >= max(completions, default=(0, 0))
+                ):
+                    validator.error("retirement lacks final settled export/publication evidence for the invocation")
+
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+        validator.error(f"malformed independent retirement evidence: {error}")
+    return validator.errors

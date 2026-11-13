@@ -259,7 +259,13 @@ class _Observations:
                 if len(matches) != 1:
                     self.fail("body observation changed its service operation identity")
 
-    def overlap(self, roles: list[str], *, environment: str | None = None) -> list[Mapping[str, Any]]:
+    def overlap(
+        self,
+        roles: list[str],
+        *,
+        environment: str | None = None,
+        gate_ids: Mapping[str, str] | None = None,
+    ) -> list[Mapping[str, Any]]:
         requests = [self.role(role) for role in roles]
         if not requests or any(not request for request in requests):
             return requests
@@ -272,7 +278,13 @@ class _Observations:
         environments = {request.get("environmentId") for request in requests}
         if len(environments) != 1 or (environment is not None and environments != {environment}):
             self.fail("native cohort reached an unrelated environment", "PLACEMENT")
-        blocked = [self.one("blocked", request) for request in requests]
+        # A fixture may also hold a handshake gate. Only its explicitly
+        # selected work gate establishes this role's cohort participation.
+        # Roles without a declared selector still require an unambiguous gate.
+        blocked = [
+            self.one("blocked", request, **({"gateId": gate_ids[role]} if gate_ids and role in gate_ids else {}))
+            for role, request in zip(roles, requests, strict=True)
+        ]
         pivot = max(item.get("atMs", 0) for item in blocked)
         for request, start in zip(requests, blocked, strict=True):
             alive = self.select({"alive", "effect"}, request, gateId=start.get("gateId"))
@@ -364,6 +376,74 @@ class _Observations:
         if release is None or not blocked.get("atMs", 0) < release <= exited.get("atMs", 0):
             self.fail("checkpoint did not stay held until the scenario's normal release")
 
+    def deadline_measurement_end(self, gate_id: str, deadline: float, cutoff: float, grace: float) -> float:
+        if "deadlineMeasurement" not in self.config:
+            return self.end
+        prior_errors = len(self.errors)
+        measurement = self.mapping(self.config["deadlineMeasurement"], "deadline measurement")
+        if measurement.get("selectedRequests") != self.selected:
+            self.fail("deadline measurement changed the selected original requests", "INCOMPLETE")
+        for field, expected in (
+            ("deadlineAtMs", deadline),
+            ("cleanupCutoffAtMs", cutoff),
+            ("observationCutoffAtMs", cutoff + grace),
+        ):
+            actual = self.number(measurement.get(field), f"deadline measurement.{field}")
+            if not math.isclose(actual, expected, rel_tol=0, abs_tol=1):
+                self.fail("deadline measurement differs from the runtime deadline or declared budgets", "INCOMPLETE")
+        observed = self.number(measurement.get("observedAtMs"), "deadline measurement.observedAtMs")
+        if not cutoff + grace <= observed <= self.end:
+            self.fail("deadline measurement does not cover its complete original observation window", "INCOMPLETE")
+        uri = measurement.get("sourceEvidenceUri")
+        collection = self.mapping(self.evidence.get("collection"), "collection")
+        sources = collection.get("evidenceUris")
+        if not isinstance(uri, str) or not uri or not isinstance(sources, list) or uri not in sources:
+            self.fail("deadline measurement has no retained source evidence", "INCOMPLETE")
+        faults = [
+            fault
+            for fault in self.records(self.evidence.get("faultsCreated"), "faultsCreated")
+            if fault.get("id") == gate_id and fault.get("ownerCaseId") == self.evidence.get("caseId")
+        ]
+        requested = self.end
+        if len(faults) != 1:
+            self.fail("deadline measurement must retain its original fault gate", "INCOMPLETE")
+        else:
+            requested = self.number(faults[0].get("releaseRequestedAtMs"), "deadline measurement.releaseRequestedAtMs")
+            acknowledged = self.number(
+                faults[0].get("releaseAcknowledgedAtMs"), "deadline measurement.releaseAcknowledgedAtMs"
+            )
+            receipt = self.number(faults[0].get("releasedAtMs"), "deadline measurement.releasedAtMs")
+            earliest_release = self.released(gate_id)
+            if (
+                not observed <= requested <= acknowledged <= self.end
+                or receipt < requested
+                or (earliest_release is not None and earliest_release < requested)
+            ):
+                self.fail("deadline measurement contradicts the controller request or release evidence", "INCOMPLETE")
+        # Observe the capture-to-release gap too; invalid snapshots never
+        # shorten validation of the full observation tail.
+        return requested if len(self.errors) == prior_errors else self.end
+
+    def late_deadline_activity(self, victim: Mapping[str, Any], cutoff: float, released_after: float) -> bool:
+        for event in self.select(ACTIVITY, victim):
+            when = event.get("atMs", 0)
+            if when <= cutoff:
+                continue
+            # Release cannot authorize new user bodies or SDK dispatch. Only
+            # completion of previously dispatched I/O is cleanup activity.
+            if when <= released_after or event.get("kind") in {"body", "effect", "checkpoint_call", "poll_call"}:
+                return True
+            start_kind = {
+                "checkpoint_ack": "checkpoint_call",
+                "checkpoint_exit": "checkpoint_call",
+                "poll_exit": "poll_call",
+            }.get(event["kind"])
+            if start_kind is not None:
+                calls = self.select(start_kind, victim, callId=event.get("callId"))
+                if len(calls) != 1 or calls[0].get("atMs", when) > when:
+                    return True
+        return False
+
     def timeout(self, victim: Mapping[str, Any]) -> float:
         timeout = self.one("platform_timeout", victim, source="platform")
         blocked = self.one("blocked", victim)
@@ -386,11 +466,14 @@ class _Observations:
         ):
             self.fail("fixture did not cross the selected request's actual platform deadline with work held")
         cutoff = deadline + self.budget("cleanupMs")
-        if self.end < cutoff + self.budget("observationGraceMs"):
+        grace = self.budget("observationGraceMs")
+        if self.end < cutoff + grace:
             self.fail("timeout collection ended before the stale-activity observation window", "INCOMPLETE")
-        if any(item.get("atMs", 0) > cutoff for item in self.select(ACTIVITY, victim)):
+        gate_id = self.string(blocked.get("gateId"), "blocked.gateId")
+        measured_until = self.deadline_measurement_end(gate_id, deadline, cutoff, grace)
+        if self.late_deadline_activity(victim, cutoff, measured_until):
             self.fail("original timed-out request continued side effects or checkpoint activity")
-        released = self.released(self.string(blocked.get("gateId"), "blocked.gateId"))
+        released = self.released(gate_id)
         if released is not None and released <= cutoff:
             self.fail("fault release supplied the timeout cleanup being asserted")
         return deadline
@@ -507,10 +590,10 @@ class _Observations:
         ):
             self.fail("completed success was repeated or lost across the timeout service retry")
 
-    def peer_progress(self, victim: Mapping[str, Any], boundary: Mapping[str, Any]) -> None:
+    def peer_progress(self, victim: Mapping[str, Any], boundary: Mapping[str, Any], gate_id: str) -> None:
         if self.profile.get("nativeConcurrency") != 2:
             return
-        self.overlap(["victim", "peer"])
+        self.overlap(["victim", "peer"], gate_ids={"victim": gate_id})
         peer = self.role("peer")
         progress = self.select({"alive", "peer_progress"}, peer)
         if not any(boundary.get("atMs", 0) <= item.get("atMs", -1) < victim.get("endedAtMs", 0) for item in progress):
@@ -535,7 +618,7 @@ class _Observations:
         exited = self.one("io_exit", victim, gateId=gate_id)
         if not self.ordered(selected, root, exited):
             self.fail("root completion was not observed with losing work still in flight")
-        self.peer_progress(victim, root)
+        self.peer_progress(victim, root, gate_id)
         self.scope_settlement(victim, gate_id)
         status = "FAILED" if self.evidence.get("scenario") == "failure-inflight" else "SUCCEEDED"
         if victim.get("outcome") != status:
@@ -550,7 +633,7 @@ class _Observations:
         victim, resume = self.role("victim"), self.role("resume")
         gate_id = self.gate(victim)
         blocked = self.one("blocked", victim, gateId=gate_id)
-        self.peer_progress(victim, blocked)
+        self.peer_progress(victim, blocked, gate_id)
         self.scope_settlement(victim, gate_id)
         enter, exited = self.one("cleanup_enter", victim), self.one("cleanup_exit", victim)
         end = self.one(ENDINGS, victim)

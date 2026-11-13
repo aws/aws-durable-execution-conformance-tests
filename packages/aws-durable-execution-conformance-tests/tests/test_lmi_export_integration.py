@@ -128,7 +128,9 @@ def test_pending_export_holds_deployment_ownership_until_proven_retirement(compl
         else:
             with pytest.raises(QuarantinedError):
                 await updating
-            assert result.status == "INFRASTRUCTURE_ERROR"
+            # Keep the original incomplete-export failure while quarantining
+            # a legacy adapter that supplies no independent retirement proof.
+            assert result.status == "FAILED"
             assert any("retirement" in error for error in result.errors)
             assert deployment_entered == []
         assert finished == [complete]

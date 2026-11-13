@@ -358,9 +358,11 @@ turn missing pre-release telemetry into an attribution pass. The envelope must
 identify the exact plugin artifact in `artifact.plugin`.
 
 For OTel-enabled evidence, normalize lifecycle timestamps to UTC Unix epoch
-milliseconds. Canonical spans retain UTC datetime timestamps; their observed
-intervals must lie between the originating request entry and
-`observationEndedAtMs`. Late spans may outlive wrapper return, but must retain
+milliseconds. Canonical spans use UTC datetime timestamps. Invocation, user and
+attempt span intervals must lie between the originating request entry and
+`observationEndedAtMs`. Execution-view logical operation spans
+may use their matching service operation's recorded lifetime across suspension or
+retry, as described below. Late spans may outlive wrapper return, but must retain
 their original request and execution attribution. Flush observations use the
 same clock and window.
 
@@ -507,6 +509,26 @@ execution start (`GetDurableExecution.StartTimestamp` or the
 its Workflow. This allows a Workflow to begin before first native admission,
 such as during cold start, and to be exported by a later replay. A missing service
 start retains the first-native lower bound; an invalid or inconsistent start
-fails validation. Invocation and operation spans still belong to their original
-native invocation window. Preserve actual span times rather than clamping them
-to handler entry.
+fails validation. Invocation, user and attempt spans still belong to their
+original native invocation window. Preserve actual span times rather than
+clamping them to handler entry.
+
+
+Execution-view logical operation spans can be exported on a later native request
+while retaining the earlier operation lifetime. For a span beginning before its
+exporting request, `histories[].operations[]` must identify exactly one operation
+with the same execution ARN, durable operation ID, type, name and terminal status.
+An explicitly unnamed operation must retain `name: null` in history and use its
+actual operation ID as the canonical span name; a missing name is not proof.
+Its `startedAtMs` and `endedAtMs` must be observed from the original service start
+and actual terminal event, preserving the original start across retries. The
+span interval must fit those bounds. Missing, conflicting or malformed history
+remains incomplete; this rule does not relax invocation-view, Invocation, user or
+attempt spans, and never extends collection beyond `observationEndedAtMs`.
+
+Export ledgers are checked against every request's original records independently
+of logical span counting. Identical canonical re-exports from the same request can
+have distinct transport receipt IDs. A duplicate identity with changed canonical
+data or a different request owner still fails and is retained for attribution
+checks. Deduplication must not overwrite another request's evidence or turn that
+contradiction into a false missing-export report.

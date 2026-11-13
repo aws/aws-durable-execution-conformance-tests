@@ -670,3 +670,202 @@ def test_both_parent_closure_and_winner_selection_must_precede_late_attempt(boun
     find(value, boundary)["atMs"] = 835
     _resequence(value)
     assert any("completed child scope" in error for error in validate_lifecycle_regressions(value))
+
+
+def _add_handshake_gate(value: dict[str, Any], role: str = "victim", *, before: bool = False) -> None:
+    """Real fixtures observe losing I/O and a separate winner-admission gate."""
+    blocked = find(value, "blocked", role)
+    gate = blocked["gateId"] + "-handshake"
+    start = blocked["atMs"] + (-10 if before else 10)
+    for offset, kind in ((-1, "io_start"), (0, "blocked"), (1, "alive"), (20, "fault_released"), (21, "io_exit")):
+        value["events"].append(
+            {**blocked, "kind": kind, "atMs": start + offset, "gateId": gate, "taskId": gate, "mode": "normal"}
+        )
+    value["faultsCreated"].append({"id": gate, "ownerCaseId": value["caseId"]})
+    value["retirement"]["faults"].append(
+        {"id": gate, "ownerCaseId": value["caseId"], "releasedAtMs": start + 20, "mode": "normal"}
+    )
+    _resequence(value)
+
+
+@pytest.mark.parametrize("scenario", ["return-inflight", "failure-inflight"])
+@pytest.mark.parametrize("handshake_first", [False, True])
+def test_peer_overlap_selects_declared_losing_work_gate(scenario: str, handshake_first: bool) -> None:
+    value = build_evidence(scenario, 2)
+    _add_handshake_gate(value, before=handshake_first)
+    assert validate_lifecycle_regressions(value) == []
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "wrong-gate-liveness", "early-exit"])
+def test_handshake_cannot_replace_losing_work_overlap(damage: str) -> None:
+    value = build_evidence("return-inflight", 2)
+    gate = value["regression"]["gateId"]
+    _add_handshake_gate(value)
+    if damage == "missing":
+        value["events"] = [
+            event for event in value["events"] if not (event["kind"] == "blocked" and event.get("gateId") == gate)
+        ]
+        expected = "exactly one blocked"
+    elif damage == "duplicate":
+        value["events"].append(deepcopy(find(value, "blocked")))
+        expected = "exactly one blocked"
+    elif damage == "wrong-gate-liveness":
+        pivot = find(value, "blocked", "peer")["atMs"]
+        for event in value["events"]:
+            if event.get("gateId") == gate and event["kind"] in {"alive", "effect"}:
+                event["atMs"] = pivot - 1
+        expected = "native overlap lacks positive continued liveness"
+    else:
+        find(value, "io_exit")["atMs"] = find(value, "blocked", "peer")["atMs"] - 1
+        expected = "native capacity stopped before overlap"
+    _resequence(value)
+    assert any(expected in error for error in validate_lifecycle_regressions(value))
+
+
+@pytest.mark.parametrize(
+    "scenario,role",
+    [
+        ("return-inflight", "peer"),
+        ("native-concurrency", "victim"),
+        ("nested-progress", "peer"),
+        ("deadline-recovery", "recovery"),
+    ],
+)
+def test_undeclared_cohort_gate_ambiguity_stays_incomplete(scenario: str, role: str) -> None:
+    value = build_evidence(scenario, 2)
+    _add_handshake_gate(value, role)
+    assert any("exactly one blocked" in error for error in validate_lifecycle_regressions(value))
+
+
+def _measured_timeout() -> dict[str, Any]:
+    value = _timeout_wrapper()
+    find(value, "wrapper_raise")["atMs"] = 900
+    find(value, "user_exit")["atMs"] = 895
+    find(value, "task_exit")["atMs"] = 898
+    owner = {key: value["events"][0][key] for key in ("requestId", "ownerRequestId", "executionArn")}
+    for offset, kind in enumerate(("checkpoint_call", "checkpoint_ack", "checkpoint_exit")):
+        value["events"].append(
+            {**owner, "kind": kind, "atMs": 690 if offset == 0 else 800 + offset, "callId": "cleanup-checkpoint"}
+        )
+    fault = value["faultsCreated"][0]
+    fault.update(releaseRequestedAtMs=750, releaseAcknowledgedAtMs=751, releasedAtMs=752)
+    value["retirement"]["faults"][0]["releasedAtMs"] = 752
+    uri = "s3://evidence/run/case/measurements/deadline.json"
+    value["collection"]["evidenceUris"].append(uri)
+    value["regression"]["deadlineMeasurement"] = {
+        "selectedRequests": deepcopy(value["selectedRequests"]),
+        "deadlineAtMs": 600,
+        "cleanupCutoffAtMs": 700,
+        "observationCutoffAtMs": 705,
+        "observedAtMs": 720,
+        "sourceEvidenceUri": uri,
+    }
+    _resequence(value)
+    return value
+
+
+def test_normal_postmeasurement_cleanup_is_not_deadline_measurement_activity() -> None:
+    value = _measured_timeout()
+    assert validate_lifecycle_regressions(value) == []
+    assert any(event["kind"] == "checkpoint_exit" and event["atMs"] == 802 for event in value["events"])
+
+
+def test_frozen_measurement_keeps_real_prerelease_late_effect_failures() -> None:
+    value = _measured_timeout()
+    effect = deepcopy(find(value, "effect"))
+    effect["atMs"] = 710
+    value["events"].append(effect)
+    _resequence(value)
+    assert any("continued side effects" in error for error in validate_lifecycle_regressions(value))
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "owner",
+        "deadline",
+        "cleanup",
+        "grace",
+        "short-window",
+        "after-release",
+        "unknown-source",
+        "missing-release",
+        "malformed",
+    ],
+)
+def test_deadline_measurement_cannot_shorten_or_substitute_the_original_window(damage: str) -> None:
+    value = _measured_timeout()
+    measurement = value["regression"]["deadlineMeasurement"]
+    if damage == "owner":
+        measurement["selectedRequests"]["victim"] = value["selectedRequests"]["retry"]
+    elif damage == "deadline":
+        measurement["deadlineAtMs"] = 650
+    elif damage == "cleanup":
+        measurement["cleanupCutoffAtMs"] = 750
+    elif damage == "grace":
+        measurement["observationCutoffAtMs"] = 700
+    elif damage == "short-window":
+        measurement["observedAtMs"] = 704
+    elif damage == "after-release":
+        measurement["observedAtMs"] = 760
+    elif damage == "unknown-source":
+        measurement["sourceEvidenceUri"] = "s3://uncollected/measurement"
+    elif damage == "missing-release":
+        value["faultsCreated"][0].pop("releaseRequestedAtMs")
+    else:
+        value["regression"]["deadlineMeasurement"] = []
+    assert any("deadline measurement" in error for error in validate_lifecycle_regressions(value))
+
+
+def test_legacy_timeout_evidence_keeps_full_observation_activity_checks() -> None:
+    value = _measured_timeout()
+    value["regression"].pop("deadlineMeasurement")
+    assert any("continued side effects" in error for error in validate_lifecycle_regressions(value))
+
+
+def test_deadline_measurement_does_not_hide_work_after_wrapper_exit() -> None:
+    value = _measured_timeout()
+    find(value, "checkpoint_exit")["atMs"] = 901
+    _resequence(value)
+    assert any("after wrapper exit" in error or "unsettled" in error for error in validate_lifecycle_regressions(value))
+
+
+@pytest.mark.parametrize("when", [710, 730, 750])
+def test_effects_until_controller_release_remain_deadline_failures(when: int) -> None:
+    value = _measured_timeout()
+    effect = deepcopy(find(value, "effect"))
+    effect["atMs"] = when
+    value["events"].append(effect)
+    _resequence(value)
+    assert any("continued side effects" in error for error in validate_lifecycle_regressions(value))
+
+
+@pytest.mark.parametrize("field", ["receipt", "acknowledgement"])
+def test_deadline_measurement_rejects_release_evidence_before_request(field: str) -> None:
+    value = _measured_timeout()
+    if field == "receipt":
+        value["faultsCreated"][0]["releasedAtMs"] = 710
+        value["retirement"]["faults"][0]["releasedAtMs"] = 710
+    else:
+        value["faultsCreated"][0]["releaseAcknowledgedAtMs"] = 710
+    assert any("deadline measurement" in error for error in validate_lifecycle_regressions(value))
+
+
+@pytest.mark.parametrize("kind", ["body", "effect", "checkpoint_call", "poll_call", "unpaired-response"])
+def test_postrelease_cleanup_cannot_admit_new_user_work(kind: str) -> None:
+    value = _measured_timeout()
+    if kind in {"body", "effect"}:
+        body = deepcopy(find(value, kind))
+        body["atMs"] = 810
+        value["events"].append(body)
+    elif kind == "unpaired-response":
+        value["events"] = [event for event in value["events"] if event["kind"] != "checkpoint_call"]
+    else:
+        call = find(value, "checkpoint_call")
+        call["atMs"] = 800
+        if kind == "poll_call":
+            call["kind"] = kind
+            value["events"].remove(find(value, "checkpoint_ack"))
+            find(value, "checkpoint_exit")["kind"] = "poll_exit"
+    _resequence(value)
+    assert any("continued side effects" in error for error in validate_lifecycle_regressions(value))

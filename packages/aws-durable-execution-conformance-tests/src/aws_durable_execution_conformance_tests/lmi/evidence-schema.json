@@ -592,6 +592,14 @@
             "string",
             "null"
           ]
+        },
+        "startedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "endedAtMs": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },

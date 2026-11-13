@@ -147,4 +147,6 @@ def test_profile_coordinator_can_journal_every_planned_native_request(tmp_path, 
         assert results[0]["status"] != "PASSED"
         assert any("budgets" in error for error in results[0]["errors"])
     assert len(results[0]["attempts"]) == len(evidence["attempts"])
-    assert finished == [True]
+    # This legacy adapter provides no separate retirement snapshot for a
+    # failed case. A rejected budget mutation therefore retains quarantine.
+    assert finished == [mutation is None]
