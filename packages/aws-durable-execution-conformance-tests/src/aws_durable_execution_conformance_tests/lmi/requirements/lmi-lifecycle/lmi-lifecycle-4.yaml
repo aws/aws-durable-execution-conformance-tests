@@ -1,8 +1,7 @@
 ---
 id: lmi-lifecycle-4
 description: Healthy peer progress and original worker recovery
-requiredScenarios:
-  - peer-recovery
+scenario: peer-recovery
 scheduling: exclusive
 minimumNativeConcurrency: 2
 contract: Select the original victim and established peer before applying a contained fault. Keep peer

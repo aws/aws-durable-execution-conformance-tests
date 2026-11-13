@@ -1,8 +1,7 @@
 ---
 id: lmi-lifecycle-5
 description: Real suspension, replay and retry
-requiredScenarios:
-  - suspension-retry
+scenario: suspension-retry
 scheduling: shared
 minimumNativeConcurrency: 1
 contract: Use public durable waits or callbacks to reach PENDING and resume through the service. Retain

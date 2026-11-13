@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The bundled catalog contains only contracts shared by supported runtimes."""
 
+import json
 from dataclasses import replace
 from importlib.resources import files
 
@@ -20,9 +21,12 @@ from aws_durable_execution_conformance_tests.lmi.matrix import (
 @pytest.mark.parametrize("runtime", RUNTIMES)
 def test_standard_catalog_is_identical_for_all_supported_runtimes(runtime):
     catalog = requirements("lifecycle", runtime=runtime)
-    assert set(catalog) == {f"lmi-lifecycle-{index}" for index in range(1, 7)}
+    assert set(catalog) == {f"lmi-lifecycle-{index}" for index in range(1, 8)}
     cases = required_cases(runtime, "lifecycle")
-    assert len(cases) == 7
+    assert len(cases) == len(catalog) == 7
+    assert {case.requirement_id: case.scenario for case in cases} == {
+        requirement_id: definition["scenario"] for requirement_id, definition in catalog.items()
+    }
     assert all(case.native_concurrency is None for case in cases)
     assert all(case.roles for case in cases)
 
@@ -30,14 +34,18 @@ def test_standard_catalog_is_identical_for_all_supported_runtimes(runtime):
 def test_every_packaged_requirement_is_shared_and_retains_its_stable_id():
     assert COVERAGE_PROFILES == ("standard",)
     catalog = requirements("lifecycle")
-    expected = {f"lmi-lifecycle-{index}" for index in range(1, 7)}
+    expected = {f"lmi-lifecycle-{index}" for index in range(1, 8)}
     assert set(catalog) == expected
     root = files("aws_durable_execution_conformance_tests.lmi").joinpath("requirements/lmi-lifecycle")
     assert {
         resource.name.removesuffix(".yaml") for resource in root.iterdir() if resource.name.endswith(".yaml")
     } == expected
     for definition in catalog.values():
-        assert not {"capability", "runtimes", "coverageProfiles", "mandatory", "pythonLifecycle"} & definition.keys()
+        assert (
+            not {"capability", "runtimes", "coverageProfiles", "mandatory", "pythonLifecycle", "requiredScenarios"}
+            & definition.keys()
+        )
+        assert isinstance(definition["scenario"], str) and definition["scenario"]
 
 
 @pytest.mark.parametrize("profile", COVERAGE_PROFILES)
@@ -84,3 +92,22 @@ def test_unknown_applicability_options_fail_closed(option, value):
     options[option] = value
     with pytest.raises(ValueError):
         requirements(**options)
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"scenario": ["normal-return", "normal-failure"]},
+        {"scenario": ""},
+        {"scenario": None},
+        {"requiredScenarios": ["normal-return"]},
+        {"scenario": "normal-return", "requiredScenarios": ["normal-return"]},
+    ],
+)
+def test_requirement_rejects_missing_or_multiple_scenarios(tmp_path, monkeypatch, definition):
+    root = tmp_path / "requirements/lmi-lifecycle"
+    root.mkdir(parents=True)
+    (root / "lmi-lifecycle-2.yaml").write_text(json.dumps({"id": "lmi-lifecycle-2", **definition}))
+    monkeypatch.setattr("aws_durable_execution_conformance_tests.lmi.catalog.files", lambda _: tmp_path)
+    with pytest.raises(ValueError, match="exactly one non-empty scenario"):
+        requirements("lifecycle")

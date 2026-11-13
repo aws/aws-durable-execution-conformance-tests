@@ -15,7 +15,7 @@ platform timeout through the actual wrapper/platform observation path. A root
 handler return, a PENDING response, and task exit are separate events.
 
 The envelope identifies `schemaVersion: 1`, `runId`, `caseId`, `cohortId`,
-`requirementId` (`lmi-lifecycle-1` through `lmi-lifecycle-6`), and `runtime`
+`requirementId` (`lmi-lifecycle-1` through `lmi-lifecycle-7`), and `runtime`
 (`javascript`, `java`, or `python`). `artifact.sdk` and `artifact.conformance`
 identify exact immutable tested artifacts. `profile` includes `functionArn`,
 `configurationDigest`, `nativeConcurrency`, and the deployed `timeoutMs`.
@@ -88,11 +88,12 @@ Source collection failures and incomplete observations must remain visible.
 | ID | Required observations |
 | --- | --- |
 | `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM process, or distinct Python processes. Histories and fixture expectations preserve attribution. |
-| `lmi-lifecycle-2` | `victim` with `root_completed` (outcome agrees with invocation), subsequent `wrapper_return`, both rejected admission probes, and separate `task_exit`. Run success and failure fixtures to cover both paths. |
+| `lmi-lifecycle-2` | Normal return: `victim` and `root_completed` both have outcome `SUCCEEDED`, followed by `wrapper_return`, both rejected admission probes, and separate `task_exit`. |
 | `lmi-lifecycle-3` | `victim` with `work_in_flight`, actual `platform_timeout` (`source: platform`) at or beyond the configured timeout, `admission_closed`, both rejected probes, and cooperative `task_exit` after timeout. `budgets.admissionMs` and `budgets.cleanupMs` are agreed fixture limits, not product SLAs. |
 | `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. The recovery request must succeed. |
 | `lmi-lifecycle-5` | Original `victim` returns PENDING with `pending` and `wrapper_return`; selected `resume` starts later against the same execution. `replay.before` stores completed success and failure operations. `replay.after` retains that exact prefix and matches collected final history. `replay.operationExecutions` records actual user-code entries by request/operation (and `attemptId` for retries), proving completed code did not run again. `replay.retry` identifies an incomplete operation and at least two distinct observed attempts, first failed and last successful. `replay.sideEffects` records `operationId`, actual `count`, and fixture-defined `expectedCount` for completed operations and retries. |
 | `lmi-lifecycle-6` | Original `victim` and sequential `warm` request reuse the same environment, worker, and process. `late_activity` retains victim ownership and identifies the warm request in `observedDuringRequestId`. Separate `task_exit` follows the late activity; no stale SDK dispatch is permitted. |
+| `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, both rejected admission probes, and separate `task_exit`. |
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run, case, and cohort identifiers isolate evidence and controls;

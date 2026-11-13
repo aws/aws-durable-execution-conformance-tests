@@ -1,12 +1,10 @@
 ---
 id: lmi-lifecycle-2
-description: Normal return, failure and disposal
-requiredScenarios:
-  - normal-return
-  - normal-failure
+description: Normal return and disposal
+scenario: normal-return
 scheduling: shared
 minimumNativeConcurrency: 1
-contract: Observe root completion and actual wrapper return independently for successful and failing handlers.
+contract: Observe root completion and actual wrapper return independently for successful handlers.
   Probe operation admission after the wrapper closes and observe SDK request dispatch separately. Closed
   invocations admit no new durable work or checkpoint dispatch. Previously dispatched I/O need not be
   forcibly terminated.

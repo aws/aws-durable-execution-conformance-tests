@@ -16,7 +16,7 @@ from itertools import pairwise
 from typing import Any, Literal
 
 SCHEMA_VERSION = 1
-REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 7))
+REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
 RUNTIMES = ("javascript", "java", "python")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
 
@@ -286,7 +286,7 @@ class _Evidence:
             if not start <= barrier.get("atMs", -1) < end:
                 self.error("cohort barrier was not established inside actual native overlap", "PLACEMENT")
 
-    def disposal(self) -> None:
+    def disposal(self, expected_outcome: str) -> None:
         if not self.require_roles("victim"):
             return
         victim = self.selected["victim"]
@@ -294,6 +294,8 @@ class _Evidence:
         wrapper = self.event(victim, "wrapper_return")
         if root.get("outcome") not in ("SUCCEEDED", "FAILED") or root.get("outcome") != victim.get("outcome"):
             self.error("root completion and actual invocation outcome disagree", "ASSERTION")
+        if victim.get("outcome") != expected_outcome:
+            self.error(f"disposal requires the selected victim outcome {expected_outcome}", "ASSERTION")
         if root.get("atMs", 0) > wrapper.get("atMs", 0):
             self.error("wrapper return precedes root completion", "ASSERTION")
         self.rejected_probe(victim, wrapper.get("atMs", 0))
@@ -612,11 +614,12 @@ def _validate_observations(validator: _Evidence, evidence: Mapping[str, Any]) ->
     requirement = evidence.get("requirementId")
     checks = {
         "lmi-lifecycle-1": validator.overlap,
-        "lmi-lifecycle-2": validator.disposal,
+        "lmi-lifecycle-2": lambda: validator.disposal("SUCCEEDED"),
         "lmi-lifecycle-3": validator.deadline,
         "lmi-lifecycle-4": validator.recovery,
         "lmi-lifecycle-5": validator.replay,
         "lmi-lifecycle-6": validator.warm_reuse,
+        "lmi-lifecycle-7": lambda: validator.disposal("FAILED"),
     }
     if requirement in checks:
         checks[requirement]()

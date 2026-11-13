@@ -52,16 +52,15 @@ def required_cases(runtime: str, capability: str, coverage_profile: str = "stand
     catalog = requirements(capability, runtime=runtime, coverage_profile=coverage_profile)
     result: list[CaseRequirement] = []
     for requirement_id, requirement in catalog.items():
-        result.extend(
+        result.append(
             CaseRequirement(
                 requirement_id,
-                scenario,
+                requirement["scenario"],
                 None,
                 tuple(requirement["roles"]),
                 requirement["scheduling"] == "exclusive",
                 requirement["minimumNativeConcurrency"],
             )
-            for scenario in requirement["requiredScenarios"]
         )
     keys = [case.key for case in result]
     if len(keys) != len(set(keys)):

@@ -1,8 +1,7 @@
 ---
 id: lmi-lifecycle-3
 description: Real invocation deadline and admission
-requiredScenarios:
-  - deadline-during-step
+scenario: deadline-during-step
 scheduling: shared-cohort
 minimumNativeConcurrency: 1
 contract: Keep controlled work in flight across the configured platform timeout. Record actual platform

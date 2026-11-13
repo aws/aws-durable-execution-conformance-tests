@@ -82,6 +82,21 @@ def evidence(requirement: int = 1, runtime: str = "javascript") -> dict[str, Any
     return result
 
 
+def failure_evidence() -> dict[str, Any]:
+    value = evidence(7)
+    victim = value["attempts"][0]
+    victim["outcome"] = "FAILED"
+    next(item for item in value["events"] if item["kind"] == "root_completed")["outcome"] = "FAILED"
+    expected = {"status": "FAILED", "error": {"type": "FixtureError", "message": "expected handler failure"}}
+    value["expectedHistories"][victim["executionArn"]] = expected
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history.pop("result")
+    history.update(expected)
+    retired = next(item for item in value["retirement"]["resources"] if item["id"] == victim["executionArn"])
+    retired["outcome"] = "FAILED"
+    return value
+
+
 def refresh_histories(value: dict[str, Any]) -> None:
     expectations = {
         item["executionArn"]: {"status": "SUCCEEDED", "result": {"marker": item["role"]}} for item in value["attempts"]
@@ -241,10 +256,20 @@ def test_native_runtime_overlap_positive_controls(runtime: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "factory", [lambda: evidence(2), deadline_evidence, recovery_evidence, replay_evidence, warm_evidence]
+    "factory",
+    [lambda: evidence(2), deadline_evidence, recovery_evidence, replay_evidence, warm_evidence, failure_evidence],
 )
 def test_lifecycle_positive_controls(factory: Any) -> None:
     assert validate_evidence(factory()) == []
+
+
+@pytest.mark.parametrize("requirement_id", [2, 7])
+def test_normal_return_and_failure_require_their_own_outcome(requirement_id: int) -> None:
+    value = evidence(2) if requirement_id == 2 else failure_evidence()
+    assert validate_evidence(value) == []
+    value["requirementId"] = "lmi-lifecycle-7" if requirement_id == 2 else "lmi-lifecycle-2"
+    expected = "FAILED" if requirement_id == 2 else "SUCCEEDED"
+    assert any(f"requires the selected victim outcome {expected}" in error for error in validate_evidence(value))
 
 
 @pytest.mark.parametrize(

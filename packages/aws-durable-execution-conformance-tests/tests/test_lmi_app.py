@@ -38,9 +38,13 @@ def manifest():
             for n in (1, 2)
         ],
         "scenarios": [
-            {"case_id": name, "requirement_id": req, "profile_id": "native-2", "scenario": name}
+            {
+                "case_id": definition["scenario"],
+                "requirement_id": req,
+                "profile_id": "native-2",
+                "scenario": definition["scenario"],
+            }
             for req, definition in requirements("lifecycle").items()
-            for name in definition["requiredScenarios"]
         ],
     }
 
@@ -58,7 +62,7 @@ def test_strict_acceptance_requires_every_mandatory_requirement():
     assert build_report(plan, results).exit_code() == 0
     for index in range(len(results)):
         incomplete = results[:index] + results[index + 1 :]
-        # Missing even one invocation in a multi-case requirement must not disappear.
+        # Every missing required case must remain visible in its requirement report.
         assert build_report(plan, incomplete).exit_code() == 1
 
 
@@ -72,10 +76,15 @@ def test_later_success_cannot_replace_failure_or_gap(status):
     assert build_report(plan, results).exit_code() == 1
 
 
-def test_missing_success_or_failure_variant_is_uncovered():
+@pytest.mark.parametrize("missing_id", ["lmi-lifecycle-2", "lmi-lifecycle-7"])
+def test_missing_disposal_requirement_is_reported_independently(missing_id):
     plan = manifest()
-    plan["scenarios"] = [case for case in plan["scenarios"] if case["scenario"] != "normal-failure"]
-    assert build_report(plan, passed_results(plan)).exit_code() == 1
+    plan["scenarios"] = [case for case in plan["scenarios"] if case["requirement_id"] != missing_id]
+    report = build_report(plan, passed_results(plan))
+    assert report.exit_code() == 1
+    statuses = {entry.id: entry.status for entry in report.entries}
+    assert statuses.pop(missing_id) == ReportStatus.UNCOVERED
+    assert all(status == ReportStatus.PASSED for status in statuses.values())
 
 
 @pytest.mark.parametrize(
@@ -83,7 +92,7 @@ def test_missing_success_or_failure_variant_is_uncovered():
     [
         ("run", "capabilityProfile", "lifecycle-otel"),
         ("run", "coverageProfile", "export-lifecycle"),
-        ("case", "requirement_id", "lmi-lifecycle-7"),
+        ("case", "scenario", "otel-attribution"),
         ("case", "requirement_id", "lmi-lifecycle-8"),
         ("case", "requirement_id", "lmi-lifecycle-16"),
         ("case", "otel_view", "invocation"),
@@ -168,7 +177,7 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
         run(["--manifest", str(path), "--output", str(tmp_path / "out")])
     assert exc.value.code == 1
     report = json.loads((tmp_path / "out/report.json").read_text())
-    assert report["summary"]["uncovered"] == 6
+    assert report["summary"]["uncovered"] == 7
     assert report["ci"]["exit_code"] == 1
     assert (tmp_path / "out/report.xml").is_file()
 

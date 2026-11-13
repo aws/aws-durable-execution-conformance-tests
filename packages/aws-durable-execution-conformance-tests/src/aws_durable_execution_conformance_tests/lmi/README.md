@@ -2,7 +2,7 @@
 
 This optional suite coordinates multiple invocations against persistent Lambda
 Managed Instances targets. It uses the core JSON/JUnit/console report writers
-for six language-neutral lifecycle requirements. SDK handlers, AWS deployment
+for seven language-neutral lifecycle requirements. SDK handlers, AWS deployment
 templates and control-plane adapters stay in each SDK repository.
 
 Run it explicitly with `durable-execution-conformance lmi-lifecycle`. Ordinary
@@ -12,26 +12,33 @@ requirements or deploy LMI functions. The dedicated requirement catalog is
 
 ## Contracts and applicability
 
-| ID | Mandatory scenario selectors | Measurement ownership |
+| ID | Scenario | Measurement ownership |
 | --- | --- | --- |
 | lmi-lifecycle-1 | `native-overlap` | Cohort capacity; exclusive if all capacity is needed |
-| lmi-lifecycle-2 | `normal-return`, `normal-failure` | Shared, bounded invocation-local faults |
+| lmi-lifecycle-2 | `normal-return` | Shared, bounded invocation-local faults |
 | lmi-lifecycle-3 | `deadline-during-step` | Shared only for contained invocation-local admission checks |
 | lmi-lifecycle-4 | `peer-recovery` | Exclusive original-environment capacity measurement |
 | lmi-lifecycle-5 | `suspension-retry` | Shared, ownership retained through resume/retry |
 | lmi-lifecycle-6 | `warm-reuse` | Identified sequential reuse; cohort ownership |
+| lmi-lifecycle-7 | `normal-failure` | Shared, bounded invocation-local faults |
 
 The `standard` coverage profile supports the `lifecycle` capability and requires
-IDs 1–6, covering seven scenarios because normal return and normal failure are
-separate cases. OTel and plugin conformance are deferred to a later change.
+IDs 1–7. Each requirement file declares exactly one `scenario` string, yielding
+seven independent test cases. Normal return is requirement 2 and normal failure
+is requirement 7. OTel and plugin conformance are deferred to a later change.
 Every ID and every listed scenario must be present and pass for every supported
 runtime. Requirement files contain only the ID, description, contract, limits,
-scenario selectors, roles, scheduling and minimum native concurrency. Mandatory
+a scenario selector, roles, scheduling and minimum native concurrency. Mandatory
 coverage and runtime applicability are suite-wide rules rather than repeated
 `mandatory`, `capability`, `runtimes` or `coverageProfiles` fields. Missing SDK APIs
 or fixtures are `NOT_IMPLEMENTED`, not exclusions. Language-specific
 starvation and non-cooperative fault fixtures remain diagnostic unless a
 supported behavior and test budget have been agreed.
+
+Adapters using the earlier draft's `requiredScenarios` array must read the scalar
+`scenario` field instead. Keep `normal-return` under `lmi-lifecycle-2` and map
+`normal-failure` to `lmi-lifecycle-7` in manifests and retained evidence. Earlier
+OTel requirement 7 evidence is outside this lifecycle catalog.
 
 | Runtime | Positive native overlap evidence | Warm reuse |
 | --- | --- | --- |
@@ -251,9 +258,9 @@ scheduled; run accounts and compatible cases concurrently.
 
 | SDK | Adoption tracker | Existing work and remaining evidence |
 | --- | --- | --- |
-| JavaScript | [#1017](https://github.com/aws/aws-durable-execution-sdk-js/issues/1017) | [#928](https://github.com/aws/aws-durable-execution-sdk-js/pull/928) closed without merging; map final fixtures to IDs 1–6 |
-| Java | [#727](https://github.com/aws/aws-durable-execution-sdk-java/issues/727) | Base harness incorporated by [#782](https://github.com/aws/aws-durable-execution-sdk-java/pull/782); adapt its driver/evidence and validate IDs 1–6 |
-| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931) owns Python regression rules; adopting this six-requirement catalog remains separate work |
+| JavaScript | [#1017](https://github.com/aws/aws-durable-execution-sdk-js/issues/1017) | [#928](https://github.com/aws/aws-durable-execution-sdk-js/pull/928) closed without merging; map final fixtures to IDs 1–7 |
+| Java | [#727](https://github.com/aws/aws-durable-execution-sdk-java/issues/727) | Base harness incorporated by [#782](https://github.com/aws/aws-durable-execution-sdk-java/pull/782); adapt its driver/evidence and validate IDs 1–7 |
+| Python | [#742](https://github.com/aws/aws-durable-execution-sdk-python/issues/742) | [#931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931) owns Python regression rules; adopting this seven-requirement catalog remains separate work |
 
 These are migration mappings, not accepted results for any requirement. At least
 two distinct real runtime models with retained evidence and regression-sensitivity

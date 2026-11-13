@@ -34,5 +34,12 @@ def requirements(
         if not resource.name.endswith(".yaml"):
             continue
         requirement = yaml.safe_load(resource.read_text())
+        if (
+            not isinstance(requirement, dict)
+            or "requiredScenarios" in requirement
+            or not isinstance(requirement.get("scenario"), str)
+            or not requirement["scenario"].strip()
+        ):
+            raise ValueError(f"{resource.name} must declare exactly one non-empty scenario")
         result[requirement["id"]] = requirement
     return result
