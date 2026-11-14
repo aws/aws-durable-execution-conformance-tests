@@ -1,0 +1,18 @@
+---
+id: lmi-lifecycle-3
+description: Real invocation deadline and admission
+scenario: deadline-during-step
+scheduling: shared
+minimumNativeConcurrency: 1
+contract: Keep controlled work in flight across the configured platform timeout. Record actual platform
+  timeout independently of root, wrapper and task exit. Verify subsequent operation admission and dispatch
+  are closed; distinguish accepted in-flight requests from new requests. Cooperative cleanup and invocation
+  outcome are separate observations.
+limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
+  user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
+  is NOT_IMPLEMENTED, never not applicable.
+behaviorBudgets:
+  - admissionMs
+  - cleanupMs
+roles:
+  - victim

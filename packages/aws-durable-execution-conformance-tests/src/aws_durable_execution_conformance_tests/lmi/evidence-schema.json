@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aws-durable-execution-conformance:lmi-evidence:1",
+  "title": "LMI lifecycle final evidence v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "requirementId",
+    "runtime",
+    "runId",
+    "caseId",
+    "artifact",
+    "profile",
+    "selectedRequests",
+    "attempts",
+    "events",
+    "sdkRequests",
+    "histories",
+    "expectedHistories",
+    "observationEndedAtMs",
+    "collection",
+    "resourcesCreated",
+    "faultsCreated",
+    "retirement"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requirementId": {
+      "enum": [
+        "lmi-lifecycle-1",
+        "lmi-lifecycle-2",
+        "lmi-lifecycle-3",
+        "lmi-lifecycle-4",
+        "lmi-lifecycle-5",
+        "lmi-lifecycle-6",
+        "lmi-lifecycle-7"
+      ]
+    },
+    "runtime": {
+      "enum": [
+        "javascript",
+        "java",
+        "python"
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "caseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "sdk",
+        "conformance"
+      ],
+      "properties": {
+        "sdk": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conformance": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": [
+        "functionArn",
+        "configurationDigest",
+        "nativeConcurrency",
+        "timeoutMs"
+      ],
+      "properties": {
+        "functionArn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configurationDigest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nativeConcurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutMs": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "recoveryPolicy": {
+          "enum": [
+            "reuse-worker",
+            "replace-worker"
+          ]
+        }
+      }
+    },
+    "selectedRequests": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/attempt"
+      },
+      "minItems": 1
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      },
+      "minItems": 1
+    },
+    "sdkRequests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/request"
+      }
+    },
+    "collectionErrors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "histories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/history"
+      },
+      "minItems": 1
+    },
+    "expectedHistories": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "SUCCEEDED",
+              "FAILED",
+              "TIMED_OUT",
+              "STOPPED",
+              "RUNNING",
+              "PENDING"
+            ]
+          },
+          "allowedStatuses": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "SUCCEEDED",
+                "FAILED",
+                "TIMED_OUT",
+                "STOPPED",
+                "RUNNING",
+                "PENDING"
+              ]
+            }
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "status"
+            ],
+            "not": {
+              "required": [
+                "allowedStatuses"
+              ]
+            }
+          },
+          {
+            "required": [
+              "allowedStatuses"
+            ],
+            "not": {
+              "required": [
+                "status"
+              ]
+            }
+          }
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "result"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          },
+          {
+            "required": [
+              "allowedStatuses"
+            ],
+            "properties": {
+              "allowedStatuses": {
+                "contains": {
+                  "const": "RUNNING"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "observationEndedAtMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "collection": {
+      "type": "object",
+      "required": [
+        "watermarks",
+        "evidenceUris"
+      ],
+      "properties": {
+        "watermarks": {
+          "type": "object",
+          "required": [
+            "lifecycle",
+            "sdkRequests",
+            "history"
+          ],
+          "properties": {
+            "lifecycle": {
+              "type": "number",
+              "minimum": 0
+            },
+            "sdkRequests": {
+              "type": "number",
+              "minimum": 0
+            },
+            "history": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "evidenceUris": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "resourcesCreated": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "faultsCreated": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fault"
+      }
+    },
+    "retirement": {
+      "type": "object",
+      "required": [
+        "retiredAtMs",
+        "resources",
+        "faults"
+      ],
+      "properties": {
+        "retiredAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/resource"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "settledAtMs",
+                  "evidenceUri",
+                  "outcome"
+                ],
+                "properties": {
+                  "settledAtMs": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "evidenceUri": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "callback"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "outcome": {
+                      "enum": [
+                        "SUCCEEDED",
+                        "FAILED",
+                        "TIMED_OUT"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "control"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "outcome": {
+                      "enum": [
+                        "DELETED"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "faults": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/fault"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "releasedAtMs",
+                  "mode"
+                ],
+                "properties": {
+                  "releasedAtMs": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "mode": {
+                    "enum": [
+                      "normal",
+                      "emergency"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "coverageProfile": {
+      "enum": [
+        "standard"
+      ],
+      "default": "standard"
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "attempt": {
+      "type": "object",
+      "required": [
+        "requestId",
+        "executionArn",
+        "environmentId",
+        "workerId",
+        "processId",
+        "role",
+        "attempt",
+        "startedAtMs",
+        "endedAtMs",
+        "outcome"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executionArn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "environmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "endedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "SUCCEEDED",
+            "FAILED",
+            "PENDING",
+            "TIMED_OUT"
+          ]
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "requestId",
+        "ownerRequestId",
+        "executionArn",
+        "kind",
+        "atMs"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerRequestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executionArn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "requestId",
+        "ownerRequestId",
+        "executionArn",
+        "method",
+        "atMs",
+        "outcome"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerRequestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executionArn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "DISPATCHED",
+            "REJECTED"
+          ]
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "type",
+        "status",
+        "parentId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "endedAtMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "required": [
+        "executionArn",
+        "ownerCaseId",
+        "status",
+        "operations"
+      ],
+      "properties": {
+        "executionArn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerCaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "SUCCEEDED",
+            "FAILED",
+            "TIMED_OUT",
+            "STOPPED",
+            "RUNNING",
+            "PENDING"
+          ]
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operation"
+          }
+        },
+        "startedAtMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "ownerCaseId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerCaseId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "fault": {
+      "type": "object",
+      "required": [
+        "id",
+        "ownerCaseId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerCaseId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

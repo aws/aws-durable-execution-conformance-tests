@@ -235,6 +235,12 @@ def parse_args(
 
 
 def run(argv: list[str] | None = None) -> None:
+    command_args = sys.argv[1:] if argv is None else argv
+    if command_args and command_args[0] == "lmi-lifecycle":
+        from aws_durable_execution_conformance_tests.lmi.app import run as run_lmi
+
+        run_lmi(command_args[1:])
+        return
     args = parse_args(argv)
     template_path = args.template
     stack_name = f"{STACK_NAME_PREFIX}-{args.name}"
