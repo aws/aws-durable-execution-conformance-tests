@@ -37,8 +37,10 @@ For bugs, include:
 - `packages/aws-durable-execution-conformance-tests-otel/`: optional OTel extension, requirements, and tests
 - `scripts/`: workspace and distribution verification
 
-SDK-specific test handlers and deployment templates live in their respective SDK
-repositories and are not released as part of this repository.
+SDK-specific test handlers and build scripts live in their respective SDK
+repositories. The LMI suite provides a reusable deployment controller configured
+with explicit runtime, handler, architecture and artifact choices; SDK-specific
+deployment templates remain with their SDK.
 
 ## Development setup
 

@@ -78,6 +78,24 @@ def main() -> None:
             assert set(lmi_catalog.requirements("lifecycle", runtime=runtime)) == {
                 f"lmi-lifecycle-{index}" for index in range(1, 8)
             }
+        for name in (
+            "adapter",
+            "artifacts",
+            "cloud",
+            "configuration",
+            "deployment",
+            "errors",
+            "observations",
+            "runner",
+            "runtime",
+            "scenarios",
+            "service",
+            "source_evidence",
+            "summary",
+        ):
+            module = importlib.import_module(f"aws_durable_execution_conformance_tests.lmi.{name}")
+            assert Path(module.__file__).is_relative_to(target)
+        assert not any(name.startswith("aws_durable_execution_sdk_") for name in sys.modules)
         assert "lmi-lifecycle" not in registry.suites
         lmi_resources = files("aws_durable_execution_conformance_tests.lmi")
         assert lmi_resources.joinpath("evidence-schema.json").is_file()

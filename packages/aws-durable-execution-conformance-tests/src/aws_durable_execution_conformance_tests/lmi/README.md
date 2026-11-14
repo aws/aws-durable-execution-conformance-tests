@@ -2,8 +2,11 @@
 
 This optional suite coordinates multiple invocations against persistent Lambda
 Managed Instances targets. It uses the core JSON/JUnit/console report writers
-for seven language-neutral lifecycle requirements. SDK handlers, AWS deployment
-templates and control-plane adapters stay in each SDK repository.
+for seven language-neutral lifecycle requirements. The shared package supplies
+AWS transport, persistent deployment, scenario choreography and evidence
+normalization. Each SDK supplies its public-API handlers, observation hooks,
+artifact build and a small runtime binding. See [SDK reuse](REUSE.md) for these
+APIs and the reusable GitHub Actions workflow.
 
 Run it explicitly with `durable-execution-conformance lmi-lifecycle`. Ordinary
 conformance, including `--suite all`, does not discover these multi-invocation
