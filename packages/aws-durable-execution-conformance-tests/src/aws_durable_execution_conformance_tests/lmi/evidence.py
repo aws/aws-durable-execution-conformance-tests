@@ -220,6 +220,19 @@ class _Evidence:
             actual[arn] = history
             if history.get("status") not in HISTORY_STATUSES:
                 self.error(f"history {arn}.status must be a recognized execution status")
+            if "startedAtMs" in history:
+                started = self.number(history["startedAtMs"], f"history {arn}.startedAtMs")
+                admissions: list[float] = []
+                for attempt in self.attempts.values():
+                    admitted = attempt.get("startedAtMs")
+                    if (
+                        attempt.get("executionArn") == arn
+                        and isinstance(admitted, (int, float))
+                        and not isinstance(admitted, bool)
+                    ):
+                        admissions.append(float(admitted))
+                if admissions and started > min(admissions):
+                    self.error(f"history {arn}.startedAtMs follows its first native admission")
             if history.get("ownerCaseId") != self.value.get("caseId"):
                 self.error(f"history {arn} belongs to a different case", "ASSERTION")
             operations = self.records(history.get("operations"), "history.operations")
@@ -602,6 +615,7 @@ class _Evidence:
                     self.error("retirement ended before owned work settled")
                 if settled_key == "resources":
                     self.string(item.get("evidenceUri"), "retirement.resources.evidenceUri")
+                    self.string(item.get("outcome"), "retirement.resources.outcome")
                     kind = self.string(item.get("kind"), "retirement.resources.kind")
                     original = next((resource for resource in created if resource.get("id") == item.get("id")), {})
                     if original.get("kind") != kind:
