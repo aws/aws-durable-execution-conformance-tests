@@ -192,12 +192,22 @@ class CaseSources:
                 details = raw.get(event_type + "Details", {})
                 if event_type.endswith("Succeeded"):
                     operation["status"] = "SUCCEEDED"
-                    result = details.get("Result", info.get("serializedResult"))
-                    if result is not None:
-                        operation["result"] = _decoded(result)
+                    # SDK snapshots are the other side of the replay comparison,
+                    # so they cannot supply missing independent service output.
+                    if "Result" in details:
+                        operation["result"] = _decoded(details["Result"])
+                    elif kind == "WAIT":
+                        # WaitSucceeded has no Result field in the service model.
+                        operation["result"] = None
+                    else:
+                        errors.append(f"Service history is missing the result for operation {identity}")
                 elif event_type.endswith("Failed"):
                     operation["status"] = "FAILED"
-                    operation["error"] = _error(details.get("Error")) or info.get("error")
+                    error = _error(details.get("Error"))
+                    if error is None:
+                        errors.append(f"Service history is missing the error for operation {identity}")
+                    else:
+                        operation["error"] = error
                 elif event_type.endswith("TimedOut"):
                     operation["status"] = "TIMED_OUT"
                 elif event_type.endswith("Stopped"):
