@@ -197,7 +197,7 @@ class Cloud:
             payload["sharedScenario"] = dispatcher_payload["scenario"]
         payload.update(scenario=scenario, marker=marker, run=self.manifest["run"])
         if self.case_context is not None:
-            payload["coverageProfile"] = "standard"
+            payload["coverageProfile"] = self.case_context.scenario.coverage_profile
             payload["behaviorBudgets"] = dict(self.case_context.scenario.behavior_budgets)
             payload["controlPrefix"] = self.control_prefix
             if "release-all" not in self.gates:

@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from threading import Event
@@ -136,6 +137,33 @@ def test_direct_launch_is_journaled_before_public_runner_transport(cloud):
     assert item["native_requests"] == []
     refresh_entries(cloud, enter(item, "original", 1))
     assert cloud.case_context.attempts[0]["requestId"] == "original"
+
+
+@pytest.mark.parametrize("coverage_profile", ["standard", "sdk-regression"])
+@pytest.mark.parametrize("payload_profile", ["admitted", "substituted", "absent"])
+def test_direct_launch_uses_the_admitted_coverage_profile(cloud, coverage_profile, payload_profile):
+    cloud.case_context.scenario = replace(
+        cloud.case_context.scenario,
+        coverage_profile=coverage_profile,
+        behavior_budgets={"settleMs": 10},
+    )
+    payload = cloud.case_context.dispatcher("victim")
+    if payload_profile == "substituted":
+        payload["coverageProfile"] = "another-profile"
+    elif payload_profile == "absent":
+        payload.pop("coverageProfile", None)
+    item = cloud.start(
+        "replay",
+        role="victim",
+        resume_roles=("resume",),
+        dispatcher_payload=payload,
+    )
+    invoked = json.loads(cloud.lam.invoke.call_args.kwargs["Payload"])
+    retained = json.loads((cloud.artifacts_dir / f"invocations/{item['marker']}.json").read_text())
+    for observed in (invoked, item["payload"], retained["payload"]):
+        assert observed["coverageProfile"] == coverage_profile
+        assert observed["behaviorBudgets"] == {"settleMs": 10}
+    assert cloud.case_context.scenario.coverage_profile == coverage_profile
 
 
 def test_service_replays_are_journaled_without_another_invoke(cloud):
