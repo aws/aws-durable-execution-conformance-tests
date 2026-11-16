@@ -232,6 +232,8 @@ class _Evidence:
                     self.string(operation["name"], "history operation.name")
                 if "parentId" not in operation:
                     self.error("history operation.parentId is required (null for the root)")
+                elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
+                    self.error("history operation.parentId must be a string or null")
                 operation_id = operation.get("id")
                 if operation_id in ids:
                     self.error("duplicate operation identity in service history")
@@ -502,6 +504,8 @@ class _Evidence:
         for retry_attempt in retry_attempts:
             if retry_attempt.get("requestId") not in self.attempts:
                 self.error("retry references an unrecorded request")
+            elif self.attempts[retry_attempt["requestId"]].get("executionArn") != victim.get("executionArn"):
+                self.error("retry attempt did not run on the suspended execution", "ASSERTION")
             if not any(
                 item.get("operationId") == retry_id
                 and item.get("attemptId") == retry_attempt.get("attemptId")
@@ -509,6 +513,11 @@ class _Evidence:
                 for item in executions
             ):
                 self.error("retry attempt lacks observed user-code execution")
+        # replay.after equals the collected final history (checked above), so a
+        # retry that never checkpointed cannot satisfy the retry semantics.
+        retried = next((operation for operation in after if operation.get("id") == retry_id), None)
+        if retried is None or retried.get("status") != "SUCCEEDED":
+            self.error("the retried operation must succeed in the collected final history", "ASSERTION")
         if retry_id in completed:
             self.error("retry must not repeat an already completed operation", "ASSERTION")
         counts = self.records(replay.get("sideEffects"), "replay.sideEffects", nonempty=True)
@@ -539,6 +548,23 @@ class _Evidence:
         exited = self.event(victim, "task_exit")
         if exited.get("atMs", 0) < late.get("atMs", 0):
             self.error("late activity continued after the recorded task exit", "ASSERTION")
+
+    def last_activity(self, request_id: Any) -> float:
+        """The latest recorded time of an invocation, its events and SDK requests."""
+        sdk_requests = self.value.get("sdkRequests", [])
+        records = [*self.events, *(sdk_requests if isinstance(sdk_requests, list) else [])]
+        times = [self.attempts.get(request_id, {}).get("endedAtMs")]
+        times += [
+            record.get("atMs")
+            for record in records
+            if isinstance(record, Mapping) and record.get("requestId") == request_id
+        ]
+        valid = [
+            float(value)
+            for value in times
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        ]
+        return max(valid, default=0.0)
 
     def retirement(self) -> None:
         retirement = self.mapping(self.value.get("retirement"), "retirement")
@@ -587,6 +613,8 @@ class _Evidence:
                         self.error("an execution may still resume after retirement")
                     if kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
+                    if kind == "invocation" and time < self.last_activity(item.get("id")):
+                        self.error("invocation settled before its recorded activity")
                     if kind == "callback" and item.get("outcome") not in ("SUCCEEDED", "FAILED", "TIMED_OUT"):
                         self.error("callback completion is not established")
                     if kind == "control" and item.get("outcome") != "DELETED":
@@ -598,10 +626,19 @@ class _Evidence:
                         "lmi-lifecycle-3",
                         "lmi-lifecycle-4",
                     ):
+                        # Only the victim's cleanup and the selected recovery are
+                        # asserted; a healthy peer may stay occupied after both.
+                        victim = self.selected.get("victim", {})
+                        recovery = self.selected.get("recovery", {})
                         asserted = [
                             event.get("atMs", 0)
                             for event in self.events
-                            if event.get("kind") in ("task_exit", "worker_recovered")
+                            if (event.get("kind") == "task_exit" and event.get("requestId") == victim.get("requestId"))
+                            or (
+                                recovery
+                                and event.get("kind") == "worker_recovered"
+                                and event.get("requestId") == recovery.get("requestId")
+                            )
                         ]
                         if asserted and time <= max(asserted):
                             self.error("fault release cannot retroactively establish cleanup or recovery", "ASSERTION")
