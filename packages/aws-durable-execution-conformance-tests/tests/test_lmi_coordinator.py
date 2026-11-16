@@ -814,3 +814,73 @@ def test_valid_retry_retains_original_selection_and_all_attempts():
     assert result.status == "PASSED"
     assert result.evidence["selectedRequests"] == {"victim": "victim:victim"}
     assert [item["attempt"] for item in result.attempts] == [1, 2]
+
+
+def test_runs_sharing_a_scheduler_keep_separate_work_budgets():
+    # A second run's limit must neither widen nor narrow the first run's.
+    serial = replace(PROFILE, profile_id="serial", resource_id="fn-serial", capacity=3, native_concurrency=3)
+    wide = replace(PROFILE, profile_id="wide", resource_id="fn-wide", capacity=3, native_concurrency=3)
+
+    class SlowAdapter(Adapter):
+        async def execute(self, context):
+            await asyncio.sleep(0.05)
+
+    async def exercise():
+        scheduler = ResourceScheduler()
+        first, second = SlowAdapter(), SlowAdapter()
+        await asyncio.gather(
+            run_scenarios(
+                [case(f"s{i}", profile=serial) for i in range(3)],
+                [serial],
+                first,
+                run_id="run-serial",
+                validator=validator,
+                scenario_concurrency=1,
+                scheduler=scheduler,
+            ),
+            run_scenarios(
+                [case(f"w{i}", profile=wide) for i in range(3)],
+                [wide],
+                second,
+                run_id="run-wide",
+                validator=validator,
+                scenario_concurrency=3,
+                scheduler=scheduler,
+            ),
+        )
+        return first.max_live, second.max_live
+
+    assert asyncio.run(exercise()) == (1, 3)
+
+
+def test_cancellation_during_preparation_reports_waiting_cases():
+    # Cases waiting for their target's preparation are part of the run's
+    # audit record, so cancellation must still publish a result for them.
+    reported: list[ScenarioResult] = []
+    entered = asyncio.Event()
+
+    class BlockedPreparation(Adapter):
+        async def prepare(self, profile):
+            entered.set()
+            await asyncio.Event().wait()
+
+    async def exercise():
+        run = asyncio.create_task(
+            run_scenarios(
+                [case("waiting")],
+                [PROFILE],
+                BlockedPreparation(),
+                run_id="run",
+                validator=validator,
+                on_result=reported.append,
+            )
+        )
+        await entered.wait()
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+    asyncio.run(exercise())
+    assert [result.case_id for result in reported][:1] == ["waiting"], reported
+    assert reported[0].status == "INFRASTRUCTURE_ERROR"
+    assert any("preparation" in error for error in reported[0].errors), reported[0].errors

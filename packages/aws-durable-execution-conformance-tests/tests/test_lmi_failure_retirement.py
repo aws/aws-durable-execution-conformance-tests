@@ -476,3 +476,31 @@ def test_passing_case_cannot_add_a_new_native_request_only_during_retirement() -
     assert adapter.started == ["failed"]
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+class StaleSnapshotAdapter(FailureAdapter):
+    """Observes late activity that its retirement snapshot does not cover."""
+
+    def __init__(self, *, late_at: int) -> None:
+        super().__init__(phase="execute")
+        self.late_at = late_at
+
+    def observations(self, context: ScenarioContext) -> dict[str, Any]:
+        observed = super().observations(context)
+        if context.scenario.case_id == "failed":
+            victim = observed["attempts"][0]
+            owner = {key: victim[key] for key in ("requestId", "executionArn")}
+            observed["events"].append(
+                {**owner, "ownerRequestId": victim["requestId"], "kind": "late_activity", "atMs": self.late_at}
+            )
+        return observed
+
+
+@pytest.mark.parametrize(("late_at", "reason"), [(25000, "predates"), (20500, "omitted or changed")])
+def test_retirement_snapshot_must_cover_previously_observed_activity(late_at: int, reason: str) -> None:
+    # The snapshot retires at 21000. Activity observed at 25000 makes it stale,
+    # and earlier activity it omits contradicts the frozen observations.
+    results, scheduler = _run(StaleSnapshotAdapter(late_at=late_at))
+    failed = results[0]
+    assert any(reason in error for error in failed.errors), failed.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is not None

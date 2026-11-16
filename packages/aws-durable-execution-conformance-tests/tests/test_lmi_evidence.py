@@ -679,6 +679,10 @@ def test_held_execution_has_an_independent_explicit_status_allowance(status: str
     value["expectedHistories"][history["executionArn"]] = {
         "allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]
     }
+    if status != "RUNNING":
+        # Retirement of an already terminal execution keeps its outcome.
+        retired = next(item for item in value["retirement"]["resources"] if item["id"] == history["executionArn"])
+        retired["outcome"] = status
     assert validate_evidence(value) == []
 
 
@@ -841,3 +845,59 @@ def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(rele
     assert any("retroactively" in error or "fault release cannot satisfy" in error for error in errors) is rejected, (
         errors
     )
+
+
+def test_expected_null_does_not_match_a_missing_history_field() -> None:
+    # dict.get() turns an absent field into None, so an expected null result
+    # matched a history that never recorded any output.
+    value = evidence()
+    victim = value["attempts"][0]
+    value["expectedHistories"][victim["executionArn"]]["result"] = None
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history.pop("result")
+    assert any(
+        "result" in error and "differs from the fixture expectation" in error for error in validate_evidence(value)
+    )
+    history["result"] = None
+    assert not any("result" in error and "fixture expectation" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
+    ("history_status", "contradicts"), [("FAILED", True), ("SUCCEEDED", False), ("RUNNING", False)]
+)
+def test_retirement_outcome_matches_an_already_terminal_history(history_status: str, contradicts: bool) -> None:
+    # An earlier RUNNING snapshot may become terminal, but a terminal history
+    # cannot retire with a different outcome.
+    value = evidence()
+    victim = value["attempts"][0]
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history["status"] = history_status
+    errors = validate_evidence(value)
+    assert any("terminal service history" in error for error in errors) is contradicts, errors
+
+
+def test_replay_compares_completed_operations_by_identity_not_position() -> None:
+    # A parent context still open at the first resume is absent from
+    # replay.before but comes first in the final history, ahead of its
+    # completed children. Their checkpoints are unchanged.
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    context = {
+        "id": "ctx",
+        "name": "nested",
+        "type": "CONTEXT",
+        "parentId": None,
+        "status": "SUCCEEDED",
+        "result": None,
+    }
+    for operation in (*value["replay"]["before"], *value["replay"]["after"]):
+        if operation["id"] in {"done", "failed"}:
+            operation["parentId"] = "ctx"
+    value["replay"]["after"].insert(0, context)
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history["operations"] = deepcopy(value["replay"]["after"])
+    assert not any("operation identity" in error for error in validate_evidence(value))
+    # A completed operation missing from the final history is still rejected.
+    value["replay"]["after"] = [item for item in value["replay"]["after"] if item["id"] != "done"]
+    history["operations"] = deepcopy(value["replay"]["after"])
+    assert any("operation identity" in error for error in validate_evidence(value))
