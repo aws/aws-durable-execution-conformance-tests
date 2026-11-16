@@ -187,6 +187,42 @@ def test_evidence_cannot_be_substituted_between_cases_or_artifacts(tmp_path):
     assert any("caseId" in error for error in result["errors"])
 
 
+def test_retained_evidence_must_cover_every_declared_cohort_role(tmp_path):
+    """A manifest may declare roles beyond the requirement's defaults.
+
+    Live runs reject an incomplete cohort through the coordinator's ownership
+    check, so retained evidence must be held to the same declared role set.
+    """
+    plan = manifest()
+    case = next(item for item in plan["scenarios"] if item["scenario"] == "native-overlap")
+    plan["scenarios"] = [case]
+    case["evidence_file"] = "evidence.json"
+    case["roles"] = ["victim", "peer", "spare"]
+    profile = next(item for item in plan["profiles"] if item["profile_id"] == case["profile_id"])
+    evidence = {
+        "caseId": case["case_id"],
+        "runId": plan["runId"],
+        "runtime": plan["runtime"],
+        "requirementId": case["requirement_id"],
+        "profile": {
+            "functionArn": profile["resource_id"],
+            "configurationDigest": profile["configuration_id"],
+            "nativeConcurrency": profile["native_concurrency"],
+        },
+        "artifact": {"sdk": profile["artifact_id"]},
+        "selectedRequests": {"victim": "request-1", "peer": "request-2"},
+    }
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
+        result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "FAILED"
+    assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
+    evidence["selectedRequests"]["spare"] = "request-3"
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
+        assert evidence_results(plan, tmp_path)[0]["status"] == "PASSED"
+
+
 def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
     plan = manifest()
     plan["scenarios"] = []

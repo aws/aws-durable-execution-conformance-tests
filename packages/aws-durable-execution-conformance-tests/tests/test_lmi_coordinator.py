@@ -620,6 +620,15 @@ def test_queued_exclusive_profile_does_not_consume_other_profiles_scenario_slots
         other_progressed = asyncio.Event()
 
         class IndependentAdapter(Adapter):
+            async def prepare(self, profile):
+                # Let the busy profile finish preparation first, so its two
+                # cases reach admission before the idle profile's case. A work
+                # budget handed to the queued case here would starve the idle
+                # profile, which must stay independent of a blocked target.
+                if profile.profile_id == "other":
+                    await asyncio.sleep(0.05)
+                await super().prepare(profile)
+
             async def execute(self, context):
                 if context.scenario.case_id == "exclusive":
                     victim_running.set()

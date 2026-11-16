@@ -104,6 +104,7 @@ class _Waiter:
     owner: str
     slots: int
     exclusive: bool
+    budgeted: bool = False
 
 
 @dataclass
@@ -142,10 +143,41 @@ class ResourceScheduler:
 
     Native capacity is a reservation budget, not proof of Lambda placement.
     Ownership persists until the caller explicitly verifies retirement.
+
+    A run's global active-work budget is granted together with a target's
+    capacity, never before or after it. Acquiring them separately deadlocks in
+    one direction or starves unrelated targets in the other: a case that holds
+    capacity while queueing for the budget blocks an owner that needs that
+    capacity back, and a case that holds budget while queueing for a blocked
+    target consumes a slot an idle profile's case could use. Admitted owners
+    keep their budget slot until they retire, so resuming never queues behind
+    another case.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, concurrency: int | None = None) -> None:
         self._resources: dict[str, _Resource] = {}
+        self._concurrency = concurrency
+        self._active = 0
+
+    def limit_concurrency(self, concurrency: int) -> None:
+        if type(concurrency) is not int or concurrency < 1:
+            raise ValueError("Scenario concurrency must be a positive integer")
+        self._concurrency = concurrency
+
+    def _budget_available(self) -> bool:
+        return self._concurrency is None or self._active < self._concurrency
+
+    async def _wake_other_resources(self, released: str) -> None:
+        """Freed budget can admit a waiter on any other target.
+
+        Each condition is taken on its own, never two at once, so two
+        concurrent releases cannot wait on each other's lock.
+        """
+        for resource_id, resource in list(self._resources.items()):
+            if resource_id == released:
+                continue
+            async with resource.condition:
+                resource.condition.notify_all()
 
     def register(self, resource_id: str, capacity: int) -> None:
         if type(capacity) is not int or capacity < 1:
@@ -165,12 +197,24 @@ class ResourceScheduler:
             resource.condition.notify_all()
 
     async def acquire(
-        self, resource_id: str, owner: str, *, slots: int = 1, exclusive: bool = False, timeout: float = 300
+        self,
+        resource_id: str,
+        owner: str,
+        *,
+        slots: int = 1,
+        exclusive: bool = False,
+        timeout: float = 300,
+        budgeted: bool = False,
     ) -> Lease:
+        """Grant a target's capacity, and the run's work budget when budgeted.
+
+        Deployment and run-ownership leases are never budgeted: they serialize
+        a target rather than run a case's work.
+        """
         resource = self._resources[resource_id]
         if not owner or type(slots) is not int or not 1 <= slots <= resource.capacity:
             raise ValueError("A lease needs an owner and slots within the resource capacity")
-        request = _Waiter(owner, slots, exclusive)
+        request = _Waiter(owner, slots, exclusive, budgeted)
         async with resource.condition:
             if owner in resource.owners or any(waiter.owner == owner for waiter in resource.queue):
                 raise ValueError(f"Duplicate resource owner {owner}")
@@ -186,10 +230,13 @@ class ResourceScheduler:
                         if (
                             first
                             and not active_exclusive
+                            and (not budgeted or self._budget_available())
                             and (not resource.owners if exclusive else slots <= available)
                         ):
                             resource.queue.popleft()
                             resource.owners[owner] = request
+                            if budgeted:
+                                self._active += 1
                             resource.condition.notify_all()
                             return Lease(self, resource_id, owner, reserved_slots=slots)
                         await resource.condition.wait()
@@ -214,8 +261,12 @@ class ResourceScheduler:
         async with resource.condition:
             if not quiescent:
                 resource.quarantine_reason = f"Unretired owner {owner}"
-            resource.owners.pop(owner)
+            released = resource.owners.pop(owner)
+            if released.budgeted:
+                self._active -= 1
             resource.condition.notify_all()
+        if released.budgeted:
+            await self._wake_other_resources(resource_id)
 
     @asynccontextmanager
     async def deployment(self, resource_id: str, owner: str, *, timeout: float = 300):
@@ -258,30 +309,6 @@ class ScenarioContext:
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
-    _semaphore: asyncio.Semaphore | None = field(default=None, repr=False)
-    _holds_permit: bool = field(default=False, repr=False)
-
-    async def acquire_permit(self, *, timeout: float = 300) -> None:
-        """Enter the run's global active-work budget.
-
-        A case takes its permit once, before any target resource, and keeps it
-        until it retires. An admitted owner must never have to acquire a permit
-        again: a queued case holding the only permit can be waiting for that
-        owner to release capacity, or for every owner to retire if it wants an
-        exclusive lease, and neither can happen if the owner is itself queued
-        behind that permit.
-        """
-        if self._semaphore is None:
-            self._holds_permit = True
-            return
-        async with asyncio.timeout(timeout):
-            await self._semaphore.acquire()
-        self._holds_permit = True
-
-    def release_permit(self) -> None:
-        if self._semaphore is not None and self._holds_permit:
-            self._semaphore.release()
-        self._holds_permit = False
 
     async def release_capacity(self) -> None:
         """Keep ownership while positively observed suspended work is idle.
@@ -289,9 +316,9 @@ class ScenarioContext:
         Call only once the cohort no longer occupies its reserved native slots.
         The service may later resume work; reserve capacity before controlling
         another launch. Exclusive scenarios remain exclusive even while idle.
-        The work permit is deliberately retained, so resuming cannot block on
-        another case; freeing the native slot only helps when the run's
-        concurrency budget admits another case at all.
+        The run's work budget stays with this case, so resuming never queues
+        behind another case; freeing the native slot only admits another case
+        when the run's concurrency budget has room for one.
         """
         if self._lease is None:
             raise RuntimeError("Scenario has no active lease")
@@ -604,11 +631,9 @@ async def run_scenarios(
         leases.register(profile.resource_id, profile.capacity)
     if not callable(getattr(adapter, "finish", None)):
         raise ValueError("Adapter must implement finish(profile, *, quiescent) for cross-run ownership")
-    semaphore = asyncio.Semaphore(scenario_concurrency)
+    leases.limit_concurrency(scenario_concurrency)
     contexts = {
-        case.case_id: ScenarioContext(
-            run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt, _semaphore=semaphore
-        )
+        case.case_id: ScenarioContext(run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt)
         for case in scenarios
     }
     completed: dict[str, ScenarioResult] = {}
@@ -671,28 +696,20 @@ async def run_scenarios(
                 )
             )
         try:
-            # Take the work permit before any target resource. Acquiring
-            # capacity first and then queueing for a permit lets this case hold
-            # a slot that an admitted owner needs back, while that owner waits
-            # behind this case for a permit. The cost is that a case queued on a
-            # busy target occupies a work slot; a deadlock that quarantines the
-            # target costs more. The context owns the permit so that release
-            # stays idempotent across the cleanup paths below.
-            try:
-                await context.acquire_permit(timeout=limits.lease)
-            except TimeoutError as exc:
-                raise PhaseTimeout(f"admission exceeded its {limits.lease:g}s harness budget") from exc
             lease_started = time.time() * 1000
             lease_monotonic_started = time.monotonic()
             try:
                 # Acquisition already has a timeout. Await it in this task so
                 # cancellation cannot strand a lease in a completed child task.
+                # The scheduler grants this target's capacity and the run's work
+                # budget together, so waiting for one never holds the other.
                 lease = await leases.acquire(
                     context.profile.resource_id,
                     f"{run_id}:{case.case_id}",
                     slots=case.slots,
                     exclusive=case.exclusive,
                     timeout=limits.lease,
+                    budgeted=True,
                 )
             except TimeoutError as exc:
                 raise PhaseTimeout(f"lease exceeded its {limits.lease:g}s harness budget") from exc
@@ -804,9 +821,6 @@ async def run_scenarios(
                         status = "INFRASTRUCTURE_ERROR"
                     errors.extend(cleanup_errors)
                 await lease.release(quiescent=retired and not cleanup_errors)
-            # Idempotent: a case that handed its permit back while suspended
-            # and never reacquired it must not over-release the budget.
-            context.release_permit()
         # Preserve partial evidence as well as failed transport launches.
         if not evidence:
             evidence = copy.deepcopy(context.evidence)

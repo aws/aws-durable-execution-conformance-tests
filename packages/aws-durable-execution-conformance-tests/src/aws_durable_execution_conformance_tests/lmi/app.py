@@ -280,6 +280,14 @@ def _identity_errors(
             "behavior_budgets", {}
         ):
             errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
+        # A manifest may declare roles beyond the requirement's defaults. Live
+        # runs reject an incomplete cohort through the coordinator's ownership
+        # check; retained evidence has to be held to the same role set, or an
+        # extra declared role can pass without ever having run.
+        declared = set(scenario.get("roles", definition.roles))
+        selected_roles = evidence.get("selectedRequests")
+        if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
+            errors.append("INCOMPLETE: selectedRequests does not cover every declared cohort role")
     else:
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")

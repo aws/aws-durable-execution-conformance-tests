@@ -109,6 +109,14 @@ class CaseSources:
                 errors.append("Raw evidence has no native request identity or source sequence")
                 continue
             by_request[request].append(raw["sequence"])
+            # Collection reads the ledger with control validation disabled, and
+            # only CONFORMANCE records become observations. A raw control
+            # failure first seen here would otherwise leave complete evidence
+            # with full watermarks despite a recorded control fault.
+            if raw.get("phase") == "CONTROL_ERROR":
+                errors.append(
+                    f"Raw control failure for {raw.get('gate', 'unnamed control')}: {raw.get('error', 'unreported')}"
+                )
             observation = raw.get("observation")
             if raw.get("phase") != "CONFORMANCE" or not isinstance(observation, Mapping):
                 continue
@@ -295,6 +303,17 @@ class CaseSources:
                 attempt.update(outcome="TIMED_OUT", endedAtMs=timeout["atMs"])
             if deadline:
                 attempt["deadlineAtMs"] = deadline[0]["deadlineAtMs"]
+            # A replace-worker runtime reports which worker capacity it took
+            # over. Without it the shared validator rejects every conforming
+            # replacement recovery, since worker_identity only names the
+            # current worker.
+            replaced = [
+                event["replacesWorkerId"]
+                for event in owned
+                if event.get("kind") == "worker_recovered" and event.get("replacesWorkerId") is not None
+            ]
+            if replaced:
+                attempt["replacesWorkerId"] = replaced[0]
             if "outcome" not in attempt:
                 errors.append(f"Native request {request} has no observed completion boundary")
             if journal[request]["attempt"] == 1:
