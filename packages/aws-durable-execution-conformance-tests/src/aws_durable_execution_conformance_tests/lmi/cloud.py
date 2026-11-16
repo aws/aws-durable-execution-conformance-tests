@@ -154,7 +154,9 @@ class Cloud:
     def verify(self):
         if self.manifest.get("concurrencies") != CONCURRENCIES or set(self.manifest["functions"]) != set(CONCURRENCIES):
             raise ProvisioningError("One deployment must contain both c1 and c2 functions")
-        for key, arn in self.manifest["functions"].items():
+        keys = (self.configuration,) if self.configuration is not None else self.manifest["functions"]
+        for key in keys:
+            arn = self.manifest["functions"][key]
             config = self.lam.get_function_configuration(FunctionName=arn)
             scaling = self.lam.get_function_scaling_config(FunctionName=arn.rsplit(":", 1)[0], Qualifier=QUALIFIER)
             self.verify_profile(config, scaling, self.manifest, key)
