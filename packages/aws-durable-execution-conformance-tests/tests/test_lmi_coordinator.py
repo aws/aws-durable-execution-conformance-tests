@@ -191,6 +191,47 @@ def test_scenario_concurrency_exceeds_native_capacity_during_suspension():
     assert adapter.max_live == 3
 
 
+def test_serial_run_admits_a_queued_case_while_another_is_suspended():
+    """A suspended owner hands back its global slot along with its capacity.
+
+    Under serial execution the queued case takes the freed native slot and then
+    waits for a work permit. If the suspended owner kept its permit, the two
+    would wait on each other until the execution budget quarantined the target.
+    """
+    profile = replace(PROFILE, capacity=1, native_concurrency=1)
+
+    class SuspendingAdapter(Adapter):
+        def __init__(self):
+            super().__init__()
+            self.queued_retired = asyncio.Event()
+
+        async def retire(self, context):
+            retired = await super().retire(context)
+            if context.scenario.case_id == "queued":
+                self.queued_retired.set()
+            return retired
+
+        async def execute(self, context):
+            if context.scenario.case_id != "suspended":
+                return
+            await context.release_capacity()
+            try:
+                await asyncio.wait_for(self.queued_retired.wait(), timeout=2)
+            finally:
+                await context.reserve_capacity(timeout=2)
+
+    adapter = SuspendingAdapter()
+    results = run(
+        [case("suspended", profile=profile), case("queued", profile=profile)],
+        adapter,
+        profiles=[profile],
+        scenario_concurrency=1,
+        budgets=Budgets(execution=5, lease=5, placement=5, collection=5, release=5, retirement=5, provisioning=5),
+    )
+    assert [result.status for result in results] == ["PASSED", "PASSED"], results
+    assert adapter.retired == ["queued", "suspended"]
+
+
 def test_cancelled_waiter_does_not_block_later_admission():
     async def exercise():
         scheduler = ResourceScheduler()

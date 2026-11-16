@@ -404,6 +404,15 @@ def test_recovery_requires_healthy_peer_progress_and_occupied_capacity() -> None
     assert any("healthy peer" in error for error in validate_evidence(value))
 
 
+def test_recovery_must_fit_the_declared_recovery_budget() -> None:
+    # Ordering alone accepted any duration: the observed 15 ms recovery passed
+    # even when the declared and retained recoveryMs were tighter.
+    value = recovery_evidence()
+    assert not validate_evidence(value)
+    value["budgets"]["recoveryMs"] = 14
+    assert any("recoveryMs" in error for error in validate_evidence(value))
+
+
 def test_extra_native_slots_cannot_substitute_for_failed_worker() -> None:
     value = recovery_evidence()
     value["profile"]["nativeConcurrency"] = 8

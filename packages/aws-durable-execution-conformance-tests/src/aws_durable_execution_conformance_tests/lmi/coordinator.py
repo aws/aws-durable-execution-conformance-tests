@@ -258,6 +258,22 @@ class ScenarioContext:
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
+    _semaphore: asyncio.Semaphore | None = field(default=None, repr=False)
+    _holds_permit: bool = field(default=False, repr=False)
+
+    async def acquire_permit(self, *, timeout: float = 300) -> None:
+        """Enter the run's global active-work budget, at most once at a time."""
+        if self._semaphore is None or self._holds_permit:
+            self._holds_permit = True
+            return
+        async with asyncio.timeout(timeout):
+            await self._semaphore.acquire()
+        self._holds_permit = True
+
+    def release_permit(self) -> None:
+        if self._semaphore is not None and self._holds_permit:
+            self._semaphore.release()
+        self._holds_permit = False
 
     async def release_capacity(self) -> None:
         """Keep ownership while positively observed suspended work is idle.
@@ -269,11 +285,21 @@ class ScenarioContext:
         if self._lease is None:
             raise RuntimeError("Scenario has no active lease")
         await self._lease.release_capacity()
+        # Idle suspended work occupies no native slot, so it must not keep a
+        # global work slot either. Otherwise a case that is waiting for a permit
+        # while already holding this target's capacity and the suspended owner
+        # that needs that capacity back wait on each other until a phase budget
+        # expires and quarantines the target.
+        self.release_permit()
 
     async def reserve_capacity(self, *, timeout: float = 300) -> None:
         if self._lease is None:
             raise RuntimeError("Scenario has no active lease")
-        await self._lease.reserve_capacity(timeout=timeout)
+        # Re-enter the global budget first: holding native capacity while
+        # waiting for a permit would reintroduce that circular wait.
+        async with asyncio.timeout(timeout):
+            await self.acquire_permit(timeout=timeout)
+            await self._lease.reserve_capacity(timeout=timeout)
 
     def dispatcher(self, role: str) -> dict[str, Any]:
         if role not in self.scenario.roles:
@@ -579,7 +605,9 @@ async def run_scenarios(
         raise ValueError("Adapter must implement finish(profile, *, quiescent) for cross-run ownership")
     semaphore = asyncio.Semaphore(scenario_concurrency)
     contexts = {
-        case.case_id: ScenarioContext(run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt)
+        case.case_id: ScenarioContext(
+            run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt, _semaphore=semaphore
+        )
         for case in scenarios
     }
     completed: dict[str, ScenarioResult] = {}
@@ -623,7 +651,6 @@ async def run_scenarios(
         status = "PASSED"
         residual: list[asyncio.Task[Any]] = []
         lease: Lease | None = None
-        acquired_semaphore = False
         cancelled = False
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
@@ -666,8 +693,9 @@ async def run_scenarios(
             context._lease = lease
             # Waiting for a busy target must not consume global slots needed
             # by unrelated profiles. Count active work only after its lease.
-            await semaphore.acquire()
-            acquired_semaphore = True
+            # The context owns the permit from here: a suspended case hands it
+            # back while idle, so ownership cannot be tracked by this frame.
+            await context.acquire_permit(timeout=limits.lease)
             context.timings["admission"]["finishedAtMs"] = time.time() * 1000
 
             # Start and placement share a single budget: repeated placement
@@ -769,8 +797,9 @@ async def run_scenarios(
                         status = "INFRASTRUCTURE_ERROR"
                     errors.extend(cleanup_errors)
                 await lease.release(quiescent=retired and not cleanup_errors)
-            if acquired_semaphore:
-                semaphore.release()
+            # Idempotent: a case that handed its permit back while suspended
+            # and never reacquired it must not over-release the budget.
+            context.release_permit()
         # Preserve partial evidence as well as failed transport launches.
         if not evidence:
             evidence = copy.deepcopy(context.evidence)

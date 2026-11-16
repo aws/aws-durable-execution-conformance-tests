@@ -59,3 +59,49 @@ def test_different_environment_and_sequential_invocations_cannot_pass():
             evidence.overlap(alive(events), {"a", "b"}, 2, runtime="python")
     with pytest.raises(evidence.PlacementError):
         evidence.overlap(alive([a, b]), {"a", "b"}, 2, runtime="python", environment="original-env")
+
+
+def retry_body(request, attempt, at_ms):
+    return {
+        "kind": "body",
+        "requestId": request,
+        "operation": "retry",
+        "operationId": "retry-op",
+        "attempt": attempt,
+        "atMs": at_ms,
+        "sequence": 1,
+    }
+
+
+def retry_exit(request, attempt, outcome, at_ms):
+    return {
+        "kind": "task_exit",
+        "requestId": request,
+        "operationId": "retry-op",
+        "attempt": attempt,
+        "outcome": outcome,
+        "atMs": at_ms,
+        "sequence": 2,
+    }
+
+
+def test_retry_attempts_follow_causal_time_not_collection_order():
+    """Raw collection order follows the S3 request keys, not execution order.
+
+    A batch first read together can list the later successful attempt before its
+    earlier failure, which previously rejected a conforming SDK.
+    """
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
+
+    events = [
+        retry_body("aa-later-request", 2, 200),
+        retry_exit("aa-later-request", 2, "SUCCEEDED", 210),
+        retry_body("zz-earlier-request", 1, 100),
+        retry_exit("zz-earlier-request", 1, "FAILED", 110),
+    ]
+    replay = replay_evidence(events, [], {"victim": "zz-earlier-request", "resume": "aa-later-request"})
+    assert [item["outcome"] for item in replay["retry"]["attempts"]] == ["FAILED", "SUCCEEDED"]
+    assert [item["requestId"] for item in replay["operationExecutions"]] == [
+        "zz-earlier-request",
+        "aa-later-request",
+    ]

@@ -377,7 +377,14 @@ def replay_evidence(
             [],
         )
     )
-    bodies = [e for e in events if e.get("kind") == "body"]
+    # `events` keeps raw collection order, which for a batch first read together
+    # follows the S3 request-key listing rather than execution chronology. Order
+    # the user-code records causally so a retry's stored failure cannot appear
+    # after its later success and reject a conforming SDK.
+    bodies = sorted(
+        (e for e in events if e.get("kind") == "body"),
+        key=lambda e: (e.get("atMs", 0), e.get("sequence", 0)),
+    )
     executions = [
         {
             "requestId": e["requestId"],

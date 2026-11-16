@@ -381,6 +381,13 @@ class _Evidence:
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
+        # Ordering alone does not bound the measurement: requirement 4 declares
+        # recoveryMs, so the observed recovery must fit inside it.
+        recovery_budget = self.number(
+            self.mapping(self.value.get("budgets"), "budgets").get("recoveryMs"), "budgets.recoveryMs"
+        )
+        if not timeout <= recovered <= timeout + recovery_budget:
+            self.error("recovery exceeded the declared recoveryMs budget", "ASSERTION")
         peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         if len(peers) != self.profile.get("nativeConcurrency", 0) - 1:
             self.error("recovery must occupy every other native capacity slot", "PLACEMENT")
