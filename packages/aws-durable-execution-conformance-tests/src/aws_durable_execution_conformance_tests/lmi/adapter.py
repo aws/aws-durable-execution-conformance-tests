@@ -127,6 +127,14 @@ class SharedAdapter:
                     pending.result(timeout=0.2)
                     break
                 except FutureTimeout:
+                    # concurrent.futures.TimeoutError is the built-in
+                    # TimeoutError here, so a reservation that exceeded its own
+                    # budget raises the same class as a poll timeout. Ask the
+                    # future which happened instead of spinning on its stored
+                    # exception forever.
+                    if pending.done():
+                        pending.result()
+                        break
                     if aborted is not None:
                         continue
                     try:

@@ -191,6 +191,9 @@ def test_scenario_concurrency_exceeds_native_capacity_during_suspension():
     assert adapter.max_live == 3
 
 
+SERIAL_BUDGETS = Budgets(execution=5, lease=5, placement=5, collection=5, release=5, retirement=5, provisioning=5)
+
+
 def test_serial_run_admits_a_queued_case_while_another_is_suspended():
     """A suspended owner hands back its global slot along with its capacity.
 
@@ -226,10 +229,43 @@ def test_serial_run_admits_a_queued_case_while_another_is_suspended():
         adapter,
         profiles=[profile],
         scenario_concurrency=1,
-        budgets=Budgets(execution=5, lease=5, placement=5, collection=5, release=5, retirement=5, provisioning=5),
+        budgets=SERIAL_BUDGETS,
     )
     assert [result.status for result in results] == ["PASSED", "PASSED"], results
     assert adapter.retired == ["queued", "suspended"]
+
+
+def test_a_case_waiting_for_a_work_permit_holds_no_native_capacity():
+    """Admission and resumption must acquire in one order: permit, then capacity.
+
+    Resumption has to take the permit first, so admission must too. Otherwise a
+    queued case can hold the slot a resuming owner needs while that owner holds
+    the permit the queued case waits for, and the two never make progress.
+    """
+    first = replace(PROFILE, profile_id="p1", resource_id="fn-1", capacity=1, native_concurrency=1)
+    second = replace(PROFILE, profile_id="p2", resource_id="fn-2", capacity=1, native_concurrency=1)
+    scheduler = ResourceScheduler()
+    waiting_owners = []
+
+    class HoldingAdapter(Adapter):
+        async def execute(self, context):
+            if context.scenario.profile_id != "p1":
+                return
+            # The other case cannot run while this one holds the only permit, so
+            # it must still be queued for that permit and own no capacity.
+            await asyncio.sleep(0.05)
+            waiting_owners.append(sorted(scheduler._resources["fn-2"].owners))
+
+    results = run(
+        [case("first", profile=first), case("second", profile=second)],
+        HoldingAdapter(),
+        profiles=[first, second],
+        scenario_concurrency=1,
+        scheduler=scheduler,
+        budgets=SERIAL_BUDGETS,
+    )
+    assert [result.status for result in results] == ["PASSED", "PASSED"], results
+    assert waiting_owners == [[]], waiting_owners
 
 
 def test_cancelled_waiter_does_not_block_later_admission():

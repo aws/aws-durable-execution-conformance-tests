@@ -670,6 +670,18 @@ async def run_scenarios(
                 )
             )
         try:
+            # Admission and resumption must acquire in one global order, the
+            # work permit before native capacity. Taking capacity first and then
+            # queueing for a permit lets this case hold the slot a resuming
+            # owner needs while that owner holds the permit this case waits for.
+            # The cost is that a case queued on a busy target occupies a work
+            # slot; a deadlock that quarantines the target costs more.
+            # The context owns the permit from here: a suspended case hands it
+            # back while idle, so ownership cannot be tracked by this frame.
+            try:
+                await context.acquire_permit(timeout=limits.lease)
+            except TimeoutError as exc:
+                raise PhaseTimeout(f"admission exceeded its {limits.lease:g}s harness budget") from exc
             lease_started = time.time() * 1000
             lease_monotonic_started = time.monotonic()
             try:
@@ -691,11 +703,6 @@ async def run_scenarios(
                     "durationMs": (time.monotonic() - lease_monotonic_started) * 1000,
                 }
             context._lease = lease
-            # Waiting for a busy target must not consume global slots needed
-            # by unrelated profiles. Count active work only after its lease.
-            # The context owns the permit from here: a suspended case hands it
-            # back while idle, so ownership cannot be tracked by this frame.
-            await context.acquire_permit(timeout=limits.lease)
             context.timings["admission"]["finishedAtMs"] = time.time() * 1000
 
             # Start and placement share a single budget: repeated placement
