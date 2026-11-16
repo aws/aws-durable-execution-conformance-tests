@@ -146,18 +146,15 @@ class CaseSources:
                 errors.append(f"Raw source publication is incomplete for {request}")
         return events, errors
 
-    def operation_snapshots(self, events: list[dict[str, Any]]) -> dict[str, dict[str, Mapping[str, Any]]]:
-        snapshots: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
-        for event in events:
-            records = list(event.get("operations", []))
-            if event.get("operationId") and event.get("operationType"):
-                records.append(event)
-            for record in records:
-                snapshots[event["executionArn"]][record["operationId"]] = record
-        return snapshots
+    def histories(self) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+        """Normalize service history from service events alone.
 
-    def histories(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
-        snapshots = self.operation_snapshots(events)
+        SDK checkpoint observations are the other side of the replay
+        comparison, so none of the history's identity or output may come from
+        them, or a corrupted checkpoint would compare equal to itself. An
+        identity field the service omits, as for an unnamed root operation, is
+        null.
+        """
         histories: list[dict[str, Any]] = []
         expected: dict[str, Any] = {}
         errors: list[str] = []
@@ -176,14 +173,13 @@ class CaseSources:
                 identity = raw.get("Id")
                 if kind is None or not isinstance(identity, str):
                     continue
-                info = snapshots.get(arn, {}).get(identity, {})
                 operation = operations.setdefault(
                     identity,
                     {
                         "id": identity,
                         "type": kind,
-                        "name": raw.get("Name", info.get("name")),
-                        "parentId": raw.get("ParentId", info.get("parentId")),
+                        "name": raw.get("Name"),
+                        "parentId": raw.get("ParentId"),
                         "status": "STARTED",
                     },
                 )
@@ -513,7 +509,7 @@ def build_evidence(
 ) -> dict[str, Any]:
     sources = CaseSources.capture(context, cloud, expected_outcome=expected_outcome, worker_identity=worker_identity)
     events, errors = sources.observations()
-    histories, expected, history_errors = sources.histories(events)
+    histories, expected, history_errors = sources.histories()
     attempts, selected, attempt_errors = sources.attempts(events)
     errors.extend(history_errors + attempt_errors)
     _causal_order(events)

@@ -113,7 +113,7 @@ def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):
         artifacts_dir=tmp_path,
     )
     sources = SimpleNamespace(
-        observations=lambda: ([], []), histories=lambda _: ([], {}, []), attempts=lambda _: ([], {}, [])
+        observations=lambda: ([], []), histories=lambda: ([], {}, []), attempts=lambda _: ([], {}, [])
     )
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
         evidence = build_evidence(context(), cloud)

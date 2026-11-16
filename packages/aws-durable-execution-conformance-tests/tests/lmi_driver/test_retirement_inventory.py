@@ -93,7 +93,7 @@ def normalized(tmp_path, *, callback_outcome="SUCCEEDED", control_deleted=True, 
     )
     sources = SimpleNamespace(
         observations=lambda: (deepcopy(baseline["events"]), []),
-        histories=lambda _: (baseline["histories"], {}, []),
+        histories=lambda: (baseline["histories"], {}, []),
         attempts=lambda _: (baseline["attempts"], baseline["selectedRequests"], []),
     )
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):

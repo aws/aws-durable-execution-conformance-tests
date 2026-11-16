@@ -141,7 +141,7 @@ def test_final_read_bound_alone_does_not_invent_quiescence(tmp_path):
     }
     sources = SimpleNamespace(
         observations=lambda: ([event], []),
-        histories=lambda _: ([], {}, []),
+        histories=lambda: ([], {}, []),
         attempts=lambda _: (
             [{"requestId": "request", "executionArn": "execution"}],
             {"victim": "request"},
