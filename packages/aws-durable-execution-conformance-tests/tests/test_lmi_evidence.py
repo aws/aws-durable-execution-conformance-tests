@@ -901,3 +901,44 @@ def test_replay_compares_completed_operations_by_identity_not_position() -> None
     value["replay"]["after"] = [item for item in value["replay"]["after"] if item["id"] != "done"]
     history["operations"] = deepcopy(value["replay"]["after"])
     assert any("operation identity" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(("outcome", "rejected"), [(None, True), ("", True), (7, True), ("FIRED", False)])
+def test_every_retired_resource_needs_an_outcome(outcome: Any, rejected: bool) -> None:
+    # The schema requires a non-empty outcome for every retired resource, not
+    # only for the four kinds with their own completion rules.
+    value = evidence()
+    resource = {"id": "timer-1", "kind": "timer", "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    settled = {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/run-1/case-1/timer.json"}
+    if outcome is not None:
+        settled["outcome"] = outcome
+    value["retirement"]["resources"].append(settled)
+    errors = validate_evidence(value)
+    assert any("retirement.resources.outcome" in error for error in errors) is rejected, errors
+
+
+@pytest.mark.parametrize(
+    ("started", "reason"),
+    [
+        (False, "finite non-negative"),
+        (-1, "finite non-negative"),
+        (float("inf"), "finite non-negative"),
+        (11, "first native admission"),
+        (10, None),
+        (5, None),
+    ],
+)
+def test_supplied_execution_start_is_valid_and_precedes_first_admission(started: Any, reason: str | None) -> None:
+    # The victim's first native admission is at 10.
+    value = evidence()
+    victim = value["attempts"][0]
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history["startedAtMs"] = started
+    errors = [
+        error for error in validate_evidence(value) if "startedAtMs" in error or "first native admission" in error
+    ]
+    if reason is None:
+        assert errors == [], errors
+    else:
+        assert any(reason in error for error in errors), errors
