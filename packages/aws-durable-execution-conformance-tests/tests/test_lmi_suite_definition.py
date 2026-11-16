@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from runpy import run_path
 from types import SimpleNamespace
@@ -123,6 +124,35 @@ def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog
     assert evidence_results(plan, tmp_path, suite=definition())[0]["status"] == "FAILED"
 
 
+@pytest.mark.parametrize("role_source", ["manifest", "suite"])
+def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
+    plan, value = plan_and_evidence()
+    suite = definition()
+    roles = ("victim", "peer", "spare")
+    if role_source == "manifest":
+        plan["scenarios"][0]["roles"] = list(roles)
+    else:
+        suite = replace(suite, cases=(replace(suite.cases[0], roles=roles),))
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    assert load_manifest(path, suite=suite) == plan
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path, suite=suite)[0]
+    assert result["status"] == "FAILED"
+    assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    spare = fixtures["attempt"]("spare")
+    value["attempts"].append(spare)
+    value["selectedRequests"]["spare"] = spare["requestId"]
+    fixtures["refresh_histories"](value)
+    fixtures["record_owned_resources"](value)
+    evidence_path.write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path, suite=suite)[0]
+    assert result["status"] == "PASSED", result["errors"]
+
+
 def test_local_definition_cannot_be_used_under_a_different_profile(tmp_path: Path) -> None:
     plan, _ = plan_and_evidence()
     plan["coverageProfile"] = "standard"
@@ -193,8 +223,6 @@ def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(
 
 @pytest.mark.parametrize("reserved", ["profile", "report", "requirement"])
 def test_caller_owned_rules_cannot_masquerade_as_shared_conformance(tmp_path: Path, reserved: str) -> None:
-    from dataclasses import replace
-
     plan, _ = plan_and_evidence()
     suite = definition()
     if reserved == "profile":

@@ -274,20 +274,19 @@ def _identity_errors(
     if evidence.get("coverageProfile", "standard") != coverage_profile:
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
+    definition = _case_definition(manifest, scenario, profile, suite)
+    # A manifest may declare roles beyond the requirement's defaults. Live
+    # runs reject an incomplete cohort through the coordinator's ownership
+    # check; retained evidence must cover the same role set for every suite.
+    declared = set(scenario.get("roles", definition.roles))
+    selected_roles = evidence.get("selectedRequests")
+    if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
+        errors.append("INCOMPLETE: selectedRequests does not cover every declared cohort role")
     if suite is None:
-        definition = _case_definition(manifest, scenario, profile)
         if (definition.budget_names or "behavior_budgets" in scenario) and evidence.get("budgets") != scenario.get(
             "behavior_budgets", {}
         ):
             errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
-        # A manifest may declare roles beyond the requirement's defaults. Live
-        # runs reject an incomplete cohort through the coordinator's ownership
-        # check; retained evidence has to be held to the same role set, or an
-        # extra declared role can pass without ever having run.
-        declared = set(scenario.get("roles", definition.roles))
-        selected_roles = evidence.get("selectedRequests")
-        if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
-            errors.append("INCOMPLETE: selectedRequests does not cover every declared cohort role")
     else:
         if evidence.get("scenario") != scenario["scenario"]:
             errors.append("INCOMPLETE: evidence scenario does not match the admitted variant")
