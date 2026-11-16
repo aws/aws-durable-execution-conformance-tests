@@ -411,3 +411,16 @@ def deploy(tmp_path):
     return DeploymentManager(
         runtime=RUNTIME, owner="test-lmi-e2e", artifacts=tmp_path, bundle=tmp_path / "function.zip"
     )
+
+
+@pytest.mark.parametrize("drift", [{"AWS_RETRY_MODE": "legacy"}, {"AWS_MAX_ATTEMPTS": "10"}])
+def test_verify_rejects_environment_drift(deploy, manifest, drift):
+    # Retry mode and extra SDK settings change behavior but are absent from
+    # the configuration identity, so the whole environment must match.
+    config = copy.deepcopy(deploy.template(manifest)["Resources"]["c1Function"]["Properties"])
+    config.update(State="Active", Version=QUALIFIER, CodeSha256="hash")
+    scaling = {"AppliedFunctionScalingConfig": SCALING}
+    deploy.verify(config, scaling, manifest, "c1")
+    config["Environment"]["Variables"].update(drift)
+    with pytest.raises(ProvisioningError):
+        deploy.verify(config, scaling, manifest, "c1")

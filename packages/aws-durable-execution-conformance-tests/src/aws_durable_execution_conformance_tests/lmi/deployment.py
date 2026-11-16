@@ -136,14 +136,7 @@ class DeploymentManager:
                                 "ExecutionEnvironmentMemoryGiBPerVCpu": 2,
                             }
                         },
-                        "Environment": {
-                            "Variables": {
-                                "LMI_BUCKET": bucket,
-                                "LMI_COMMIT": manifest["commit"],
-                                "LMI_RUN_ID": manifest["run"],
-                                "AWS_RETRY_MODE": "standard",
-                            }
-                        },
+                        "Environment": {"Variables": self.environment(manifest)},
                         "LoggingConfig": {
                             "LogFormat": "JSON",
                             "ApplicationLogLevel": "INFO",
@@ -189,6 +182,16 @@ class DeploymentManager:
             time.sleep(3)
         raise ProvisioningError(f"{name}: provisioning deadline exceeded; stack retained")
 
+    @staticmethod
+    def environment(manifest):
+        """The complete function environment; anything else is drift."""
+        return {
+            "LMI_BUCKET": manifest["bucket"],
+            "LMI_COMMIT": manifest["commit"],
+            "LMI_RUN_ID": manifest["run"],
+            "AWS_RETRY_MODE": "standard",
+        }
+
     def verify(self, config, scaling, manifest, key):
         actual = config.get("CapacityProviderConfig", {}).get("LambdaManagedInstancesCapacityProviderConfig", {})
         checks = [
@@ -198,7 +201,7 @@ class DeploymentManager:
             config.get("Role") == manifest["role"],
             config.get("Handler") == self.runtime.handler,
             not config.get("Layers", []),
-            config.get("Environment", {}).get("Variables", {}).get("LMI_BUCKET") == manifest["bucket"],
+            config.get("Environment", {}).get("Variables") == self.environment(manifest),
             config.get("Architectures") == [self.runtime.architecture],
             config.get("Version") == QUALIFIER,
             config.get("CodeSha256") == manifest["codeSha256"],
@@ -207,8 +210,6 @@ class DeploymentManager:
             config.get("DurableConfig", {}).get("ExecutionTimeout") == manifest["executionTimeout"],
             config.get("Timeout") == manifest["invocationTimeout"],
             scaling.get("AppliedFunctionScalingConfig") == SCALING,
-            config.get("Environment", {}).get("Variables", {}).get("LMI_COMMIT") == manifest["commit"],
-            config.get("Environment", {}).get("Variables", {}).get("LMI_RUN_ID") == manifest["run"],
         ]
         if not all(checks):
             raise ProvisioningError(f"{key}: LMI configuration/artifact/scaling readback mismatch")

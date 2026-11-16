@@ -2,7 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Language-neutral source selection and runtime-specific placement models."""
 
+from collections.abc import Mapping
+
 from .errors import CollectionError, PlacementError
+
+# The error type Lambda reports in InvocationCompletedDetails when the
+# platform ends an invocation at its timeout, as observed in real LMI runs.
+PLATFORM_TIMEOUT_ERROR_TYPES = frozenset({"Sandbox.Timedout"})
+
+
+def service_error_type(details):
+    """The structured error type of a service invocation completion, if any."""
+    error = details.get("Error") if isinstance(details, Mapping) else None
+    payload = error.get("Payload", error) if isinstance(error, Mapping) else None
+    kind = payload.get("ErrorType") if isinstance(payload, Mapping) else None
+    return kind if isinstance(kind, str) else None
+
+
+def is_platform_timeout(details):
+    """Classify by error type: messages and stack traces can mention timeouts."""
+    return service_error_type(details) in PLATFORM_TIMEOUT_ERROR_TYPES
 
 
 def select(events, phase, marker=None):

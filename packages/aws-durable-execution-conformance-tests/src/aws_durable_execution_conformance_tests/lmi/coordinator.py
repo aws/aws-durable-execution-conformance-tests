@@ -104,7 +104,7 @@ class _Waiter:
     owner: str
     slots: int
     exclusive: bool
-    budgeted: bool = False
+    budget: str | None = None
 
 
 @dataclass
@@ -154,18 +154,19 @@ class ResourceScheduler:
     another case.
     """
 
-    def __init__(self, *, concurrency: int | None = None) -> None:
+    def __init__(self) -> None:
         self._resources: dict[str, _Resource] = {}
-        self._concurrency = concurrency
-        self._active = 0
+        # Runs can share a scheduler, so each keeps its own work budget.
+        self._limits: dict[str, int] = {}
+        self._active: Counter[str] = Counter()
 
-    def limit_concurrency(self, concurrency: int) -> None:
-        if type(concurrency) is not int or concurrency < 1:
-            raise ValueError("Scenario concurrency must be a positive integer")
-        self._concurrency = concurrency
+    def limit_concurrency(self, budget: str, concurrency: int) -> None:
+        if not budget or type(concurrency) is not int or concurrency < 1:
+            raise ValueError("A work budget needs a name and a positive concurrency")
+        self._limits[budget] = concurrency
 
-    def _budget_available(self) -> bool:
-        return self._concurrency is None or self._active < self._concurrency
+    def _budget_available(self, budget: str | None) -> bool:
+        return budget is None or budget not in self._limits or self._active[budget] < self._limits[budget]
 
     async def _wake_other_resources(self, released: str) -> None:
         """Freed budget can admit a waiter on any other target.
@@ -204,9 +205,9 @@ class ResourceScheduler:
         slots: int = 1,
         exclusive: bool = False,
         timeout: float = 300,
-        budgeted: bool = False,
+        budget: str | None = None,
     ) -> Lease:
-        """Grant a target's capacity, and the run's work budget when budgeted.
+        """Grant a target's capacity, and a slot in the named work budget.
 
         Deployment and run-ownership leases are never budgeted: they serialize
         a target rather than run a case's work.
@@ -214,7 +215,7 @@ class ResourceScheduler:
         resource = self._resources[resource_id]
         if not owner or type(slots) is not int or not 1 <= slots <= resource.capacity:
             raise ValueError("A lease needs an owner and slots within the resource capacity")
-        request = _Waiter(owner, slots, exclusive, budgeted)
+        request = _Waiter(owner, slots, exclusive, budget)
         async with resource.condition:
             if owner in resource.owners or any(waiter.owner == owner for waiter in resource.queue):
                 raise ValueError(f"Duplicate resource owner {owner}")
@@ -230,13 +231,13 @@ class ResourceScheduler:
                         if (
                             first
                             and not active_exclusive
-                            and (not budgeted or self._budget_available())
+                            and self._budget_available(budget)
                             and (not resource.owners if exclusive else slots <= available)
                         ):
                             resource.queue.popleft()
                             resource.owners[owner] = request
-                            if budgeted:
-                                self._active += 1
+                            if budget is not None:
+                                self._active[budget] += 1
                             resource.condition.notify_all()
                             return Lease(self, resource_id, owner, reserved_slots=slots)
                         await resource.condition.wait()
@@ -262,10 +263,10 @@ class ResourceScheduler:
             if not quiescent:
                 resource.quarantine_reason = f"Unretired owner {owner}"
             released = resource.owners.pop(owner)
-            if released.budgeted:
-                self._active -= 1
+            if released.budget is not None:
+                self._active[released.budget] -= 1
             resource.condition.notify_all()
-        if released.budgeted:
+        if released.budget is not None:
             await self._wake_other_resources(resource_id)
 
     @asynccontextmanager
@@ -582,13 +583,36 @@ def _retirement_ownership_errors(
         "gateId",
     )
 
-    def starts(events: list[Any]) -> Counter[tuple[Any, ...]]:
+    # Completion facts and late activity are preserved as well as starts: a
+    # snapshot that drops them would audit less than was already observed.
+    preserved_kinds = start_kinds | {
+        "task_exit",
+        "io_exit",
+        "checkpoint_exit",
+        "poll_exit",
+        "wrapper_return",
+        "wrapper_raise",
+        "late_activity",
+    }
+
+    def preserved(events: list[Any]) -> Counter[tuple[Any, ...]]:
         if any(not isinstance(event, Mapping) for event in events):
             raise ValueError("Retirement observations must be objects")
-        return Counter(tuple(event.get(key) for key in fields) for event in events if event.get("kind") in start_kinds)
+        return Counter(
+            tuple(event.get(key) for key in fields) for event in events if event.get("kind") in preserved_kinds
+        )
 
-    if starts(before_events) - starts(after_events):
+    if preserved(before_events) - preserved(after_events):
         errors.append("Retirement omitted or changed previously observed work")
+    observed = [event.get("atMs") for event in before_events] + [original.get("observationEndedAtMs")]
+    latest = max(
+        (value for value in observed if isinstance(value, (int, float)) and not isinstance(value, bool)),
+        default=0,
+    )
+    retirement = final.get("retirement")
+    retired_at = retirement.get("retiredAtMs") if isinstance(retirement, Mapping) else None
+    if not isinstance(retired_at, (int, float)) or isinstance(retired_at, bool) or retired_at < latest:
+        errors.append("Retirement snapshot predates previously observed activity")
     return errors
 
 
@@ -631,7 +655,7 @@ async def run_scenarios(
         leases.register(profile.resource_id, profile.capacity)
     if not callable(getattr(adapter, "finish", None)):
         raise ValueError("Adapter must implement finish(profile, *, quiescent) for cross-run ownership")
-    leases.limit_concurrency(scenario_concurrency)
+    leases.limit_concurrency(run_id, scenario_concurrency)
     contexts = {
         case.case_id: ScenarioContext(run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt)
         for case in scenarios
@@ -680,7 +704,24 @@ async def run_scenarios(
         cancelled = False
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
-        preparation_errors, preparation_timings = await asyncio.shield(prepared[case.profile_id])
+        try:
+            preparation_errors, preparation_timings = await asyncio.shield(prepared[case.profile_id])
+        except asyncio.CancelledError:
+            # Waiting cases belong to the run's audit record even though they
+            # never acquired a lease, so publish them before propagating.
+            emit(
+                ScenarioResult(
+                    case.case_id,
+                    case.requirement_id,
+                    case.profile_id,
+                    "INFRASTRUCTURE_ERROR",
+                    ["Scenario cancelled during target preparation"],
+                    {},
+                    [],
+                    context.timings,
+                )
+            )
+            raise
         context.timings.update(copy.deepcopy(preparation_timings))
         if preparation_errors:
             return emit(
@@ -709,7 +750,7 @@ async def run_scenarios(
                     slots=case.slots,
                     exclusive=case.exclusive,
                     timeout=limits.lease,
-                    budgeted=True,
+                    budget=run_id,
                 )
             except TimeoutError as exc:
                 raise PhaseTimeout(f"lease exceeded its {limits.lease:g}s harness budget") from exc
