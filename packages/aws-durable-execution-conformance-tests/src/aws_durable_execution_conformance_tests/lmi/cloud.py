@@ -507,6 +507,33 @@ class Cloud:
             self.release(gate)
         self.gates.clear()
 
+    def delete_controls(self):
+        """Delete owned barriers only after their runtime users are quiescent."""
+        gates = {record["gate"] for record in self.control_records if record["action"] == "hold"}
+        deleted = {
+            record["gate"]
+            for record in self.control_records
+            if record["action"] == "delete" and record.get("state") == "ACKNOWLEDGED"
+        }
+        for gate in sorted(gates - deleted):
+            self.check_active()
+            if gate not in self.released_gates:
+                raise CollectionError("Cannot delete an unreleased case control")
+            intent = {"gate": gate, "action": "delete", "started": time.time(), "state": "PENDING"}
+            self.control_records.append(intent)
+            self._save("control-records.json", self.control_records)
+            request = {"Bucket": self.manifest["bucket"], "Key": f"{self.control_prefix}{gate}"}
+            self.s3.delete_object(**request)
+            try:
+                self.s3.head_object(**request)
+            except ClientError as error:
+                if error.response["Error"]["Code"] not in {"404", "NoSuchKey", "NotFound"}:
+                    raise CollectionError("Cannot verify owned control deletion") from error
+            else:
+                raise CollectionError("Deleted case control is still present")
+            intent.update(time=time.time(), state="ACKNOWLEDGED")
+            self._save("control-records.json", self.control_records)
+
     def run_invocations(self):
         """Recover only this run's invocations, including failed Invoke responses."""
         events = self.refresh(markers=[], validate_controls=False)

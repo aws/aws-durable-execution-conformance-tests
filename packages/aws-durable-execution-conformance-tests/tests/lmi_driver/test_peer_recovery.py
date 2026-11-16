@@ -115,6 +115,9 @@ class RecoveryCloud(ScriptCloud):
     def collect(self, **options):
         self.actions.append(("collect",))
 
+    def delete_controls(self):
+        self.actions.append(("delete-controls",))
+
     def settle_case(self):
         self.retiring = True
         self.actions.append(("settle",))

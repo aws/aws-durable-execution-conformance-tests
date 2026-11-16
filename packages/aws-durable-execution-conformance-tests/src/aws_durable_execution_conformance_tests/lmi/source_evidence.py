@@ -586,6 +586,39 @@ def build_evidence(
         {"kind": "execution", "id": arn, "ownerCaseId": context.scenario.case_id}
         for arn in dict.fromkeys(item["executionArn"] for item in attempts)
     )
+    # Service callback starts establish ownership even when callback dispatch
+    # failed before the driver received a response. Operation IDs avoid exposing
+    # callback tokens in the retained inventory.
+    callbacks = {}
+    callback_completions: dict[str, list[dict[str, Any]]] = {}
+    for arn in dict.fromkeys(item["executionArn"] for item in attempts):
+        for event in getattr(cloud, "raw_histories", {}).get(arn, []):
+            operation_id = event.get("Id")
+            if not isinstance(operation_id, str):
+                continue
+            identity = f"{arn}/callback/{operation_id}"
+            if event.get("EventType", "").startswith("Callback"):
+                callbacks[identity] = {
+                    "kind": "callback",
+                    "id": identity,
+                    "ownerCaseId": context.scenario.case_id,
+                    "executionArn": arn,
+                    "operationId": operation_id,
+                }
+            if event.get("EventType") in {"CallbackSucceeded", "CallbackFailed", "CallbackTimedOut"}:
+                callback_completions.setdefault(identity, []).append(event)
+    created.extend(callbacks.values())
+    controls = {
+        record["gate"]: {
+            "kind": "control",
+            "id": f"s3://{cloud.manifest['bucket']}/{cloud.control_prefix}{record['gate']}",
+            "gate": record["gate"],
+            "ownerCaseId": context.scenario.case_id,
+        }
+        for record in cloud.control_records
+        if record["action"] == "hold"
+    }
+    created.extend(controls.values())
     evidence["resourcesCreated"] = created
     # Coordination barriers are not injected victim faults. Retain their full
     # journal separately; releasing a healthy peer is not evidence of victim cleanup.
@@ -638,14 +671,36 @@ def build_evidence(
                 item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
             elif resource["kind"] == "execution":
                 item["outcome"] = cloud.execution_results.get(resource["id"], {}).get("Status", "UNKNOWN")
-            else:
-                completion = [
-                    event
-                    for event in events
-                    if event.get("kind") == resource["kind"] + "_completed"
-                    and event.get(resource["kind"] + "Id") == resource["id"]
+            elif resource["kind"] == "callback":
+                completion = callback_completions.get(resource["id"], [])
+                item["outcome"] = "UNKNOWN"
+                if len(completion) == 1:
+                    item["outcome"] = {
+                        "CallbackSucceeded": "SUCCEEDED",
+                        "CallbackFailed": "FAILED",
+                        "CallbackTimedOut": "TIMED_OUT",
+                    }[completion[0]["EventType"]]
+                    try:
+                        item["settledAtMs"] = _milliseconds(completion[0].get("EventTimestamp"))
+                    except (TypeError, ValueError):
+                        item["outcome"] = "UNKNOWN"
+                invocation = next((i for i in cloud.invocations if i.get("arn") == resource["executionArn"]), None)
+                if invocation is not None:
+                    item["evidenceUri"] = (
+                        (cloud.artifacts_dir / f"histories/{invocation['marker']}.json").resolve().as_uri()
+                    )
+            elif resource["kind"] == "control":
+                receipts = [
+                    record
+                    for record in cloud.control_records
+                    if record["gate"] == resource["gate"]
+                    and record["action"] == "delete"
+                    and record.get("state") == "ACKNOWLEDGED"
                 ]
-                item["outcome"] = completion[0].get("outcome") if len(completion) == 1 else "UNKNOWN"
+                item["outcome"] = "DELETED" if receipts else "UNKNOWN"
+                if receipts:
+                    item["settledAtMs"] = receipts[-1]["time"] * 1000
+                item["evidenceUri"] = (cloud.artifacts_dir / "control-records.json").resolve().as_uri()
             settled.append(item)
         evidence["retirement"] = {
             "retiredAtMs": retired,

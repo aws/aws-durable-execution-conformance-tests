@@ -102,7 +102,8 @@ def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):
     from .test_shared_partial_evidence import context
 
     cloud = SimpleNamespace(
-        manifest={"invocationTimeout": 60},
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        control_prefix="runs/run/cases/case/control/",
         retired_at=None,
         observation_ended_at=2,
         source_uris=set(),

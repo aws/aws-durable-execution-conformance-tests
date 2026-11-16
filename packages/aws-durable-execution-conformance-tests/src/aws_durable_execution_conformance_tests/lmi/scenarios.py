@@ -337,5 +337,6 @@ class ScenarioDriver:
             message="Case-owned task/request work is not quiescent",
         )
         self.cloud.collect(full_run=False)
+        self.cloud.delete_controls()
         self.cloud.retired_at = time.time()
         return True

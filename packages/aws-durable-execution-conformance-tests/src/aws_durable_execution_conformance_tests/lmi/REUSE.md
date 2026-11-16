@@ -141,6 +141,9 @@ repository; SDK repositories must use separately provisioned test capacity if
 they run at the same time. Direct CLI runs are not serialized with Actions.
 There is no S3 shared lock. Within a run, the coordinator still verifies
 case ownership, capacity, cancellation and retirement before reusing a target.
+Retirement inventories service callbacks and case controls. Callback completion
+requires a terminal service-history event; controls are deleted after runtime
+quiescence, with S3 absence verified and deletion receipts retained.
 
 The Python adoption is [SDK PR #931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931).
 Merge the shared PR first, then the SDK caller pinned to it. Harness tests and
