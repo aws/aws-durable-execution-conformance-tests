@@ -37,6 +37,15 @@ Each attempt records:
 - `startedAtMs`, `endedAtMs`, and independently observed invocation `outcome`
   (`SUCCEEDED`, `FAILED`, `PENDING`, or `TIMED_OUT`).
 
+The source normalizer uses the matching request's
+`InvocationCompletedDetails.StartTimestamp` for a completed native invocation's
+start. It must be finite, nonnegative and no later than that request's first
+fixture observation. A missing or invalid start on a collected completion record
+makes the evidence incomplete. Before a platform completion record is available,
+the normalizer retains the narrower fixture-observed interval; that alone cannot
+establish a full native timeout. Never substitute the durable execution start or
+infer native admission by subtracting the configured timeout from a deadline.
+
 `events` is an array of observations. Every event records `kind`, `requestId`,
 `ownerRequestId`, `executionArn`, and `atMs`. The invocation and execution owner
 must agree with the launch record. Late work keeps its original `requestId` and

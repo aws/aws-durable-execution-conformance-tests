@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from typing import Any
 
 import boto3
@@ -31,9 +32,15 @@ class DurableFunctionRunner:
         self.function_name = function_name
         self.lambda_client = lambda_client if lambda_client is not None else client("lambda", region)
 
-    def run_async(self, input=None) -> str:
+    def run_async(self, input=None, *, execution_name: str | None = None) -> str:
+        # Resolve once per logical invocation, before botocore can retry the
+        # transport. A lost response must not create another durable execution.
+        name = execution_name if execution_name is not None else uuid.uuid4().hex
         result = self.lambda_client.invoke(
-            FunctionName=self.function_name, InvocationType="Event", Payload=json.dumps(input)
+            FunctionName=self.function_name,
+            InvocationType="Event",
+            Payload=json.dumps(input),
+            DurableExecutionName=name,
         )
         if result.get("StatusCode") != 202 or not result.get("DurableExecutionArn"):
             body = result.get("Payload")

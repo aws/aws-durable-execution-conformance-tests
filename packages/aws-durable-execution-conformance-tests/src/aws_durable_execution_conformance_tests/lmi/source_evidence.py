@@ -10,6 +10,7 @@ in the case artifact directory and S3 ledger.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -240,11 +241,28 @@ class CaseSources:
             owned = [event for event in events if event.get("requestId") == request]
             boundaries = [event for event in owned if event.get("kind") in {"wrapper_return", "wrapper_raise"}]
             deadline = [event for event in owned if event.get("kind") == "runtime_deadline"]
+            observed_start = min([raw["time"] * 1000, *(event["atMs"] for event in owned)])
+            started_at = observed_start
             timeout = None
             for service_event in self.cloud.raw_histories.get(raw["execution"], []):
                 details = service_event.get("InvocationCompletedDetails", {})
+                if details.get("RequestId") != request:
+                    continue
+                # Fixture setup occurs after native admission. Only this
+                # request's platform start establishes its full timeout window;
+                # the durable execution start may belong to an earlier replay.
+                try:
+                    native_start = _milliseconds(details.get("StartTimestamp"))
+                except (ValueError, OverflowError):
+                    native_start = None
+                if native_start is None or not math.isfinite(native_start) or not 0 <= native_start <= observed_start:
+                    errors.append(
+                        f"Native request {request} has an invalid or missing InvocationCompletedDetails.StartTimestamp"
+                    )
+                else:
+                    started_at = native_start
                 message = json.dumps(details.get("Error", {})).lower().replace(" ", "")
-                if details.get("RequestId") == request and any(word in message for word in ("timeout", "timedout")):
+                if any(word in message for word in ("timeout", "timedout")):
                     timeout = {
                         "kind": "platform_timeout",
                         "requestId": request,
@@ -268,7 +286,7 @@ class CaseSources:
                 "attempt": journal[request]["attempt"],
                 "marker": raw["marker"],
                 "fixture": item.get("payload", {}).get("scenario"),
-                "startedAtMs": min([raw["time"] * 1000, *(event["atMs"] for event in owned)]),
+                "startedAtMs": started_at,
             }
             if boundaries:
                 attempt["outcome"] = boundaries[-1]["outcome"]

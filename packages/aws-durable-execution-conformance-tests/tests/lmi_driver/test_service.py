@@ -12,15 +12,29 @@ from aws_durable_execution_conformance_tests.lmi.service import DurableFunctionR
 from .test_cloud import Clock
 
 
-def test_invoke_preserves_the_fixture_payload_and_does_not_retry_writes():
+def test_invoke_preserves_the_fixture_payload_and_explicit_execution_name():
     api = Mock()
     api.invoke.return_value = {"StatusCode": 202, "DurableExecutionArn": "execution"}
     runner = DurableFunctionRunner("qualified-function", region="us-west-2", lambda_client=api)
     payload = {"caseId": "case", "scenario": "replay", "marker": "marker"}
-    assert runner.run_async(input=payload) == "execution"
+    assert runner.run_async(input=payload, execution_name="journaled-launch") == "execution"
     api.invoke.assert_called_once_with(
-        FunctionName="qualified-function", InvocationType="Event", Payload=json.dumps(payload)
+        FunctionName="qualified-function",
+        InvocationType="Event",
+        Payload=json.dumps(payload),
+        DurableExecutionName="journaled-launch",
     )
+
+
+def test_unnamed_logical_calls_receive_distinct_execution_names():
+    api = Mock()
+    api.invoke.return_value = {"StatusCode": 202, "DurableExecutionArn": "execution"}
+    runner = DurableFunctionRunner("qualified-function", region="us-west-2", lambda_client=api)
+    runner.run_async(input={"same": "payload"})
+    runner.run_async(input={"same": "payload"})
+    names = [call.kwargs["DurableExecutionName"] for call in api.invoke.call_args_list]
+    assert len(set(names)) == 2
+    assert all(1 <= len(name) <= 64 and name.isalnum() for name in names)
 
 
 def test_callback_search_retries_not_found_and_follows_pages(monkeypatch):

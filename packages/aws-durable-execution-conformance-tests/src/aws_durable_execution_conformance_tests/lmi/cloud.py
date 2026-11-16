@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded real-service driver using the repository's cloud runner."""
 
+import hashlib
 import json
 import time
 import uuid
@@ -180,6 +181,15 @@ class Cloud:
         if self.configuration not in self.manifest["functions"]:
             raise ProvisioningError("Select a deployed concurrency configuration before Invoke")
         marker = marker or scenario + "-" + uuid.uuid4().hex[:12]
+        # Markers can exceed Lambda's 64-character execution-name limit. Keep
+        # their run/case scope while deriving a stable, bounded transport name.
+        identity = [
+            self.manifest["run"],
+            self.configuration,
+            self.case_context.scenario.case_id if self.case_context is not None else None,
+            marker,
+        ]
+        execution_name = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         payload = dict(dispatcher_payload or {})
         if dispatcher_payload:
             payload["sharedScenario"] = dispatcher_payload["scenario"]
@@ -218,24 +228,30 @@ class Cloud:
             "resume_roles": tuple(resume_roles),
             "native_requests": [],
             "launch_id": marker,
+            "execution_name": execution_name,
         }
         if self.case_context is not None:
             # Retain attempted writes before the transport, even if its response
             # is lost. Later ledger observations can recover their native IDs.
             self.invocations.append(item)
-            self.case_context.record_attempt(marker, role=role, marker=marker, source="driver-invoke")
+            self.case_context.record_attempt(
+                marker, role=role, marker=marker, durableExecutionName=execution_name, source="driver-invoke"
+            )
             self._save(
                 f"invocations/{marker}.json",
-                {"payload": payload, "launched": item["started"]},
+                {"payload": payload, "launched": item["started"], "durableExecutionName": execution_name},
             )
         self.check_active()
         try:
-            arn = runner.run_async(input=payload)
+            arn = runner.run_async(input=payload, execution_name=execution_name)
             if not arn:
                 raise CollectionError("Invoke did not return a durable execution ARN")
             self._require_execution_target(arn)
         except Exception as error:
-            self._save(f"invocations/{marker}.json", {"payload": payload, "error": str(error)})
+            self._save(
+                f"invocations/{marker}.json",
+                {"payload": payload, "error": str(error), "durableExecutionName": execution_name},
+            )
             raise CollectionError(f"{marker}: invocation API failed") from error
         item["arn"] = arn
         if self.case_context is None:
@@ -248,6 +264,7 @@ class Cloud:
                 "arn": arn,
                 "function": runner.function_name,
                 "started": item["started"],
+                "durableExecutionName": execution_name,
             },
         )
         return item
