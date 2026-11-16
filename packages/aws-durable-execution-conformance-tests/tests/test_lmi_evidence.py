@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence, validate_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    same_json,
+    validate_common_evidence,
+    validate_evidence,
+)
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:
@@ -502,6 +506,35 @@ def test_replay_snapshot_is_bound_to_service_history() -> None:
     value = replay_evidence()
     value["replay"]["after"][-1]["result"] = "invented success"
     assert any("collected service history" in error for error in validate_evidence(value))
+
+
+def test_replay_cannot_retype_a_stored_number_as_a_boolean() -> None:
+    # The stored result is 1 and Python container equality accepts True for it,
+    # so this corruption used to survive the completed-operation comparison.
+    value = replay_evidence()
+    assert not validate_evidence(value)
+    value["replay"]["before"][0]["result"]["value"] = True
+    assert any("operation identity" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        (1, True),
+        (True, 1),
+        (0, False),
+        ({"value": [1]}, {"value": [True]}),
+        ([{"nested": False}], [{"nested": 0}]),
+    ],
+)
+def test_json_comparison_keeps_booleans_distinct_from_numbers(left: Any, right: Any) -> None:
+    assert left == right, "the fixture must rely on Python's bool/number equality"
+    assert not same_json(left, right)
+
+
+@pytest.mark.parametrize("value", [1, 1.5, "text", None, True, False, {"a": [1, {"b": None}, "c"]}, []])
+def test_json_comparison_accepts_equal_values(value: Any) -> None:
+    assert same_json(value, deepcopy(value))
 
 
 def test_retirement_cannot_omit_suspended_executions_or_invocations() -> None:

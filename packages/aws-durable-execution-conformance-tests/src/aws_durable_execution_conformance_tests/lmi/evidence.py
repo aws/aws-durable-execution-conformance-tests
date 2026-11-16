@@ -21,6 +21,24 @@ RUNTIMES = ("javascript", "java", "python")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
 
 
+def same_json(left: Any, right: Any) -> bool:
+    """Compare decoded checkpoint data without Python's bool/number equality.
+
+    ``True == 1`` holds in Python, so plain container equality would accept a
+    stored number that an SDK turned into a boolean, or the reverse. JSON keeps
+    those types distinct, and so must a checkpoint comparison.
+    """
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        return set(left) == set(right) and all(same_json(left[key], right[key]) for key in left)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    return type(left) is type(right) and bool(left == right)
+
+
 class _Evidence:
     def __init__(
         self,
@@ -242,7 +260,7 @@ class _Evidence:
                 if not allow_running and "result" not in expectation and "error" not in expectation:
                     self.error(f"history {arn} needs an independently declared expected result/error")
                 for key, item in expectation.items():
-                    if key != "allowedStatuses" and history.get(key) != item:
+                    if key != "allowedStatuses" and not same_json(history.get(key), item):
                         self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
         if set(actual) != arns or (check_expectations and set(expected) != arns):
@@ -422,7 +440,7 @@ class _Evidence:
         replay = self.mapping(self.value.get("replay"), "replay")
         before = self.records(replay.get("before"), "replay.before", nonempty=True)
         after = self.records(replay.get("after"), "replay.after", nonempty=True)
-        if len(after) < len(before) or after[: len(before)] != before:
+        if len(after) < len(before) or not same_json(after[: len(before)], before):
             self.error("replay changed completed operation identity, result, or failure", "ASSERTION")
         ids: set[str] = set()
         for operation in before:
@@ -445,7 +463,7 @@ class _Evidence:
         final_history = next(
             history for history in self.value["histories"] if history["executionArn"] == victim["executionArn"]
         )
-        if final_history.get("operations") != after:
+        if not same_json(final_history.get("operations"), after):
             self.error("replay.after differs from the collected service history", "ASSERTION")
         statuses = {operation.get("status") for operation in before}
         if not {"SUCCEEDED", "FAILED"} <= statuses:

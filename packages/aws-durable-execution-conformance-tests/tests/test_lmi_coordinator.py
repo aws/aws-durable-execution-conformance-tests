@@ -194,45 +194,37 @@ def test_scenario_concurrency_exceeds_native_capacity_during_suspension():
 SERIAL_BUDGETS = Budgets(execution=5, lease=5, placement=5, collection=5, release=5, retirement=5, provisioning=5)
 
 
-def test_serial_run_admits_a_queued_case_while_another_is_suspended():
-    """A suspended owner hands back its global slot along with its capacity.
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_suspended_owner_resumes_while_another_case_waits(exclusive):
+    """An admitted owner never has to acquire a work permit again.
 
-    Under serial execution the queued case takes the freed native slot and then
-    waits for a work permit. If the suspended owner kept its permit, the two
-    would wait on each other until the execution budget quarantined the target.
+    Under serial execution the queued case holds the only permit. A shared
+    waiter needs the owner to free capacity and an exclusive waiter needs every
+    owner to retire, so if resuming had to reacquire a permit the owner and the
+    waiter would wait on each other until the execution budget quarantined the
+    target.
     """
     profile = replace(PROFILE, capacity=1, native_concurrency=1)
 
     class SuspendingAdapter(Adapter):
-        def __init__(self):
-            super().__init__()
-            self.queued_retired = asyncio.Event()
-
-        async def retire(self, context):
-            retired = await super().retire(context)
-            if context.scenario.case_id == "queued":
-                self.queued_retired.set()
-            return retired
-
         async def execute(self, context):
             if context.scenario.case_id != "suspended":
                 return
             await context.release_capacity()
-            try:
-                await asyncio.wait_for(self.queued_retired.wait(), timeout=2)
-            finally:
-                await context.reserve_capacity(timeout=2)
+            # Give the waiter time to queue for the permit and the lease.
+            await asyncio.sleep(0.05)
+            await context.reserve_capacity(timeout=2)
 
     adapter = SuspendingAdapter()
     results = run(
-        [case("suspended", profile=profile), case("queued", profile=profile)],
+        [case("suspended", profile=profile), case("waiter", profile=profile, exclusive=exclusive)],
         adapter,
         profiles=[profile],
         scenario_concurrency=1,
         budgets=SERIAL_BUDGETS,
     )
     assert [result.status for result in results] == ["PASSED", "PASSED"], results
-    assert adapter.retired == ["queued", "suspended"]
+    assert adapter.retired == ["suspended", "waiter"]
 
 
 def test_a_case_waiting_for_a_work_permit_holds_no_native_capacity():

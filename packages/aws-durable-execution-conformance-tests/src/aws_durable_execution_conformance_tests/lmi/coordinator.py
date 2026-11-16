@@ -262,8 +262,16 @@ class ScenarioContext:
     _holds_permit: bool = field(default=False, repr=False)
 
     async def acquire_permit(self, *, timeout: float = 300) -> None:
-        """Enter the run's global active-work budget, at most once at a time."""
-        if self._semaphore is None or self._holds_permit:
+        """Enter the run's global active-work budget.
+
+        A case takes its permit once, before any target resource, and keeps it
+        until it retires. An admitted owner must never have to acquire a permit
+        again: a queued case holding the only permit can be waiting for that
+        owner to release capacity, or for every owner to retire if it wants an
+        exclusive lease, and neither can happen if the owner is itself queued
+        behind that permit.
+        """
+        if self._semaphore is None:
             self._holds_permit = True
             return
         async with asyncio.timeout(timeout):
@@ -281,25 +289,18 @@ class ScenarioContext:
         Call only once the cohort no longer occupies its reserved native slots.
         The service may later resume work; reserve capacity before controlling
         another launch. Exclusive scenarios remain exclusive even while idle.
+        The work permit is deliberately retained, so resuming cannot block on
+        another case; freeing the native slot only helps when the run's
+        concurrency budget admits another case at all.
         """
         if self._lease is None:
             raise RuntimeError("Scenario has no active lease")
         await self._lease.release_capacity()
-        # Idle suspended work occupies no native slot, so it must not keep a
-        # global work slot either. Otherwise a case that is waiting for a permit
-        # while already holding this target's capacity and the suspended owner
-        # that needs that capacity back wait on each other until a phase budget
-        # expires and quarantines the target.
-        self.release_permit()
 
     async def reserve_capacity(self, *, timeout: float = 300) -> None:
         if self._lease is None:
             raise RuntimeError("Scenario has no active lease")
-        # Re-enter the global budget first: holding native capacity while
-        # waiting for a permit would reintroduce that circular wait.
-        async with asyncio.timeout(timeout):
-            await self.acquire_permit(timeout=timeout)
-            await self._lease.reserve_capacity(timeout=timeout)
+        await self._lease.reserve_capacity(timeout=timeout)
 
     def dispatcher(self, role: str) -> dict[str, Any]:
         if role not in self.scenario.roles:
@@ -670,14 +671,13 @@ async def run_scenarios(
                 )
             )
         try:
-            # Admission and resumption must acquire in one global order, the
-            # work permit before native capacity. Taking capacity first and then
-            # queueing for a permit lets this case hold the slot a resuming
-            # owner needs while that owner holds the permit this case waits for.
-            # The cost is that a case queued on a busy target occupies a work
-            # slot; a deadlock that quarantines the target costs more.
-            # The context owns the permit from here: a suspended case hands it
-            # back while idle, so ownership cannot be tracked by this frame.
+            # Take the work permit before any target resource. Acquiring
+            # capacity first and then queueing for a permit lets this case hold
+            # a slot that an admitted owner needs back, while that owner waits
+            # behind this case for a permit. The cost is that a case queued on a
+            # busy target occupies a work slot; a deadlock that quarantines the
+            # target costs more. The context owns the permit so that release
+            # stays idempotent across the cleanup paths below.
             try:
                 await context.acquire_permit(timeout=limits.lease)
             except TimeoutError as exc:
