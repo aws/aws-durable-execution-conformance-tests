@@ -52,7 +52,7 @@ env:
 jobs:
   harness:
     # Keep fork and Dependabot code outside the testing account.
-    runs-on: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]') && 'ubuntu-latest' || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}
+    runs-on: ${{ (github.actor == 'dependabot[bot]' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     permissions:
       contents: read
     timeout-minutes: 10
@@ -79,7 +79,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: lmi-harness-tests
+          name: lmi-harness-${{ inputs.stack-name }}-${{ inputs.lambda-runtime }}-${{ inputs.region }}
           path: ${{ inputs.artifact-directory }}/
 
   cloud:
@@ -178,7 +178,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lmi-${{ inputs.lambda-runtime }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: lmi-${{ inputs.stack-name }}-${{ inputs.lambda-runtime }}-${{ inputs.region }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 7
           path: ${{ inputs.artifact-directory }}/
       - name: Summarize outcomes
