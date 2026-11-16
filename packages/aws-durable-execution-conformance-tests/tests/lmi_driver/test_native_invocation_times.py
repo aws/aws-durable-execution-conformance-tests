@@ -14,7 +14,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import validate_eviden
 from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
 
 
-def native_sources(*, start=0.010, observed_start=11):
+def native_sources(*, start=0.010, observed_start=11, end=0.030, event_time=0.030):
     value = run_path(str(Path(__file__).parents[1] / "test_lmi_evidence.py"))["deadline_evidence"]()
     victim = value["attempts"][0]
     request = victim["requestId"]
@@ -72,11 +72,11 @@ def native_sources(*, start=0.010, observed_start=11):
                 {
                     "EventType": "InvocationCompleted",
                     "EventId": 3,
-                    "EventTimestamp": 0.030,
+                    "EventTimestamp": event_time,
                     "InvocationCompletedDetails": {
                         "RequestId": request,
                         "StartTimestamp": start,
-                        "EndTimestamp": 0.030,
+                        "EndTimestamp": end,
                         "Error": {"ErrorType": "Sandbox.Timedout"},
                     },
                 },
@@ -138,3 +138,24 @@ def test_running_invocation_keeps_observed_interval_without_inventing_a_native_s
     assert attempts[0]["startedAtMs"] == 11
     assert "endedAtMs" not in attempts[0]
     assert errors == ["Native request request-victim has no observed completion boundary"]
+
+
+def test_native_timeout_is_measured_at_the_invocation_end_not_the_history_event():
+    # The service writes the history event after the invocation ends. Using the
+    # event time would move the timeout boundary past the admission closure and
+    # cleanup it bounds, rejecting a conforming SDK.
+    sources, events, value = native_sources(end=0.030, event_time=0.040)
+    value, errors = normalized_deadline(sources, events, value)
+    assert errors == []
+    timeout = next(event for event in events if event["kind"] == "platform_timeout")
+    assert timeout["atMs"] == 30
+    assert value["attempts"][0]["endedAtMs"] == 30
+    assert validate_evidence(value) == []
+
+
+@pytest.mark.parametrize("end", [None, "invalid", True, float("nan"), float("inf"), 10**400, 0.009])
+def test_malformed_native_end_cannot_fall_back_to_the_history_event(end):
+    sources, events, value = native_sources(end=end)
+    value, errors = normalized_deadline(sources, events, value)
+    assert any("EndTimestamp" in error for error in errors)
+    assert validate_evidence(value)

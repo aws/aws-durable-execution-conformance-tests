@@ -279,12 +279,24 @@ class CaseSources:
                     started_at = native_start
                 message = json.dumps(details.get("Error", {})).lower().replace(" ", "")
                 if any(word in message for word in ("timeout", "timedout")):
+                    # The native boundary is the invocation's own end. The
+                    # history event is written afterwards, so its timestamp
+                    # would move the boundary past the work it bounds.
+                    try:
+                        native_end = _milliseconds(details.get("EndTimestamp"))
+                    except (ValueError, OverflowError):
+                        native_end = None
+                    if native_end is None or not math.isfinite(native_end) or native_end < started_at:
+                        errors.append(
+                            f"Native request {request} has an invalid or missing InvocationCompletedDetails.EndTimestamp"
+                        )
+                        continue
                     timeout = {
                         "kind": "platform_timeout",
                         "requestId": request,
                         "ownerRequestId": request,
                         "executionArn": raw["execution"],
-                        "atMs": _milliseconds(service_event.get("EventTimestamp")),
+                        "atMs": native_end,
                         "source": "platform",
                         "sourceEventId": service_event.get("EventId"),
                     }
