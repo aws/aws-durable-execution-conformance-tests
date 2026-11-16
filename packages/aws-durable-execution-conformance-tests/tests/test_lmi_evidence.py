@@ -783,3 +783,61 @@ def test_unnamed_context_replay_still_rejects_completed_user_code(operation_id: 
     value = unnamed_context_replay_evidence()
     value["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": operation_id})
     assert any("repeated completed" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("parent", [False, 1, ["parent"], {"id": "parent"}])
+def test_history_operation_parent_must_be_a_string_or_null(parent: Any) -> None:
+    # The wire schema allows a string or null; presence alone accepted a
+    # malformed parent that the replay comparison then matched consistently.
+    value = evidence()
+    value["histories"][0]["operations"] = [
+        {"id": "op-1", "type": "STEP", "status": "SUCCEEDED", "name": "step", "parentId": parent}
+    ]
+    assert any("parentId" in error for error in validate_evidence(value))
+    value["histories"][0]["operations"][0]["parentId"] = "parent-op"
+    assert not any("parentId" in error for error in validate_evidence(value))
+
+
+def test_retry_must_run_on_the_suspended_execution() -> None:
+    value = replay_evidence()
+    peer = next(item for item in value["attempts"] if item["role"] == "peer")
+    assert peer["executionArn"] != value["attempts"][0]["executionArn"]
+    for item in (*value["replay"]["retry"]["attempts"], *value["replay"]["operationExecutions"]):
+        if item.get("operationId", "retry") == "retry":
+            item["requestId"] = peer["requestId"]
+    assert any("suspended execution" in error for error in validate_evidence(value))
+
+
+def test_retried_operation_must_succeed_in_the_collected_history() -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["replay"]["after"] = [item for item in value["replay"]["after"] if item["id"] != "retry"]
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    history["operations"] = deepcopy(value["replay"]["after"])
+    assert any("retried operation" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(("settled", "rejected"), [(0, True), (45, True), (46, False)])
+def test_invocation_cannot_settle_before_its_recorded_activity(settled: int, rejected: bool) -> None:
+    # The victim's last activity is its admission probe at 46.
+    value = evidence()
+    victim = value["attempts"][0]
+    invocation = next(item for item in value["retirement"]["resources"] if item["id"] == victim["requestId"])
+    invocation["settledAtMs"] = settled
+    errors = validate_evidence(value)
+    assert any("before its recorded activity" in error for error in errors) is rejected, errors
+
+
+@pytest.mark.parametrize(("released", "rejected"), [(50, False), (40, True)])
+def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(released: int, rejected: bool) -> None:
+    # Victim exit at 35 and recovery at 45 are the asserted boundaries. A
+    # healthy peer that stays occupied until 100 must not move them.
+    value = recovery_evidence()
+    peer = next(item for item in value["attempts"] if item["role"] == "peer")
+    value["events"].append(event(peer, "task_exit", 100))
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    value["retirement"]["faults"][0]["releasedAtMs"] = released
+    errors = validate_evidence(value)
+    assert any("retroactively" in error or "fault release cannot satisfy" in error for error in errors) is rejected, (
+        errors
+    )
