@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
 from runpy import run_path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -15,6 +17,7 @@ import pytest
 from aws_durable_execution_conformance_tests.lmi.app import (
     build_report,
     evidence_results,
+    live_results,
     load_manifest,
     run,
 )
@@ -274,6 +277,87 @@ def test_normal_failure_cannot_reuse_success_evidence():
     )
 
 
+@pytest.mark.parametrize(
+    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error"]
+)
+def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
+    import asyncio
+    import sys
+    from copy import deepcopy
+    from pathlib import Path
+    from runpy import run_path
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"]()
+    if failure == "missing-evidence":
+        value.pop("collection")
+        value.pop("retirement")
+    elif failure == "collectionErrors":
+        value["collectionErrors"] = ["SDK request source collection failed"]
+    elif failure is not None:
+        value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
+    finished = []
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    plan["scenarios"] = [plan["scenarios"][0]]
+    scenario = plan["scenarios"][0]
+    scenario["case_id"] = value["caseId"]
+    profile = plan["profiles"][1]
+    profile.update(
+        resource_id=value["profile"]["functionArn"],
+        artifact_id=value["artifact"]["sdk"],
+        configuration_id=value["profile"]["configurationDigest"],
+    )
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            finished.append(quiescent)
+
+        async def start(self, context):
+            assert context.scenario.slots == 2
+            assert context.scenario.roles == ["victim", "peer"]
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+                # This is where a real adapter sends the request. The audit is already durable.
+                assert attempt["requestId"] in (tmp_path / "attempts.jsonl").read_text()
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            if "retirement" in value:
+                context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda manifest: Adapter())}):
+        results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    expected_status = "PASSED" if failure is None else "FAILED"
+    assert results[0]["status"] == expected_status, results
+    assert finished == [failure is None]
+    if failure is not None:
+        assert any("retirement" in error for error in results[0]["errors"])
+    if failure in {"collectionErrors", "observation_error", "control_error"}:
+        assert any(failure in error for error in results[0]["errors"])
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    assert audit[-1]["status"] == expected_status
+    assert len(audit[-1]["attempts"]) == 2
+
+
 def test_output_reuse_preserves_previous_run(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest()))
@@ -332,6 +416,10 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib.import_module") as load_adapter:
+        with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
@@ -346,4 +434,59 @@ def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requi
     result = evidence_results(load_manifest(path), tmp_path)[0]
     assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
     if tightened is not None:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("source", ["matching", "evidence", "factory", "scenario"])
+def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
+    plan, value = timed_plan(requirement)
+    if source != "matching":
+        # Keep every declared budget name so the admitted snapshot stays valid
+        # and only its values disagree with the evidence.
+        budgets = plan["scenarios"][0]["behavior_budgets"]
+        plan["scenarios"][0]["behavior_budgets"] = {name: 0.5 for name in budgets}
+    original = deepcopy(plan)
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            pass
+
+        async def start(self, context):
+            if source == "scenario":
+                context.scenario.behavior_budgets.update(value["budgets"])
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(received):
+        if source == "factory":
+            received["scenarios"][0]["behavior_budgets"].update(value["budgets"])
+        return Adapter()
+
+    with patch.dict("sys.modules", {"fixture": SimpleNamespace(create=factory)}):
+        result = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))[0]
+    assert plan == original
+    if source == "matching":
+        assert result["status"] == "PASSED", result
+    else:
+        assert result["status"] != "PASSED", result
         assert any("behavior budgets" in error for error in result["errors"])

@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import importlib
 import json
 import math
+import os
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -355,6 +358,88 @@ def evidence_results(
     return results
 
 
+def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
+    """Persist before dispatch; sink failure must abort the launch."""
+    with path.open("a") as stream:
+        stream.write(json.dumps(record) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+async def live_results(
+    manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
+) -> list[dict[str, Any]]:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import Budgets, Profile, Scenario, run_scenarios
+
+    # Validation keeps its own snapshot. Adapter and Scenario objects must not
+    # be able to change the expected budgets, profile, or coverage after admission.
+    manifest = deepcopy(dict(manifest))
+    suite = deepcopy(suite)
+    _required(manifest, suite)
+    module_name, separator, factory_name = adapter_name.partition(":")
+    if not separator or not factory_name:
+        raise ValueError("--adapter must be a local Python module:factory")
+    profiles = [
+        Profile(**{key: value for key, value in profile.items() if key != "incompatibilityReason"})
+        for profile in manifest["profiles"]
+    ]
+    active = [scenario for scenario in manifest["scenarios"] if "not_implemented" not in scenario]
+    profile_map = {profile["profile_id"]: profile for profile in manifest["profiles"]}
+    scenarios = []
+    for scenario in active:
+        definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
+        _validate_behavior_budgets(scenario, definition, suite)
+        configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
+        configured.setdefault("exclusive", definition.exclusive)
+        configured.setdefault("slots", definition.minimum_native_concurrency)
+        configured.setdefault("roles", list(definition.roles))
+        configured["coverage_profile"] = manifest.get("coverageProfile", "standard")
+        scenarios.append(Scenario(**configured))
+    expected = {scenario["case_id"]: scenario for scenario in active}
+    factory = getattr(importlib.import_module(module_name), factory_name)
+    adapter = factory(deepcopy(manifest))
+
+    def bound_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        scenario = expected.get(evidence.get("caseId", ""))
+        if scenario is None:
+            return ["INCOMPLETE: adapter returned evidence for an unadmitted case"]
+        return _identity_errors(manifest, scenario, evidence, suite=suite) + list(
+            (suite.validator if suite else validate)(evidence, phase=phase)
+        )
+
+    outcomes = await run_scenarios(
+        scenarios,
+        profiles,
+        adapter,
+        run_id=manifest["runId"],
+        validator=bound_validator,
+        scenario_concurrency=manifest.get("scenarioConcurrency", 8),
+        budgets=Budgets(**manifest.get("budgets", {})),
+        on_attempt=lambda context: _append_audit(
+            audit_dir / "attempts.jsonl",
+            {
+                "runId": context.run_id,
+                "caseId": context.scenario.case_id,
+                "profileId": context.profile.profile_id,
+                "attempts": context.attempts,
+            },
+        ),
+        on_result=lambda result: _append_audit(audit_dir / "results.jsonl", asdict(result)),
+    )
+    results = [asdict(outcome) for outcome in outcomes]
+    results.extend(
+        {
+            "case_id": scenario["case_id"],
+            "requirement_id": scenario["requirement_id"],
+            "status": "NOT_IMPLEMENTED",
+            "errors": [scenario["not_implemented"]],
+        }
+        for scenario in manifest["scenarios"]
+        if "not_implemented" in scenario
+    )
+    return results
+
+
 def build_report(
     manifest: Mapping[str, Any], results: list[dict[str, Any]], *, suite: SuiteDefinition | None = None
 ) -> Report:
@@ -449,6 +534,7 @@ def build_report(
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--adapter", help="SDK-owned local module:factory; omit to validate retained evidence")
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
@@ -457,9 +543,13 @@ def run(argv: list[str] | None = None) -> None:
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
         (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        results = evidence_results(manifest, args.manifest.parent)
+        results = (
+            asyncio.run(live_results(manifest, args.adapter, audit_dir=args.output))
+            if args.adapter
+            else evidence_results(manifest, args.manifest.parent)
+        )
         report = build_report(manifest, results)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, ImportError, AttributeError) as exc:
         parser.error(str(exc))
     (args.output / "evidence.json").write_text(json.dumps(results, indent=2) + "\n")
     (args.output / "coverage.json").write_text(json.dumps(coverage_inventory(manifest), indent=2) + "\n")
