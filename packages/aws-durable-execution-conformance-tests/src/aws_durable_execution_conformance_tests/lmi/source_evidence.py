@@ -59,6 +59,8 @@ def _decoded(value: Any) -> Any:
 def _error(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
+    if value.get("Truncated") is True:
+        raise ValueError("Truncated service data cannot establish checkpoint equality")
     if "Payload" in value:
         value = value["Payload"]
     if not isinstance(value, Mapping):

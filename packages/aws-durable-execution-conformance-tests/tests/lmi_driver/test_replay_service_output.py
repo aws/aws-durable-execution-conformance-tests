@@ -116,3 +116,20 @@ def test_wait_success_uses_the_service_models_empty_result():
     histories, _, errors = observed.histories(events)
     assert errors == []
     assert histories[0]["operations"][0]["result"] is None
+
+
+@pytest.mark.parametrize("error_source", ["operation", "execution"])
+def test_truncated_service_error_cannot_establish_replay_equality(error_source):
+    error = {"Payload": {"ErrorType": "ServiceError", "ErrorMessage": "retained prefix"}, "Truncated": False}
+    observed, events = history_sources(
+        "StepFailed",
+        {"Error": error},
+        {"status": "FAILED", "error": {"type": "ServiceError", "message": "retained prefix"}},
+    )
+    if error_source == "operation":
+        error["Truncated"] = True
+    else:
+        observed.cloud.execution_results["exec"] = {"Status": "FAILED", "Error": {**error, "Truncated": True}}
+
+    with pytest.raises(ValueError, match="Truncated service data"):
+        observed.histories(events)
