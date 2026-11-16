@@ -14,7 +14,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import validate_eviden
 from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
 
 
-def native_sources(*, start=0.010, observed_start=11, end=0.030, event_time=0.030):
+def native_sources(*, start=0.010, observed_start=11, end=0.030, event_time=0.030, error=None):
     value = run_path(str(Path(__file__).parents[1] / "test_lmi_evidence.py"))["deadline_evidence"]()
     victim = value["attempts"][0]
     request = victim["requestId"]
@@ -77,7 +77,7 @@ def native_sources(*, start=0.010, observed_start=11, end=0.030, event_time=0.03
                         "RequestId": request,
                         "StartTimestamp": start,
                         "EndTimestamp": end,
-                        "Error": {"ErrorType": "Sandbox.Timedout"},
+                        "Error": error if error is not None else {"ErrorType": "Sandbox.Timedout"},
                     },
                 },
             ]
@@ -159,3 +159,30 @@ def test_malformed_native_end_cannot_fall_back_to_the_history_event(end):
     value, errors = normalized_deadline(sources, events, value)
     assert any("EndTimestamp" in error for error in errors)
     assert validate_evidence(value)
+
+
+# The service wraps the error in a Payload, as in a real LMI run.
+REAL_TIMEOUT = {"Payload": {"ErrorType": "Sandbox.Timedout", "ErrorMessage": "Task timed out after 60.00 seconds"}}
+
+
+def test_platform_timeout_is_read_from_the_service_error_payload():
+    sources, events, _ = native_sources(error={**REAL_TIMEOUT, "Truncated": False})
+    attempts, _, errors = sources.attempts(events)
+    assert errors == []
+    assert attempts[0]["outcome"] == "TIMED_OUT"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"Payload": {"ErrorType": "DatabaseError", "ErrorMessage": "database timeout after retries"}},
+        {"Payload": {"ErrorType": "ValueError", "ErrorMessage": "bad", "StackTrace": ["timeout_helpers.py:3"]}},
+    ],
+)
+def test_application_errors_mentioning_timeout_are_not_platform_timeouts(error):
+    # Matching the serialized error turned these into native timeouts and
+    # overwrote the observed FAILED outcome with TIMED_OUT.
+    sources, events, _ = native_sources(error=error)
+    attempts, _, _ = sources.attempts(events)
+    assert not any(event["kind"] == "platform_timeout" for event in events)
+    assert attempts[0]["outcome"] == "FAILED"

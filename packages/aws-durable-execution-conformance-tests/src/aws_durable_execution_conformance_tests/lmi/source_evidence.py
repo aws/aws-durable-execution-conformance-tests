@@ -20,6 +20,7 @@ from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioContext
+from aws_durable_execution_conformance_tests.lmi.observations import is_platform_timeout, service_error_type
 
 TERMINAL = {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}
 _ACTIVE_FAULTS = {"deadline-during-step", "peer-recovery"}
@@ -246,6 +247,19 @@ class CaseSources:
         for raw in self.raw:
             if raw.get("phase") == "WRAPPER_ENTER":
                 raw_by_request[raw["request"]] = raw
+        # The ledger alone cannot reveal a native request that never
+        # published. Without this, a retry whose original left no stream is
+        # bound as the original, and the original goes unaudited.
+        unpublished: dict[str, str | None] = {}
+        for arn in dict.fromkeys(item.get("arn") for item in self.cloud.invocations):
+            for service_event in self.cloud.raw_histories.get(arn, []) if arn else []:
+                details = service_event.get("InvocationCompletedDetails")
+                native = details.get("RequestId") if isinstance(details, Mapping) else None
+                if isinstance(native, str) and native not in raw_by_request:
+                    unpublished[native] = service_error_type(details)
+        for native, error_type in unpublished.items():
+            reported = f" ({error_type})" if error_type else ""
+            errors.append(f"Service-recorded native request {native}{reported} has no lifecycle ledger stream")
         for request, raw in raw_by_request.items():
             item = next(
                 (item for item in self.cloud.invocations if item["marker"] == raw["marker"]),
@@ -277,8 +291,7 @@ class CaseSources:
                     )
                 else:
                     started_at = native_start
-                message = json.dumps(details.get("Error", {})).lower().replace(" ", "")
-                if any(word in message for word in ("timeout", "timedout")):
+                if is_platform_timeout(details):
                     # The native boundary is the invocation's own end. The
                     # history event is written afterwards, so its timestamp
                     # would move the boundary past the work it bounds.

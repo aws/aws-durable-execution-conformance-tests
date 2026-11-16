@@ -173,3 +173,35 @@ def test_retry_attempts_follow_causal_time_not_collection_order():
         "zz-earlier-request",
         "aa-later-request",
     ]
+
+
+def test_service_recorded_request_without_a_ledger_stream_is_incomplete():
+    # The original was rejected before running, so only its retry published a
+    # lifecycle stream. The retry must not stand in for the original silently.
+    ctx, case_sources = sources(
+        [raw_record("WRAPPER_ENTER", 1, request="r2")],
+        invocations=[{"marker": "m", "arn": "exec", "payload": {"scenario": "barrier"}}],
+        request_roles={"r2": "victim"},
+        raw_histories={
+            "exec": [
+                {
+                    "EventType": "InvocationCompleted",
+                    "InvocationCompletedDetails": {
+                        "RequestId": "r1",
+                        "StartTimestamp": 0.0001,
+                        "EndTimestamp": 0.0002,
+                        "Error": {"Payload": {"ErrorType": "TooManyRequestsException"}},
+                    },
+                },
+                {
+                    "EventType": "InvocationCompleted",
+                    "InvocationCompletedDetails": {"RequestId": "r2", "StartTimestamp": 0.5, "EndTimestamp": 0.9},
+                },
+            ]
+        },
+    )
+    ctx.record_attempt("r2", role="victim", requestId="r2")
+    events = [{"kind": "wrapper_return", "requestId": "r2", "atMs": 900, "outcome": "SUCCEEDED"}]
+    _, _, errors = case_sources.attempts(events)
+    missing = [error for error in errors if "no lifecycle ledger stream" in error]
+    assert len(missing) == 1 and "r1" in missing[0] and "TooManyRequestsException" in missing[0], errors

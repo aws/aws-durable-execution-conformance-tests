@@ -17,6 +17,7 @@ from aws_durable_execution_conformance_tests.lmi.artifacts import case_key, save
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, ProvisioningError
 from aws_durable_execution_conformance_tests.lmi.observations import (
     check_controls,
+    is_platform_timeout,
     select,
 )
 from aws_durable_execution_conformance_tests.lmi.runtime import CONCURRENCIES, QUALIFIER
@@ -447,8 +448,7 @@ class Cloud:
         def observed():
             for event in self.history(item):
                 details = event.get("InvocationCompletedDetails", {})
-                error = json.dumps(details.get("Error", {})).lower().replace(" ", "")
-                if details.get("RequestId") == request and any(label in error for label in ("timeout", "timedout")):
+                if details.get("RequestId") == request and is_platform_timeout(details):
                     return event
             return None
 

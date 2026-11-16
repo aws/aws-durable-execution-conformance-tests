@@ -145,7 +145,7 @@ def test_requires_request_specific_service_timeout(driver, message):
     good = {
         "InvocationCompletedDetails": {
             "RequestId": "request",
-            "Error": {"Payload": message},
+            "Error": {"Payload": {"ErrorType": "Sandbox.Timedout", "ErrorMessage": message}},
         }
     }
     driver.history = Mock(return_value=[good])
@@ -157,7 +157,7 @@ def test_requires_request_specific_service_timeout(driver, message):
             {
                 "InvocationCompletedDetails": {
                     "RequestId": "different",
-                    "Error": {"Payload": message},
+                    "Error": {"Payload": {"ErrorType": "Sandbox.Timedout", "ErrorMessage": message}},
                 }
             }
         ],
@@ -386,3 +386,17 @@ def test_summary_does_not_accept_a_report_without_deployment_identity(tmp_path):
     summary = summarize(tmp_path)
     assert "Deployment identity is missing" in summary
     assert "PASSED" not in summary
+
+
+@pytest.mark.parametrize(
+    ("error", "found"),
+    [
+        ({"Payload": {"ErrorType": "Sandbox.Timedout", "ErrorMessage": "Task timed out after 60.00 seconds"}}, True),
+        ({"Payload": {"ErrorType": "DatabaseError", "ErrorMessage": "database timeout"}}, False),
+    ],
+)
+def test_platform_timeout_wait_uses_the_structured_error_type(driver, error, found):
+    event = {"InvocationCompletedDetails": {"RequestId": "request", "Error": error}}
+    driver.history = lambda item: [event]
+    driver.poll = lambda predicate, **options: predicate()
+    assert (driver.platform_timeout({"arn": "execution"}, "request") is event) is found
