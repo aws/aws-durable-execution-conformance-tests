@@ -85,9 +85,11 @@ jobs:
   cloud:
     name: cloud (${{ inputs.runtime-label }}, concurrency 1 and 2)
     needs: harness
-    # Trusted PRs and manual runs exercise the shared lifecycle suite. SDK
-    # failures remain strict; fork and Dependabot PRs run only the harness.
-    if: github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    # Trusted pushes, PRs and manual runs exercise the shared lifecycle suite.
+    # A caller's post-merge push must run it too, or a regression that lands on
+    # top of a pre-merge green PR is never observed. SDK failures remain strict;
+    # fork and Dependabot PRs run only the harness.
+    if: github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 120
     permissions:

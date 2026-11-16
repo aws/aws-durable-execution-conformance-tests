@@ -6,7 +6,6 @@ import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any
@@ -77,7 +76,6 @@ class Cloud:
         self.control_records: list[dict[str, Any]] = []
         self.source_uris: set[str] = set()
         self.observation_ended_at: float | None = None
-        self.deadline_measurement: dict[str, Any] | None = None
         self.retired_at: float | None = None
         self.callback_records: list[dict[str, Any]] = []
         self.control_prefix = f"runs/{manifest['run']}/control/"
@@ -364,50 +362,6 @@ class Cloud:
 
     def phase(self, item, phase, **kwargs):
         return self.poll(lambda: select(self.for_item(item), phase), **kwargs)
-
-    def record_deadline_measurement(self, snapshot: dict[str, Any]) -> None:
-        """Persist the completed measurement before any victim-fault release."""
-        self.check_active()
-        recorded = deepcopy(snapshot)
-        self._save("measurements/deadline.json", recorded)
-        self.deadline_measurement = recorded
-
-    def wait_terminal(self, item: dict[str, Any]) -> dict[str, Any]:
-        """Observe actual terminal state and wrapper exits without asserting success.
-
-        Deadline fixtures can legitimately finish with several service outcomes.
-        Their declared conformance expectations decide acceptance; this method
-        only observes completion and does not stop or retry an execution.
-        """
-        self._require_execution_target(item["arn"])
-
-        def terminal() -> dict[str, Any] | None:
-            result = self.lam.get_durable_execution(DurableExecutionArn=item["arn"])
-            if result["Status"] in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}:
-                return result
-            return None
-
-        result = self.poll(
-            terminal,
-            seconds=self.manifest["driverTimeout"],
-            message="Released victim execution did not reach an actual terminal state",
-        )
-        self.execution_results[item["arn"]] = result
-        self._save(f"executions/{item['marker']}.json", result)
-
-        def wrappers_closed() -> bool:
-            events = self.for_item(item)
-            entered = {event["request"] for event in select(events, "WRAPPER_ENTER")}
-            exited = {event["request"] for event in events if event["phase"] in {"WRAPPER_RETURN", "WRAPPER_RAISE"}}
-            return bool(entered) and entered <= exited
-
-        self.poll(
-            wrappers_closed,
-            seconds=self.manifest["driverTimeout"],
-            message="Released victim has native invocations without actual wrapper exits",
-        )
-        self.history(item)
-        return result
 
     def finish(self, item, status="SUCCEEDED"):
         try:

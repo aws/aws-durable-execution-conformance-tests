@@ -130,7 +130,7 @@ def deadline_evidence(requirement: int = 3, runtime: str = "javascript") -> dict
     value = evidence(requirement, runtime)
     victim = value["attempts"][0]
     victim["outcome"] = "TIMED_OUT"
-    value["budgets"] = {"admissionMs": 5, "cleanupMs": 10}
+    value["budgets"] = {"admissionMs": 5, "cleanupMs": 10, "recoveryMs": 15, "observationGraceMs": 1}
     value["events"] = [
         item for item in value["events"] if item["kind"] not in ("root_completed", "task_exit", "admission_probe")
     ]

@@ -25,7 +25,8 @@ def test_cloud_lifecycle_and_credentials_are_owned_by_the_reusable_workflow():
     }
     assert (
         cloud["if"]
-        == "github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))"
+        == "github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'"
+        " || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))"
     )
     assert "head.repo.full_name != github.repository" in harness["runs-on"]
     assert "'ubuntu-latest'" in harness["runs-on"]

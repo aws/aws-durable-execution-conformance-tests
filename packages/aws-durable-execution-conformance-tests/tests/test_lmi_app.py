@@ -55,9 +55,11 @@ def manifest():
                 "requirement_id": req,
                 "profile_id": "native-2",
                 "scenario": definition["scenario"],
+                # Track the catalog so a newly declared budget cannot be
+                # left undeclared by this fixture.
                 **(
-                    {"behavior_budgets": {"admissionMs": 5, "cleanupMs": 10}}
-                    if definition["scenario"] in ("deadline-during-step", "peer-recovery")
+                    {"behavior_budgets": {name: 5 for name in definition["behaviorBudgets"]}}
+                    if definition.get("behaviorBudgets")
                     else {}
                 ),
             }
@@ -404,7 +406,10 @@ def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requi
 def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
     plan, value = timed_plan(requirement)
     if source != "matching":
-        plan["scenarios"][0]["behavior_budgets"] = {"admissionMs": 0.5, "cleanupMs": 1}
+        # Keep every declared budget name so the admitted snapshot stays valid
+        # and only its values disagree with the evidence.
+        budgets = plan["scenarios"][0]["behavior_budgets"]
+        plan["scenarios"][0]["behavior_budgets"] = {name: 0.5 for name in budgets}
     original = deepcopy(plan)
 
     class Adapter:

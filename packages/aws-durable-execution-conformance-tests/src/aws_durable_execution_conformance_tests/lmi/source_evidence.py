@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -180,20 +181,6 @@ class CaseSources:
                 if "ParentId" in raw:
                     operation["parentId"] = raw["ParentId"]
                 details = raw.get(event_type + "Details", {})
-                # Service operation lifetime is independent of native invocation
-                # and exporter timing. A retry cannot replace its original start.
-                if (
-                    event_type in {prefix + "Started" for prefix in _OPERATION_TYPES}
-                    and raw.get("EventTimestamp") is not None
-                ):
-                    started_at = _milliseconds(raw["EventTimestamp"])
-                    operation["startedAtMs"] = min(operation.get("startedAtMs", started_at), started_at)
-                if (
-                    any(event_type.endswith(suffix) for suffix in ("Succeeded", "Failed", "TimedOut", "Stopped"))
-                    and raw.get("EventTimestamp") is not None
-                ):
-                    ended_at = _milliseconds(raw["EventTimestamp"])
-                    operation["endedAtMs"] = ended_at
                 if event_type.endswith("Succeeded"):
                     operation["status"] = "SUCCEEDED"
                     result = details.get("Result", info.get("serializedResult"))
@@ -206,9 +193,6 @@ class CaseSources:
                     operation["status"] = "TIMED_OUT"
                 elif event_type.endswith("Stopped"):
                     operation["status"] = "STOPPED"
-            for operation in operations.values():
-                operation.pop("startedAtMs", None)
-                operation.pop("endedAtMs", None)
             result = self.cloud.execution_results[arn]
             started = result.get("StartTimestamp")
             if started is None:
@@ -366,9 +350,14 @@ def replay_evidence(
             operation["error"] = saved.get("error")
         before.append(operation)
     victim = next((e for e in events if e.get("requestId") == selected.get("victim")), {})
-    after: list[dict[str, Any]] = next(
-        (h["operations"] for h in histories if h["executionArn"] == victim.get("executionArn")),
-        [],
+    # Copy the collected history: sharing the list object would make the
+    # validator's replay.after/history comparison an identity check that no
+    # inconsistent snapshot could ever fail.
+    after: list[dict[str, Any]] = deepcopy(
+        next(
+            (h["operations"] for h in histories if h["executionArn"] == victim.get("executionArn")),
+            [],
+        )
     )
     bodies = [e for e in events if e.get("kind") == "body"]
     executions = [
@@ -450,8 +439,6 @@ def assertion_events(events, scenario, selected):
 
 def retirement_snapshot(evidence):
     """Restore every observed task for the common independent retirement audit."""
-    from copy import deepcopy
-
     snapshot = deepcopy(evidence)
     for event in snapshot.get("events", []):
         if event.get("kind") in {"observed_task_start", "observed_task_exit"}:

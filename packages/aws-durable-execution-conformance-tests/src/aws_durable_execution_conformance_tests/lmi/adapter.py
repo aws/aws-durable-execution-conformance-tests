@@ -121,16 +121,26 @@ class SharedAdapter:
         def capacity(operation: Callable[[], Any]) -> None:
             cloud.check_active()
             pending = asyncio.run_coroutine_threadsafe(operation(), loop)
-            try:
-                while True:
+            aborted: BaseException | None = None
+            while True:
+                try:
+                    pending.result(timeout=0.2)
+                    break
+                except FutureTimeout:
+                    if aborted is not None:
+                        continue
                     try:
-                        pending.result(timeout=0.2)
-                        return
-                    except FutureTimeout:
                         cloud.check_active()
-            finally:
-                if not pending.done():
-                    pending.cancel()
+                    except CollectionError as error:
+                        # Abandoning a half-applied capacity change would leave
+                        # this lease owning the target with zero reserved slots,
+                        # so the scheduler could admit another case onto it while
+                        # the suspended execution can still resume. Both lease
+                        # operations are bounded by the scheduler's own timeout,
+                        # so let the reservation settle before aborting.
+                        aborted = error
+            if aborted is not None:
+                raise aborted
 
         driver = self.driver_factory(
             context,

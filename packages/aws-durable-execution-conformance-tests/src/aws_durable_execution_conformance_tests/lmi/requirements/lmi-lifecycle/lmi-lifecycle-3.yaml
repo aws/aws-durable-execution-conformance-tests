@@ -14,5 +14,6 @@ limits: Budgets are agreed test configuration, not product SLAs. Hard terminatio
 behaviorBudgets:
   - admissionMs
   - cleanupMs
+  - observationGraceMs
 roles:
   - victim
