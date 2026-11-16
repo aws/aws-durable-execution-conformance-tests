@@ -19,6 +19,7 @@ SCHEMA_VERSION = 1
 REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
 RUNTIMES = ("javascript", "java", "python")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
+TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
 
 
 class EvidenceValidator(Protocol):
@@ -266,7 +267,7 @@ class _Evidence:
                 if not allow_running and "result" not in expectation and "error" not in expectation:
                     self.error(f"history {arn} needs an independently declared expected result/error")
                 for key, item in expectation.items():
-                    if key != "allowedStatuses" and not same_json(history.get(key), item):
+                    if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
                         self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
         if set(actual) != arns or (check_expectations and set(expected) != arns):
@@ -446,7 +447,8 @@ class _Evidence:
         replay = self.mapping(self.value.get("replay"), "replay")
         before = self.records(replay.get("before"), "replay.before", nonempty=True)
         after = self.records(replay.get("after"), "replay.after", nonempty=True)
-        if len(after) < len(before) or not same_json(after[: len(before)], before):
+        after_by_id = {operation.get("id"): operation for operation in after}
+        if any(not same_json(after_by_id.get(operation.get("id")), operation) for operation in before):
             self.error("replay changed completed operation identity, result, or failure", "ASSERTION")
         ids: set[str] = set()
         for operation in before:
@@ -611,6 +613,21 @@ class _Evidence:
                         "STOPPED",
                     ):
                         self.error("an execution may still resume after retirement")
+                    if kind == "execution":
+                        histories = self.value.get("histories")
+                        observed = next(
+                            (
+                                history.get("status")
+                                for history in (histories if isinstance(histories, list) else [])
+                                if isinstance(history, Mapping) and history.get("executionArn") == item.get("id")
+                            ),
+                            None,
+                        )
+                        # An earlier RUNNING or PENDING snapshot may become terminal.
+                        if observed in TERMINAL_STATUSES and item.get("outcome") != observed:
+                            self.error(
+                                "retirement execution outcome differs from the terminal service history", "ASSERTION"
+                            )
                     if kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
                     if kind == "invocation" and time < self.last_activity(item.get("id")):
