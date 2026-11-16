@@ -55,6 +55,7 @@ def test_scenarios_reuse_the_qualified_function_for_their_concurrency(driver, co
                 "FunctionName": driver.manifest["functions"][configuration],
                 "InvocationType": "Event",
                 "Payload": ANY,
+                "DurableExecutionName": ANY,
             },
         )
         item = driver.start(scenario, gate="fault" if scenario == "deadline" else None)

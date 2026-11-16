@@ -53,6 +53,11 @@ success; the normal-failure fixture throws a language-appropriate error.
 observed facts. `worker_identity(raw)` returns the actual worker identity from
 the SDK's source record (a Python process, JVM worker, or Node.js worker).
 
+Each logical launch derives a stable, 64-character `DurableExecutionName` from
+its run, configuration, case, and marker. The driver records this name before
+Invoke and reuses it with the same payload across transport retries, so a lost
+response cannot create a second execution. New logical launches use new markers.
+
 ## Observation protocol
 
 The shared driver reads immutable JSON records from
