@@ -381,11 +381,11 @@ class ScenarioContext:
                     raise ValueError("Cannot replace a launch's original role or attempt ordinal")
                 if "attempt" in diagnostics and type(diagnostics["attempt"]) is not int:
                     raise ValueError("Attempt ordinal must remain an integer")
-                if (
-                    "requestId" in attempt
-                    and diagnostics.get("requestId", attempt["requestId"]) != attempt["requestId"]
-                ):
-                    raise ValueError("Cannot replace the original invocation request ID")
+                # Once bound, a launch keeps its request and execution: a later
+                # update must not rebind it to another invocation's work.
+                for name, label in (("requestId", "invocation request ID"), ("executionArn", "durable execution")):
+                    if name in attempt and diagnostics.get(name, attempt[name]) != attempt[name]:
+                        raise ValueError(f"Cannot replace the original {label}")
                 attempt.update(diagnostics)
                 if self._on_attempt is not None:
                     self._on_attempt(self)
@@ -516,6 +516,10 @@ def _ownership_errors(
                     or item["attempt"] != original["attempt"]
                 ):
                     errors.append(f"Collected role or ordinal substitutes journaled launch {item['requestId']}")
+                # Another execution's evidence under the journaled request would
+                # accept its result and leave the journaled execution unaudited.
+                if "executionArn" in original and item.get("executionArn") != original["executionArn"]:
+                    errors.append(f"Collected execution substitutes the journaled execution of {item['requestId']}")
         selected = evidence.get("selectedRequests")
         originals = {item["role"]: item.get("requestId") for item in context.attempts if item["attempt"] == 1}
         if (

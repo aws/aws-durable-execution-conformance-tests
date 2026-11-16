@@ -744,6 +744,34 @@ def test_retained_request_ids_cannot_relabel_a_retry_as_the_selected_original():
     assert any("first journaled invocation" in error for error in result.errors)
 
 
+def test_journaled_execution_cannot_be_rebound():
+    context = ScenarioContext("run", case("victim"), PROFILE)
+    context.record_attempt("launch", requestId="original", executionArn="execution-a")
+    context.update_attempt("launch", executionArn="execution-a")
+    with pytest.raises(ValueError, match="original durable execution"):
+        context.update_attempt("launch", executionArn="execution-b")
+
+
+def test_retained_request_ids_cannot_substitute_another_execution():
+    # Matching request, role and ordinal is not enough: collecting another
+    # execution's attempts, histories and retirement under the journaled
+    # request would accept its result and leave the original unaudited.
+    class SubstitutingAdapter(Adapter):
+        async def start(self, context):
+            context.record_attempt(
+                "launch", role="victim", requestId="victim-request", executionArn="journaled-execution"
+            )
+
+        async def collect(self, context):
+            evidence = await super().collect(context)
+            evidence["attempts"][0]["executionArn"] = "substituted-execution"
+            return evidence
+
+    result = run([case("victim")], SubstitutingAdapter())[0]
+    assert result.status == "INCOMPLETE_EVIDENCE"
+    assert any("substitutes the journaled execution" in error for error in result.errors), result.errors
+
+
 def test_retained_request_ids_cannot_swap_cohort_roles():
     class RoleSwappingAdapter(Adapter):
         async def collect(self, context):
