@@ -55,3 +55,29 @@ def test_cloud_lifecycle_and_credentials_are_owned_by_the_reusable_workflow():
     ]
     assert len(credentials) == 3
     assert all(step["with"]["allowed-account-ids"] == "${{ secrets.TEST_ACCOUNT_ID }}" for step in credentials)
+
+
+def test_dependabot_code_never_reaches_the_testing_account_runner():
+    # The Dependabot check must not depend on the event being a pull request:
+    # a Dependabot push would otherwise select the CodeBuild runner.
+    harness = workflow()["jobs"]["harness"]
+    assert harness["runs-on"] == (
+        "${{ (github.actor == 'dependabot[bot]' || (github.event_name == 'pull_request'"
+        " && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest'"
+        " || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}"
+    )
+
+
+def test_artifact_names_are_unique_per_workflow_invocation():
+    # One caller run can invoke the workflow for several runtimes or regions.
+    value = workflow()
+    names = [
+        step["with"]["name"]
+        for job in value["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    ]
+    assert len(names) == 2
+    for name in names:
+        for identity in ("inputs.stack-name", "inputs.lambda-runtime", "inputs.region"):
+            assert identity in name, name
