@@ -469,11 +469,21 @@ class _Evidence:
         if not {"SUCCEEDED", "FAILED"} <= statuses:
             self.error("replay must preserve both a completed success and a completed failure")
         completed = {operation.get("id") for operation in before}
+        # Operations completed before the first resume stay completed for every
+        # later invocation of the same execution, and a body without external
+        # effects is invisible to the side-effect counts. So no request after
+        # the victim's on this execution may run them, not only the selected
+        # first resume.
+        later = {resume.get("requestId")} | {
+            request_id
+            for request_id, attempt in self.attempts.items()
+            if attempt.get("executionArn") == victim.get("executionArn") and request_id != victim.get("requestId")
+        }
         executions = self.records(replay.get("operationExecutions"), "replay.operationExecutions", nonempty=True)
         for execution in executions:
             if execution.get("requestId") not in self.attempts:
                 self.error("operationExecutions references an unrecorded request")
-            if execution.get("requestId") == resume.get("requestId") and execution.get("operationId") in completed:
+            if execution.get("requestId") in later and execution.get("operationId") in completed:
                 self.error("resume repeated completed user code", "ASSERTION")
         retry = self.mapping(replay.get("retry"), "replay.retry")
         retry_id = self.string(retry.get("operationId"), "replay.retry.operationId")

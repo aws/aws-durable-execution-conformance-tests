@@ -455,6 +455,21 @@ def test_replay_checks_stored_failures_and_completed_side_effects() -> None:
     assert any("side-effect count" in error for error in validate_evidence(value))
 
 
+def test_no_later_invocation_may_repeat_completed_user_code() -> None:
+    # A side-effect count cannot catch this when the body has no external
+    # effect, so every request after the victim on the same execution is
+    # checked, not only the selected first resume.
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    second = attempt("resume", start=90, end=100)
+    second.update(requestId="request-resume-2", executionArn=victim["executionArn"], attempt=2)
+    value["attempts"].append(second)
+    record_owned_resources(value)
+    assert not validate_evidence(value)
+    value["replay"]["operationExecutions"].append({"requestId": second["requestId"], "operationId": "done"})
+    assert any("repeated completed" in error for error in validate_evidence(value))
+
+
 def test_resume_must_have_original_execution_and_real_pending() -> None:
     value = replay_evidence()
     value["attempts"][-1]["executionArn"] = "replacement-execution"
