@@ -12,6 +12,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     same_json,
     validate_common_evidence,
     validate_evidence,
+    validate_retirement_evidence,
 )
 
 
@@ -1112,6 +1113,27 @@ def test_retry_must_run_on_the_suspended_execution() -> None:
     assert any("suspended execution" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("native_end", [40, 70])
+def test_retry_body_order_is_not_inferred_from_native_invocation_intervals(phase: Any, native_end: int) -> None:
+    # User-code observations retain their owner after native completion. A
+    # later platform observation can widen the interval without changing them.
+    value = replay_evidence()
+    victim, resume = value["attempts"][0], value["attempts"][-1]
+    victim["endedAtMs"] = native_end
+    retries = value["replay"]["retry"]["attempts"]
+    retries[0]["requestId"], retries[1]["requestId"] = resume["requestId"], victim["requestId"]
+    for retry, owner, at_ms in zip(retries, (resume, victim), (55, 65), strict=True):
+        entry = next(
+            item for item in value["replay"]["operationExecutions"] if item.get("attemptId") == retry["attemptId"]
+        )
+        entry["requestId"] = owner["requestId"]
+        value["events"].append(event(owner, "body", at_ms, operationId="retry", attemptId=retry["attemptId"]))
+    value["events"][-1]["observedDuringRequestId"] = resume["requestId"]
+
+    assert validate_evidence(value, phase=phase) == []
+
+
 def test_retried_operation_must_succeed_in_the_collected_history() -> None:
     value = replay_evidence()
     victim = value["attempts"][0]
@@ -1130,6 +1152,46 @@ def test_invocation_cannot_settle_before_its_recorded_activity(settled: int, rej
     invocation["settledAtMs"] = settled
     errors = validate_evidence(value)
     assert any("before its recorded activity" in error for error in errors) is rejected, errors
+
+
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("settled", [0, 5, 6])
+def test_execution_settlement_respects_its_known_service_start(validator: Any, phase: Any, settled: int) -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    value["histories"][0]["startedAtMs"] = 5
+    execution = next(item for item in value["retirement"]["resources"] if item["id"] == victim["executionArn"])
+    execution["settledAtMs"] = settled
+
+    errors = validator(value, phase=phase)
+
+    if phase == "final" and settled < 5:
+        assert any("execution settled before its service start" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+def test_independent_retirement_audit_rejects_settlement_before_service_start() -> None:
+    value = evidence()
+    value["histories"][0]["startedAtMs"] = 5
+    execution = next(
+        item for item in value["retirement"]["resources"] if item["id"] == value["histories"][0]["executionArn"]
+    )
+    execution["settledAtMs"] = 0
+    assert any("execution settled before its service start" in error for error in validate_retirement_evidence(value))
+
+
+def test_missing_service_start_is_not_inferred_from_a_later_native_admission() -> None:
+    # A failed-case audit can include delayed native requests for an execution
+    # that already became terminal. Native admission is not service birth.
+    value = failure_evidence()
+    execution = next(
+        item for item in value["retirement"]["resources"] if item["id"] == value["histories"][0]["executionArn"]
+    )
+    execution["settledAtMs"] = 0
+    assert "startedAtMs" not in value["histories"][0]
+    assert validate_common_evidence(value) == []
 
 
 @pytest.mark.parametrize(("released", "rejected"), [(50, False), (40, True)])
@@ -1333,3 +1395,49 @@ def test_supplied_operation_timestamps_are_finite_nonnegative_numbers(field: str
         assert errors == [], errors
     else:
         assert any(f"history operation.{field}" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize(
+    ("started", "ended", "rejected"),
+    [
+        (25, 10, True),
+        (10, 10, False),
+        (10, 25, False),
+        (0, 0, False),
+        (None, 10, False),
+        (25, None, False),
+        (None, None, False),
+    ],
+)
+def test_operation_interval_preserves_timestamp_order_and_optional_metadata(
+    phase: Any, replay: bool, started: int | None, ended: int | None, rejected: bool
+) -> None:
+    value = replay_evidence() if replay else evidence()
+    operation: dict[str, Any] = {
+        "id": "done",
+        "name": "completed-step",
+        "type": "STEP",
+        "parentId": None,
+        "status": "SUCCEEDED",
+    }
+    if replay:
+        operation = deepcopy(value["replay"]["before"][0])
+    if started is not None:
+        operation["startedAtMs"] = started
+    if ended is not None:
+        operation["endedAtMs"] = ended
+    if replay:
+        value["replay"]["before"][0] = deepcopy(operation)
+        value["replay"]["after"][0] = deepcopy(operation)
+        value["histories"][0]["operations"] = deepcopy(value["replay"]["after"])
+    else:
+        value["histories"][0]["operations"] = [operation]
+
+    errors = validate_evidence(value, phase=phase)
+
+    if rejected:
+        assert any("operation endedAtMs precedes startedAtMs" in error for error in errors), errors
+    else:
+        assert errors == [], errors

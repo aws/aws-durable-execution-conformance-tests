@@ -266,9 +266,18 @@ class _Evidence:
                     self.error("history operation.parentId is required (null for the root)")
                 elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
                     self.error("history operation.parentId must be a string or null")
-                for key in ("startedAtMs", "endedAtMs"):
-                    if key in operation:
-                        self.number(operation[key], f"history operation.{key}")
+                operation_start = (
+                    self.number(operation["startedAtMs"], "history operation.startedAtMs")
+                    if "startedAtMs" in operation
+                    else None
+                )
+                operation_end = (
+                    self.number(operation["endedAtMs"], "history operation.endedAtMs")
+                    if "endedAtMs" in operation
+                    else None
+                )
+                if operation_start is not None and operation_end is not None and operation_end < operation_start:
+                    self.error("history operation endedAtMs precedes startedAtMs")
                 operation_id = operation.get("id")
                 if operation_id in ids:
                     self.error("duplicate operation identity in service history")
@@ -679,17 +688,21 @@ class _Evidence:
                         histories = self.value.get("histories")
                         observed = next(
                             (
-                                history.get("status")
+                                history
                                 for history in (histories if isinstance(histories, list) else [])
                                 if isinstance(history, Mapping) and history.get("executionArn") == item.get("id")
                             ),
-                            None,
+                            {},
                         )
                         # An earlier RUNNING or PENDING snapshot may become terminal.
-                        if observed in TERMINAL_STATUSES and item.get("outcome") != observed:
+                        if observed.get("status") in TERMINAL_STATUSES and item.get("outcome") != observed["status"]:
                             self.error(
                                 "retirement execution outcome differs from the terminal service history", "ASSERTION"
                             )
+                        if "startedAtMs" in observed and time < self.number(
+                            observed["startedAtMs"], "history execution.startedAtMs"
+                        ):
+                            self.error("execution settled before its service start")
                     if kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
                     if kind == "invocation" and time < self.last_activity(item.get("id")):

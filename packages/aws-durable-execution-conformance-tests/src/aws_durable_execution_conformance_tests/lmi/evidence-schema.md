@@ -79,7 +79,9 @@ Each operation retains `id`, static `name`, `type`, `parentId` (null at root),
 `status`, and its stored result/error. `name` is explicitly null for a genuinely
 unnamed operation, including SDK-supported unnamed child contexts; missing names
 are incomplete evidence. Preserve its actual ID and parent instead of inventing
-a name. Execution history status and its fixture
+a name. Optional operation `startedAtMs` and `endedAtMs` are finite, nonnegative
+timestamps; when both are supplied, the end must be at or after the start.
+Execution history status and its fixture
 expectation must be recognized `SUCCEEDED`, `FAILED`, `TIMED_OUT`, `STOPPED`,
 `RUNNING`, or `PENDING` values; nonterminal observations cannot establish final
 retirement. `expectedHistories` is keyed by execution
@@ -128,6 +130,8 @@ Every `replay.operationExecutions` record requires nonempty string `requestId`
 and `operationId` fields. The request must identify a recorded invocation. An
 operation may be incomplete or not yet checkpointed, so its ID need not appear
 in the final history, but an entry without an ID cannot establish skipped work.
+Invocation intervals can be provisional, and owned activity may outlive them;
+their endpoints alone do not establish retry user-code entry order.
 
 ## Retirement
 
@@ -146,6 +150,9 @@ In `final` validation, `retirement.retiredAtMs` follows observation completion.
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
 be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,
 or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle ownership.
+An execution's settlement must be at or after its service history's `startedAtMs`
+when supplied. Native admission is a separate boundary and does not substitute
+for missing service-start metadata.
 Durable callbacks use `kind: callback` and require an observed `SUCCEEDED`,
 `FAILED`, or `TIMED_OUT` outcome; their `evidenceUri` retains the service completion
 record. Case-owned control objects use `kind: control` and require `DELETED`,
