@@ -37,6 +37,10 @@ Each attempt records:
 - `startedAtMs`, `endedAtMs`, and independently observed invocation `outcome`
   (`SUCCEEDED`, `FAILED`, `PENDING`, or `TIMED_OUT`).
 
+Each `(role, attempt)` pair is unique within the case, across all recorded
+requests and executions. A different execution does not reset a role's ordinal;
+different roles may use the same ordinal, including when they share an execution.
+
 The source normalizer uses the matching request's
 `InvocationCompletedDetails.StartTimestamp` for a completed native invocation's
 start. It must be finite, nonnegative and no later than that request's first
@@ -119,6 +123,11 @@ watermarks cover the full window. Independent retirement applies the same rule.
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run and case identifiers isolate evidence and controls;
 they do not change durable names, branching, or concurrency topology on replay.
+
+Every `replay.operationExecutions` record requires nonempty string `requestId`
+and `operationId` fields. The request must identify a recorded invocation. An
+operation may be incomplete or not yet checkpointed, so its ID need not appear
+in the final history, but an entry without an ID cannot establish skipped work.
 
 ## Retirement
 
