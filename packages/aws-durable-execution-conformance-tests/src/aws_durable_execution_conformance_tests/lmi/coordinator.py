@@ -675,6 +675,73 @@ class _RetentionChanges:
         self.conflicts.update(other.conflicts)
 
 
+def _operation_entries_compatible(previous: Any, current: Any) -> bool:
+    if same_json(previous, current):
+        return True
+    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
+        return False
+    for key in ("requestId", "operationId"):
+        if not isinstance(previous.get(key), str) or not previous[key].strip() or previous[key] != current.get(key):
+            return False
+    if ("attemptId" in previous) != ("attemptId" in current):
+        return False
+    if "attemptId" in previous:
+        attempt_id = previous["attemptId"]
+        if not isinstance(attempt_id, str) or not attempt_id.strip() or attempt_id != current["attemptId"]:
+            return False
+    elif not (previous.keys() <= current.keys() or current.keys() <= previous.keys()):
+        # Without a retry identity, complementary partial descriptions do not
+        # establish that two observations came from the same body occurrence.
+        return False
+    return all(same_json(previous[key], current[key]) for key in previous.keys() & current.keys())
+
+
+def _retain_operation_entries(previous: list[Any], current: list[Any]) -> tuple[list[Any], _RetentionChanges]:
+    """Match compatible body entries one-to-one; their order is not an identity."""
+    candidates = [
+        [index for index, item in enumerate(current) if _operation_entries_compatible(record, item)]
+        for record in previous
+    ]
+    by_previous: dict[int, int] = {}
+    by_current: dict[int, int] = {}
+    for start in range(len(previous)):
+        pending = deque([start])
+        parents: dict[int, int] = {}
+        endpoint: int | None = None
+        while pending and endpoint is None:
+            original = pending.popleft()
+            for observed in candidates[original]:
+                if observed in parents:
+                    continue
+                parents[observed] = original
+                if observed not in by_current:
+                    endpoint = observed
+                    break
+                pending.append(by_current[observed])
+        # Reassign an earlier match when necessary, so a bare entry cannot
+        # consume the only occurrence compatible with another entry's metadata.
+        while endpoint is not None:
+            original = parents[endpoint]
+            prior_match = by_previous.get(original)
+            by_previous[original] = endpoint
+            by_current[endpoint] = original
+            endpoint = prior_match
+
+    retained = copy.deepcopy(current)
+    changes = _RetentionChanges()
+    for index, record in enumerate(previous):
+        match = by_previous.get(index)
+        if match is None:
+            retained.append(copy.deepcopy(record))
+            changes.omitted = True
+        elif isinstance(record, Mapping):
+            for key, value in record.items():
+                if key not in retained[match]:
+                    retained[match][key] = copy.deepcopy(value)
+                    changes.omitted = True
+    return retained, changes
+
+
 def _observation_updates(
     previous: Mapping[str, Any], current: Mapping[str, Any], path: tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -743,6 +810,8 @@ def _observation_updates(
             if records:
                 updates[key] = records
         else:
+            # Unkeyed lists stay whole: operationExecutions can contain multiple
+            # body occurrences with the same request/operation identities.
             updates[key] = copy.deepcopy(value)
     return updates
 
@@ -789,6 +858,13 @@ def _retain_observations(
             changed.omitted = True
         elif isinstance(previous, Mapping) and isinstance(retained[key], Mapping):
             retained[key], nested_changed = _retain_observations(previous, retained[key], (*path, key))
+            changed.merge(nested_changed)
+        elif (
+            (*path, key) == ("replay", "operationExecutions")
+            and isinstance(previous, list)
+            and isinstance(retained[key], list)
+        ):
+            retained[key], nested_changed = _retain_operation_entries(previous, retained[key])
             changed.merge(nested_changed)
         elif isinstance(previous, list) and isinstance(retained[key], list):
             remaining = list(range(len(retained[key])))

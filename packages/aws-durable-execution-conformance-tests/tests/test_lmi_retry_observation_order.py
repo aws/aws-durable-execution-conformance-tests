@@ -553,3 +553,134 @@ def test_after_status_delta_retains_an_unchanged_terminal_null_outcome(rewrite: 
     assert (result.status == "PASSED") is (not rewrite), result.errors
     retained = next(operation for operation in result.evidence["replay"]["after"] if operation["id"] == "retry")
     assert retained["result"] is None
+
+
+class OperationEntryAdapter(RetryObservationAdapter):
+    def __init__(self, value: dict[str, Any], initial: list[dict[str, Any]], mode: str = "normal") -> None:
+        super().__init__(value, [value["replay"]["retry"]["attempts"]], partial=mode == "partial")
+        self.initial_entries, self.mode = initial, mode
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        context.evidence["replay"]["operationExecutions"] = deepcopy(self.initial_entries)
+
+    async def place(self, context: ScenarioContext) -> None:
+        if self.mode == "phase":
+            context.evidence["replay"]["operationExecutions"] = deepcopy(
+                self.collected["replay"]["operationExecutions"]
+            )
+        await super().place(context)
+
+
+@pytest.mark.parametrize("mode", ["normal", "partial", "phase"])
+@pytest.mark.parametrize("operation_id", ["done", "retry"])
+def test_operation_entry_can_gain_missing_outcome_metadata(mode: str, operation_id: str) -> None:
+    value = _replay_evidence()
+    entry = next(item for item in value["replay"]["operationExecutions"] if item["operationId"] == operation_id)
+    if operation_id == "done":
+        entry["outcome"] = "SUCCEEDED"
+    original = deepcopy(entry)
+    original.pop("outcome")
+    assert validate_evidence(value) == []
+    result, _ = _run(OperationEntryAdapter(value, [original], mode))
+    if mode != "partial":
+        assert result.status == "PASSED", result.errors
+    assert validate_evidence(result.evidence) == [], result.errors
+    assert result.evidence["replay"]["operationExecutions"] == value["replay"]["operationExecutions"]
+    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("requestId", "request-resume"),
+        ("operationId", "other-work"),
+        ("attemptId", "other-attempt"),
+        ("outcome", "SUCCEEDED"),
+        ("details", {"values": [2, 1]}),
+    ],
+)
+def test_operation_entry_cannot_rewrite_known_identity_or_metadata(field: str, changed: Any) -> None:
+    value = _replay_evidence()
+    original = {
+        "requestId": "request-victim",
+        "operationId": "uncheckpointed",
+        "attemptId": "extra",
+        "outcome": "FAILED",
+        "details": {"values": [1, 2]},
+    }
+    value["replay"]["operationExecutions"].append({**deepcopy(original), field: changed})
+    assert validate_evidence(value) == []
+    result, _ = _run(OperationEntryAdapter(value, [original]))
+    assert result.status != "PASSED", result.errors
+    assert any(same_json(original, item) for item in result.evidence["replay"]["operationExecutions"])
+
+
+@pytest.mark.parametrize("initial_identified", [False, True])
+def test_operation_entry_without_attempt_id_cannot_be_rebound_to_a_retry(initial_identified: bool) -> None:
+    value = _replay_evidence()
+    original = {"requestId": "request-victim", "operationId": "uncheckpointed"}
+    collected = {**original, "attemptId": "identified"}
+    if initial_identified:
+        original, collected = collected, original
+    value["replay"]["operationExecutions"].append(collected)
+    result, _ = _run(OperationEntryAdapter(value, [original]))
+    assert result.status != "PASSED"
+    assert original in result.evidence["replay"]["operationExecutions"]
+    assert collected in result.evidence["replay"]["operationExecutions"]
+
+
+def test_operation_entry_enrichment_matches_occurrences_without_stealing_known_metadata() -> None:
+    value = _replay_evidence()
+    bare = {"requestId": "request-victim", "operationId": "uncheckpointed"}
+    failed = {**bare, "outcome": "FAILED"}
+    value["replay"]["operationExecutions"].extend(
+        [{**failed, "evidenceUri": "memory://failed"}, {**bare, "outcome": "SUCCEEDED"}]
+    )
+    assert validate_evidence(value) == []
+    result, _ = _run(OperationEntryAdapter(value, [bare, failed]))
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["replay"]["operationExecutions"] == value["replay"]["operationExecutions"]
+
+
+def test_new_retry_entries_remain_distinct_on_the_same_request_and_operation() -> None:
+    value = _replay_evidence(3)
+    original = deepcopy(
+        next(item for item in value["replay"]["operationExecutions"] if item.get("attemptId") == "retry-1")
+    )
+    original.pop("outcome")
+    result, _ = _run(OperationEntryAdapter(value, [original], "phase"))
+    assert result.status == "PASSED", result.errors
+    entries = [item for item in result.evidence["replay"]["operationExecutions"] if item["operationId"] == "retry"]
+    assert [item["attemptId"] for item in entries] == ["retry-1", "retry-2", "retry-3"]
+
+
+@pytest.mark.parametrize("phase", ["place", "execute"])
+def test_operation_entry_enrichment_cannot_erase_an_additional_body_occurrence(phase: str) -> None:
+    value = _replay_evidence()
+    original = {"requestId": "request-victim", "operationId": "uncheckpointed"}
+    value["replay"]["operationExecutions"].append({**original, "outcome": "SUCCEEDED"})
+
+    class RepeatedEntryAdapter(OperationEntryAdapter):
+        async def place(self, context: ScenarioContext) -> None:
+            if phase == "place":
+                context.evidence["replay"]["operationExecutions"].append(deepcopy(original))
+
+        async def execute(self, context: ScenarioContext) -> None:
+            if phase == "execute":
+                context.evidence["replay"]["operationExecutions"].append(deepcopy(original))
+
+    result, _ = _run(RepeatedEntryAdapter(value, [original]))
+    assert result.status != "PASSED"
+    assert (
+        sum(item["operationId"] == "uncheckpointed" for item in result.evidence["replay"]["operationExecutions"]) == 2
+    )
+
+
+def test_operation_entry_metadata_does_not_hide_completed_code_on_resume() -> None:
+    value = _replay_evidence()
+    original = {"requestId": "request-resume", "operationId": "done"}
+    value["replay"]["operationExecutions"].append({**original, "outcome": "SUCCEEDED"})
+    result, _ = _run(OperationEntryAdapter(value, [original]))
+    assert result.status != "PASSED"
+    assert any("repeated completed user code" in error for error in result.errors), result.errors
