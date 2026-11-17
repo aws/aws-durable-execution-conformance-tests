@@ -2684,3 +2684,88 @@ def test_rereading_provisional_fields_does_not_reverse_observed_progress(discove
     if discover_control:
         assert any(resource["kind"] == "control" for resource in collected.evidence["resourcesCreated"])
     assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("scope", ["execution", "operation"])
+@pytest.mark.parametrize("field", ["result", "error"])
+@pytest.mark.parametrize("outcome", [None, {"value": "original"}])
+@pytest.mark.parametrize("rewrite", [False, True])
+def test_status_only_completion_retains_present_outcomes_before_a_later_phase(
+    scope: str, field: str, outcome: Any, rewrite: bool
+) -> None:
+    final_outcome = {"value": "rewritten"} if rewrite else outcome
+    terminal_status = "SUCCEEDED" if field == "result" else "FAILED"
+
+    class StatusOnlyCompletionAdapter(FailureAdapter):
+        def target(self, value: dict[str, Any]) -> dict[str, Any]:
+            history = value["histories"][0]
+            return history["operations"][0] if scope == "operation" else history
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            final = self.snapshots[context.scenario.case_id]
+            history = final["histories"][0]
+            if scope == "operation":
+                history["result"] = None
+                history["operations"] = [{"id": "step", "name": "work", "type": "STEP", "parentId": None}]
+            self.target(final).update(status=terminal_status, **{field: deepcopy(final_outcome)})
+            for resource in final["retirement"]["resources"]:
+                if resource["kind"] == "execution":
+                    resource["outcome"] = history["status"]
+            context.evidence = self.observations(context)
+            self.target(context.evidence).update(
+                status="STARTED" if scope == "operation" else "RUNNING", **{field: deepcopy(outcome)}
+            )
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            history = value["histories"][0]
+            expected = {
+                key: deepcopy(item)
+                for key, item in history.items()
+                if key in {"status", "result", "error", "operations"}
+            }
+            value["expectedHistories"] = {history["executionArn"]: expected}
+            return value
+
+        async def place(self, context: ScenarioContext) -> None:
+            # Only status changes on the supplied object; the current outcome
+            # remains explicitly present, including a meaningful JSON null.
+            self.target(context.evidence)["status"] = terminal_status
+
+        async def execute(self, context: ScenarioContext) -> None:
+            if rewrite:
+                self.target(context.evidence)[field] = deepcopy(final_outcome)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            # Exercise the normal retirement-record path, without an independent
+            # full snapshot that might incidentally expose the lost observation.
+            context.evidence["retirement"] = deepcopy(self.snapshots[context.scenario.case_id]["retirement"])
+            return True
+
+    adapter = StatusOnlyCompletionAdapter(phase="none")
+    scheduler = ResourceScheduler()
+    (collected,) = asyncio.run(
+        run_scenarios(
+            [_case("failed")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            scheduler=scheduler,
+            validator=lambda evidence, *, phase="final": validate_common_evidence(
+                evidence,
+                phase="observations" if phase == "observations" else "final",
+                requirement_ids=("fixture-check",),
+            ),
+        )
+    )
+    retained = adapter.target(collected.evidence)
+    assert field in retained
+    assert same_json(retained[field], outcome)
+    if rewrite:
+        assert collected.status != "PASSED", collected.errors
+        assert any("conflict with retained facts" in error for error in collected.errors), collected.errors
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+    else:
+        assert collected.status == "PASSED", collected.errors
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None

@@ -662,6 +662,11 @@ def _observation_updates(
                         and "status" in record
                     ):
                         nested["status"] = record["status"]
+                        # Status can make an unchanged outcome immutable. Carry
+                        # present values (including null), but not removed fields.
+                        for outcome in ("result", "error"):
+                            if outcome in record:
+                                nested[outcome] = copy.deepcopy(record[outcome])
                     records.append(nested)
             if records:
                 updates[key] = records
