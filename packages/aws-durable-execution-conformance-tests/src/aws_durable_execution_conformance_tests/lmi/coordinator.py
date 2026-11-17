@@ -569,6 +569,7 @@ _OBSERVATION_IDENTITIES: dict[tuple[str, ...], str] = {
     ("faultsCreated",): "id",
     ("resourcesCreated",): "id",
     ("replay", "retry", "attempts"): "attemptId",
+    ("replay", "sideEffects"): "operationId",
 }
 
 
@@ -591,6 +592,27 @@ def _retry_attempt_order(evidence: Mapping[str, Any]) -> tuple[str, ...] | None:
     return tuple(identifiers)
 
 
+def _side_effect_observation_errors(evidence: Mapping[str, Any]) -> list[str]:
+    replay = evidence.get("replay")
+    counts = replay.get("sideEffects") if isinstance(replay, Mapping) else None
+    if not isinstance(counts, list):
+        return []
+    errors = []
+    seen: set[str] = set()
+    for count in counts:
+        if not isinstance(count, Mapping):
+            continue
+        operation_id = count.get("operationId")
+        if isinstance(operation_id, str):
+            if operation_id in seen:
+                errors.append(f"INCOMPLETE: duplicate side-effect operationId {operation_id}")
+            seen.add(operation_id)
+        for counter_field in ("count", "expectedCount"):
+            if counter_field in count and (type(count[counter_field]) is not int or count[counter_field] < 0):
+                errors.append(f"INCOMPLETE: side-effect {counter_field} must be a non-negative integer")
+    return errors
+
+
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
     if path == ("histories", "status"):
         return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
@@ -599,6 +621,8 @@ def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) ->
             *_OPERATION_NONTERMINAL_STATUSES,
             *_OPERATION_TERMINAL_STATUSES,
         )
+    if path == ("replay", "sideEffects", "count"):
+        return type(previous) is int and type(current) is int and 0 <= previous <= current
     increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
     increasing |= path == ("attempts", "endedAtMs")
     decreasing = path == ("attempts", "startedAtMs")
@@ -1125,6 +1149,10 @@ async def run_scenarios(
         cancelled = False
 
         def record_observations(snapshot: dict[str, Any], phase: str) -> None:
+            for issue in _side_effect_observation_errors(snapshot):
+                diagnostic = f"{issue} ({phase})"
+                if diagnostic not in errors:
+                    errors.append(diagnostic)
             order = _retry_attempt_order(snapshot)
             if order is not None:
                 for previous in retry_orderings:

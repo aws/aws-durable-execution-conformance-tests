@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Collected replay evidence cannot rewrite previously observed retry order."""
+"""Replay observations preserve retry order and cumulative side-effect counts."""
 
 import asyncio
 from collections.abc import Mapping
@@ -219,3 +219,84 @@ def test_retry_attempt_enrichment_cannot_replace_request_or_outcome(field: str, 
     assert result.status != "PASSED"
     retained = next(item for item in result.evidence["replay"]["retry"]["attempts"] if item["attemptId"] == "retry-2")
     assert retained[field] == known[1][field]
+
+
+class SideEffectObservationAdapter(RetryObservationAdapter):
+    def __init__(self, collected: dict[str, Any], initial: list[dict[str, Any]], *, partial: bool = False) -> None:
+        super().__init__(collected, [deepcopy(collected["replay"]["retry"]["attempts"])], partial=partial)
+        self.initial_effects = initial
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        context.evidence["replay"]["sideEffects"] = deepcopy(self.initial_effects)
+
+
+def _effect(value: dict[str, Any]) -> dict[str, Any]:
+    return next(item for item in value["replay"]["sideEffects"] if item["operationId"] == "done")
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_side_effect_observations_can_reach_the_predeclared_count(partial: bool) -> None:
+    value = _replay_evidence()
+    _effect(value).update(count=2, expectedCount=2)
+    known = {"operationId": "done", "count": 1, "expectedCount": 2}
+    assert validate_evidence(value) == []
+    result, _ = _run(SideEffectObservationAdapter(value, [known], partial=partial))
+    if partial:
+        assert result.status != "PASSED"
+    else:
+        assert result.status == "PASSED", result.errors
+    assert validate_evidence(result.evidence) == [], result.errors
+    assert not any("side-effect" in error or "omitted or changed retained" in error for error in result.errors)
+    assert _effect(result.evidence) == {"operationId": "done", "count": 2, "expectedCount": 2}
+
+
+def test_side_effect_source_metadata_can_enrich_the_same_counter() -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    _effect(value)["evidenceUri"] = "memory://side-effect-count"
+    result, _ = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status == "PASSED", result.errors
+    assert _effect(result.evidence) == _effect(value)
+    assert sum(item["operationId"] == "done" for item in result.evidence["replay"]["sideEffects"]) == 1
+
+
+@pytest.mark.parametrize("change", ["decrease", "expectation"])
+def test_side_effect_progress_cannot_decrease_or_change_the_declared_expectation(change: str) -> None:
+    value = _replay_evidence()
+    known = {"operationId": "done", "count": 2 if change == "decrease" else 1, "expectedCount": 1}
+    if change == "expectation":
+        _effect(value).update(count=2, expectedCount=2)
+    assert validate_evidence(value) == []
+    result, _ = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status != "PASSED", result.errors
+    assert _effect(result.evidence)["expectedCount"] == 1
+    assert _effect(result.evidence)["count"] == 2
+    assert any("side-effect count differs" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("source", ["context", "collector"])
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, conflicting: bool) -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    duplicate = {**known, "count": 2, "expectedCount": 2} if conflicting else deepcopy(known)
+    initial = [known, duplicate] if source == "context" else [known]
+    if source == "collector":
+        value["replay"]["sideEffects"].append(duplicate)
+    assert validate_evidence(value) == []
+    result, _ = _run(SideEffectObservationAdapter(value, initial))
+    assert result.status != "PASSED", result.errors
+    assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
+    assert sum(item["operationId"] == "done" for item in result.evidence["replay"]["sideEffects"]) == 2
+
+
+@pytest.mark.parametrize("field", ["count", "expectedCount"])
+@pytest.mark.parametrize("invalid", [1.0, True, -1, float("inf"), "1"])
+def test_invalid_counter_observations_cannot_be_erased_by_valid_collection(field: str, invalid: Any) -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    known[field] = invalid
+    result, _ = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status != "PASSED", result.errors
+    assert any(f"side-effect {field} must be a non-negative integer" in error for error in result.errors), result.errors
