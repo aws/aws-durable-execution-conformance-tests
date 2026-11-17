@@ -129,15 +129,23 @@ class _Evidence:
         if self.number(self.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
             self.error("profile.timeoutMs must be positive")
         observation_end = self.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
+        attempt_ordinals: set[tuple[str, int]] = set()
         for attempt in self.records(value.get("attempts"), "attempts", nonempty=True):
             request_id = self.string(attempt.get("requestId"), "attempt.requestId")
             if request_id in self.attempts:
                 self.error(f"duplicate requestId {request_id}")
             self.attempts[request_id] = attempt
-            for key in ("executionArn", "environmentId", "workerId", "processId", "role"):
+            for key in ("executionArn", "environmentId", "workerId", "processId"):
                 self.string(attempt.get(key), f"attempt {request_id}.{key}")
-            if type(attempt.get("attempt")) is not int or attempt["attempt"] < 1:
+            role = self.string(attempt.get("role"), f"attempt {request_id}.role")
+            ordinal = attempt.get("attempt")
+            if type(ordinal) is not int or ordinal < 1:
                 self.error(f"attempt {request_id}.attempt must be a positive integer")
+            else:
+                identity = (role, ordinal)
+                if identity in attempt_ordinals:
+                    self.error(f"duplicate attempt ordinal {ordinal} for role {role}")
+                attempt_ordinals.add(identity)
             start = self.number(attempt.get("startedAtMs"), f"attempt {request_id}.startedAtMs")
             end = self.number(attempt.get("endedAtMs"), f"attempt {request_id}.endedAtMs")
             if end <= start or end > observation_end:

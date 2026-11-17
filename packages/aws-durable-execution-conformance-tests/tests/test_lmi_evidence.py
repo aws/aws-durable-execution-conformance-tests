@@ -353,6 +353,61 @@ def test_selected_retry_cannot_replace_original_request() -> None:
     assert any("retry" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_duplicate_original_ordinal_cannot_hide_failed_placement(
+    runtime: str, phase: Literal["observations", "final"]
+) -> None:
+    value = evidence(runtime=runtime)
+    original = attempt("victim", start=1, end=9)
+    original.update(
+        requestId="request-original-victim",
+        executionArn="arn:execution:original-victim",
+        environmentId="failed-placement-environment",
+    )
+    # The selected, later request has valid placement but also claims victim/1.
+    # Retain the real original and its history instead of discarding the miss.
+    value["attempts"].insert(0, original)
+    value["events"].append(event(original, "wrapper_return", 9))
+    refresh_histories(value)
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("duplicate attempt ordinal 1 for role victim" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("same_execution", [False, True])
+def test_duplicate_retry_ordinals_are_rejected_across_executions(
+    phase: Literal["observations", "final"], same_execution: bool
+) -> None:
+    value = evidence()
+    first = attempt("victim", start=50, end=60)
+    first.update(requestId="request-victim-retry-2", attempt=2)
+    second = {**first, "requestId": "request-duplicate-retry-2", "startedAtMs": 70, "endedAtMs": 80}
+    if not same_execution:
+        second["executionArn"] = "arn:execution:another-victim"
+    value["attempts"].extend([first, second])
+    refresh_histories(value)
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("duplicate attempt ordinal 2 for role victim" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_attempt_ordinals_are_unique_within_each_role(phase: Literal["observations", "final"]) -> None:
+    value = replay_evidence()
+    # victim/1 and resume/1 share an execution; a subsequent resume/2 is valid.
+    resume = value["attempts"][-1]
+    value["attempts"].append(
+        {**resume, "requestId": "request-resume-2", "attempt": 2, "startedAtMs": 90, "endedAtMs": 100}
+    )
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        assert validate(value, phase=phase) == []
+
+
 def test_barriers_and_intervals_must_both_prove_overlap() -> None:
     value = evidence()
     value["events"][1]["atMs"] = 41
