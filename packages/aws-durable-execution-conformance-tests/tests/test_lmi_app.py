@@ -4,6 +4,7 @@
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
 import json
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
 from runpy import run_path
@@ -232,6 +233,38 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
     assert report["summary"]["uncovered"] == 7
     assert report["ci"]["exit_code"] == 1
     assert (tmp_path / "out/report.xml").is_file()
+
+
+@pytest.mark.parametrize("reason", ["", "handler unavailable"])
+def test_cli_reports_not_implemented_with_optional_reason(tmp_path, reason):
+    plan = manifest()
+    for case in plan["scenarios"]:
+        case["not_implemented"] = reason
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    output = tmp_path / "out"
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(path), "--output", str(output)])
+    assert exc.value.code == 1
+
+    results = json.loads((output / "evidence.json").read_text())
+    assert len(results) == len(plan["scenarios"])
+    assert all(result["status"] == "NOT_IMPLEMENTED" and result["errors"] == [reason] for result in results)
+    report = json.loads((output / "report.json").read_text())
+    assert report["summary"]["not_implemented"] == 7
+    assert report["summary"]["failed"] == report["summary"]["uncovered"] == 0
+    assert report["ci"]["fail_on"] == FAIL_ON_STRICT
+    assert report["ci"]["exit_code"] == 1
+    assert all(entry["status"] == "NOT_IMPLEMENTED" for entry in report["results"])
+
+    junit = ET.parse(output / "report.xml").getroot()
+    assert junit.attrib["tests"] == junit.attrib["skipped"] == "7"
+    assert junit.attrib["failures"] == "0"
+    for testcase in junit.findall("testcase"):
+        skipped = testcase.find("skipped")
+        assert skipped is not None
+        assert skipped.attrib["message"].startswith("NOT_IMPLEMENTED")
 
 
 def test_dispatch_is_opt_in():
