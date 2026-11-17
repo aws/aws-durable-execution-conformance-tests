@@ -415,6 +415,176 @@ def _run_standard_cleanup_discovery(
     return result
 
 
+@pytest.mark.parametrize(
+    ("phase", "path"), [("release", "normal"), ("retire", "normal"), ("retirement", "independent")]
+)
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        (("schemaVersion",), 2),
+        (("schemaVersion",), True),
+        (("observationEndedAtMs",), False),
+        (("observationEndedAtMs",), -1),
+        (("observationEndedAtMs",), float("nan")),
+        (("observationEndedAtMs",), float("inf")),
+        (("collection",), None),
+        (("collection", "watermarks"), []),
+        (("collection", "watermarks", "lifecycle"), False),
+        (("collection", "watermarks", "history"), -1),
+        (("collection", "evidenceUris"), None),
+        (("collection", "evidenceUris"), [False]),
+    ],
+)
+def test_cleanup_rejects_supplied_malformed_envelope_metadata(
+    phase: str, path: str, field: tuple[str, ...], invalid: Any
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        target = snapshot
+        for key in field[:-1]:
+            target = target[key]
+        target[field[-1]] = invalid
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase=phase, path=path, quiescent=False, retirement_valid=path == "normal"
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(".".join(field) in error for error in result.errors), result.errors
+    assert result.evidence["schemaVersion"] == 1
+    assert result.evidence["observationEndedAtMs"] == 200
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("field", ["schemaVersion", "observationEndedAtMs", "collection"])
+def test_cleanup_envelope_correction_cannot_erase_malformed_metadata(path: str, field: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        snapshot[field] = None if calls == 1 else deepcopy(value[field])
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=False)
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(field in error for error in result.errors), result.errors
+    assert result.cleanup_evidence["release"][0][field] is None
+
+
+@pytest.mark.parametrize(
+    ("phase", "path"), [("release", "normal"), ("retire", "normal"), ("retirement", "independent")]
+)
+def test_retirement_must_cover_metadata_only_cleanup_window(phase: str, path: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["observationEndedAtMs"] = 300
+        snapshot["collection"]["watermarks"] = dict.fromkeys(snapshot["collection"]["watermarks"], 300)
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase=phase, path=path, quiescent=False, retirement_valid=path == "normal"
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any("observation window" in error for error in result.errors), result.errors
+    assert result.evidence["observationEndedAtMs"] == 200
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("shortfall", ["retirement", "watermarks"])
+def test_cleanup_observation_bounds_preserve_exact_integer_timestamps(path: str, shortfall: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    end = 2**53 + 1
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["observationEndedAtMs"] = end
+        snapshot["collection"]["watermarks"] = dict.fromkeys(
+            snapshot["collection"]["watermarks"], end - 1 if shortfall == "watermarks" else end
+        )
+        value["retirement"]["retiredAtMs"] = end - 1 if shortfall == "retirement" else end + 1
+
+    result = _run_standard_cleanup_discovery(
+        value,
+        mutate,
+        phase="release",
+        path=path,
+        quiescent=False,
+        retirement_valid=path == "normal" or shortfall == "watermarks",
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any("observation window" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("retired_at", [220, 320])
+def test_retirement_covers_every_retained_cleanup_window_after_correction(path: str, retired_at: int) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        end = 300 if calls == 1 else 200
+        snapshot["observationEndedAtMs"] = end
+        snapshot["collection"]["watermarks"] = dict.fromkeys(snapshot["collection"]["watermarks"], end)
+        value["retirement"]["retiredAtMs"] = retired_at
+
+    covered = retired_at >= 300
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=covered)
+    assert result.status == ("PASSED" if covered else "INFRASTRUCTURE_ERROR"), result.errors
+    assert result.cleanup_evidence["release"][0]["observationEndedAtMs"] == 300
+    if not covered:
+        assert any("observation window" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("complete_coverage", [False, True])
+def test_cleanup_watermark_completion_must_cover_retained_window(path: str, complete_coverage: bool) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        snapshot["observationEndedAtMs"] = 300
+        if calls == 2 and complete_coverage:
+            snapshot["collection"]["watermarks"] = dict.fromkeys(snapshot["collection"]["watermarks"], 300)
+        value["retirement"]["retiredAtMs"] = 320
+
+    result = _run_standard_cleanup_discovery(
+        value,
+        mutate,
+        phase="both",
+        path=path,
+        quiescent=complete_coverage,
+        retirement_valid=complete_coverage or path == "normal",
+    )
+    assert result.status == ("PASSED" if complete_coverage else "INFRASTRUCTURE_ERROR"), result.errors
+    if not complete_coverage:
+        assert any("observation window" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("partial", [{}, {"watermarks": {}}, {"watermarks": {"lifecycle": 100}}, {"evidenceUris": []}])
+def test_cleanup_accepts_absent_and_partial_envelope_metadata(path: str, partial: dict[str, Any]) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            snapshot.pop("schemaVersion")
+            snapshot.pop("observationEndedAtMs")
+            snapshot["collection"] = deepcopy(partial)
+        else:
+            for field in ("schemaVersion", "observationEndedAtMs", "collection"):
+                snapshot[field] = deepcopy(value[field])
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "PASSED", result.errors
+
+
 @pytest.mark.parametrize("phase", ["release", "retire", "snapshot"])
 @pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize(

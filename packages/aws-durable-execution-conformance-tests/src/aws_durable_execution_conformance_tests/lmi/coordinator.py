@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     HISTORY_STATUSES,
+    SCHEMA_VERSION,
     TERMINAL_STATUSES,
     EvidenceValidator,
     same_json,
@@ -1218,6 +1219,65 @@ def _retirement_ownership_errors(
     if not isinstance(retired_at, (int, float)) or isinstance(retired_at, bool) or retired_at < latest:
         errors.append("Retirement snapshot predates previously observed activity")
     return errors
+
+
+def _cleanup_envelope_errors(sources: Sequence[Mapping[str, Any]], final: Mapping[str, Any]) -> list[str]:
+    """Retain supplied metadata errors and reconcile cumulative window coverage."""
+    findings: list[str] = []
+    observation_end: int | float = 0
+    watermarks: dict[str, int | float] = {}
+
+    def timestamp(value: Any, path: str) -> int | float | None:
+        try:
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+                return value
+        except OverflowError:
+            pass
+        findings.append(f"INCOMPLETE: cleanup {path} must be a finite non-negative number")
+        return None
+
+    for source in sources:
+        if "schemaVersion" in source and (
+            type(source["schemaVersion"]) is not int or source["schemaVersion"] != SCHEMA_VERSION
+        ):
+            findings.append(f"INCOMPLETE: cleanup unsupported schemaVersion; expected {SCHEMA_VERSION}")
+        if "observationEndedAtMs" in source:
+            end = timestamp(source["observationEndedAtMs"], "observationEndedAtMs")
+            if end is not None:
+                observation_end = max(observation_end, end)
+        if "collection" not in source:
+            continue
+        collection = source["collection"]
+        if not isinstance(collection, Mapping):
+            findings.append("INCOMPLETE: cleanup collection must be an object")
+            continue
+        if "watermarks" in collection:
+            supplied = collection["watermarks"]
+            if not isinstance(supplied, Mapping):
+                findings.append("INCOMPLETE: cleanup collection.watermarks must be an object")
+            else:
+                for name in ("lifecycle", "sdkRequests", "history"):
+                    if name in supplied:
+                        covered = timestamp(supplied[name], f"collection.watermarks.{name}")
+                        if covered is not None:
+                            watermarks[name] = max(watermarks.get(name, 0), covered)
+        if "evidenceUris" in collection:
+            references = collection["evidenceUris"]
+            if not isinstance(references, list) or any(not isinstance(uri, str) or not uri for uri in references):
+                findings.append("INCOMPLETE: cleanup collection.evidenceUris must be an array of non-empty strings")
+
+    # Partial snapshots may precede watermark completion or omit envelope fields.
+    # Every retained window still needs eventual collection coverage and a
+    # retirement that follows it, regardless of whether owned inventories changed.
+    for name, covered in watermarks.items():
+        if covered < observation_end:
+            findings.append(f"INCOMPLETE: cleanup {name} collection does not cover the retained observation window")
+    retirement = final.get("retirement")
+    if isinstance(retirement, Mapping) and "retiredAtMs" in retirement:
+        retired_at = timestamp(retirement["retiredAtMs"], "retirement.retiredAtMs")
+        if retired_at is not None and retired_at < observation_end:
+            findings.append("INCOMPLETE: cleanup retirement precedes a retained observation window")
+    return findings
 
 
 def _cleanup_retry_errors(
@@ -2491,6 +2551,15 @@ async def run_scenarios(
                                 physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
+                # Envelope changes do not alter ownership inventories, but they
+                # still constrain the collection and retirement proof. Audit all
+                # raw snapshots so later corrections cannot erase malformed data.
+                for finding in _cleanup_envelope_errors(
+                    [*observation_baselines, evidence, *cleanup_snapshots, retirement_evidence],
+                    retirement_evidence or evidence,
+                ):
+                    if finding not in cleanup_errors:
+                        cleanup_errors.append(finding)
                 # Some discoveries need all eventual sources to resolve native
                 # request references, even when no ownership inventory changed.
                 try:
