@@ -145,9 +145,44 @@
       },
       "minItems": 1
     },
+    "budgets": {
+      "type": "object",
+      "properties": {
+        "admissionMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cleanupMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "recoveryMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "observationGraceMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
     "replay": {
       "type": "object",
       "properties": {
+        "before": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/completedOperation"
+          }
+        },
+        "after": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/operation"
+          }
+        },
         "operationExecutions": {
           "type": "array",
           "minItems": 1,
@@ -169,6 +204,34 @@
                 "pattern": "\\S"
               }
             }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "required": [
+            "operationId",
+            "attempts"
+          ],
+          "properties": {
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "attempts": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/retryAttempt"
+              }
+            }
+          }
+        },
+        "sideEffects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sideEffect"
           }
         }
       }
@@ -437,6 +500,86 @@
       "minLength": 1
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "enum": [
+              "lmi-lifecycle-3",
+              "lmi-lifecycle-4"
+            ]
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "required": [
+          "budgets"
+        ],
+        "properties": {
+          "budgets": {
+            "required": [
+              "admissionMs",
+              "cleanupMs",
+              "observationGraceMs"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "const": "lmi-lifecycle-4"
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "budgets": {
+            "required": [
+              "recoveryMs"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "const": "lmi-lifecycle-5"
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "required": [
+          "replay"
+        ],
+        "properties": {
+          "replay": {
+            "required": [
+              "before",
+              "after",
+              "operationExecutions",
+              "retry",
+              "sideEffects"
+            ]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "attempt": {
       "type": "object",
@@ -693,6 +836,83 @@
         },
         "releasedAtMs": {
           "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "completedOperation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/operation"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SUCCEEDED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "result"
+            ]
+          },
+          "else": {
+            "required": [
+              "error"
+            ]
+          }
+        }
+      ]
+    },
+    "retryAttempt": {
+      "type": "object",
+      "required": [
+        "attemptId",
+        "requestId",
+        "outcome"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "outcome": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "sideEffect": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "count",
+        "expectedCount"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedCount": {
+          "type": "integer",
           "minimum": 0
         }
       }

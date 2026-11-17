@@ -337,6 +337,15 @@ class _Evidence:
                     and request["atMs"] >= closed
                 ):
                     self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
+            for event in self.events:
+                if (
+                    event.get("requestId") == request_id
+                    and event.get("kind") == "admission_probe"
+                    and isinstance(event.get("atMs"), (float, int))
+                    and event["atMs"] >= closed
+                    and event.get("outcome") != "REJECTED"
+                ):
+                    self.error(f"closed invocation admitted a {event.get('probe')} probe", "ASSERTION")
 
     def overlap(self) -> None:
         if not self.require_roles("victim", "peer"):
@@ -382,32 +391,27 @@ class _Evidence:
             self.error("task exit preceded root completion in the disposal fixture", "ASSERTION")
 
     def rejected_probe(self, victim: Mapping[str, Any], closed: float) -> None:
-        first_closed = min(
-            [closed]
-            + [
-                event["atMs"]
-                for event in self.events
-                if event.get("requestId") == victim.get("requestId")
-                and event.get("kind") in ("wrapper_return", "admission_closed")
-            ]
-        )
+        # Common behavior validation checks outcomes from the first closure.
+        # Coverage still needs both probes after this scenario's boundary.
         for probe in ("operation", "checkpoint"):
-            observations = [
-                event
-                for event in self.events
-                if event.get("requestId") == victim.get("requestId")
+            if not any(
+                event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
                 and event.get("probe") == probe
-                and event.get("atMs", -1) >= first_closed
-            ]
-            # Earlier closure broadens the outcome checks, but cannot replace
-            # the required probes after this scenario's closure boundary.
-            if not any(event.get("atMs", -1) >= closed for event in observations):
+                and event.get("atMs", -1) >= closed
+                for event in self.events
+            ):
                 self.error(f"missing post-closure {probe} admission probe")
-            if any(event.get("outcome") != "REJECTED" for event in observations):
-                self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
 
-    def deadline(self) -> None:
+    def observation_grace(self, boundary: float) -> None:
+        budgets = self.mapping(self.value.get("budgets"), "budgets")
+        grace = self.number(budgets.get("observationGraceMs"), "budgets.observationGraceMs")
+        if self.value.get("observationEndedAtMs", 0) < boundary + grace:
+            self.error(
+                "observationEndedAtMs does not cover the declared observationGraceMs after the scenario boundary"
+            )
+
+    def deadline(self, *, check_grace: bool = True) -> None:
         if not self.require_roles("victim"):
             return
         victim = self.selected["victim"]
@@ -429,6 +433,8 @@ class _Evidence:
             budget = self.number(budgets.get(field), f"budgets.{field}")
             if not time <= event.get("atMs", -1) <= time + budget:
                 self.error(f"deadline {field} exceeds the declared fixture budget", "ASSERTION")
+        if check_grace:
+            self.observation_grace(time)
         self.rejected_probe(victim, closed.get("atMs", 0))
         for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
             release = fault.get("releasedAtMs")
@@ -437,13 +443,14 @@ class _Evidence:
 
     def recovery(self) -> None:
         self.overlap()
-        self.deadline()
+        self.deadline(check_grace=False)
         if not self.require_roles("victim", "peer", "recovery"):
             return
         victim, recovery = self.selected["victim"], self.selected["recovery"]
         peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         timeout = self.event(victim, "platform_timeout").get("atMs", 0)
         recovered = self.event(recovery, "worker_recovered").get("atMs", 0)
+        self.observation_grace(recovered)
         if recovery.get("environmentId") != victim.get("environmentId"):
             self.error("replacement environment cannot establish worker recovery", "PLACEMENT")
         policy = self.profile.get("recoveryPolicy")

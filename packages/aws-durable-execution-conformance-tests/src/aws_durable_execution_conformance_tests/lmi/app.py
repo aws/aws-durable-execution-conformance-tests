@@ -58,6 +58,8 @@ def _check_suite(manifest: Mapping[str, Any], suite: SuiteDefinition) -> None:
         not isinstance(name, str) or name.startswith("lmi-lifecycle-") for name in suite.requirements
     ):
         raise ValueError("caller-owned rules must use their own report and requirement namespace")
+    if any(case.requirement_id not in suite.requirements for case in suite.cases):
+        raise ValueError("every case requirement must exist in the suite requirement catalog")
 
 
 def _catalog(manifest: Mapping[str, Any], suite: SuiteDefinition | None = None) -> dict[str, dict[str, Any]]:

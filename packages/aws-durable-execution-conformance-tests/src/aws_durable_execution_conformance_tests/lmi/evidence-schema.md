@@ -64,7 +64,8 @@ or `REJECTED`). No dispatch is allowed after that invocation's `wrapper_return`
 or `admission_closed`, whichever came first. Admission probes are separate
 `admission_probe` events with `probe: operation | checkpoint` and `outcome:
 REJECTED`. Every probe at or after the earliest recorded closure must be rejected,
-even when a later closure is also recorded. Both probe kinds must still be
+for every invocation and scenario, even when a later closure is also recorded.
+Both probe kinds must still be
 observed after the scenario's required boundary: `wrapper_return` for disposal,
 or `admission_closed` for deadline/recovery.
 
@@ -125,6 +126,15 @@ watermarks cover the full window. Independent retirement applies the same rule.
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run and case identifiers isolate evidence and controls;
 they do not change durable names, branching, or concurrency topology on replay.
+
+For deadline and recovery cases, `budgets.observationGraceMs` is the minimum
+retained observation tail after the asserted scenario boundary: the victim's
+actual `platform_timeout` for `lmi-lifecycle-3`, and the selected recovery's
+`worker_recovered` for `lmi-lifecycle-4`. `observationEndedAtMs` must reach that
+boundary plus the declared grace, with collection watermarks covering the full
+window. A missing or too-short tail is incomplete measurement evidence; it does
+not by itself establish an SDK behavior failure. Physical retirement audits
+remain independent of this behavior-observation requirement.
 
 Every `replay.operationExecutions` record requires nonempty string `requestId`
 and `operationId` fields. The request must identify a recorded invocation. An

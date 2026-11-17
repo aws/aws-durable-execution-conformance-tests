@@ -516,6 +516,65 @@ def test_probe_outcomes_ignore_another_invocations_closure(phase: Literal["obser
     assert validate_evidence(value, phase=phase) == []
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+@pytest.mark.parametrize(
+    ("role", "at_ms", "outcome", "rejected"),
+    [
+        ("victim", 39, "ACCEPTED", False),
+        ("victim", 40, "ACCEPTED", True),
+        ("victim", 60, "ACCEPTED", True),
+        ("victim", 60, "REJECTED", False),
+        ("peer", 60, "ACCEPTED", True),
+        ("warm", 60, "ACCEPTED", False),
+    ],
+)
+def test_warm_reuse_checks_all_recorded_post_closure_probes(
+    phase: Any, probe: str, role: str, at_ms: int, outcome: str, rejected: bool
+) -> None:
+    value = warm_evidence()
+    owner = next(item for item in value["attempts"] if item["role"] == role)
+    value["events"].append(event(owner, "admission_probe", at_ms, probe=probe, outcome=outcome))
+    errors = validate_evidence(value, phase=phase)
+    if rejected:
+        assert any(f"closed invocation admitted a {probe} probe" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+def complete_retirement_events(value: dict[str, Any]) -> None:
+    for owner in value["attempts"]:
+        value["events"].extend(
+            [
+                event(owner, "wrapper_enter", owner["startedAtMs"]),
+                event(owner, "task_start", owner["startedAtMs"], taskId="root"),
+            ]
+        )
+        owned = [item for item in value["events"] if item["requestId"] == owner["requestId"]]
+        exits = [item for item in owned if item["kind"] == "task_exit"]
+        if exits:
+            exits[0]["taskId"] = "root"
+        else:
+            value["events"].append(event(owner, "task_exit", owner["endedAtMs"], taskId="root"))
+        if not any(item["kind"] in {"wrapper_return", "wrapper_raise"} for item in owned):
+            value["events"].append(event(owner, "wrapper_return", owner["endedAtMs"]))
+        ordered = sorted(
+            (item for item in value["events"] if item["requestId"] == owner["requestId"]),
+            key=lambda item: item["atMs"],
+        )
+        for sequence, item in enumerate(ordered):
+            item["sequence"] = sequence
+
+
+def test_independent_retirement_audits_quiescence_without_rechecking_probe_behavior() -> None:
+    value = evidence()
+    value["events"].append(event(value["attempts"][0], "admission_probe", 60, probe="operation", outcome="ACCEPTED"))
+    complete_retirement_events(value)
+
+    assert any("closed invocation admitted" in error for error in validate_common_evidence(value))
+    assert validate_retirement_evidence(value) == []
+
+
 @pytest.mark.parametrize("change", ["early", "simulated", "no-inflight", "accepted", "budget"])
 def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: str) -> None:
     value = deadline_evidence()
@@ -1441,3 +1500,46 @@ def test_operation_interval_preserves_timestamp_order_and_optional_metadata(
         assert any("operation endedAtMs precedes startedAtMs" in error for error in errors), errors
     else:
         assert errors == [], errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("observation_end", [199, 200, 201])
+def test_observation_grace_extends_past_the_scenario_boundary(
+    phase: Any, requirement: int, observation_end: int
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    # Timeout is at 30; recovered capacity is observed at 45. The configured
+    # grace makes the minimum observation end exactly 200 for both scenarios.
+    value["budgets"]["observationGraceMs"] = 170 if requirement == 3 else 155
+    value["observationEndedAtMs"] = observation_end
+    value["collection"]["watermarks"] = dict.fromkeys(("lifecycle", "sdkRequests", "history"), observation_end)
+    errors = validate_evidence(value, phase=phase)
+    if observation_end < 200:
+        assert any(error.startswith("INCOMPLETE:") and "observationGraceMs" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("missing", [False, True])
+def test_observation_grace_cannot_be_omitted_or_exceed_the_retained_tail(
+    phase: Any, requirement: int, missing: bool
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    if missing:
+        del value["budgets"]["observationGraceMs"]
+    else:
+        value["budgets"]["observationGraceMs"] = 1000
+    errors = validate_evidence(value, phase=phase)
+    assert any(error.startswith("INCOMPLETE:") and "observationGraceMs" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+def test_independent_retirement_does_not_require_a_successful_observation_grace(requirement: int) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    value["budgets"]["observationGraceMs"] = 1000
+    complete_retirement_events(value)
+    assert any("observationGraceMs" in error for error in validate_evidence(value))
+    assert validate_retirement_evidence(value) == []

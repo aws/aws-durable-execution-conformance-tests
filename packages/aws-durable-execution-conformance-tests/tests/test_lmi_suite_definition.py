@@ -120,6 +120,23 @@ def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog
     assert evidence_results(plan, tmp_path, suite=definition())[0]["status"] == "FAILED"
 
 
+@pytest.mark.parametrize("entry_point", ["manifest", "coverage", "report"])
+def test_suite_rejects_a_mandatory_case_missing_from_its_requirement_catalog(tmp_path: Path, entry_point: str) -> None:
+    plan, _ = plan_and_evidence()
+    original = definition()
+    missing_case = replace(original.cases[0], requirement_id="sdk-check-2", scenario="additional-check")
+    suite = replace(original, cases=(*original.cases, missing_case))
+    with pytest.raises(ValueError, match=r"case requirement.*catalog"):
+        if entry_point == "manifest":
+            path = tmp_path / "manifest.json"
+            path.write_text(json.dumps(plan))
+            load_manifest(path, suite=suite)
+        elif entry_point == "coverage":
+            coverage_inventory(plan, suite=suite)
+        else:
+            build_report(plan, [{**plan["scenarios"][0], "status": "PASSED", "errors": []}], suite=suite)
+
+
 @pytest.mark.parametrize("role_source", ["manifest", "suite"])
 def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
     plan, value = plan_and_evidence()
@@ -136,6 +153,7 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     evidence_path.write_text(json.dumps(value))
     result = evidence_results(plan, tmp_path, suite=suite)[0]
     assert result["status"] == "FAILED"
+
     assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
 
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
