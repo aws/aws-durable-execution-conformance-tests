@@ -427,7 +427,7 @@ class ScenarioAdapter(Protocol):
 
     An optional ``collect_partial(context)`` captures a bounded read-only snapshot
     after a non-cancelled phase failure, before fault release. It must not wait for
-    cleanup or invent missing observations. A failed case can release its lease
+    cleanup or invent missing observations. A case that failed before cleanup can release its lease
     only when ``retire`` additionally supplies ``context.retirement_evidence``:
     independently auditable post-cleanup facts. That snapshot never replaces the
     original behavior evidence or makes its result pass.
@@ -436,10 +436,12 @@ class ScenarioAdapter(Protocol):
     even when a cleanup method raises. The coordinator preserves each cleanup
     phase's snapshots separately in ``ScenarioResult.cleanup_evidence``. A case
     that passed observations may supply its complete physical retirement snapshot
-    through the normal ``context.evidence`` path; failed cases still require
+    through the normal ``context.evidence`` path; cases already failing before cleanup require
     ``context.retirement_evidence``. All discovered work must be reconciled by
     that snapshot under the independent physical retirement checks. Cleanup
     cannot replace the original behavioral observations.
+    A newly discovered SDK behavior violation fails the case without invalidating
+    otherwise complete physical retirement, including through the normal path.
     """
 
     async def prepare(self, profile: Profile) -> None: ...
@@ -1218,6 +1220,150 @@ def _retirement_ownership_errors(
     return errors
 
 
+def _cleanup_behavior_errors(original: Mapping[str, Any], snapshot: Mapping[str, Any], *, standard: bool) -> list[str]:
+    """Detect specific refutations without replacing frozen business evidence."""
+    findings: list[str] = []
+
+    def records(value: Any) -> list[Mapping[str, Any]]:
+        return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+    def timestamp(value: Any) -> float | None:
+        if type(value) not in (int, float) or value < 0:
+            return None
+        try:
+            return float(value) if math.isfinite(value) else None
+        except OverflowError:
+            return None
+
+    attempts = {
+        item["requestId"]: item for item in records(original.get("attempts")) if isinstance(item.get("requestId"), str)
+    }
+    events = records(original.get("events"))
+    closures: dict[str, float] = {}
+    for event in events:
+        request_id, time = event.get("requestId"), timestamp(event.get("atMs"))
+        if (
+            isinstance(request_id, str)
+            and request_id in attempts
+            and time is not None
+            and event.get("kind") in ("wrapper_return", "admission_closed")
+        ):
+            closures[request_id] = min(closures.get(request_id, time), time)
+    for collection in ("sdkRequests", "events"):
+        remaining = records(original.get(collection))
+        for record in records(snapshot.get(collection)):
+            if collection == "events" and record.get("kind") != "admission_probe":
+                continue
+            match = next(
+                (
+                    index
+                    for index, prior in enumerate(remaining)
+                    if _owned_record_enriches(prior, record, event=collection == "events")
+                ),
+                None,
+            )
+            if match is not None:
+                remaining.pop(match)
+                continue
+            request_id, time = record.get("requestId"), timestamp(record.get("atMs"))
+            closed = closures.get(request_id) if isinstance(request_id, str) else None
+            if closed is None or time is None or time < closed:
+                continue
+            if collection == "sdkRequests" and record.get("outcome") == "DISPATCHED":
+                findings.append(f"ASSERTION: request {request_id} dispatched SDK work after admission closed")
+            elif (
+                collection == "events"
+                and record.get("probe") in ("operation", "checkpoint")
+                and record.get("outcome") != "REJECTED"
+            ):
+                findings.append(
+                    f"ASSERTION: request {request_id} admitted a {record['probe']} probe after admission closed"
+                )
+    if not standard:
+        return findings
+
+    selected = original.get("selectedRequests")
+    if not isinstance(selected, Mapping):
+        return findings
+    current_attempts = {
+        item["requestId"]: item for item in records(snapshot.get("attempts")) if isinstance(item.get("requestId"), str)
+    }
+
+    def role(role_name: str) -> Mapping[str, Any]:
+        request_id = selected.get(role_name)
+        return attempts.get(request_id, {}) if isinstance(request_id, str) else {}
+
+    def boundary(role_name: str, kind: str) -> float | None:
+        request_id = role(role_name).get("requestId")
+        matches = [
+            event
+            for event in events
+            if request_id is not None and event.get("requestId") == request_id and event.get("kind") == kind
+        ]
+        return timestamp(matches[0].get("atMs")) if len(matches) == 1 else None
+
+    def native_time(role_name: str, key: str) -> float | None:
+        previous = role(role_name)
+        current = current_attempts.get(previous.get("requestId"), {})
+        return timestamp(current[key] if key in current else previous.get(key))
+
+    def changed_time(role_name: str, key: str) -> bool:
+        previous = role(role_name)
+        current = current_attempts.get(previous.get("requestId"), {})
+        return key in current and timestamp(current[key]) is not None and not same_json(current[key], previous.get(key))
+
+    requirement = original.get("requirementId")
+    if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
+        limits = [boundary("victim", "task_exit")]
+        if requirement == "lmi-lifecycle-4":
+            limits.append(boundary("recovery", "worker_recovered"))
+        known_limits = [time for time in limits if time is not None]
+        previous_faults = records(original.get("faultsCreated"))
+        for fault in records(snapshot.get("faultsCreated")):
+            released = timestamp(fault.get("releasedAtMs"))
+            known_release = any(
+                prior.get("id") == fault.get("id")
+                and "releasedAtMs" in prior
+                and same_json(prior["releasedAtMs"], fault.get("releasedAtMs"))
+                for prior in previous_faults
+            )
+            if not known_release and released is not None and known_limits and released <= max(known_limits):
+                findings.append(
+                    "ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery"
+                )
+    if requirement == "lmi-lifecycle-6" and (
+        changed_time("victim", "endedAtMs") or changed_time("warm", "startedAtMs")
+    ):
+        start, end, returned = (
+            native_time("warm", "startedAtMs"),
+            native_time("victim", "endedAtMs"),
+            boundary("victim", "wrapper_return"),
+        )
+        if start is not None and ((end is not None and start < end) or (returned is not None and start <= returned)):
+            findings.append("PLACEMENT: cleanup evidence disproves sequential warm reuse")
+    if requirement == "lmi-lifecycle-4" and (
+        changed_time("victim", "endedAtMs") or changed_time("recovery", "startedAtMs")
+    ):
+        start, end, timeout = (
+            native_time("recovery", "startedAtMs"),
+            native_time("victim", "endedAtMs"),
+            boundary("victim", "platform_timeout"),
+        )
+        if start is not None and timeout is not None and start < timeout:
+            findings.append("ASSERTION: cleanup evidence places recovery before the victim timeout")
+        victim, recovery = role("victim"), role("recovery")
+        if (
+            original.get("runtime") == "python"
+            and victim.get("processId")
+            and victim.get("processId") == recovery.get("processId")
+            and start is not None
+            and end is not None
+            and start < end
+        ):
+            findings.append("PLACEMENT: cleanup evidence places Python recovery before victim native completion")
+    return findings
+
+
 async def run_scenarios(
     scenarios: Sequence[Scenario],
     profiles: Sequence[Profile],
@@ -1517,7 +1663,9 @@ async def run_scenarios(
                 retired = False
                 physical_retirement_verified = False
                 cleanup_errors: list[str] = []
+                cleanup_behavior_errors: list[str] = []
                 frozen_cleanup_identity: dict[str, Any] = {}
+                frozen_behavior: dict[str, Any] = {}
                 owned_inventories = (
                     "attempts",
                     "resourcesCreated",
@@ -1584,6 +1732,11 @@ async def run_scenarios(
                             if not any(same_json(snapshot, previous) for previous in snapshots):
                                 snapshots.append(snapshot)
                                 check_cleanup_identity(snapshot, phase)
+                                for finding in _cleanup_behavior_errors(
+                                    frozen_behavior, snapshot, standard=case.coverage_profile == "standard"
+                                ):
+                                    if finding not in cleanup_behavior_errors:
+                                        cleanup_behavior_errors.append(finding)
                                 # Source failures invalidate cleanup evidence
                                 # even when ownership inventories did not change
                                 # or a later phase removes the diagnostics.
@@ -1666,6 +1819,21 @@ async def run_scenarios(
                     frozen_cleanup_identity = copy.deepcopy(
                         {key: evidence[key] for key in ("runtime", "artifact", "profile") if key in evidence}
                     )
+                    frozen_behavior = copy.deepcopy(
+                        {
+                            key: evidence[key]
+                            for key in (
+                                "requirementId",
+                                "runtime",
+                                "selectedRequests",
+                                "attempts",
+                                "events",
+                                "sdkRequests",
+                                "faultsCreated",
+                            )
+                            if key in evidence
+                        }
+                    )
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"Cleanup identity retention: {type(exc).__name__}: {exc}")
                 release_evidence = context.evidence
@@ -1720,6 +1888,11 @@ async def run_scenarios(
                             work = "Launched work" if context.attempts else "Owned work"
                             cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
+                            for finding in _cleanup_behavior_errors(
+                                frozen_behavior, retirement_evidence, standard=case.coverage_profile == "standard"
+                            ):
+                                if finding not in cleanup_behavior_errors:
+                                    cleanup_behavior_errors.append(finding)
                             audit = [
                                 error
                                 for baseline in [*observation_baselines, evidence, *cleanup_snapshots]
@@ -1754,6 +1927,10 @@ async def run_scenarios(
                             cleanup_errors.append("Final retirement evidence did not establish quiescence")
                     except Exception as exc:
                         cleanup_errors.append(f"Final evidence validation: {type(exc).__name__}: {exc}")
+                if cleanup_behavior_errors:
+                    errors.extend(finding for finding in cleanup_behavior_errors if finding not in errors)
+                    if status == "PASSED":
+                        status = "FAILED"
                 if cleanup_errors:
                     if status == "PASSED":
                         status = "INFRASTRUCTURE_ERROR"

@@ -4,9 +4,11 @@
 """Failed observations stay failed; only independently proven cleanup permits reuse."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
+from runpy import run_path
 from typing import Any
 
 import pytest
@@ -24,6 +26,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
     same_json,
     validate_common_evidence,
+    validate_evidence,
     validate_retirement_evidence,
 )
 
@@ -269,6 +272,305 @@ def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> No
     value["retirement"]["resources"].append(
         {**resource, "settledAtMs": 20900, "outcome": outcome, "evidenceUri": "memory://provider-completion"}
     )
+
+
+def _standard_retirement_snapshot(factory: str, runtime: str = "javascript") -> dict[str, Any]:
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures[factory](2, runtime) if factory == "evidence" else fixtures[factory](runtime=runtime)
+    for attempt in value["attempts"]:
+        owner = {key: attempt[key] for key in ("requestId", "executionArn")}
+        owner["ownerRequestId"] = attempt["requestId"]
+        local = [event for event in value["events"] if event["requestId"] == attempt["requestId"]]
+        value["events"].extend(
+            [
+                {**owner, "kind": "wrapper_enter", "atMs": attempt["startedAtMs"]},
+                {**owner, "kind": "task_start", "taskId": "root", "atMs": attempt["startedAtMs"] + 0.1},
+            ]
+        )
+        exits = [event for event in local if event["kind"] == "task_exit"]
+        if exits:
+            for event in exits:
+                event["taskId"] = "root"
+        else:
+            value["events"].append({**owner, "kind": "task_exit", "taskId": "root", "atMs": attempt["endedAtMs"] - 0.1})
+        if not any(event["kind"] == "wrapper_return" for event in local):
+            value["events"].append({**owner, "kind": "wrapper_return", "atMs": attempt["endedAtMs"]})
+    _resequence(value)
+    assert validate_evidence(value) == []
+    assert validate_retirement_evidence(value) == []
+    return value
+
+
+def _run_standard_cleanup_discovery(
+    value: dict[str, Any],
+    mutate: Callable[[dict[str, Any]], None],
+    *,
+    phase: str,
+    path: str,
+    originally_failed: bool = False,
+) -> ScenarioResult:
+    deployment = value["profile"]
+    profile = Profile(
+        "standard",
+        deployment["functionArn"],
+        deployment["nativeConcurrency"],
+        deployment["nativeConcurrency"],
+        value["artifact"]["sdk"],
+        deployment["configurationDigest"],
+        recovery_policy=deployment.get("recoveryPolicy"),
+    )
+    case = Scenario(
+        value["caseId"],
+        value["requirementId"],
+        profile.profile_id,
+        "fixture",
+        roles=tuple(value["selectedRequests"]),
+        exclusive=True,
+        behavior_budgets=value.get("budgets", {}),
+    )
+    finished: list[bool] = []
+
+    class Adapter:
+        async def prepare(self, profile: Profile) -> None:
+            pass
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            finished.append(quiescent)
+
+        async def start(self, context: ScenarioContext) -> None:
+            for attempt in value["attempts"]:
+                context.record_attempt(
+                    attempt["requestId"],
+                    role=attempt["role"],
+                    requestId=attempt["requestId"],
+                    executionArn=attempt["executionArn"],
+                )
+
+        async def place(self, context: ScenarioContext) -> None:
+            pass
+
+        async def execute(self, context: ScenarioContext) -> None:
+            pass
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            observed = deepcopy(value)
+            observed.pop("retirement")
+            assert bool(validate_evidence(observed, phase="observations")) is originally_failed
+            return observed
+
+        async def release(self, context: ScenarioContext) -> None:
+            if phase == "release":
+                mutate(context.evidence)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if phase == "retire":
+                mutate(context.evidence)
+            final = deepcopy(context.evidence)
+            if phase == "snapshot":
+                mutate(final)
+            final["retirement"] = deepcopy(value["retirement"])
+            _resequence(final)
+            if path == "independent":
+                context.retirement_evidence = final
+            else:
+                context.evidence = final
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
+
+    scheduler = ResourceScheduler()
+
+    async def exercise() -> ScenarioResult:
+        results = await run_scenarios(
+            [case], [profile], Adapter(), run_id=value["runId"], validator=validator, scheduler=scheduler
+        )
+        # A conformance failure is distinct from residual physical work.
+        lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
+        await lease.release(quiescent=True)
+        return results[0]
+
+    result = asyncio.run(exercise())
+    assert finished == [True]
+    assert validate_retirement_evidence(result.retirement_evidence or result.evidence) == []
+    return result
+
+
+@pytest.mark.parametrize("phase", ["release", "retire"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("kind", "outcome", "when", "owner", "early_closure", "rejected"),
+    [
+        ("sdk", "DISPATCHED", 50, "victim", False, True),
+        ("sdk", "DISPATCHED", 40, "victim", False, True),
+        ("sdk", "DISPATCHED", 39, "victim", False, False),
+        ("sdk", "REJECTED", 50, "victim", False, False),
+        ("sdk", "DISPATCHED", 41, "peer", False, False),
+        ("sdk", "DISPATCHED", 39, "victim", True, True),
+        ("operation", "ACCEPTED", 50, "victim", False, True),
+        ("checkpoint", "ACCEPTED", 50, "victim", False, True),
+        ("operation", "REJECTED", 50, "victim", False, False),
+        ("operation", "ACCEPTED", 39, "victim", False, False),
+        ("operation", "ACCEPTED", 41, "peer", False, False),
+    ],
+)
+def test_cleanup_discovered_admission_violations_fail_behavior_but_allow_audited_retirement(
+    phase: str, path: str, kind: str, outcome: str, when: int, owner: str, early_closure: bool, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    selected = next(attempt for attempt in value["attempts"] if attempt["role"] == owner)
+    if early_closure:
+        value["events"].append(
+            {
+                "kind": "admission_closed",
+                "atMs": 38,
+                "requestId": selected["requestId"],
+                "ownerRequestId": selected["requestId"],
+                "executionArn": selected["executionArn"],
+            }
+        )
+        _resequence(value)
+    original_requests = deepcopy(value["sdkRequests"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        record = {
+            "requestId": selected["requestId"],
+            "ownerRequestId": selected["requestId"],
+            "executionArn": selected["executionArn"],
+            "atMs": when,
+            "outcome": outcome,
+        }
+        if kind == "sdk":
+            snapshot["sdkRequests"].append({**record, "method": "CheckpointDurableExecution"})
+        else:
+            snapshot["events"].append({**record, "kind": "admission_probe", "probe": kind})
+        if early_closure:
+            next(event for event in snapshot["events"] if event["kind"] == "admission_closed")["atMs"] = 41
+        _resequence(snapshot)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["sdkRequests"] == original_requests
+    if rejected:
+        assert any("admission" in error.lower() for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("factory", "runtime", "change", "rejected"),
+    [
+        ("deadline_evidence", "javascript", "fault-before-exit", True),
+        ("recovery_evidence", "python", "fault-before-recovery", True),
+        ("recovery_evidence", "python", "fault-after-recovery", False),
+        ("warm_evidence", "python", "victim-end-overlap", True),
+        ("warm_evidence", "python", "warm-start-before-wrapper", True),
+        ("warm_evidence", "python", "warm-start-equal-wrapper", True),
+        ("warm_evidence", "python", "victim-end-equal", False),
+        ("recovery_evidence", "python", "recovery-before-timeout", True),
+        ("recovery_evidence", "python", "victim-end-overlap", True),
+        ("recovery_evidence", "python", "victim-end-equal", False),
+        ("recovery_evidence", "javascript", "victim-end-overlap", False),
+        ("recovery_evidence", "python", "replacement-victim-overlap", False),
+    ],
+)
+def test_cleanup_native_completion_and_fault_facts_can_refute_frozen_standard_measurements(
+    path: str, factory: str, runtime: str, change: str, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot(factory, runtime)
+    if change == "replacement-victim-overlap":
+        value["profile"]["recoveryPolicy"] = "replace-worker"
+        attempts = {attempt["role"]: attempt for attempt in value["attempts"]}
+        attempts["recovery"].update(
+            workerId="replacement-worker",
+            processId="replacement-process",
+            replacesWorkerId=attempts["victim"]["workerId"],
+        )
+    original_attempts = deepcopy(value["attempts"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        attempts = {attempt["role"]: attempt for attempt in snapshot["attempts"]}
+        if change.startswith("fault-"):
+            snapshot["faultsCreated"][0]["releasedAtMs"] = {
+                "fault-before-exit": 34,
+                "fault-before-recovery": 44,
+                "fault-after-recovery": 46,
+            }[change]
+        elif change == "warm-start-before-wrapper":
+            attempts["warm"]["startedAtMs"] = 39
+        elif change == "warm-start-equal-wrapper":
+            attempts["warm"]["startedAtMs"] = 40
+        elif change == "recovery-before-timeout":
+            attempts["recovery"]["startedAtMs"] = 29
+        else:
+            following = attempts["warm"] if "warm" in attempts else attempts["recovery"]
+            attempts["victim"]["endedAtMs"] = following["startedAtMs"] + (10 if change.endswith("overlap") else 0)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["attempts"] == original_attempts
+
+
+@pytest.mark.parametrize("change", ["dispatch", "probe", "early-fault", "warm-overlap", "recovery-before-timeout"])
+def test_retirement_only_discoveries_are_checked_against_frozen_measurements(change: str) -> None:
+    factory = (
+        "evidence"
+        if change in ("dispatch", "probe")
+        else "warm_evidence"
+        if change == "warm-overlap"
+        else "recovery_evidence"
+    )
+    value = _standard_retirement_snapshot(factory, "python")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        attempts = {attempt["role"]: attempt for attempt in snapshot["attempts"]}
+        victim = attempts["victim"]
+        if change in ("dispatch", "probe"):
+            record = {
+                "requestId": victim["requestId"],
+                "ownerRequestId": victim["requestId"],
+                "executionArn": victim["executionArn"],
+                "atMs": 50,
+            }
+            if change == "dispatch":
+                snapshot["sdkRequests"].append(
+                    {**record, "method": "CheckpointDurableExecution", "outcome": "DISPATCHED"}
+                )
+            else:
+                snapshot["events"].append(
+                    {**record, "kind": "admission_probe", "probe": "operation", "outcome": "ACCEPTED"}
+                )
+        elif change == "early-fault":
+            snapshot["faultsCreated"][0]["releasedAtMs"] = 44
+        elif change == "warm-overlap":
+            victim["endedAtMs"] = 60
+        else:
+            attempts["recovery"]["startedAtMs"] = 29
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == "FAILED", result.errors
+
+
+def test_cleanup_admission_discovery_keeps_an_original_failed_observation() -> None:
+    value = _standard_retirement_snapshot("evidence")
+    victim = value["attempts"][0]
+    bad = {
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "atMs": 50,
+        "method": "CheckpointDurableExecution",
+        "outcome": "DISPATCHED",
+    }
+    value["sdkRequests"].append(bad)
+    original_requests = deepcopy(value["sdkRequests"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["sdkRequests"].append({**bad, "atMs": 51})
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path="independent", originally_failed=True)
+    assert result.status == "FAILED"
+    assert result.evidence["sdkRequests"] == original_requests
 
 
 class ReplacingEvidenceAdapter(FailureAdapter):
