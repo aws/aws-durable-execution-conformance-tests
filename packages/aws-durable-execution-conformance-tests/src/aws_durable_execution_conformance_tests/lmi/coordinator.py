@@ -863,6 +863,8 @@ def _retirement_ownership_errors(
         if not isinstance(attempt, Mapping):
             raise ValueError("Original invocation inventory is malformed")
         settled = indexed.get(attempt.get("requestId"), {})
+        # PENDING belongs to the suspended invocation; its resume has a new
+        # request ID and cannot replace that already observed native outcome.
         for key in (
             "executionArn",
             "environmentId",
@@ -870,6 +872,7 @@ def _retirement_ownership_errors(
             "processId",
             "role",
             "attempt",
+            "outcome",
         ):
             if key in attempt and attempt[key] != settled.get(key):
                 errors.append(f"Retirement changed an original invocation's {key}")

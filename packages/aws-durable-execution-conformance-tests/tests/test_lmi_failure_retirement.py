@@ -1070,6 +1070,144 @@ def test_passing_case_cannot_add_a_new_native_request_only_during_retirement() -
     assert scheduler.quarantine_reason(PROFILE.resource_id)
 
 
+@pytest.mark.parametrize("original_failed", [False, True])
+@pytest.mark.parametrize(
+    ("observed_outcome", "retired_outcome"),
+    [("SUCCEEDED", "FAILED"), ("FAILED", "SUCCEEDED"), ("PENDING", "SUCCEEDED"), ("TIMED_OUT", "FAILED")],
+)
+def test_retirement_cannot_change_an_observed_native_invocation_outcome(
+    original_failed: bool, observed_outcome: str, retired_outcome: str
+) -> None:
+    class ChangedOutcomeAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            snapshot = self.snapshots[context.scenario.case_id]
+            snapshot["histories"][0]["result"] = None
+            if context.scenario.case_id == "failed":
+                snapshot["attempts"][0]["outcome"] = observed_outcome
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if not original_failed:
+                observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: {"status": "SUCCEEDED", "result": None} for history in observed["histories"]
+            }
+            return observed
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["attempts"][0]["outcome"] = retired_outcome
+
+    adapter = ChangedOutcomeAdapter(phase="assertion")
+    (observed, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert observed.status == ("FAILED" if original_failed else "INFRASTRUCTURE_ERROR"), observed.errors
+    assert any("original invocation's outcome" in error for error in observed.errors), observed.errors
+    assert observed.evidence["attempts"][0]["outcome"] == observed_outcome
+    assert validate_retirement_evidence(observed.retirement_evidence) == []
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+def test_retirement_can_complete_a_previously_absent_native_outcome(phase: str) -> None:
+    class CompletedOutcomeAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["attempts"][0].pop("outcome")
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if phase == "normal":
+                observed["behaviorErrors"] = []
+            return observed
+
+    adapter = CompletedOutcomeAdapter(phase="assertion" if phase == "normal" else "placement")
+    (observed, following), scheduler = _run(adapter)
+    assert observed.evidence["attempts"][0]["outcome"] == "SUCCEEDED"
+    assert following.status == "PASSED", following.errors
+    if phase == "normal":
+        assert observed.status == "PASSED", observed.errors
+    else:
+        assert ORIGINAL_FAILURE in observed.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+def test_pending_invocation_and_its_resume_keep_independent_native_outcomes() -> None:
+    class ResumingAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            snapshot = self.snapshots[context.scenario.case_id]
+            snapshot["histories"][0]["result"] = None
+            if context.scenario.case_id != "failed":
+                return
+            victim = snapshot["attempts"][0]
+            victim["outcome"] = "PENDING"
+            resumed = {
+                **victim,
+                "requestId": "resumed-request",
+                "role": "resume",
+                "outcome": "SUCCEEDED",
+                "startedAtMs": 1100,
+                "endedAtMs": 2000,
+            }
+            context.record_attempt(resumed["requestId"], role="resume", requestId=resumed["requestId"])
+            snapshot["attempts"].append(resumed)
+            snapshot["selectedRequests"]["resume"] = resumed["requestId"]
+            snapshot["events"].extend(
+                [
+                    {
+                        **event,
+                        "requestId": resumed["requestId"],
+                        "ownerRequestId": resumed["requestId"],
+                        "atMs": event["atMs"] + 1000,
+                    }
+                    for event in list(snapshot["events"])
+                ]
+            )
+            resource = {"id": resumed["requestId"], "kind": "invocation", "ownerCaseId": "failed"}
+            snapshot["resourcesCreated"].append(resource)
+            snapshot["retirement"]["resources"].append(
+                {
+                    **resource,
+                    "settledAtMs": 20900,
+                    "outcome": "QUIESCENT",
+                    "evidenceUri": "memory://resumed-native-completion",
+                }
+            )
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: {"status": "SUCCEEDED", "result": None} for history in observed["histories"]
+            }
+            return observed
+
+    adapter = ResumingAdapter(phase="assertion")
+    scheduler = ResourceScheduler()
+    cases = [replace(_case("failed"), roles=("victim", "resume")), _case("next")]
+    observed, following = asyncio.run(
+        run_scenarios(
+            cases,
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+        )
+    )
+    assert observed.status == following.status == "PASSED", observed.errors
+    before = [(item["requestId"], item["outcome"]) for item in observed.evidence["attempts"]]
+    after = [(item["requestId"], item["outcome"]) for item in observed.retirement_evidence["attempts"]]
+    assert before == after == [("request:failed:victim", "PENDING"), ("resumed-request", "SUCCEEDED")]
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
 @pytest.mark.parametrize("path", ["normal", "independent", "failed"])
 @pytest.mark.parametrize(
     "change",
