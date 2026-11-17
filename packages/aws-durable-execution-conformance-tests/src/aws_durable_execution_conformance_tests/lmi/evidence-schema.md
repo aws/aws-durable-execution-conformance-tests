@@ -73,8 +73,11 @@ remain inside `observationEndedAtMs`.
 
 `sdkRequests` retains every attempted SDK request, including rejected requests.
 Each has the same ownership/time fields plus `method` and `outcome` (`DISPATCHED`
-or `REJECTED`). No dispatch is allowed after that invocation's `wrapper_return`
-or `admission_closed`, whichever came first. Admission probes are separate
+or `REJECTED`). No dispatch is allowed at or after that invocation's first
+`wrapper_return`, `wrapper_raise`, or `admission_closed`. A raised wrapper exit
+closes admission for peers, resumes, retries, and warm requests too. The disposal
+fixtures specifically require a `wrapper_return`, including their normal root
+failure case; a wrapper that itself throws is a different boundary. Admission probes are separate
 `admission_probe` events with `probe: operation | checkpoint` and `outcome:
 REJECTED`. Every probe at or after the earliest recorded closure must be rejected,
 for every invocation and scenario, even when a later closure is also recorded.
@@ -153,6 +156,12 @@ Every `replay.operationExecutions` record requires nonempty string `requestId`
 and `operationId` fields. The request must identify a recorded invocation. An
 operation may be incomplete or not yet checkpointed, so its ID need not appear
 in the final history, but an entry without an ID cannot establish skipped work.
+The operation identified by `replay.retry.operationId` must be `SUCCEEDED` in
+`replay.after` and the matching final history, with its stored `result` key.
+Explicit JSON null is a valid result; an absent result is incomplete evidence.
+Unrelated pending operations need no stored result. This cross-record identity
+constraint is enforced by the semantic validator, since the structural JSON
+schema cannot compare an array entry's ID with the retry object's ID.
 Invocation intervals can be provisional, and owned activity may outlive them;
 their endpoints alone do not establish retry user-code entry order.
 
@@ -162,8 +171,10 @@ their endpoints alone do not establish retry user-code entry order.
 `ownerCaseId`. It must include every invocation (`id = requestId`, `kind =
 invocation`) and durable execution (`id = executionArn`, `kind = execution`), plus
 callbacks, control objects, and other retained work. `faultsCreated` separately
-inventories fault IDs and owners. If a fault was already released during
-observation, record `releasedAtMs` there as a finite, nonnegative timestamp. Both
+inventories fault IDs and owners. When a release has been observed, record its
+`releasedAtMs` there as a finite, nonnegative timestamp on the same normalized
+clock. A final snapshot may add a post-assertion cleanup release after
+`observationEndedAtMs`; the frozen observation phase precedes that cleanup. Both
 observation and final validation check every supplied release timestamp before
 comparing it to cleanup or recovery; release cannot establish the earlier
 cleanup/recovery assertion.
@@ -189,8 +200,12 @@ completion evidence. Both final validation and independent failed-case audits
 enforce these outcomes. Other retained resource kinds need an explicit completion
 contract before the independent audit can permit target reuse.
 `retirement.faults` likewise matches every created fault and records `releasedAtMs`
-and `mode: normal | emergency`. Releasing a fault before the asserted cleanup or
-recovery is a failure regardless of release mode.
+and `mode: normal | emergency`. Its timestamp records the provider release
+acknowledgment, which may follow the originally observed release. For the same
+fault ID, it must not precede a supplied `faultsCreated.releasedAtMs`; both times
+must be at or before `retirement.retiredAtMs`. An absent original release time
+remains valid when the final acknowledgment proves release. Releasing a fault
+before the asserted cleanup or recovery is a failure regardless of release mode.
 
 The coordinator first freezes collected observations and validates with
 `phase="observations"`, before release. It preserves those findings while adding
@@ -204,3 +219,48 @@ The SDK adapter is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
 incomplete evidence; it cannot authenticate observations supplied by a dishonest
 adapter or substitute local synthetic controls for real LMI validation.
+
+
+## Independent physical retirement audit
+
+`validate_retirement_evidence` audits a separate post-cleanup snapshot, including
+failed cases. It needs the actual completion stream for every launched request,
+with the ownership and normalized timestamp fields above. It requires:
+
+- Exactly one `wrapper_enter`, one wrapper exit (`wrapper_return` or
+  `wrapper_raise`), and one `task_exit` with `taskId: root` per request. Entry must
+  precede or equal both exits.
+- A nonnegative integer `sequence` on every event, unique within each request.
+  Sequence order must agree with nondecreasing `atMs`. Equal timestamps retain
+  their semantic order through sequence; interval and entry/exit comparisons use
+  `(atMs, sequence)`.
+- Exactly one start and exit for every work identity in the following pairs.
+  Neither an unmatched start nor an unmatched exit establishes completion, and
+  each start must precede or equal its exit.
+
+| Start | Exit | Identity within a request |
+| --- | --- | --- |
+| `task_start` | `task_exit` | Nonempty `taskId`, with `root` reserved for the root task |
+| `io_start` | `io_exit` | Nonempty `taskId` identifying this observed I/O interval |
+| `checkpoint_call` | `checkpoint_exit` | Nonempty `callId` identifying this call |
+| `poll_call` | `poll_exit` | Nonempty `callId` identifying this call |
+
+Each I/O interval needs a distinct ID in the `taskId` field; reusing the owning
+task's ID for multiple I/O intervals cannot establish unique completion pairs.
+Identities are scoped to the request and event pair. Multiple child tasks and
+calls are permitted in this audit, with all their start and exit facts retained.
+
+Behavior assertions use one scenario-owned `task_exit` for the selected request.
+Other task facts may be retained as `observed_task_start`/`observed_task_exit`
+with their original `sourceKind`; the adapter must restore every actual
+`task_start`/`task_exit` in the separate physical snapshot before auditing it.
+The root exit alone does not prove child-task or I/O completion. The wire schema
+covers the shared envelope; these additional physical completion rules apply to
+the independent audit rather than every behavior observation document.
+
+Every invocation's settlement must cover its last actual activity. Every
+collected execution history must be terminal and agree with its retirement
+outcome. Only invocation, execution, callback, and control resource kinds have
+completion contracts in this audit; an unknown retained resource kind cannot
+permit target reuse. Successful retirement does not clear failed behavior
+assertions, and unresolved completion keeps the target quarantined.

@@ -377,7 +377,7 @@ class _Evidence:
                 event["atMs"]
                 for event in self.events
                 if event.get("requestId") == request_id
-                and event.get("kind") in ("wrapper_return", "admission_closed")
+                and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
                 and isinstance(event.get("atMs"), (float, int))
             ]
             if not closures:
@@ -640,6 +640,8 @@ class _Evidence:
         retried = next((operation for operation in after if operation.get("id") == retry_id), None)
         if retried is None or retried.get("status") != "SUCCEEDED":
             self.error("the retried operation must succeed in the collected final history", "ASSERTION")
+        elif "result" not in retried:
+            self.error("the retried operation must preserve its stored result", "INCOMPLETE")
         if retry_id in completed:
             self.error("retry must not repeat an already completed operation", "ASSERTION")
         counts = self.records(replay.get("sideEffects"), "replay.sideEffects", nonempty=True)
@@ -723,6 +725,13 @@ class _Evidence:
             for item in (*created, *settled):
                 if item.get("ownerCaseId") != self.value.get("caseId"):
                     self.error("cleanup attempted to change another case's resources", "ASSERTION")
+            if settled_key == "faults":
+                for fault in created:
+                    if (
+                        "releasedAtMs" in fault
+                        and self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs") > end
+                    ):
+                        self.error("observed fault release occurred after retirement ended")
             for item in settled:
                 time = self.number(item.get(time_key), f"retirement.{settled_key}.{time_key}")
                 if time > end:
@@ -769,6 +778,11 @@ class _Evidence:
                     if kind == "control" and item.get("outcome") != "DELETED":
                         self.error("control object deletion is not established")
                 if settled_key == "faults":
+                    original = next((fault for fault in created if fault.get("id") == item.get("id")), {})
+                    if "releasedAtMs" in original and time < self.number(
+                        original["releasedAtMs"], "faultsCreated.releasedAtMs"
+                    ):
+                        self.error("fault release acknowledgment precedes its observed release")
                     if item.get("mode") not in ("normal", "emergency"):
                         self.error("fault release must record normal or emergency mode")
                     if self.standard_behavior and self.value.get("requirementId") in (

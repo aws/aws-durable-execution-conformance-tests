@@ -1602,3 +1602,222 @@ def test_independent_retirement_does_not_require_a_successful_observation_grace(
     complete_retirement_events(value)
     assert any("observationGraceMs" in error for error in validate_evidence(value))
     assert validate_retirement_evidence(value) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("activity", ["dispatch", "operation", "checkpoint"])
+@pytest.mark.parametrize("later_closure", [False, True])
+def test_raised_wrapper_closes_admission_at_its_first_exit(phase: Any, activity: str, later_closure: bool) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    peer["outcome"] = "FAILED"
+    wrapper = next(
+        item for item in value["events"] if item["requestId"] == peer["requestId"] and item["kind"] == "wrapper_return"
+    )
+    wrapper["kind"] = "wrapper_raise"
+    history = next(item for item in value["histories"] if item["executionArn"] == peer["executionArn"])
+    history.pop("result")
+    history.update(status="FAILED", error={"type": "PeerFailure"})
+    value["expectedHistories"][peer["executionArn"]] = {"status": "FAILED", "error": {"type": "PeerFailure"}}
+    next(item for item in value["retirement"]["resources"] if item["id"] == peer["executionArn"])["outcome"] = "FAILED"
+    if later_closure:
+        value["events"].append(event(peer, "admission_closed", 50))
+    assert validate_evidence(value, phase=phase) == []
+    if activity == "dispatch":
+        value["sdkRequests"].append(
+            event(peer, "request", 43, method="CheckpointDurableExecution", outcome="DISPATCHED")
+        )
+        expected = "dispatched SDK work after admission closed"
+    else:
+        value["events"].append(event(peer, "admission_probe", 43, probe=activity, outcome="ACCEPTED"))
+        expected = f"closed invocation admitted a {activity} probe"
+    assert any(expected in error for error in validate_evidence(value, phase=phase))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("has_result", [False, True])
+def test_successful_retry_requires_its_stored_result_including_null(phase: Any, has_result: bool) -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    history = next(item for item in value["histories"] if item["executionArn"] == victim["executionArn"])
+    for operations in (value["replay"]["after"], history["operations"]):
+        retried = next(item for item in operations if item["id"] == value["replay"]["retry"]["operationId"])
+        if has_result:
+            retried["result"] = None
+        else:
+            retried.pop("result")
+        # An unrelated pending operation must not require a stored result.
+        operations.append(
+            {"id": "pending", "name": "pending-step", "type": "STEP", "parentId": None, "status": "PENDING"}
+        )
+    errors = validate_evidence(value, phase=phase)
+    if has_result:
+        assert errors == []
+    else:
+        assert any("retried operation" in error and "stored result" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
+@pytest.mark.parametrize("factory", [deadline_evidence, recovery_evidence])
+@pytest.mark.parametrize("mode", ["normal", "emergency"])
+def test_observed_fault_release_cannot_outlive_retirement_or_its_acknowledgment(
+    validator: Any, factory: Any, mode: str
+) -> None:
+    value = factory()
+    complete_retirement_events(value)
+    value["retirement"]["faults"][0]["mode"] = mode
+    assert validator(value) == []
+    value["faultsCreated"][0]["releasedAtMs"] = 230
+    errors = validator(value)
+    assert any("observed fault release" in error and "retirement" in error for error in errors), errors
+    assert any("fault release acknowledgment precedes" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
+@pytest.mark.parametrize(
+    ("observed", "acknowledged", "rejected"),
+    [(None, 210, False), (50, 210, False), (210, 210.0, False), (220, 220, False), (215, 210, True)],
+)
+def test_fault_release_acknowledgment_may_follow_observation(
+    validator: Any, observed: Any, acknowledged: int | float, rejected: bool
+) -> None:
+    value = deadline_evidence()
+    complete_retirement_events(value)
+    if observed is not None:
+        value["faultsCreated"][0]["releasedAtMs"] = observed
+    value["retirement"]["faults"][0]["releasedAtMs"] = acknowledged
+    errors = validator(value)
+    if rejected:
+        assert any("fault release acknowledgment precedes" in error for error in errors), errors
+    else:
+        assert errors == []
+        assert validate_evidence(value, phase="observations") == []
+
+
+@pytest.mark.parametrize("kind", ["wrapper_enter", "wrapper_return", "task_exit"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_physical_retirement_requires_unique_request_completion_boundaries(kind: str, mutation: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    assert validate_retirement_evidence(value) == []
+    peer = value["attempts"][1]
+    boundary = next(item for item in value["events"] if item["requestId"] == peer["requestId"] and item["kind"] == kind)
+    if mutation == "missing":
+        value["events"].remove(boundary)
+    else:
+        value["events"].append({**boundary, "sequence": 100})
+    assert any(
+        "actual entry, wrapper exit and root-task exit" in error for error in validate_retirement_evidence(value)
+    )
+
+
+@pytest.mark.parametrize("exit_kind", ["wrapper_return", "wrapper_raise"])
+def test_physical_retirement_accepts_each_actual_wrapper_exit(exit_kind: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    peer = value["attempts"][1]
+    next(
+        item for item in value["events"] if item["requestId"] == peer["requestId"] and item["kind"] == "wrapper_return"
+    )["kind"] = exit_kind
+    assert validate_retirement_evidence(value) == []
+
+
+@pytest.mark.parametrize(
+    ("start_kind", "end_kind", "identity"),
+    [
+        ("task_start", "task_exit", "taskId"),
+        ("io_start", "io_exit", "taskId"),
+        ("checkpoint_call", "checkpoint_exit", "callId"),
+        ("poll_call", "poll_exit", "callId"),
+    ],
+)
+@pytest.mark.parametrize(
+    "mutation", ["missing-start", "missing-end", "duplicate-start", "duplicate-end", "missing-id", "reversed"]
+)
+def test_physical_retirement_requires_complete_work_intervals(
+    start_kind: str, end_kind: str, identity: str, mutation: str
+) -> None:
+    value = evidence()
+    owner = value["attempts"][1]
+    start = event(owner, start_kind, 23, **{identity: "work-1"})
+    end = event(owner, end_kind, 24, **{identity: "work-1"})
+    complete_retirement_events(value)
+    value["events"].extend([start, end])
+    local = sorted(
+        (item for item in value["events"] if item["requestId"] == owner["requestId"]), key=lambda item: item["atMs"]
+    )
+    for sequence, item in enumerate(local):
+        item["sequence"] = sequence
+    assert validate_retirement_evidence(value) == []
+    if mutation == "missing-start":
+        value["events"].remove(start)
+    elif mutation == "missing-end":
+        value["events"].remove(end)
+    elif mutation == "duplicate-start":
+        value["events"].append({**start, "sequence": 100})
+    elif mutation == "duplicate-end":
+        value["events"].append({**end, "sequence": 100})
+    elif mutation == "missing-id":
+        del start[identity]
+    else:
+        start["atMs"], end["atMs"] = end["atMs"], start["atMs"]
+        start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
+    errors = validate_retirement_evidence(value)
+    assert any(
+        "completion pair" in error or "non-empty string" in error or "reverses an observed work interval" in error
+        for error in errors
+    ), errors
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "entry-after-exit",
+        "wrong-root",
+        "duplicate-sequence",
+        "timestamp-order",
+        "unknown-kind",
+        "running-history",
+        "pending-history",
+    ],
+)
+def test_physical_retirement_rejects_uncertain_completion(mutation: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    assert validate_retirement_evidence(value) == []
+    peer = value["attempts"][1]
+    local = sorted(
+        (item for item in value["events"] if item["requestId"] == peer["requestId"]), key=lambda item: item["sequence"]
+    )
+    if mutation == "entry-after-exit":
+        entry = next(item for item in local if item["kind"] == "wrapper_enter")
+        entry.update(atMs=43, sequence=100)
+        expected = "completion precedes actual invocation entry"
+    elif mutation == "wrong-root":
+        next(item for item in local if item["kind"] == "task_exit")["taskId"] = "other"
+        expected = "actual entry, wrapper exit and root-task exit"
+    elif mutation == "duplicate-sequence":
+        local[-1]["sequence"] = local[0]["sequence"]
+        expected = "unique per-request semantic sequence numbers"
+    elif mutation == "timestamp-order":
+        local[-1]["atMs"] = 13
+        expected = "sequence contradicts its normalized timestamps"
+    elif mutation == "unknown-kind":
+        value["resourcesCreated"].append({"id": "other-1", "ownerCaseId": value["caseId"], "kind": "other"})
+        value["retirement"]["resources"].append(
+            {
+                "id": "other-1",
+                "ownerCaseId": value["caseId"],
+                "kind": "other",
+                "settledAtMs": 210,
+                "outcome": "DONE",
+                "evidenceUri": "s3://evidence/other",
+            }
+        )
+        expected = "no completion contract for resource kind"
+    else:
+        history = next(item for item in value["histories"] if item["executionArn"] == peer["executionArn"])
+        history["status"] = "RUNNING" if mutation == "running-history" else "PENDING"
+        expected = "service history still permits execution resume"
+    errors = validate_retirement_evidence(value)
+    assert any(expected in error for error in errors), errors

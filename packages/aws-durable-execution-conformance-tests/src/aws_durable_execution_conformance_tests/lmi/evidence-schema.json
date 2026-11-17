@@ -181,7 +181,8 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/operation"
-          }
+          },
+          "$comment": "Semantic validation identifies retry.operationId in this array and the collected final history, requires SUCCEEDED and a stored result key (including JSON null), and permits unrelated pending operations without a result. JSON Schema cannot express this cross-record ID comparison."
         },
         "operationExecutions": {
           "type": "array",
@@ -672,7 +673,8 @@
           "type": "number",
           "minimum": 0
         }
-      }
+      },
+      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Behavior observations do not require the complete physical stream. See evidence-schema.md."
     },
     "request": {
       "type": "object",
