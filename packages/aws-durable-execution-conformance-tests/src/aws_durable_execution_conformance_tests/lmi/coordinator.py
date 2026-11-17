@@ -1220,7 +1220,14 @@ def _retirement_ownership_errors(
     return errors
 
 
-def _cleanup_behavior_errors(original: Mapping[str, Any], snapshot: Mapping[str, Any], *, standard: bool) -> list[str]:
+def _cleanup_behavior_errors(
+    original: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+    *,
+    standard: bool,
+    known_snapshots: Sequence[Mapping[str, Any]] = (),
+    final: bool = False,
+) -> list[str]:
     """Detect specific refutations without replacing frozen business evidence."""
     findings: list[str] = []
 
@@ -1239,46 +1246,45 @@ def _cleanup_behavior_errors(original: Mapping[str, Any], snapshot: Mapping[str,
         item["requestId"]: item for item in records(original.get("attempts")) if isinstance(item.get("requestId"), str)
     }
     events = records(original.get("events"))
+    admission_sources = (original, *known_snapshots, snapshot)
+    known_requests = {
+        attempt["requestId"]
+        for source in admission_sources
+        for attempt in records(source.get("attempts"))
+        if isinstance(attempt.get("requestId"), str)
+    }
     closures: dict[str, float] = {}
-    for event in events:
+    # A later observation can reveal an earlier closure. Preserve every known
+    # boundary and recheck old activity as well as newly discovered requests.
+    for event in (event for source in admission_sources for event in records(source.get("events"))):
         request_id, time = event.get("requestId"), timestamp(event.get("atMs"))
         if (
             isinstance(request_id, str)
-            and request_id in attempts
+            and request_id in known_requests
             and time is not None
             and event.get("kind") in ("wrapper_return", "admission_closed")
         ):
             closures[request_id] = min(closures.get(request_id, time), time)
     for collection in ("sdkRequests", "events"):
-        remaining = records(original.get(collection))
-        for record in records(snapshot.get(collection)):
+        for record in (record for source in admission_sources for record in records(source.get(collection))):
             if collection == "events" and record.get("kind") != "admission_probe":
-                continue
-            match = next(
-                (
-                    index
-                    for index, prior in enumerate(remaining)
-                    if _owned_record_enriches(prior, record, event=collection == "events")
-                ),
-                None,
-            )
-            if match is not None:
-                remaining.pop(match)
                 continue
             request_id, time = record.get("requestId"), timestamp(record.get("atMs"))
             closed = closures.get(request_id) if isinstance(request_id, str) else None
             if closed is None or time is None or time < closed:
                 continue
             if collection == "sdkRequests" and record.get("outcome") == "DISPATCHED":
-                findings.append(f"ASSERTION: request {request_id} dispatched SDK work after admission closed")
+                finding = f"ASSERTION: request {request_id} dispatched SDK work after admission closed"
             elif (
                 collection == "events"
                 and record.get("probe") in ("operation", "checkpoint")
                 and record.get("outcome") != "REJECTED"
             ):
-                findings.append(
-                    f"ASSERTION: request {request_id} admitted a {record['probe']} probe after admission closed"
-                )
+                finding = f"ASSERTION: request {request_id} admitted a {record['probe']} probe after admission closed"
+            else:
+                continue
+            if finding not in findings:
+                findings.append(finding)
     if not standard:
         return findings
 
@@ -1733,10 +1739,18 @@ async def run_scenarios(
                                 snapshots.append(snapshot)
                                 check_cleanup_identity(snapshot, phase)
                                 for finding in _cleanup_behavior_errors(
-                                    frozen_behavior, snapshot, standard=case.coverage_profile == "standard"
+                                    frozen_behavior,
+                                    snapshot,
+                                    standard=case.coverage_profile == "standard",
+                                    known_snapshots=[
+                                        item for snapshots in cleanup_evidence.values() for item in snapshots
+                                    ],
                                 ):
-                                    if finding not in cleanup_behavior_errors:
-                                        cleanup_behavior_errors.append(finding)
+                                    destination = (
+                                        cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                                    )
+                                    if finding not in destination:
+                                        destination.append(finding)
                                 # Source failures invalidate cleanup evidence
                                 # even when ownership inventories did not change
                                 # or a later phase removes the diagnostics.
@@ -1889,10 +1903,16 @@ async def run_scenarios(
                             cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
                             for finding in _cleanup_behavior_errors(
-                                frozen_behavior, retirement_evidence, standard=case.coverage_profile == "standard"
+                                frozen_behavior,
+                                retirement_evidence,
+                                standard=case.coverage_profile == "standard",
+                                known_snapshots=cleanup_snapshots,
                             ):
-                                if finding not in cleanup_behavior_errors:
-                                    cleanup_behavior_errors.append(finding)
+                                destination = (
+                                    cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                                )
+                                if finding not in destination:
+                                    destination.append(finding)
                             audit = [
                                 error
                                 for baseline in [*observation_baselines, evidence, *cleanup_snapshots]
@@ -1906,6 +1926,21 @@ async def run_scenarios(
                                 physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
+                # Some discoveries need all eventual sources to resolve native
+                # request references, even when no ownership inventory changed.
+                try:
+                    for finding in _cleanup_behavior_errors(
+                        frozen_behavior,
+                        retirement_evidence or evidence,
+                        standard=case.coverage_profile == "standard",
+                        known_snapshots=cleanup_snapshots,
+                        final=True,
+                    ):
+                        destination = cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                        if finding not in destination:
+                            destination.append(finding)
+                except (Exception, asyncio.CancelledError) as exc:
+                    cleanup_errors.append(f"Final cleanup behavior validation: {type(exc).__name__}: {exc}")
                 if evidence and status == "PASSED":
                     try:
                         if cleanup_changed and physical_retirement_verified:

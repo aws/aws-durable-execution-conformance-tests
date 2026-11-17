@@ -359,11 +359,11 @@ def _run_standard_cleanup_discovery(
             return observed
 
         async def release(self, context: ScenarioContext) -> None:
-            if phase == "release":
+            if phase in ("release", "both"):
                 mutate(context.evidence)
 
         async def retire(self, context: ScenarioContext) -> bool:
-            if phase == "retire":
+            if phase in ("retire", "both"):
                 mutate(context.evidence)
             final = deepcopy(context.evidence)
             if phase == "snapshot":
@@ -395,6 +395,102 @@ def _run_standard_cleanup_discovery(
     assert finished == [True]
     assert validate_retirement_evidence(result.retirement_evidence or result.evidence) == []
     return result
+
+
+@pytest.mark.parametrize("phase", ["retire", "snapshot"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("kind", "outcome", "when", "closure_owner", "rejected"),
+    [
+        ("sdk", "DISPATCHED", 39, "victim", True),
+        ("probe", "ACCEPTED", 39, "victim", True),
+        ("sdk", "REJECTED", 39, "victim", False),
+        ("sdk", "DISPATCHED", 37, "victim", False),
+        ("probe", "ACCEPTED", 37, "victim", False),
+        ("sdk", "DISPATCHED", 39, "peer", False),
+        ("probe", "ACCEPTED", 39, "peer", False),
+    ],
+)
+def test_discovered_earlier_closure_rechecks_previously_observed_admission(
+    phase: str, path: str, kind: str, outcome: str, when: int, closure_owner: str, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    attempts = {attempt["role"]: attempt for attempt in value["attempts"]}
+    victim = attempts["victim"]
+    if kind == "sdk":
+        value["sdkRequests"][0].update(atMs=when, outcome=outcome)
+    else:
+        value["events"].append(
+            {
+                "kind": "admission_probe",
+                "probe": "operation",
+                "outcome": outcome,
+                "atMs": when,
+                "requestId": victim["requestId"],
+                "ownerRequestId": victim["requestId"],
+                "executionArn": victim["executionArn"],
+            }
+        )
+        _resequence(value)
+    original_requests, original_events = deepcopy(value["sdkRequests"]), deepcopy(value["events"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        owner = attempts[closure_owner]
+        snapshot["events"].append(
+            {
+                "kind": "admission_closed",
+                "atMs": 38,
+                "requestId": owner["requestId"],
+                "ownerRequestId": owner["requestId"],
+                "executionArn": owner["executionArn"],
+            }
+        )
+        _resequence(snapshot)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["sdkRequests"] == original_requests
+    assert result.evidence["events"] == original_events
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("kind", ["sdk", "probe"])
+def test_cleanup_admission_combines_closure_and_activity_from_separate_snapshots(path: str, kind: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    victim = value["attempts"][0]
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        owner = {
+            "requestId": victim["requestId"],
+            "ownerRequestId": victim["requestId"],
+            "executionArn": victim["executionArn"],
+        }
+        if calls == 1:
+            snapshot["events"].append({**owner, "kind": "admission_closed", "atMs": 38})
+        else:
+            snapshot["events"] = [event for event in snapshot["events"] if event["kind"] != "admission_closed"]
+            if kind == "sdk":
+                snapshot["sdkRequests"].append(
+                    {**owner, "method": "CheckpointDurableExecution", "outcome": "DISPATCHED", "atMs": 39}
+                )
+            else:
+                snapshot["events"].append(
+                    {**owner, "kind": "admission_probe", "probe": "operation", "outcome": "ACCEPTED", "atMs": 39}
+                )
+        _resequence(snapshot)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert calls == 2
+    assert result.status == "FAILED", result.errors
+    assert not any(event["kind"] == "admission_closed" for event in result.retirement_evidence["events"])
+    assert any(
+        event["kind"] == "admission_closed"
+        for snapshot in result.cleanup_evidence["release"]
+        for event in snapshot["events"]
+    )
 
 
 @pytest.mark.parametrize("phase", ["release", "retire"])
