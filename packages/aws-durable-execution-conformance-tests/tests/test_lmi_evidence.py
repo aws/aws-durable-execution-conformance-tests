@@ -4,7 +4,7 @@
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -153,8 +153,9 @@ def deadline_evidence(requirement: int = 3, runtime: str = "javascript") -> dict
     return value
 
 
-def recovery_evidence(runtime: str = "javascript") -> dict[str, Any]:
+def recovery_evidence(runtime: str = "javascript", *, native_concurrency: int = 2) -> dict[str, Any]:
     value = deadline_evidence(4, runtime)
+    value["profile"]["nativeConcurrency"] = native_concurrency
     peer = value["attempts"][1]
     peer["endedAtMs"] = 100
     recovery = attempt("recovery", start=40, end=60)
@@ -171,6 +172,15 @@ def recovery_evidence(runtime: str = "javascript") -> dict[str, Any]:
             event(peer, "wrapper_return", 100),
         ]
     )
+    for index in range(2, native_concurrency):
+        peer = attempt(
+            f"peer{index}", start=12, end=100, process=f"process-{index + 1}" if runtime == "python" else "process-1"
+        )
+        value["attempts"].append(peer)
+        value["selectedRequests"][peer["role"]] = peer["requestId"]
+        value["events"].extend(
+            [event(peer, "peer_progress", 25), event(peer, "peer_progress", 44), event(peer, "wrapper_return", 100)]
+        )
     refresh_histories(value)
     record_owned_resources(value)
     return value
@@ -343,6 +353,61 @@ def test_selected_retry_cannot_replace_original_request() -> None:
     assert any("retry" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_duplicate_original_ordinal_cannot_hide_failed_placement(
+    runtime: str, phase: Literal["observations", "final"]
+) -> None:
+    value = evidence(runtime=runtime)
+    original = attempt("victim", start=1, end=9)
+    original.update(
+        requestId="request-original-victim",
+        executionArn="arn:execution:original-victim",
+        environmentId="failed-placement-environment",
+    )
+    # The selected, later request has valid placement but also claims victim/1.
+    # Retain the real original and its history instead of discarding the miss.
+    value["attempts"].insert(0, original)
+    value["events"].append(event(original, "wrapper_return", 9))
+    refresh_histories(value)
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("duplicate attempt ordinal 1 for role victim" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("same_execution", [False, True])
+def test_duplicate_retry_ordinals_are_rejected_across_executions(
+    phase: Literal["observations", "final"], same_execution: bool
+) -> None:
+    value = evidence()
+    first = attempt("victim", start=50, end=60)
+    first.update(requestId="request-victim-retry-2", attempt=2)
+    second = {**first, "requestId": "request-duplicate-retry-2", "startedAtMs": 70, "endedAtMs": 80}
+    if not same_execution:
+        second["executionArn"] = "arn:execution:another-victim"
+    value["attempts"].extend([first, second])
+    refresh_histories(value)
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("duplicate attempt ordinal 2 for role victim" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_attempt_ordinals_are_unique_within_each_role(phase: Literal["observations", "final"]) -> None:
+    value = replay_evidence()
+    # victim/1 and resume/1 share an execution; a subsequent resume/2 is valid.
+    resume = value["attempts"][-1]
+    value["attempts"].append(
+        {**resume, "requestId": "request-resume-2", "attempt": 2, "startedAtMs": 90, "endedAtMs": 100}
+    )
+    record_owned_resources(value)
+    for validate in (validate_evidence, validate_common_evidence):
+        assert validate(value, phase=phase) == []
+
+
 def test_barriers_and_intervals_must_both_prove_overlap() -> None:
     value = evidence()
     value["events"][1]["atMs"] = 41
@@ -375,6 +440,81 @@ def test_admission_rejection_requires_actual_probes() -> None:
     assert any("admission probe" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+@pytest.mark.parametrize(
+    ("at", "outcome", "rejected"),
+    [(35, "ACCEPTED", False), (36, "ACCEPTED", True), (37, "ACCEPTED", True), (37, "REJECTED", False)],
+)
+def test_disposal_checks_probe_outcomes_from_the_first_closure(
+    requirement: int, phase: Literal["observations", "final"], probe: str, at: int, outcome: str, rejected: bool
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    victim = value["attempts"][0]
+    # Keep the rejected probes after wrapper return at 40. They must not hide
+    # an accepted probe at or after the earlier admission closure at 36.
+    value["events"].extend(
+        [event(victim, "admission_closed", 36), event(victim, "admission_probe", at, probe=probe, outcome=outcome)]
+    )
+    errors = validate_evidence(value, phase=phase)
+    if rejected:
+        assert any(f"closed invocation admitted a {probe} probe" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+def test_deadline_checks_probes_from_an_earlier_wrapper_return(
+    requirement: int, phase: Literal["observations", "final"], probe: str
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    victim = value["attempts"][0]
+    wrapper = next(
+        item
+        for item in value["events"]
+        if item["requestId"] == victim["requestId"] and item["kind"] == "wrapper_return"
+    )
+    wrapper["atMs"] = 30
+    assert validate_evidence(value, phase=phase) == []
+    # Admission closure at 31 cannot hide acceptance after wrapper return.
+    value["events"].append(event(victim, "admission_probe", 30, probe=probe, outcome="ACCEPTED"))
+    assert any(
+        f"closed invocation admitted a {probe} probe" in error for error in validate_evidence(value, phase=phase)
+    )
+
+
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+def test_disposal_still_requires_probes_after_wrapper_return(
+    requirement: int, phase: Literal["observations", "final"], probe: str
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    victim = value["attempts"][0]
+    value["events"] = [item for item in value["events"] if item.get("probe") != probe]
+    value["events"].extend(
+        [event(victim, "admission_closed", 36), event(victim, "admission_probe", 37, probe=probe, outcome="REJECTED")]
+    )
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"missing post-closure {probe} admission probe" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_probe_outcomes_ignore_another_invocations_closure(phase: Literal["observations", "final"]) -> None:
+    value = evidence(2)
+    victim, peer = value["attempts"]
+    value["events"].extend(
+        [
+            event(peer, "admission_closed", 36),
+            event(victim, "admission_probe", 37, probe="operation", outcome="ACCEPTED"),
+        ]
+    )
+    assert validate_evidence(value, phase=phase) == []
+
+
 @pytest.mark.parametrize("change", ["early", "simulated", "no-inflight", "accepted", "budget"])
 def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: str) -> None:
     value = deadline_evidence()
@@ -392,11 +532,113 @@ def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: s
     assert validate_evidence(value)
 
 
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("native_end", [29, 30, 40])
+def test_native_interval_contains_the_asserted_platform_timeout(
+    runtime: str, requirement: int, phase: Literal["observations", "final"], native_end: int
+) -> None:
+    value = deadline_evidence(runtime=runtime) if requirement == 3 else recovery_evidence(runtime)
+    # Admission at 10 plus timeoutMs=20 establishes the timeout at 30.
+    # Closure, probes and task exit may still follow native completion.
+    value["attempts"][0]["endedAtMs"] = native_end
+    errors = validate_evidence(value, phase=phase)
+    if native_end < 30:
+        assert any("platform timeout follows native invocation completion" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
 @pytest.mark.parametrize("field", ["environmentId", "workerId", "processId"])
 def test_recovery_cannot_use_unrelated_capacity(field: str) -> None:
     value = recovery_evidence()
     value["attempts"][-1][field] = "replacement"
     assert any(error.startswith("PLACEMENT:") for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("peer_role", ["peer", "peer2", "peer3"])
+def test_python_recovery_cannot_replace_victim_with_an_occupied_peer_process(
+    phase: Literal["observations", "final"], peer_role: str
+) -> None:
+    value = recovery_evidence("python", native_concurrency=4)
+    value["profile"]["recoveryPolicy"] = "replace-worker"
+    selected = {item["role"]: item for item in value["attempts"]}
+    recovery = selected["recovery"]
+    recovery.update(workerId="replacement-worker", processId="replacement-process", replacesWorkerId="process-1")
+    assert validate_evidence(value, phase=phase) == []
+
+    peer = selected[peer_role]
+    recovery.update(workerId=peer["workerId"], processId=peer["processId"])
+    assert any("occupied Python peer process" in error for error in validate_evidence(value, phase=phase))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("runtime", ["python", "javascript", "java"])
+@pytest.mark.parametrize("policy", ["reuse-worker", "replace-worker"])
+@pytest.mark.parametrize("victim_end", [39, 40, 50])
+def test_python_recovery_waits_for_same_process_native_completion(
+    phase: Literal["observations", "final"], runtime: str, policy: str, victim_end: int
+) -> None:
+    value = recovery_evidence(runtime)
+    victim, recovery = value["attempts"][0], value["attempts"][-1]
+    victim["endedAtMs"] = victim_end
+    next(item for item in value["events"] if item["kind"] == "wrapper_return")["atMs"] = min(40, victim_end)
+    value["profile"]["recoveryPolicy"] = policy
+    if policy == "replace-worker":
+        # A different worker label cannot make an occupied Python process free.
+        recovery.update(workerId="replacement-worker", replacesWorkerId=victim["workerId"])
+    errors = validate_evidence(value, phase=phase)
+    if runtime == "python" and victim_end > recovery["startedAtMs"]:
+        assert any("native invocation completion" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_python_recovery_can_replace_a_process_with_an_unfinished_native_invocation(
+    phase: Literal["observations", "final"],
+) -> None:
+    value = recovery_evidence("python")
+    victim, recovery = value["attempts"][0], value["attempts"][-1]
+    victim["endedAtMs"] = 50
+    value["profile"]["recoveryPolicy"] = "replace-worker"
+    recovery.update(workerId="replacement-worker", processId="replacement-process", replacesWorkerId=victim["workerId"])
+    assert validate_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_python_recovery_uses_native_completion_separately_from_background_task_exit(
+    phase: Literal["observations", "final"],
+) -> None:
+    value = recovery_evidence("python")
+    value["budgets"]["cleanupMs"] = 15
+    next(item for item in value["events"] if item["kind"] == "task_exit")["atMs"] = 45
+    # Native completion at 40 releases the process for recovery at 40, even
+    # though a victim-owned background task exits later within its budget.
+    assert validate_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("existing_role", ["victim", "peer", "peer2", "peer3"])
+def test_recovery_execution_is_independent_of_every_selected_peer(
+    phase: Literal["observations", "final"], runtime: str, existing_role: str
+) -> None:
+    value = recovery_evidence(runtime, native_concurrency=4)
+    # Reusing the victim process remains valid, including shared JavaScript/JVM
+    # processes, provided the recovery has its own durable execution identity.
+    assert validate_evidence(value, phase=phase) == []
+    selected = {item["role"]: item for item in value["attempts"]}
+    recovery = selected["recovery"]
+    recovery["executionArn"] = selected[existing_role]["executionArn"]
+    for item in value["events"]:
+        if item["requestId"] == recovery["requestId"]:
+            item["executionArn"] = recovery["executionArn"]
+    refresh_histories(value)
+    record_owned_resources(value)
+    assert any("independent request" in error for error in validate_evidence(value, phase=phase))
 
 
 def test_recovery_requires_healthy_peer_progress_and_occupied_capacity() -> None:
@@ -455,6 +697,47 @@ def test_replay_checks_stored_failures_and_completed_side_effects() -> None:
     assert any("side-effect count" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("field", ["requestId", "operationId"])
+@pytest.mark.parametrize("invalid", [None, False, 1, "", " ", [], {}])
+def test_replay_execution_identities_must_be_nonempty_strings(
+    phase: Literal["observations", "final"], field: str, invalid: Any
+) -> None:
+    value = replay_evidence()
+    execution = {"requestId": "request-resume", "operationId": "unfinished"}
+    execution[field] = invalid
+    value["replay"]["operationExecutions"].append(execution)
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"replay.operationExecutions.{field} must be a non-empty string" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("field", ["requestId", "operationId"])
+def test_replay_execution_cannot_omit_either_identity(phase: Literal["observations", "final"], field: str) -> None:
+    value = replay_evidence()
+    execution = {"requestId": "request-resume", "operationId": "unfinished"}
+    del execution[field]
+    value["replay"]["operationExecutions"].append(execution)
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"replay.operationExecutions.{field} must be a non-empty string" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("operation_id", ["done", "failed", "unfinished"])
+def test_replay_execution_distinguishes_completed_from_uncheckpointed_operations(
+    phase: Literal["observations", "final"], operation_id: str
+) -> None:
+    value = replay_evidence()
+    value["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": operation_id})
+    errors = validate_evidence(value, phase=phase)
+    if operation_id == "unfinished":
+        # A real body entry can precede its checkpoint, so its nonempty ID need
+        # not be present in the completed snapshots or final service history.
+        assert errors == [], errors
+    else:
+        assert any("repeated completed user code" in error for error in errors), errors
+
+
 def test_no_later_invocation_may_repeat_completed_user_code() -> None:
     # A side-effect count cannot catch this when the body has no external
     # effect, so every request after the victim on the same execution is
@@ -484,6 +767,23 @@ def test_warm_reuse_requires_the_original_process() -> None:
     value = warm_evidence()
     value["attempts"][-1]["processId"] = "new-process"
     assert any("original process" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("native_end", [49, 50, 70])
+def test_warm_reuse_requires_native_completion_before_warm_admission(
+    runtime: str, phase: Literal["observations", "final"], native_end: int
+) -> None:
+    value = warm_evidence(runtime)
+    # Wrapper return at 40 precedes warm admission at 50 in every case.
+    # Late activity at 60 and task exit at 65 may outlive native completion.
+    value["attempts"][0]["endedAtMs"] = native_end
+    errors = validate_evidence(value, phase=phase)
+    if native_end > 50:
+        assert any("warm invocation was not sequential reuse" in error for error in errors), errors
+    else:
+        assert errors == [], errors
 
 
 def test_case_owned_cleanup_and_retirement_completeness() -> None:
@@ -845,6 +1145,34 @@ def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(rele
     assert any("retroactively" in error or "fault release cannot satisfy" in error for error in errors) is rejected, (
         errors
     )
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("released", [None, False, True, "34", -1, float("inf"), float("nan"), [], {}])
+def test_observed_fault_release_requires_a_finite_nonnegative_timestamp(
+    phase: Any, requirement: int, released: Any
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    # A later valid retirement release cannot repair malformed observations.
+    assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("faultsCreated.releasedAtMs must be a finite non-negative number" in error for error in errors), (
+            errors
+        )
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("released", [50, 50.5])
+def test_observed_fault_release_accepts_valid_timestamps(phase: Any, requirement: int, released: int | float) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    value["retirement"]["faults"][0]["releasedAtMs"] = released
+    for validate in (validate_evidence, validate_common_evidence):
+        assert validate(value, phase=phase) == []
 
 
 def test_expected_null_does_not_match_a_missing_history_field() -> None:

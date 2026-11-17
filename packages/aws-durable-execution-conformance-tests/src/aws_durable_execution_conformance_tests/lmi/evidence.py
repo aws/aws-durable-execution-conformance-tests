@@ -129,15 +129,23 @@ class _Evidence:
         if self.number(self.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
             self.error("profile.timeoutMs must be positive")
         observation_end = self.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
+        attempt_ordinals: set[tuple[str, int]] = set()
         for attempt in self.records(value.get("attempts"), "attempts", nonempty=True):
             request_id = self.string(attempt.get("requestId"), "attempt.requestId")
             if request_id in self.attempts:
                 self.error(f"duplicate requestId {request_id}")
             self.attempts[request_id] = attempt
-            for key in ("executionArn", "environmentId", "workerId", "processId", "role"):
+            for key in ("executionArn", "environmentId", "workerId", "processId"):
                 self.string(attempt.get(key), f"attempt {request_id}.{key}")
-            if type(attempt.get("attempt")) is not int or attempt["attempt"] < 1:
+            role = self.string(attempt.get("role"), f"attempt {request_id}.role")
+            ordinal = attempt.get("attempt")
+            if type(ordinal) is not int or ordinal < 1:
                 self.error(f"attempt {request_id}.attempt must be a positive integer")
+            else:
+                identity = (role, ordinal)
+                if identity in attempt_ordinals:
+                    self.error(f"duplicate attempt ordinal {ordinal} for role {role}")
+                attempt_ordinals.add(identity)
             start = self.number(attempt.get("startedAtMs"), f"attempt {request_id}.startedAtMs")
             end = self.number(attempt.get("endedAtMs"), f"attempt {request_id}.endedAtMs")
             if end <= start or end > observation_end:
@@ -170,6 +178,9 @@ class _Evidence:
             self.string(request.get("method"), "sdkRequest.method")
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
+        for fault in self.records(value.get("faultsCreated"), "faultsCreated"):
+            if "releasedAtMs" in fault:
+                self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
         self.histories(check_expectations=validate_behavior)
         collection_errors = value.get("collectionErrors", [])
         if not isinstance(collection_errors, list):
@@ -362,6 +373,15 @@ class _Evidence:
             self.error("task exit preceded root completion in the disposal fixture", "ASSERTION")
 
     def rejected_probe(self, victim: Mapping[str, Any], closed: float) -> None:
+        first_closed = min(
+            [closed]
+            + [
+                event["atMs"]
+                for event in self.events
+                if event.get("requestId") == victim.get("requestId")
+                and event.get("kind") in ("wrapper_return", "admission_closed")
+            ]
+        )
         for probe in ("operation", "checkpoint"):
             observations = [
                 event
@@ -369,9 +389,11 @@ class _Evidence:
                 if event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
                 and event.get("probe") == probe
-                and event.get("atMs", -1) >= closed
+                and event.get("atMs", -1) >= first_closed
             ]
-            if not observations:
+            # Earlier closure broadens the outcome checks, but cannot replace
+            # the required probes after this scenario's closure boundary.
+            if not any(event.get("atMs", -1) >= closed for event in observations):
                 self.error(f"missing post-closure {probe} admission probe")
             if any(event.get("outcome") != "REJECTED" for event in observations):
                 self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
@@ -387,6 +409,8 @@ class _Evidence:
         time = timeout.get("atMs", 0)
         if time < victim.get("startedAtMs", 0) + self.profile.get("timeoutMs", 0):
             self.error("platform timeout did not cross the configured invocation deadline", "ASSERTION")
+        if time > victim.get("endedAtMs", 0):
+            self.error("platform timeout follows native invocation completion", "ASSERTION")
         if victim.get("outcome") != "TIMED_OUT" or timeout.get("source") != "platform":
             self.error("deadline requires an observed platform timeout, not a simulated cancellation", "ASSERTION")
         if not inflight.get("atMs", time) < time <= exited.get("atMs", 0):
@@ -408,6 +432,7 @@ class _Evidence:
         if not self.require_roles("victim", "peer", "recovery"):
             return
         victim, recovery = self.selected["victim"], self.selected["recovery"]
+        peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         timeout = self.event(victim, "platform_timeout").get("atMs", 0)
         recovered = self.event(recovery, "worker_recovered").get("atMs", 0)
         if recovery.get("environmentId") != victim.get("environmentId"):
@@ -425,7 +450,7 @@ class _Evidence:
             self.error("profile.recoveryPolicy must explicitly select reuse-worker or replace-worker")
         if recovery.get("outcome") != "SUCCEEDED":
             self.error("recovered capacity did not complete the selected recovery request", "ASSERTION")
-        if recovery.get("executionArn") in (victim.get("executionArn"), self.selected["peer"].get("executionArn")):
+        if any(recovery.get("executionArn") == attempt.get("executionArn") for attempt in (victim, *peers)):
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
@@ -436,13 +461,18 @@ class _Evidence:
         )
         if not timeout <= recovered <= timeout + recovery_budget:
             self.error("recovery exceeded the declared recoveryMs budget", "ASSERTION")
-        peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         if len(peers) != self.profile.get("nativeConcurrency", 0) - 1:
             self.error("recovery must occupy every other native capacity slot", "PLACEMENT")
         if self.value.get("runtime") == "python":
             processes = [victim.get("processId"), *(peer.get("processId") for peer in peers)]
             if len(set(processes)) != len(processes):
                 self.error("recovery peers must occupy distinct Python processes", "PLACEMENT")
+            if any(recovery.get("processId") == peer.get("processId") for peer in peers):
+                self.error("recovery cannot use an occupied Python peer process", "PLACEMENT")
+            if recovery.get("processId") == victim.get("processId") and recovery.get("startedAtMs", 0) < victim.get(
+                "endedAtMs", 0
+            ):
+                self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
         for peer in peers:
             if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
                 "startedAtMs", 0
@@ -516,9 +546,11 @@ class _Evidence:
         }
         executions = self.records(replay.get("operationExecutions"), "replay.operationExecutions", nonempty=True)
         for execution in executions:
-            if execution.get("requestId") not in self.attempts:
+            request_id = self.string(execution.get("requestId"), "replay.operationExecutions.requestId")
+            operation_id = self.string(execution.get("operationId"), "replay.operationExecutions.operationId")
+            if request_id not in self.attempts:
                 self.error("operationExecutions references an unrecorded request")
-            if execution.get("requestId") in later and execution.get("operationId") in completed:
+            if request_id in later and operation_id in completed:
                 self.error("resume repeated completed user code", "ASSERTION")
         retry = self.mapping(replay.get("retry"), "replay.retry")
         retry_id = self.string(retry.get("operationId"), "replay.retry.operationId")
@@ -567,7 +599,9 @@ class _Evidence:
         closed = self.event(victim, "wrapper_return")
         if any(victim.get(key) != warm.get(key) for key in ("environmentId", "workerId", "processId")):
             self.error("warm reuse must identify the original process and worker", "PLACEMENT")
-        if warm.get("startedAtMs", 0) <= closed.get("atMs", 0):
+        if warm.get("startedAtMs", 0) <= closed.get("atMs", 0) or warm.get("startedAtMs", 0) < victim.get(
+            "endedAtMs", 0
+        ):
             self.error("warm invocation was not sequential reuse", "PLACEMENT")
         late = self.event(victim, "late_activity")
         if late.get("observedDuringRequestId") != warm.get("requestId") or not warm.get("startedAtMs", 0) <= late.get(

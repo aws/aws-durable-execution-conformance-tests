@@ -145,6 +145,34 @@
       },
       "minItems": 1
     },
+    "replay": {
+      "type": "object",
+      "properties": {
+        "operationExecutions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "requestId",
+              "operationId"
+            ],
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "operationId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          }
+        }
+      }
+    },
     "expectedHistories": {
       "type": "object",
       "additionalProperties": {
@@ -662,6 +690,10 @@
         "ownerCaseId": {
           "type": "string",
           "minLength": 1
+        },
+        "releasedAtMs": {
+          "type": "number",
+          "minimum": 0
         }
       }
     }
