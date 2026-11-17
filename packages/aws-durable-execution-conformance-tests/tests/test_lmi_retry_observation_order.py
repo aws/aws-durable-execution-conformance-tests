@@ -300,3 +300,97 @@ def test_invalid_counter_observations_cannot_be_erased_by_valid_collection(field
     result, _ = _run(SideEffectObservationAdapter(value, [known]))
     assert result.status != "PASSED", result.errors
     assert any(f"side-effect {field} must be a non-negative integer" in error for error in result.errors), result.errors
+
+
+def _inventory(value: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    if name == "operations":
+        return next(history["operations"] for history in value["histories"] if history["operations"])
+    if name == "retry":
+        return value["replay"]["retry"]["attempts"]
+    if name == "sideEffects":
+        return value["replay"]["sideEffects"]
+    return value[name]
+
+
+def _replay_with_fault() -> dict[str, Any]:
+    value = _replay_evidence()
+    fault = {"id": "fault-1", "ownerCaseId": value["caseId"]}
+    value["faultsCreated"] = [fault]
+    value["retirement"]["faults"] = [{**fault, "releasedAtMs": 205, "mode": "normal"}]
+    assert validate_evidence(value) == []
+    return value
+
+
+@pytest.mark.parametrize("phase", ["place", "execute"])
+@pytest.mark.parametrize(
+    "inventory", ["attempts", "histories", "operations", "faultsCreated", "resourcesCreated", "retry", "sideEffects"]
+)
+def test_in_place_identity_occurrence_increases_survive_later_deduplication(phase: str, inventory: str) -> None:
+    value = _replay_with_fault()
+    invalid = deepcopy(value)
+    rows = _inventory(invalid, inventory)
+    rows.insert(1, deepcopy(rows[0]))
+    if inventory != "sideEffects":
+        assert validate_evidence(invalid)
+
+    class DuplicateDuringPhaseAdapter(RetryObservationAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = deepcopy(self.collected)
+            context.evidence.pop("retirement")
+
+        def duplicate(self, context: ScenarioContext) -> None:
+            rows = _inventory(context.evidence, inventory)
+            rows.insert(1, deepcopy(rows[0]))
+
+        async def place(self, context: ScenarioContext) -> None:
+            if phase == "place":
+                self.duplicate(context)
+
+        async def execute(self, context: ScenarioContext) -> None:
+            if phase == "execute":
+                self.duplicate(context)
+
+    result, scheduler = _run(DuplicateDuringPhaseAdapter(value, [value["replay"]["retry"]["attempts"]]))
+    assert result.status != "PASSED", result.errors
+    assert len(_inventory(result.evidence, inventory)) == len(_inventory(value, inventory)) + 1
+    if inventory == "retry":
+        assert any("duplicate retry attemptId" in error for error in result.errors), result.errors
+        assert any("distinct observed attempts" in error for error in validate_evidence(result.evidence))
+    assert scheduler.quarantine_reason(value["profile"]["functionArn"])
+
+
+@pytest.mark.parametrize(
+    "inventory", ["attempts", "histories", "operations", "faultsCreated", "resourcesCreated", "retry", "sideEffects"]
+)
+def test_metadata_updates_do_not_increase_identity_occurrences(inventory: str) -> None:
+    value = _replay_with_fault()
+    _inventory(value, inventory)[0]["evidenceUri"] = "memory://additional-observation"
+    if inventory == "operations":
+        operation_id = _inventory(value, inventory)[0]["id"]
+        for operation in [*value["replay"]["before"], *value["replay"]["after"]]:
+            if operation["id"] == operation_id:
+                operation["evidenceUri"] = "memory://additional-observation"
+    assert validate_evidence(value) == []
+
+    class MetadataDuringPhaseAdapter(RetryObservationAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = deepcopy(self.collected)
+            context.evidence.pop("retirement")
+            _inventory(context.evidence, inventory)[0].pop("evidenceUri")
+
+        async def place(self, context: ScenarioContext) -> None:
+            _inventory(context.evidence, inventory)[0]["evidenceUri"] = "memory://additional-observation"
+
+    result, _ = _run(MetadataDuringPhaseAdapter(value, [value["replay"]["retry"]["attempts"]]))
+    assert result.status == "PASSED", result.errors
+    assert len(_inventory(result.evidence, inventory)) == len(_inventory(value, inventory))
+
+
+def test_new_unique_retry_observation_is_retained_without_replaying_other_fields() -> None:
+    value = _replay_evidence(3)
+    attempts = value["replay"]["retry"]["attempts"]
+    result, _ = _run(RetryObservationAdapter(value, [[attempts[0], attempts[2]], attempts]))
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["replay"]["retry"]["attempts"] == attempts

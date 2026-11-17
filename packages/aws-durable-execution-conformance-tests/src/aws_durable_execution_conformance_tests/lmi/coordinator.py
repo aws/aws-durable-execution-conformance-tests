@@ -585,9 +585,9 @@ def _retry_attempt_order(evidence: Mapping[str, Any]) -> tuple[str, ...] | None:
         if not isinstance(identifier, str) or not identifier.strip():
             return None
         identifiers.append(identifier)
-    # Invalid or singleton fragments establish no ordering constraint. Their
-    # records remain retained for the normal shape and multiplicity validators.
-    if len(identifiers) < 2 or len(set(identifiers)) != len(identifiers):
+    # Singleton fragments establish no ordering constraint. The caller diagnoses
+    # duplicate identities before using an observed sequence as an ordering.
+    if len(identifiers) < 2:
         return None
     return tuple(identifiers)
 
@@ -679,6 +679,21 @@ def _observation_updates(
                 updates[key] = nested
         elif isinstance(previous[key], list) and isinstance(value, list) and (*path, key) in _OBSERVATION_IDENTITIES:
             identity = _OBSERVATION_IDENTITIES[(*path, key)]
+            previous_counts = Counter(
+                record[identity]
+                for record in previous[key]
+                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
+            )
+            current_counts = Counter(
+                record[identity]
+                for record in value
+                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
+            )
+            if any(current_counts[identifier] > count for identifier, count in previous_counts.items()):
+                # A lone extra occurrence would merge back into the known row.
+                # Preserve this inventory's full multiplicity and facts instead.
+                updates[key] = copy.deepcopy(value)
+                continue
             remaining = list(previous[key])
             records = []
             for record in value:
@@ -1154,7 +1169,11 @@ async def run_scenarios(
                 if diagnostic not in errors:
                     errors.append(diagnostic)
             order = _retry_attempt_order(snapshot)
-            if order is not None:
+            if order is not None and len(set(order)) != len(order):
+                diagnostic = f"INCOMPLETE: duplicate retry attemptId in observations ({phase})"
+                if diagnostic not in errors:
+                    errors.append(diagnostic)
+            elif order is not None:
                 for previous in retry_orderings:
                     shared = set(previous) & set(order)
                     if tuple(item for item in previous if item in shared) != tuple(
