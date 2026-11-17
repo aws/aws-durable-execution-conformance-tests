@@ -1002,18 +1002,37 @@ def _retirement_ownership_errors(
                 errors.append(f"Retirement cannot reconcile a malformed invocation {key}")
             elif (key == "startedAtMs" and after > before) or (key == "endedAtMs" and after < before):
                 errors.append(f"Retirement narrowed an original invocation's {key}")
-    for name, identity_fields in (
-        ("resourcesCreated", ("kind", "id", "ownerCaseId")),
-        ("faultsCreated", ("id", "ownerCaseId")),
-        ("histories", ("executionArn", "ownerCaseId")),
+    for name, identifier, identity_fields in (
+        ("resourcesCreated", "id", ("kind", "ownerCaseId")),
+        ("faultsCreated", "id", ("ownerCaseId",)),
+        ("histories", "executionArn", ("ownerCaseId",)),
     ):
         before, after = original.get(name, []), final.get(name, [])
         if not isinstance(before, list) or not isinstance(after, list):
             raise ValueError("Retirement resource inventories must be lists")
         for resource in before:
-            if not isinstance(resource, Mapping) or not any(
-                isinstance(item, Mapping) and all(item.get(key) == resource.get(key) for key in identity_fields)
-                for item in after
+            if (
+                not isinstance(resource, Mapping)
+                or not isinstance(resource.get(identifier), str)
+                or not resource[identifier].strip()
+            ):
+                errors.append(f"Original {name} entry requires a stable non-empty {identifier}")
+                continue
+            matched_resource = next(
+                (
+                    item
+                    for item in after
+                    if isinstance(item, Mapping)
+                    and identifier in item
+                    and same_json(resource[identifier], item[identifier])
+                ),
+                None,
+            )
+            # Provisional rows can lack ownership metadata; final completeness
+            # is checked independently. Explicit null and known values persist.
+            if matched_resource is None or any(
+                key in resource and (key not in matched_resource or not same_json(resource[key], matched_resource[key]))
+                for key in identity_fields
             ):
                 errors.append(f"Retirement omitted or changed an original {name} entry")
 
@@ -1034,8 +1053,10 @@ def _retirement_ownership_errors(
     }
     for history in original.get("histories", []):
         if not isinstance(history, Mapping):
-            raise ValueError("Original history inventory is malformed")
+            continue  # Already reported as an unidentified original inventory row.
         arn = history.get("executionArn")
+        if not isinstance(arn, str) or not arn.strip():
+            continue
         completed_history = final_histories.get(arn)
         if history.get("status") in TERMINAL_STATUSES:
             preserve_history_fields(

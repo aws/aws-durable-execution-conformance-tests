@@ -3232,3 +3232,122 @@ def test_status_only_completion_retains_present_outcomes_before_a_later_phase(
     else:
         assert collected.status == "PASSED", collected.errors
         assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+class ProvisionalOwnershipAdapter(FailureAdapter):
+    def __init__(self, inventory: str, missing: tuple[str, ...], phase: str = "none") -> None:
+        super().__init__(phase=phase)
+        self.inventory, self.missing = inventory, missing
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        value = self.snapshots[context.scenario.case_id]
+        for history in value["histories"]:
+            history["result"] = None
+        row = deepcopy(value[self.inventory][0])
+        for name in self.missing:
+            row.pop(name)
+        context.evidence = {self.inventory: [row]}
+
+    def observations(self, context: ScenarioContext) -> dict[str, Any]:
+        value = super().observations(context)
+        value["behaviorErrors"] = []
+        value["expectedHistories"] = {
+            history["executionArn"]: {"status": history["status"], "result": None} for history in value["histories"]
+        }
+        return value
+
+
+@pytest.mark.parametrize("phase", ["none", "placement"])
+@pytest.mark.parametrize(
+    "inventory,missing",
+    [
+        ("histories", ("ownerCaseId", "status", "operations", "result")),
+        ("resourcesCreated", ("kind", "ownerCaseId")),
+        ("resourcesCreated", ("ownerCaseId",)),
+        ("resourcesCreated", ("kind",)),
+        ("faultsCreated", ("ownerCaseId",)),
+    ],
+)
+def test_retirement_completes_provisional_ownership_metadata(
+    phase: str, inventory: str, missing: tuple[str, ...]
+) -> None:
+    adapter = ProvisionalOwnershipAdapter(inventory, missing, phase)
+    (collected, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    if phase == "none":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+        assert PHASE_FAILURE in collected.errors[0]
+    assert validate_retirement_evidence(collected.retirement_evidence) == []
+    assert following.status == "PASSED", following.errors
+    assert adapter.started == ["failed", "next"]
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize(
+    "inventory,field",
+    [
+        ("histories", "ownerCaseId"),
+        ("resourcesCreated", "ownerCaseId"),
+        ("resourcesCreated", "kind"),
+        ("faultsCreated", "ownerCaseId"),
+    ],
+)
+@pytest.mark.parametrize("known", [None, "different-value"])
+def test_retirement_cannot_replace_explicit_ownership_fields(inventory: str, field: str, known: Any) -> None:
+    class KnownOwnershipAdapter(ProvisionalOwnershipAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                context.evidence[self.inventory][0][field] = known
+
+    adapter = KnownOwnershipAdapter(inventory, ())
+    (collected, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert collected.status != "PASSED"
+    assert any(f"original {inventory} entry" in error for error in collected.errors), collected.errors
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("inventory", ["histories", "resourcesCreated", "faultsCreated"])
+@pytest.mark.parametrize("malformed", ["missing", None, "", [], {}])
+def test_retirement_requires_identifiable_provisional_inventory_rows(inventory: str, malformed: Any) -> None:
+    class UnidentifiedOwnershipAdapter(ProvisionalOwnershipAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                identifier = "executionArn" if inventory == "histories" else "id"
+                row = context.evidence[self.inventory][0]
+                if malformed == "missing":
+                    row.pop(identifier)
+                else:
+                    row[identifier] = malformed
+
+    adapter = UnidentifiedOwnershipAdapter(inventory, ())
+    (collected, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert collected.status != "PASSED"
+    assert any("stable" in error and inventory in error for error in collected.errors), collected.errors
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize(
+    "inventory,field", [("histories", "ownerCaseId"), ("resourcesCreated", "kind"), ("faultsCreated", "ownerCaseId")]
+)
+def test_final_retirement_ownership_still_must_be_complete(inventory: str, field: str) -> None:
+    class IncompleteFinalOwnershipAdapter(ProvisionalOwnershipAdapter):
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                context.retirement_evidence[self.inventory][0].pop(field)
+                assert validate_retirement_evidence(context.retirement_evidence)
+            return True
+
+    adapter = IncompleteFinalOwnershipAdapter(inventory, (field,))
+    (collected, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert collected.status != "PASSED"
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
