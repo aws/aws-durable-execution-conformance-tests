@@ -144,8 +144,10 @@ The shared adapter also acquires a persistent retirement fence before using each
 qualified Lambda target. Its object is
 `s3://<deployment bucket>/quarantine/<sha256 of full qualified function ARN>.json`
 and records `resourceId`, `runId`, `commit` and the prior run's `evidencePrefix`
-(`runs/<runId>/`). Only that owner can clear the fence after independently
-validated quiescence. Failed retirement, cancellation or an abrupt controller
+(`runs/<runId>/`). The orchestration/deployment role needs `s3:GetObject`,
+`s3:PutObject` and `s3:DeleteObject` on the deployment bucket's `quarantine/*`
+prefix; fixture runtime roles do not need fence access. Only that owner can clear
+the fence after independently validated quiescence. Failed retirement, cancellation or an abrupt controller
 exit leaves it in place. Later preparation and deployment reject the fenced
 target and report its exact S3 URI, even if its service executions are terminal.
 
