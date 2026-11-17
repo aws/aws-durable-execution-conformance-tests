@@ -409,6 +409,8 @@ class _Evidence:
         time = timeout.get("atMs", 0)
         if time < victim.get("startedAtMs", 0) + self.profile.get("timeoutMs", 0):
             self.error("platform timeout did not cross the configured invocation deadline", "ASSERTION")
+        if time > victim.get("endedAtMs", 0):
+            self.error("platform timeout follows native invocation completion", "ASSERTION")
         if victim.get("outcome") != "TIMED_OUT" or timeout.get("source") != "platform":
             self.error("deadline requires an observed platform timeout, not a simulated cancellation", "ASSERTION")
         if not inflight.get("atMs", time) < time <= exited.get("atMs", 0):
