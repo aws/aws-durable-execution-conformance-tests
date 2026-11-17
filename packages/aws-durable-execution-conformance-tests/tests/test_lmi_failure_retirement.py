@@ -746,3 +746,233 @@ def test_early_failure_freezes_context_observations_without_partial_collection(d
         assert adapter.started == ["failed"]
         assert adapter.finished == [False]
         assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("inventory", ["faultsCreated", "histories", "resourcesCreated", "events", "sdkRequests"])
+def test_prelaunch_owned_work_requires_an_independent_retirement_audit(inventory: str) -> None:
+    class PrelaunchFailureAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id != "failed":
+                await super().start(context)
+                return
+            self.started.append(context.scenario.case_id)
+            snapshot = _snapshot(context)
+            if inventory == "sdkRequests":
+                snapshot[inventory] = [{"requestId": "unidentified-dispatch", "atMs": 200}]
+            context.evidence = {inventory: deepcopy(snapshot[inventory])}
+            raise RuntimeError(PHASE_FAILURE)
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed":
+                context.evidence.clear()
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id == "failed":
+                self.steps.append(("failed", "retire"))
+                return True
+            return await super().retire(context)
+
+    adapter = PrelaunchFailureAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert failed.attempts == []
+    assert failed.evidence[inventory]
+    assert PHASE_FAILURE in failed.errors[0]
+    assert any("independent retirement evidence" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("collection", ["reduced-response", "in-place", "exception", "cancelled"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+def test_partial_collection_cannot_erase_previously_retained_observations(
+    collection: str, complete_retirement: bool
+) -> None:
+    class PartialLossAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            self.steps.append((context.scenario.case_id, "partial"))
+            captured = self.observations(context) if collection == "reduced-response" else context.evidence
+            captured["events"] = [item for item in captured["events"] if item["kind"] not in {"io_start", "io_exit"}]
+            captured["faultsCreated"] = []
+            captured["behaviorErrors"] = []
+            if collection == "exception":
+                raise RuntimeError("partial collection failed after mutation")
+            if collection == "cancelled":
+                raise asyncio.CancelledError
+            return captured
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed" and not complete_retirement:
+                final = context.retirement_evidence
+                final["events"] = [item for item in final["events"] if item["kind"] not in {"io_start", "io_exit"}]
+                final["faultsCreated"] = []
+                final["retirement"]["faults"] = []
+                assert validate_retirement_evidence(final) == []
+            return True
+
+    adapter = PartialLossAdapter(phase="placement")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status != "PASSED"
+    assert PHASE_FAILURE in failed.errors[0]
+    assert ORIGINAL_FAILURE in failed.errors
+    assert failed.evidence["behaviorErrors"] == [ORIGINAL_FAILURE]
+    assert any(item["kind"] == "io_start" for item in failed.evidence["events"])
+    assert failed.evidence["faultsCreated"]
+    if complete_retirement and collection in {"reduced-response", "in-place"}:
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("collection", ["response", "exception", "cancelled"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+def test_partial_collection_retains_new_context_work_even_when_it_is_absent_from_the_response(
+    collection: str, complete_retirement: bool
+) -> None:
+    class AdditionalContextAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            context.evidence["resourcesCreated"].append(
+                {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+            )
+            if collection == "exception":
+                raise RuntimeError("partial collection failed after retaining a control")
+            if collection == "cancelled":
+                raise asyncio.CancelledError
+            return self.observations(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed" and complete_retirement:
+                _add_retained_resource(context.retirement_evidence, "control", "DELETED")
+            return True
+
+    adapter = AdditionalContextAdapter(phase="placement")
+    (failed, following), scheduler = _run(adapter)
+    assert ORIGINAL_FAILURE in failed.errors
+    assert any(item["id"] == "control:failed" for item in failed.evidence["resourcesCreated"])
+    if complete_retirement and collection == "response":
+        assert following.status == "PASSED", following.errors
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_partial_collection_cannot_hide_an_execution_known_only_from_its_history() -> None:
+    class HistoryInventoryAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["histories"].append(
+                    {"executionArn": "arn:execution:unresolved", "ownerCaseId": "failed", "status": "RUNNING"}
+                )
+
+    (failed, following), scheduler = _run(HistoryInventoryAdapter(phase="placement"))
+    assert any(item["executionArn"] == "arn:execution:unresolved" for item in failed.evidence["histories"])
+    assert any("original histories entry" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("collection", ["reduced-response", "in-place", "exception"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+def test_normal_collection_cannot_erase_context_observations_before_a_failed_audit(
+    collection: str, complete_retirement: bool
+) -> None:
+    class NormalLossAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            if context.scenario.case_id != "failed":
+                return await super().collect(context)
+            captured = self.observations(context) if collection == "reduced-response" else context.evidence
+            captured["events"] = [item for item in captured["events"] if item["kind"] not in {"io_start", "io_exit"}]
+            captured["faultsCreated"] = []
+            captured["behaviorErrors"] = []
+            if collection == "exception":
+                raise RuntimeError("normal collection failed after mutation")
+            return captured
+
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            return context.evidence
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed" and not complete_retirement:
+                final = context.retirement_evidence
+                final["events"] = [item for item in final["events"] if item["kind"] not in {"io_start", "io_exit"}]
+                final["faultsCreated"] = []
+                final["retirement"]["faults"] = []
+            return True
+
+    adapter = NormalLossAdapter(phase="none")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status != "PASSED"
+    assert ORIGINAL_FAILURE in failed.errors
+    assert failed.evidence["behaviorErrors"] == [ORIGINAL_FAILURE]
+    assert any(item["kind"] == "io_start" for item in failed.evidence["events"])
+    assert failed.evidence["faultsCreated"]
+    if collection != "exception":
+        assert failed.status == "INCOMPLETE_EVIDENCE"
+        assert any("Collection omitted or changed" in error for error in failed.errors)
+    if complete_retirement:
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("history_status", ["RUNNING", "PENDING"])
+def test_normal_collection_can_enrich_provisional_context_observations(history_status: str) -> None:
+    class EnrichingAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["observationEndedAtMs"] = 1500
+                context.evidence["collection"]["watermarks"] = dict.fromkeys(
+                    context.evidence["collection"]["watermarks"], 1500
+                )
+                context.evidence["attempts"][0].update(startedAtMs=150, endedAtMs=800)
+                context.evidence["histories"][0]["status"] = history_status
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+    adapter = EnrichingAdapter(phase="none")
+    (enriched, following), scheduler = _run(adapter)
+    assert enriched.status == following.status == "PASSED", enriched.errors
+    assert len(enriched.evidence["attempts"]) == len(enriched.evidence["histories"]) == 1
+    assert enriched.evidence["attempts"][0]["startedAtMs"] == 100
+    assert enriched.evidence["attempts"][0]["endedAtMs"] == 1000
+    assert enriched.evidence["histories"][0]["status"] == "SUCCEEDED"
+    assert enriched.evidence["observationEndedAtMs"] == 20000
+    assert all(value == 20000 for value in enriched.evidence["collection"]["watermarks"].values())
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None

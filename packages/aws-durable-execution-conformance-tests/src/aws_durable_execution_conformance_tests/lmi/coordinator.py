@@ -21,7 +21,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    HISTORY_STATUSES,
+    EvidenceValidator,
+    same_json,
+    validate_retirement_evidence,
+)
 
 
 @dataclass(frozen=True)
@@ -529,6 +534,75 @@ def _ownership_errors(
     return errors
 
 
+def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
+    if path == ("histories", "status"):
+        return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
+    increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
+    increasing |= path == ("attempts", "endedAtMs")
+    decreasing = path == ("attempts", "startedAtMs")
+    if not (increasing or decreasing):
+        return False
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in (previous, current)):
+        return False
+    return current >= previous if increasing else current <= previous
+
+
+def _retain_observations(
+    original: Mapping[str, Any], captured: Mapping[str, Any], path: tuple[str, ...] = ()
+) -> tuple[dict[str, Any], bool]:
+    """Keep every prior fact while adding a failed collector's new observations.
+
+    Native intervals, observation watermarks and unfinished service histories
+    may advance. Other conflicting facts retain their original values. Lists
+    preserve known records, including multiplicity, so collection cannot erase
+    owned work. The raw snapshots are audited separately during retirement.
+    """
+    retained = copy.deepcopy(dict(captured))
+    changed = False
+    for key, previous in original.items():
+        if key not in retained:
+            retained[key] = copy.deepcopy(previous)
+            changed = True
+        elif isinstance(previous, Mapping) and isinstance(retained[key], Mapping):
+            retained[key], nested_changed = _retain_observations(previous, retained[key], (*path, key))
+            changed |= nested_changed
+        elif isinstance(previous, list) and isinstance(retained[key], list):
+            remaining = list(range(len(retained[key])))
+            identity = {("attempts",): "requestId", ("histories",): "executionArn"}.get((*path, key))
+            for record in previous:
+                match = next(
+                    (
+                        index
+                        for index in remaining
+                        if same_json(record, retained[key][index])
+                        or (
+                            identity is not None
+                            and isinstance(record, Mapping)
+                            and isinstance(record.get(identity), str)
+                            and isinstance(retained[key][index], Mapping)
+                            and record[identity] == retained[key][index].get(identity)
+                        )
+                    ),
+                    None,
+                )
+                if match is None:
+                    retained[key].append(copy.deepcopy(record))
+                    changed = True
+                else:
+                    remaining.remove(match)
+                    if identity is not None and isinstance(record, Mapping):
+                        retained[key][match], nested_changed = _retain_observations(
+                            record, retained[key][match], (*path, key)
+                        )
+                        changed |= nested_changed
+        elif not same_json(previous, retained[key]) and not _observation_advanced(
+            previous, retained[key], (*path, key)
+        ):
+            retained[key] = copy.deepcopy(previous)
+            changed = True
+    return retained, changed
+
+
 def _retirement_ownership_errors(
     context: ScenarioContext, original: Mapping[str, Any], final: Mapping[str, Any]
 ) -> list[str]:
@@ -573,6 +647,7 @@ def _retirement_ownership_errors(
     for name, identity_fields in (
         ("resourcesCreated", ("kind", "id", "ownerCaseId")),
         ("faultsCreated", ("id", "ownerCaseId")),
+        ("histories", ("executionArn", "ownerCaseId")),
     ):
         before, after = original.get(name, []), final.get(name, [])
         if not isinstance(before, list) or not isinstance(after, list):
@@ -762,6 +837,7 @@ async def run_scenarios(
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
         evidence: dict[str, Any] = {}
+        observation_baselines: list[dict[str, Any]] = []
         retirement_evidence: dict[str, Any] = {}
         collected_normally = False
         errors: list[str] = []
@@ -838,13 +914,26 @@ async def run_scenarios(
 
             await _bounded(establish(), "placement", limits.placement, context, residual)
             await _bounded(adapter.execute(context), "execution", limits.execution, context, residual)
+            if not isinstance(context.evidence, Mapping):
+                raise ValueError("Context observations must be an evidence object")
+            evidence = copy.deepcopy(dict(context.evidence))
+            if evidence:
+                observation_baselines.append(copy.deepcopy(evidence))
             collected = await _bounded(adapter.collect(context), "collection", limits.collection, context, residual)
             if not isinstance(collected, Mapping):
                 raise ValueError("Adapter collection must return an evidence object")
-            evidence = copy.deepcopy(dict(collected))
+            observation_baselines.append(copy.deepcopy(dict(collected)))
+            if not isinstance(context.evidence, Mapping):
+                raise ValueError("Context observations must be an evidence object")
+            if context.evidence:
+                observation_baselines.append(copy.deepcopy(dict(context.evidence)))
+            captured, changed = _retain_observations(context.evidence, collected)
+            evidence, prior_changed = _retain_observations(evidence, captured)
             context.evidence = copy.deepcopy(evidence)
             collected_normally = True
             ownership_errors = _ownership_errors(context, evidence)
+            if changed or prior_changed:
+                ownership_errors.append("Collection omitted or changed retained observations")
             errors.extend(ownership_errors)
             errors.extend(validator(evidence, phase="observations"))
             if errors:
@@ -863,6 +952,18 @@ async def run_scenarios(
             if lease is not None:
                 retired = False
                 cleanup_errors: list[str] = []
+                if not collected_normally:
+                    # Freeze context-held work before even a read-only collector
+                    # can mutate it, fail, or be cancelled.
+                    try:
+                        if not isinstance(context.evidence, Mapping):
+                            raise ValueError("Context observations must be an evidence object")
+                        if context.evidence:
+                            observation_baselines.append(copy.deepcopy(dict(context.evidence)))
+                        evidence, _ = _retain_observations(evidence, context.evidence)
+                    except Exception as exc:
+                        errors.append(f"Context observation retention: {type(exc).__name__}: {exc}")
+                        cleanup_errors.append("Context did not retain trustworthy observations")
                 partial = getattr(adapter, "collect_partial", None)
                 if not collected_normally and context.attempts and not cancelled and not residual and callable(partial):
                     try:
@@ -871,21 +972,28 @@ async def run_scenarios(
                         )
                         if not isinstance(captured, Mapping):
                             raise ValueError("Partial collection must return an evidence object")
-                        evidence = copy.deepcopy(dict(captured))
-                        context.evidence = copy.deepcopy(evidence)
-                        errors.extend(_ownership_errors(context, evidence))
-                        errors.extend(validator(evidence, phase="observations"))
+                        observation_baselines.append(copy.deepcopy(dict(captured)))
+                        evidence, changed = _retain_observations(evidence, captured)
+                        if changed:
+                            errors.append("Partial collection omitted or changed retained observations")
                     except (Exception, asyncio.CancelledError) as exc:
                         errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Partial collection did not retain trustworthy observations")
-                if not evidence:
-                    # Adapters may retain observations directly on the context
-                    # without offering collect_partial. Freeze these before any
-                    # cleanup call can mutate them or affect the retirement audit.
+                    finally:
+                        # A collector can retain additional work directly on the
+                        # context before returning a different snapshot or raising.
+                        try:
+                            if not isinstance(context.evidence, Mapping):
+                                raise ValueError("Context observations must be an evidence object")
+                            if context.evidence:
+                                observation_baselines.append(copy.deepcopy(dict(context.evidence)))
+                            evidence, _ = _retain_observations(evidence, context.evidence)
+                        except Exception as exc:
+                            errors.append(f"Partial context retention: {type(exc).__name__}: {exc}")
+                            cleanup_errors.append("Context did not retain trustworthy observations")
+                if not collected_normally:
+                    context.evidence = copy.deepcopy(evidence)
                     try:
-                        if not isinstance(context.evidence, Mapping):
-                            raise ValueError("Context observations must be an evidence object")
-                        evidence = copy.deepcopy(dict(context.evidence))
                         if evidence:
                             errors.extend(_ownership_errors(context, evidence))
                             errors.extend(validator(evidence, phase="observations"))
@@ -911,20 +1019,35 @@ async def run_scenarios(
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 if evidence and "retirement" in context.evidence:
                     evidence["retirement"] = copy.deepcopy(context.evidence["retirement"])
-                launched_work = (
+                owned_work = (
                     context.attempts
                     or context.retirement_evidence
-                    or any(evidence.get(name) for name in ("attempts", "resourcesCreated", "sdkRequests", "events"))
+                    or any(
+                        evidence.get(name)
+                        for name in (
+                            "attempts",
+                            "resourcesCreated",
+                            "faultsCreated",
+                            "histories",
+                            "sdkRequests",
+                            "events",
+                        )
+                    )
                 )
-                if launched_work and (status != "PASSED" or context.retirement_evidence):
+                if owned_work and (status != "PASSED" or context.retirement_evidence):
                     try:
                         if not isinstance(context.retirement_evidence, Mapping):
                             raise ValueError("Independent retirement snapshot must be an object")
                         retirement_evidence = copy.deepcopy(dict(context.retirement_evidence))
                         if not retirement_evidence:
-                            cleanup_errors.append("Launched work has no independent retirement evidence")
+                            work = "Launched work" if context.attempts else "Owned work"
+                            cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
-                            audit = _retirement_ownership_errors(context, evidence, retirement_evidence)
+                            audit = [
+                                error
+                                for baseline in [*observation_baselines, evidence]
+                                for error in _retirement_ownership_errors(context, baseline, retirement_evidence)
+                            ]
                             audit.extend(validate_retirement_evidence(retirement_evidence))
                             if audit:
                                 errors.extend(error for error in audit if error not in errors)
