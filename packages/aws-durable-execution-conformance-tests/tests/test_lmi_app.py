@@ -236,7 +236,7 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
 
 
 @pytest.mark.parametrize("reason", ["", "handler unavailable"])
-def test_cli_reports_not_implemented_with_optional_reason(tmp_path, reason):
+def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reason):
     plan = manifest()
     for case in plan["scenarios"]:
         case["not_implemented"] = reason
@@ -247,6 +247,10 @@ def test_cli_reports_not_implemented_with_optional_reason(tmp_path, reason):
     with pytest.raises(SystemExit) as exc:
         run(["--manifest", str(path), "--output", str(output)])
     assert exc.value.code == 1
+    console = capsys.readouterr().out
+    assert "Not implemented (declared SDK gap):" in console
+    assert "non-blocking" not in console
+    assert "Exit code: 1 (fail-on: strict)" in console
 
     results = json.loads((output / "evidence.json").read_text())
     assert len(results) == len(plan["scenarios"])
