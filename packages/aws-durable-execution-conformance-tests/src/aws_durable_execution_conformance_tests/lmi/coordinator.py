@@ -1324,19 +1324,20 @@ def _cleanup_behavior_errors(
         if requirement == "lmi-lifecycle-4":
             limits.append(boundary("recovery", "worker_recovered"))
         known_limits = [time for time in limits if time is not None]
-        previous_faults = records(original.get("faultsCreated"))
-        for fault in records(snapshot.get("faultsCreated")):
-            released = timestamp(fault.get("releasedAtMs"))
-            known_release = any(
-                prior.get("id") == fault.get("id")
-                and "releasedAtMs" in prior
-                and same_json(prior["releasedAtMs"], fault.get("releasedAtMs"))
-                for prior in previous_faults
-            )
-            if not known_release and released is not None and known_limits and released <= max(known_limits):
-                findings.append(
-                    "ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery"
-                )
+        releases: list[float] = []
+        # A later release acknowledgment cannot erase an earlier release from
+        # either observation records or a provisional/final retirement record.
+        for source in (original, *known_snapshots, snapshot):
+            faults = records(source.get("faultsCreated"))
+            retirement = source.get("retirement")
+            if isinstance(retirement, Mapping):
+                faults.extend(records(retirement.get("faults")))
+            for fault in faults:
+                released = timestamp(fault.get("releasedAtMs"))
+                if released is not None:
+                    releases.append(released)
+        if releases and known_limits and min(releases) <= max(known_limits):
+            findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
     if requirement == "lmi-lifecycle-6" and (
         changed_time("victim", "endedAtMs") or changed_time("warm", "startedAtMs")
     ):
@@ -1991,6 +1992,7 @@ async def run_scenarios(
                                 "events",
                                 "sdkRequests",
                                 "faultsCreated",
+                                "retirement",
                                 "replay",
                             )
                             if key in evidence

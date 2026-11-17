@@ -317,6 +317,7 @@ def _run_standard_cleanup_discovery(
     path: str,
     originally_failed: bool = False,
     quiescent: bool = True,
+    observe_retirement: bool = False,
 ) -> ScenarioResult:
     deployment = value["profile"]
     profile = Profile(
@@ -363,7 +364,8 @@ def _run_standard_cleanup_discovery(
 
         async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
             observed = deepcopy(value)
-            observed.pop("retirement")
+            if not observe_retirement:
+                observed.pop("retirement")
             assert bool(validate_evidence(observed, phase="observations")) is originally_failed
             return observed
 
@@ -378,6 +380,8 @@ def _run_standard_cleanup_discovery(
             if phase == "snapshot":
                 mutate(final)
             final["retirement"] = deepcopy(value["retirement"])
+            if phase == "retirement":
+                mutate(final)
             _resequence(final)
             if path == "independent":
                 context.retirement_evidence = final
@@ -680,6 +684,79 @@ def test_cleanup_discovered_admission_violations_fail_behavior_but_allow_audited
     assert result.evidence["sdkRequests"] == original_requests
     if rejected:
         assert any("admission" in error.lower() for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize(
+    ("phase", "path"), [("release", "normal"), ("retire", "normal"), ("retirement", "independent")]
+)
+@pytest.mark.parametrize("mode", ["normal", "emergency"])
+@pytest.mark.parametrize(
+    ("factory", "released", "failed"),
+    [
+        ("deadline_evidence", 34, True),
+        ("deadline_evidence", 35, True),
+        ("deadline_evidence", 36, False),
+        ("recovery_evidence", 44, True),
+        ("recovery_evidence", 45, True),
+        ("recovery_evidence", 46, False),
+    ],
+)
+def test_retained_retirement_fault_releases_refute_measurement_even_after_overwrite(
+    phase: str, path: str, mode: str, factory: str, released: int, failed: bool
+) -> None:
+    value = _standard_retirement_snapshot(factory, "python")
+    original_faults = deepcopy(value["faultsCreated"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        fault = value["faultsCreated"][0]
+        snapshot.setdefault("retirement", {})["faults"] = [
+            {"id": fault["id"], "ownerCaseId": fault["ownerCaseId"], "releasedAtMs": released, "mode": mode}
+        ]
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if failed else "PASSED"), result.errors
+    assert result.evidence["faultsCreated"] == original_faults
+    if failed:
+        assert any("fault release" in error for error in result.errors), result.errors
+    if phase == "retirement":
+        assert result.retirement_evidence["retirement"]["faults"][0]["releasedAtMs"] == released
+    else:
+        assert result.evidence["retirement"]["faults"][0]["releasedAtMs"] == 210
+        assert any(
+            fault.get("releasedAtMs") == released
+            for snapshot in result.cleanup_evidence[phase]
+            for fault in snapshot.get("retirement", {}).get("faults", [])
+        )
+
+
+def test_early_retirement_release_cannot_be_erased_from_original_observations() -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    value["retirement"]["faults"][0]["releasedAtMs"] = 34
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["retirement"]["faults"][0]["releasedAtMs"] = 210
+        value["retirement"]["faults"][0]["releasedAtMs"] = 210
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="normal", observe_retirement=True)
+    assert result.status == "FAILED", result.errors
+    assert any("fault release" in error for error in result.errors)
+
+
+def test_retirement_release_discovery_preserves_an_existing_sdk_failure() -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    value["sdkRequests"][0]["atMs"] = 32
+    original_requests = deepcopy(value["sdkRequests"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["retirement"]["faults"][0]["releasedAtMs"] = 34
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="retirement", path="independent", originally_failed=True
+    )
+    assert result.status == "FAILED"
+    assert any("admission closed" in error for error in result.errors)
+    assert any("fault release" in error for error in result.errors)
+    assert result.evidence["sdkRequests"] == original_requests
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])
