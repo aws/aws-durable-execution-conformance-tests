@@ -117,9 +117,11 @@ class _Waiter:
 class _Resource:
     capacity: int
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    recovery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     queue: deque[_Waiter] = field(default_factory=deque)
     owners: dict[str, _Waiter] = field(default_factory=dict)
     quarantine_reason: str | None = None
+    quarantine_version: int = 0
 
 
 @dataclass
@@ -201,6 +203,7 @@ class ResourceScheduler:
         resource = self._resources[resource_id]
         async with resource.condition:
             resource.quarantine_reason = reason
+            resource.quarantine_version += 1
             resource.condition.notify_all()
 
     async def acquire(
@@ -268,6 +271,7 @@ class ResourceScheduler:
         async with resource.condition:
             if not quiescent:
                 resource.quarantine_reason = f"Unretired owner {owner}"
+                resource.quarantine_version += 1
             released = resource.owners.pop(owner)
             if released.budget is not None:
                 self._active[released.budget] -= 1
@@ -291,18 +295,25 @@ class ResourceScheduler:
 
         No active owner is allowed. The verification must retire residual AWS
         work and establish the deployed artifact before returning literal True.
+        Verification leaves admission quarantined without holding its condition,
+        so external I/O cannot block retirement or admission on other targets.
         """
         resource = self._resources[resource_id]
-        async with resource.condition:
-            if resource.owners:
-                raise QuarantinedError("Cannot recover a resource while an owner is active")
-            if resource.quarantine_reason is None:
-                return
-            async with asyncio.timeout(timeout):
+        async with asyncio.timeout(timeout):
+            async with resource.recovery_lock:
+                async with resource.condition:
+                    if resource.owners:
+                        raise QuarantinedError("Cannot recover a resource while an owner is active")
+                    if resource.quarantine_reason is None:
+                        return
+                    version = resource.quarantine_version
                 if await verify() is not True:
                     raise QuarantinedError("Recovery could not prove quiescence")
-            resource.quarantine_reason = None
-            resource.condition.notify_all()
+                async with resource.condition:
+                    if resource.quarantine_version != version:
+                        raise QuarantinedError("Quarantine changed during recovery; verification must be repeated")
+                    resource.quarantine_reason = None
+                    resource.condition.notify_all()
 
 
 @dataclass
