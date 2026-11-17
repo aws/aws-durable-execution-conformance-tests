@@ -582,6 +582,196 @@ def test_cleanup_retry_unbound_native_reference_requires_reconciliation() -> Non
     assert any(error.startswith("INCOMPLETE:") and "native request" in error for error in result.errors), result.errors
 
 
+@pytest.mark.parametrize("phase", ["release", "retire", "snapshot"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("view", ["before", "after"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "result",
+        "number-kind",
+        "error",
+        "id",
+        "type",
+        "name",
+        "parentId",
+        "status",
+        "duplicate",
+        "metadata",
+        "partial",
+        "subset",
+    ],
+)
+def test_cleanup_checkpoint_views_preserve_completed_facts(phase: str, path: str, view: str, change: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    frozen = deepcopy(value)
+    rejected = change not in {"metadata", "partial", "subset"}
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        operations = snapshot["replay"][view]
+        operation = next(item for item in operations if item["id"] == ("failed" if change == "error" else "done"))
+        if change in {"result", "error"}:
+            operation[change] = {"rewritten": [2, 1]}
+        elif change == "number-kind":
+            operation["result"] = {"value": True}
+        elif change == "id":
+            operation["id"] = "renamed-id"
+        elif change == "type":
+            operation["type"] = "CONTEXT"
+        elif change == "name":
+            operation["name"] = "renamed-operation"
+        elif change == "parentId":
+            operation["parentId"] = "other-parent"
+        elif change == "status":
+            operation["status"] = "PENDING"
+        elif change == "duplicate":
+            operations.append(deepcopy(operation))
+        elif change == "metadata":
+            operation["endedAtMs"] = 30
+        elif change == "partial":
+            snapshot["replay"][view] = [{"id": "failed", "error": deepcopy(value["replay"]["before"][1]["error"])}]
+        else:
+            snapshot["replay"][view] = [deepcopy(value["replay"]["before"][1])]
+
+    probe = deepcopy(value)
+    mutate(probe)
+    if rejected:
+        assert validate_evidence(probe)
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["replay"] == frozen["replay"]
+    assert result.evidence["histories"] == frozen["histories"]
+
+
+@pytest.mark.parametrize("view", ["before", "after"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_cleanup_checkpoint_contradiction_survives_restoration(view: str, path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            snapshot["replay"][view][0]["result"] = "rewritten"
+        else:
+            snapshot["replay"][view] = deepcopy(value["replay"][view])
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "FAILED", result.errors
+    assert result.evidence["replay"] == value["replay"]
+    assert result.evidence["histories"] == value["histories"]
+
+
+@pytest.mark.parametrize("mode", ["retry", "later-code", "conflicting-views"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_new_cleanup_checkpoint_claims_must_agree_with_known_replay_constraints(mode: str, path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    if mode == "later-code":
+        operation = {
+            "id": "additional",
+            "name": "additional",
+            "type": "STEP",
+            "parentId": None,
+            "status": "SUCCEEDED",
+            "result": "before",
+        }
+        value["replay"]["after"].append(deepcopy(operation))
+        next(item for item in value["histories"] if item["executionArn"] == "arn:execution:victim")[
+            "operations"
+        ].append(deepcopy(operation))
+        value["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": "additional"})
+        value["replay"]["sideEffects"].append({"operationId": "additional", "count": 1, "expectedCount": 1})
+    assert validate_evidence(value) == []
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        if mode == "retry":
+            operation = next(item for item in snapshot["replay"]["after"] if item["id"] == "retry")
+            snapshot["replay"]["before"].append(deepcopy(operation))
+        else:
+            operation = {
+                "id": "additional",
+                "name": "additional",
+                "type": "STEP",
+                "parentId": None,
+                "status": "SUCCEEDED",
+                "result": "before",
+            }
+            snapshot["replay"]["before"].append(operation)
+            if mode == "conflicting-views":
+                snapshot["replay"]["after"].append({**operation, "result": "after"})
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert validate_evidence(probe)
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path=path)
+    assert result.status == "FAILED", result.errors
+    assert result.evidence["replay"] == value["replay"]
+    assert result.evidence["histories"] == value["histories"]
+
+
+@pytest.mark.parametrize("initial", ["STARTED", "PENDING", "READY"])
+@pytest.mark.parametrize("later", ["READY", "SUCCEEDED"])
+def test_cleanup_after_checkpoint_can_complete_without_rewriting_frozen_state(initial: str, later: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    operation = {
+        "id": "incomplete",
+        "name": "incomplete",
+        "type": "STEP",
+        "parentId": None,
+        "status": initial,
+        "result": {"poll": 1},
+    }
+    value["replay"]["after"].append(deepcopy(operation))
+    history = next(item for item in value["histories"] if item["executionArn"] == "arn:execution:victim")
+    history["operations"].append(deepcopy(operation))
+    assert validate_evidence(value) == []
+    frozen = deepcopy(value)
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        for current in snapshot["replay"]["after"]:
+            if current["id"] == "incomplete":
+                current.update(status=later, result={"poll": 2})
+        for current in next(item for item in snapshot["histories"] if item["executionArn"] == "arn:execution:victim")[
+            "operations"
+        ]:
+            if current["id"] == "incomplete":
+                current.update(status=later, result={"poll": 2})
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path="independent")
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["replay"] == frozen["replay"]
+    assert result.evidence["histories"] == frozen["histories"]
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_cleanup_new_after_checkpoint_can_gain_service_correlation_later(path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    operation = {
+        "id": "discovered",
+        "name": "discovered",
+        "type": "STEP",
+        "parentId": None,
+        "status": "SUCCEEDED",
+        "result": "stored",
+    }
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            snapshot["replay"]["after"].append(deepcopy(operation))
+        else:
+            history = next(item for item in snapshot["histories"] if item["executionArn"] == "arn:execution:victim")
+            history["operations"].append(deepcopy(operation))
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["replay"] == value["replay"]
+    assert result.evidence["histories"] == value["histories"]
+
+
 @pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize("phase", ["release", "retire", "snapshot", "both"])
 @pytest.mark.parametrize("pending_at", [39, 40, 40.5])
