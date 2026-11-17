@@ -905,6 +905,21 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
     try:
         validator.string(requirement, "requirementId")
         validator.common(validate_behavior=False)
+        aliases = {"observed_task_start": "task_start", "observed_task_exit": "task_exit"}
+        physical_events: list[Mapping[str, Any]] = []
+        for event in validator.events:
+            kind = event.get("kind")
+            if isinstance(kind, str) and (kind == "observed_task" or kind.startswith("observed_task_")):
+                if kind not in aliases:
+                    validator.error("retirement task alias has an unsupported kind")
+                elif event.get("sourceKind") != aliases[kind]:
+                    validator.error("retirement task alias has missing or mismatched sourceKind")
+                else:
+                    event = {**event, "kind": aliases[kind]}
+            physical_events.append(event)
+        # Restore the full physical stream locally; retain the caller's singular
+        # scenario task boundary and its raw source facts unchanged.
+        validator.events = physical_events
         validator.retirement()
         if validator.errors:
             return validator.errors

@@ -255,8 +255,12 @@ calls are permitted in this audit, with all their start and exit facts retained.
 
 Behavior assertions use one scenario-owned `task_exit` for the selected request.
 Other task facts may be retained as `observed_task_start`/`observed_task_exit`
-with their original `sourceKind`; the adapter must restore every actual
-`task_start`/`task_exit` in the separate physical snapshot before auditing it.
+with their original `sourceKind`. The physical audit locally restores these
+known aliases to `task_start`/`task_exit`, requiring a matching `sourceKind` for
+each. It rejects missing or mismatched source kinds and unknown names in the
+reserved `observed_task_*` alias family. Every restored child start and exit
+receives the same completion checks as a native task event. The audit leaves the
+caller's behavior evidence unchanged; already restored snapshots remain valid.
 The root exit alone does not prove child-task or I/O completion. The wire schema
 covers the shared envelope; these additional physical completion rules apply to
 the independent audit rather than every behavior observation document.

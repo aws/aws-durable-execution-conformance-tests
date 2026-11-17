@@ -676,7 +676,7 @@
           "minimum": 0
         }
       },
-      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Behavior observations do not require the complete physical stream. See evidence-schema.md."
+      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Behavior observations do not require the complete physical stream. See evidence-schema.md. Physical retirement locally restores observed_task_start/observed_task_exit only with matching sourceKind, rejects malformed or unknown observed_task aliases, and audits their complete work pairs without changing behavior evidence."
     },
     "request": {
       "type": "object",
