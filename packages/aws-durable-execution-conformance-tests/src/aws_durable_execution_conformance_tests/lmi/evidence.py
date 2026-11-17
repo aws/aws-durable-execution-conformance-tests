@@ -411,6 +411,7 @@ class _Evidence:
         if not self.require_roles("victim", "peer", "recovery"):
             return
         victim, recovery = self.selected["victim"], self.selected["recovery"]
+        peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         timeout = self.event(victim, "platform_timeout").get("atMs", 0)
         recovered = self.event(recovery, "worker_recovered").get("atMs", 0)
         if recovery.get("environmentId") != victim.get("environmentId"):
@@ -428,7 +429,7 @@ class _Evidence:
             self.error("profile.recoveryPolicy must explicitly select reuse-worker or replace-worker")
         if recovery.get("outcome") != "SUCCEEDED":
             self.error("recovered capacity did not complete the selected recovery request", "ASSERTION")
-        if recovery.get("executionArn") in (victim.get("executionArn"), self.selected["peer"].get("executionArn")):
+        if any(recovery.get("executionArn") == attempt.get("executionArn") for attempt in (victim, *peers)):
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
@@ -439,13 +440,14 @@ class _Evidence:
         )
         if not timeout <= recovered <= timeout + recovery_budget:
             self.error("recovery exceeded the declared recoveryMs budget", "ASSERTION")
-        peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         if len(peers) != self.profile.get("nativeConcurrency", 0) - 1:
             self.error("recovery must occupy every other native capacity slot", "PLACEMENT")
         if self.value.get("runtime") == "python":
             processes = [victim.get("processId"), *(peer.get("processId") for peer in peers)]
             if len(set(processes)) != len(processes):
                 self.error("recovery peers must occupy distinct Python processes", "PLACEMENT")
+            if any(recovery.get("processId") == peer.get("processId") for peer in peers):
+                self.error("recovery cannot use an occupied Python peer process", "PLACEMENT")
         for peer in peers:
             if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
                 "startedAtMs", 0
