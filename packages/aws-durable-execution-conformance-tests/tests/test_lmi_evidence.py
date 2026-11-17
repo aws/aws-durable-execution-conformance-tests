@@ -942,3 +942,66 @@ def test_supplied_execution_start_is_valid_and_precedes_first_admission(started:
         assert errors == [], errors
     else:
         assert any(reason in error for error in errors), errors
+
+
+@pytest.mark.parametrize("peer_process", ["process-1", "process-2", "process-3"])
+def test_python_recovery_occupies_distinct_processes_for_every_peer(peer_process: str) -> None:
+    value = recovery_evidence("python")
+    value["profile"]["nativeConcurrency"] = 3
+    peer = attempt("peer2", start=12, end=100, process=peer_process)
+    value["attempts"].append(peer)
+    value["selectedRequests"]["peer2"] = peer["requestId"]
+    value["events"].extend(
+        [event(peer, "peer_progress", 25), event(peer, "peer_progress", 44), event(peer, "wrapper_return", 100)]
+    )
+    refresh_histories(value)
+    record_owned_resources(value)
+    errors = validate_evidence(value)
+    if peer_process == "process-3":
+        assert errors == [], errors
+    else:
+        assert any("distinct Python processes" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("records", ["events", "sdkRequests"])
+@pytest.mark.parametrize(("observed_at", "rejected"), [(49, True), (50, False), (60, False), (80, False), (81, True)])
+def test_observed_during_request_contains_the_recorded_activity(records: str, observed_at: int, rejected: bool) -> None:
+    value = warm_evidence()
+    victim, warm = value["attempts"][0], value["attempts"][-1]
+    value[records].append(
+        event(
+            victim,
+            "background_observation",
+            observed_at,
+            observedDuringRequestId=warm["requestId"],
+            method="CheckpointDurableExecution",
+            outcome="REJECTED",
+        )
+    )
+    errors = validate_evidence(value)
+    if rejected:
+        assert any("observedDuringRequestId interval" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("field", ["startedAtMs", "endedAtMs"])
+@pytest.mark.parametrize("timestamp", [False, "10", -1, float("inf"), float("nan"), 0, 25])
+def test_supplied_operation_timestamps_are_finite_nonnegative_numbers(field: str, timestamp: Any) -> None:
+    value = evidence()
+    value["histories"][0]["operations"].append(
+        {
+            "id": "step-1",
+            "name": "completed-step",
+            "type": "STEP",
+            "parentId": None,
+            "status": "SUCCEEDED",
+            "result": None,
+            field: timestamp,
+        }
+    )
+    errors = validate_evidence(value)
+    if type(timestamp) is int and timestamp >= 0:
+        assert errors == [], errors
+    else:
+        assert any(f"history operation.{field}" in error for error in errors), errors

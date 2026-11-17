@@ -207,8 +207,15 @@ class _Evidence:
         if time > end or time < self.attempts[request_id].get("startedAtMs", 0):
             self.error(f"{kind} lies outside its observation window")
         observed_during = record.get("observedDuringRequestId")
-        if observed_during is not None and observed_during not in self.attempts:
-            self.error(f"{kind}.observedDuringRequestId references an unrecorded request")
+        if observed_during is not None:
+            if not isinstance(observed_during, str) or observed_during not in self.attempts:
+                self.error(f"{kind}.observedDuringRequestId references an unrecorded request")
+            else:
+                observed_attempt = self.attempts[observed_during]
+                start = self.number(observed_attempt.get("startedAtMs"), "observed attempt.startedAtMs")
+                finish = self.number(observed_attempt.get("endedAtMs"), "observed attempt.endedAtMs")
+                if not start <= time <= finish:
+                    self.error(f"{kind} lies outside its observedDuringRequestId interval", "ASSERTION")
 
     def histories(self, *, check_expectations: bool = True) -> None:
         expected = self.mapping(self.value.get("expectedHistories"), "expectedHistories") if check_expectations else {}
@@ -248,6 +255,9 @@ class _Evidence:
                     self.error("history operation.parentId is required (null for the root)")
                 elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
                     self.error("history operation.parentId must be a string or null")
+                for key in ("startedAtMs", "endedAtMs"):
+                    if key in operation:
+                        self.number(operation[key], f"history operation.{key}")
                 operation_id = operation.get("id")
                 if operation_id in ids:
                     self.error("duplicate operation identity in service history")
@@ -429,6 +439,10 @@ class _Evidence:
         peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         if len(peers) != self.profile.get("nativeConcurrency", 0) - 1:
             self.error("recovery must occupy every other native capacity slot", "PLACEMENT")
+        if self.value.get("runtime") == "python":
+            processes = [victim.get("processId"), *(peer.get("processId") for peer in peers)]
+            if len(set(processes)) != len(processes):
+                self.error("recovery peers must occupy distinct Python processes", "PLACEMENT")
         for peer in peers:
             if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
                 "startedAtMs", 0
