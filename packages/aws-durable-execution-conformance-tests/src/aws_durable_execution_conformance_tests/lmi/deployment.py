@@ -320,6 +320,10 @@ class DeploymentManager:
         ):
             raise ProvisioningError("Evidence bucket must be private before uploading the tested artifact")
         if stack is not None:
+            from .quarantine import require_unfenced
+
+            for output in stack.get("Outputs", []):
+                require_unfenced(storage, manifest["bucket"], output["OutputValue"])
             self.wait_for_idle_functions(stack)
         manifest["owned"] = True
         save(self.artifacts / "manifest.json", manifest)

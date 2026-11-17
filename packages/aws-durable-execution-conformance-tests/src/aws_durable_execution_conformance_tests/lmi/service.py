@@ -14,6 +14,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
+
 from .errors import CollectionError
 
 
@@ -63,13 +65,16 @@ class DurableFunctionRunner:
         deadline = time.monotonic() + timeout
         while True:
             marker = None
+            history: list[dict[str, Any]] = []
             try:
                 while True:
                     request = {"DurableExecutionArn": execution_arn, "IncludeExecutionData": True}
                     if marker:
                         request["Marker"] = marker
                     page = self.lambda_client.get_durable_execution_history(**request)
-                    for event in page.get("Events", []):
+                    history.extend(page.get("Events", []))
+                    inherit_wait_for_callback_event_names(history)
+                    for event in history:
                         if event.get("EventType") == "CallbackStarted" and event.get("Name") == name:
                             callback = event.get("CallbackStartedDetails", {}).get("CallbackId")
                             if callback:

@@ -78,6 +78,7 @@ class SharedAdapter:
         self.driver_factory = driver_factory
         self.configuration_identity = configuration_identity
         self.cases: dict[str, _Case] = {}
+        self.prepared_clouds: dict[str, Cloud] = {}
 
     async def prepare(self, profile: Profile) -> None:
         def verify() -> None:
@@ -90,6 +91,10 @@ class SharedAdapter:
                 raise ProvisioningError("Shared configuration identity differs from the deployed fixture")
             cloud = self.cloud_factory(self.deployment, key, artifacts_dir=self.artifacts_dir / "configuration")
             cloud.verify()
+            from .quarantine import acquire_fence
+
+            acquire_fence(cloud.s3, self.deployment, profile.resource_id)
+            self.prepared_clouds[profile.resource_id] = cloud
 
         await asyncio.to_thread(verify)
 
@@ -226,6 +231,12 @@ class SharedAdapter:
         return await case.call(retire)
 
     async def finish(self, profile: Profile, *, quiescent: bool) -> None:
-        # The shared runner retains per-case retirement results. Cross-run
-        # serialization ends with the GitHub Actions cloud job.
-        return None
+        # Even a terminal execution can leave invocation-owned runtime work.
+        # Retain the pre-admission fence on failed or uncertain retirement.
+        cloud = self.prepared_clouds.get(profile.resource_id)
+        if cloud is None or not quiescent:
+            return
+        from .quarantine import release_fence
+
+        await asyncio.to_thread(release_fence, cloud.s3, self.deployment, profile.resource_id)
+        del self.prepared_clouds[profile.resource_id]

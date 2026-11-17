@@ -88,3 +88,20 @@ def test_permissions_fail_without_polling_again():
     with pytest.raises(ClientError):
         runner.wait_for_callback("execution", "completion")
     api.get_durable_execution_history.assert_called_once()
+
+
+@pytest.mark.parametrize("parent_first", [True, False])
+def test_unnamed_callback_inherits_its_context_name_across_pages(parent_first):
+    api = Mock()
+    parent = {"Id": "context", "EventType": "ContextStarted", "SubType": "WaitForCallback", "Name": "completion"}
+    child = {
+        "Id": "callback",
+        "ParentId": "context",
+        "EventType": "CallbackStarted",
+        "CallbackStartedDetails": {"CallbackId": "target"},
+    }
+    first, second = (parent, child) if parent_first else (child, parent)
+    api.get_durable_execution_history.side_effect = [{"Events": [first], "NextMarker": "page2"}, {"Events": [second]}]
+    runner = DurableFunctionRunner("function", region="us-west-2", lambda_client=api)
+    assert runner.wait_for_callback("execution", "completion", timeout=5) == "target"
+    assert api.get_durable_execution_history.call_count == 2

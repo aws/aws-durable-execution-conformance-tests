@@ -140,7 +140,7 @@ def apis(deploy, monkeypatch, tmp_path):
             "RestrictPublicBuckets": True,
         }
     }
-    clients["s3"].get_object.side_effect = AssertionError("Deployment must not read an S3 lock")
+    clients["s3"].get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
     return clients
 
 
@@ -162,8 +162,8 @@ def test_later_run_updates_fixed_functions_without_recreating_resources(deploy, 
     deploy.deploy_stack(second, b"second-code")
     cfn.create_stack.assert_called_once()
     assert cfn.update_stack.call_count == 2
-    apis["s3"].get_object.assert_not_called()
-    assert all(not call.kwargs["Key"].startswith("ownership/") for call in apis["s3"].put_object.call_args_list)
+    assert apis["s3"].get_object.call_count == 2
+    assert all(call.kwargs["Key"].startswith("quarantine/") for call in apis["s3"].get_object.call_args_list)
     templates = [json.loads(call.kwargs["TemplateBody"]) for call in cfn.update_stack.call_args_list]
     assert templates[0]["Outputs"] == templates[1]["Outputs"]
     assert templates[0]["Resources"].keys() == templates[1]["Resources"].keys()
@@ -424,3 +424,20 @@ def test_verify_rejects_environment_drift(deploy, manifest, drift):
     config["Environment"]["Variables"].update(drift)
     with pytest.raises(ProvisioningError):
         deploy.verify(config, scaling, manifest, "c1")
+
+
+def test_retained_fence_blocks_deployment_before_upload_or_function_update(deploy, manifest, apis, monkeypatch):
+    import io
+
+    retained = stack(manifest)
+    apis["cloudformation"].describe_stacks.return_value = {"Stacks": [retained]}
+    resource = retained["Outputs"][0]["OutputValue"]
+    apis["s3"].get_object.side_effect = None
+    apis["s3"].get_object.return_value = {
+        "Body": io.BytesIO(json.dumps({"resourceId": resource, "runId": "previous", "commit": "old"}).encode())
+    }
+    with pytest.raises(ProvisioningError, match="quarantined by run previous"):
+        deploy.deploy_stack(manifest, b"new-code")
+    apis["cloudformation"].update_stack.assert_not_called()
+    apis["s3"].put_object.assert_not_called()
+    apis["lambda"].get_paginator.assert_not_called()
