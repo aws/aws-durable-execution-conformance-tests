@@ -1854,3 +1854,91 @@ def test_partial_cleanup_cannot_hide_supplied_checkpoint_diagnostics(fragment: d
     partial = _Evidence({})
     partial.operation_shape(fragment, "cleanup.operation", completed=True, check_interval=True, partial=True)
     assert any(diagnostic in error for error in partial.errors), partial.errors
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "paired",
+        "mixed",
+        "root",
+        "unmatched-start",
+        "unmatched-exit",
+        "missing-source",
+        "wrong-start-source",
+        "wrong-exit-source",
+        "unexpected-source",
+        "unknown-alias",
+    ],
+)
+def test_physical_retirement_audits_preserved_task_aliases_without_mutating_evidence(case: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    owner = value["attempts"][1]
+    assert validate_retirement_evidence(value) == []
+    if case == "root":
+        for item in value["events"]:
+            if item["requestId"] == owner["requestId"] and item["kind"] in {"task_start", "task_exit"}:
+                item["sourceKind"] = item["kind"]
+                item["kind"] = "observed_" + item["kind"]
+    else:
+        start = event(owner, "observed_task_start", 23, taskId="child", sourceKind="task_start")
+        exit_event = event(owner, "observed_task_exit", 24, taskId="child", sourceKind="task_exit")
+        if case == "mixed":
+            start["kind"] = "task_start"
+        elif case == "missing-source":
+            del start["sourceKind"]
+        elif case == "wrong-start-source":
+            start["sourceKind"] = "task_exit"
+        elif case == "wrong-exit-source":
+            exit_event["sourceKind"] = "task_start"
+        elif case == "unexpected-source":
+            start["sourceKind"] = "io_start"
+        elif case == "unknown-alias":
+            start["kind"] = "observed_task_pause"
+        if case != "unmatched-exit":
+            value["events"].append(start)
+        if case != "unmatched-start":
+            value["events"].append(exit_event)
+    local = sorted(
+        (item for item in value["events"] if item["requestId"] == owner["requestId"]), key=lambda item: item["atMs"]
+    )
+    for sequence, item in enumerate(local):
+        item["sequence"] = sequence
+    original = deepcopy(value)
+    errors = validate_retirement_evidence(value)
+    if case in {"paired", "mixed", "root"}:
+        assert errors == []
+    elif case in {"unmatched-start", "unmatched-exit"}:
+        assert errors == ["INCOMPLETE: retirement lacks the unique task_start/task_exit completion pair"]
+    else:
+        assert any("retirement task alias" in error for error in errors), errors
+    assert value == original
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("source", ["receipt", "acknowledgment"])
+@pytest.mark.parametrize("after_boundary", [False, True])
+def test_fault_causality_each_observer_has_an_independent_scenario_boundary(
+    phase: Any, requirement: int, source: str, after_boundary: bool
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    boundary = 35 if requirement == 3 else 45
+    release = boundary + int(after_boundary)
+    # Keep the other observer safely late so its independent rule cannot mask
+    # deletion or inversion of the condition under test.
+    value["faultsCreated"][0]["releasedAtMs"] = release if source == "receipt" else 210
+    value["retirement"]["faults"][0]["releasedAtMs"] = release if source == "acknowledgment" else 210
+    errors = validate_evidence(value, phase=phase)
+    if after_boundary or (source == "acknowledgment" and phase == "observations"):
+        assert errors == []
+    else:
+        diagnostic = (
+            "fault release cannot retroactively establish cleanup or recovery"
+            if source == "acknowledgment"
+            else "fault release supplied the cleanup being asserted"
+            if requirement == 3
+            else "fault release cannot satisfy worker recovery"
+        )
+        assert errors == [f"ASSERTION: {diagnostic}"]
