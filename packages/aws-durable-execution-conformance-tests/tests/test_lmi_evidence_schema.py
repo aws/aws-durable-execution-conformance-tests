@@ -167,3 +167,56 @@ def test_schema_leaves_cross_record_semantics_to_the_executable_validator(schema
     value["replay"]["sideEffects"][0]["count"] = 2
     schema_validator.validate(value)
     assert any("side-effect count differs" in error for error in validate_evidence(value))
+
+
+def appended_replay_record(evidence_factories, kind):
+    value = evidence_factories["replay_evidence"]()
+    if kind == "side-effect":
+        record = {"operationId": "additional-operation", "count": 1, "expectedCount": 1}
+        value["replay"]["sideEffects"].append(record)
+        return value, record, "operationId"
+    record = {"attemptId": "retry-middle", "requestId": "request-resume", "outcome": "FAILED"}
+    value["replay"]["retry"]["attempts"].insert(1, record)
+    value["replay"]["operationExecutions"].append({**record, "operationId": "retry"})
+    retry_effect = next(item for item in value["replay"]["sideEffects"] if item["operationId"] == "retry")
+    retry_effect.update(count=3, expectedCount=3)
+    return value, record, "outcome"
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("kind", ["side-effect", "retry"])
+@pytest.mark.parametrize(
+    ("present", "invalid"),
+    [(False, None), (True, None), (True, False), (True, 1), (True, ""), (True, " "), (True, []), (True, {})],
+)
+def test_additional_replay_records_require_declared_string_fields(
+    schema_validator, evidence_factories, phase, kind, present, invalid
+):
+    value, record, field = appended_replay_record(evidence_factories, kind)
+    if present:
+        record[field] = invalid
+    else:
+        del record[field]
+
+    assert not schema_validator.is_valid(value)
+    assert validate_evidence(value, phase=phase)
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    ("kind", "valid"),
+    [
+        ("side-effect", "additional-operation"),
+        ("side-effect", " another-operation "),
+        ("retry", "FAILED"),
+        ("retry", "TIMED_OUT"),
+    ],
+)
+def test_additional_replay_records_preserve_nonempty_values_without_new_enums(
+    schema_validator, evidence_factories, phase, kind, valid
+):
+    value, record, field = appended_replay_record(evidence_factories, kind)
+    record[field] = valid
+
+    schema_validator.validate(value)
+    assert validate_evidence(value, phase=phase) == []

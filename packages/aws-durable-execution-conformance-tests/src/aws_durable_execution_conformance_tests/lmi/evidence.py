@@ -579,6 +579,7 @@ class _Evidence:
         ):
             self.error("retry must demonstrate a failed attempt followed by success", "ASSERTION")
         for retry_attempt in retry_attempts:
+            self.string(retry_attempt.get("outcome"), "retry.outcome")
             if retry_attempt.get("requestId") not in self.attempts:
                 self.error("retry references an unrecorded request")
             elif self.attempts[retry_attempt["requestId"]].get("executionArn") != victim.get("executionArn"):
@@ -598,7 +599,8 @@ class _Evidence:
         if retry_id in completed:
             self.error("retry must not repeat an already completed operation", "ASSERTION")
         counts = self.records(replay.get("sideEffects"), "replay.sideEffects", nonempty=True)
-        if not completed | {retry_id} <= {item.get("operationId") for item in counts}:
+        effect_ids = {self.string(item.get("operationId"), "replay.sideEffects.operationId") for item in counts}
+        if not completed | {retry_id} <= effect_ids:
             self.error("side-effect counts must cover stored successes, failures, and retries")
         for count in counts:
             actual = count.get("count")
