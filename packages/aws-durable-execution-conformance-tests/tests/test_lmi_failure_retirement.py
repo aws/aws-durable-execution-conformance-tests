@@ -1339,6 +1339,114 @@ def test_cleanup_identity_failure_does_not_block_other_profiles() -> None:
     assert scheduler.quarantine_reason(other.resource_id) is None
 
 
+class IndependentCleanupIdentityAdapter(CleanupIdentityAdapter):
+    async def retire(self, context: ScenarioContext) -> bool:
+        final = deepcopy(self.snapshots[context.scenario.case_id])
+        if context.scenario.case_id == "failed":
+            target = final
+            for key in self.path[:-1]:
+                target = target[key]
+            target[self.path[-1]] = deepcopy(self.value)
+            if self.mutate_context:
+                context.profile = replace(context.profile, recovery_policy=self.value)
+        context.retirement_evidence = final
+        context.evidence["retirement"] = deepcopy(self.snapshots[context.scenario.case_id]["retirement"])
+        return True
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("artifact", "sdk"), "sdk@other"),
+        (("profile", "configurationDigest"), "sha256:other"),
+        (("profile", "nativeConcurrency"), 2),
+        (("profile", "timeoutMs"), 501),
+        (("profile", "recoveryPolicy"), "replace-worker"),
+    ],
+)
+def test_independent_retirement_cannot_change_frozen_deployment_identity(path: tuple[str, ...], value: Any) -> None:
+    adapter = IndependentCleanupIdentityAdapter("independent", path, value)
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    scheduler = ResourceScheduler()
+    failed, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+        )
+    )
+    assert failed.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert any("Cleanup retirement snapshot" in error and ".".join(path) in error for error in failed.errors), (
+        failed.errors
+    )
+    assert failed.evidence["profile"]["timeoutMs"] == 500
+    assert failed.evidence["profile"]["recoveryPolicy"] == "reuse-worker"
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(profile.resource_id)
+
+
+def test_independent_retirement_policy_cannot_be_authorized_by_mutating_context() -> None:
+    class MissingObservedPolicyAdapter(IndependentCleanupIdentityAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["profile"].pop("recoveryPolicy")
+
+    adapter = MissingObservedPolicyAdapter(
+        "independent", ("profile", "recoveryPolicy"), "replace-worker", mutate_context=True
+    )
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    failed, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+        )
+    )
+    assert failed.status == following.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert "recoveryPolicy" not in failed.evidence["profile"]
+    assert any("Cleanup retirement snapshot: profile.recoveryPolicy" in error for error in failed.errors)
+    assert adapter.finished == [False]
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("artifact", "extra"), {"new": True}),
+        (("profile", "extra"), "new"),
+        (("profile", "recoveryPolicy"), "reuse-worker"),
+    ],
+)
+def test_independent_retirement_can_fill_unobserved_identity_metadata(path: tuple[str, ...], value: Any) -> None:
+    class MissingObservedPolicyAdapter(IndependentCleanupIdentityAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["profile"].pop("recoveryPolicy")
+
+    adapter = MissingObservedPolicyAdapter("independent", path, value)
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    scheduler = ResourceScheduler()
+    result, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+        )
+    )
+    assert result.status == following.status == "PASSED", result.errors
+    assert validate_retirement_evidence(result.retirement_evidence) == []
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(profile.resource_id) is None
+
+
 @pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
 @pytest.mark.parametrize("clear_later", [False, True])
 @pytest.mark.parametrize(

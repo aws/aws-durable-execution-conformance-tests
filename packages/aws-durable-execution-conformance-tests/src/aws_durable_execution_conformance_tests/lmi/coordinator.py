@@ -2050,6 +2050,7 @@ async def run_scenarios(
                             work = "Launched work" if context.attempts else "Owned work"
                             cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
+                            check_cleanup_identity(retirement_evidence, "retirement snapshot")
                             for finding in _cleanup_behavior_errors(
                                 frozen_behavior,
                                 retirement_evidence,
