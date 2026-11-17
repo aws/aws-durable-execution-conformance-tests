@@ -602,6 +602,92 @@ def test_completed_native_intervals_still_settle_after_original_activity(source:
         assert scheduler.quarantine_reason(PROFILE.resource_id) is None
 
 
+def _same_time_pair(value: dict[str, Any], start_kind: str, end_kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if start_kind in {"checkpoint_call", "poll_call"}:
+        for event in value["events"]:
+            if event["kind"] in {"io_start", "io_exit"}:
+                event["kind"] = start_kind if event["kind"] == "io_start" else end_kind
+                event["callId"] = "observed-call"
+    start = next(event for event in value["events"] if event["kind"] == start_kind)
+    end = next(event for event in value["events"] if event["kind"] == end_kind)
+    end["atMs"] = start["atMs"]
+    _resequence(value)
+    return start, end
+
+
+@pytest.mark.parametrize(
+    ("start_kind", "end_kind"),
+    [
+        ("task_start", "task_exit"),
+        ("io_start", "io_exit"),
+        ("checkpoint_call", "checkpoint_exit"),
+        ("poll_call", "poll_exit"),
+        ("wrapper_enter", "wrapper_return"),
+        ("wrapper_enter", "wrapper_raise"),
+    ],
+)
+def test_retirement_cannot_reorder_observed_equal_time_boundaries(start_kind: str, end_kind: str) -> None:
+    class ReorderedAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                _same_time_pair(self.snapshots[context.scenario.case_id], start_kind, end_kind)
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                start = next(event for event in observed["events"] if event["kind"] == start_kind)
+                end = next(event for event in observed["events"] if event["kind"] == end_kind)
+                start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
+            return observed
+
+    adapter = ReorderedAdapter()
+    (failed, following), scheduler = _run(adapter, retry=end_kind == "wrapper_raise")
+    assert ORIGINAL_FAILURE in failed.errors
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert any("semantic order" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("completion", ["renumbered", "added-event", "missing-sequences", "partial-sequences"])
+def test_retirement_preserves_relative_order_without_freezing_sequence_numbers(completion: str) -> None:
+    class CompletedOrderAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                _same_time_pair(self.snapshots[context.scenario.case_id], "io_start", "io_exit")
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                for event in observed["events"]:
+                    if completion == "missing-sequences" or (
+                        completion == "partial-sequences" and event["kind"] == "io_exit"
+                    ):
+                        event.pop("sequence")
+            return observed
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            if completion == "added-event":
+                end = next(event for event in final["events"] if event["kind"] == "io_exit")
+                final["events"].insert(final["events"].index(end), {**end, "kind": "late_activity"})
+                _resequence(final)
+            for event in final["events"]:
+                event["sequence"] = 10 + event["sequence"] * 3
+
+    adapter = CompletedOrderAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert ORIGINAL_FAILURE in failed.errors
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert following.status == "PASSED", following.errors
+    assert adapter.started == ["failed", "next"]
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
 class StaleSnapshotAdapter(FailureAdapter):
     """Observes late activity that its retirement snapshot does not cover."""
 

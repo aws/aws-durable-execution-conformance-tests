@@ -681,6 +681,7 @@ def _retirement_ownership_errors(
     # Completion facts and late activity are preserved as well as starts: a
     # snapshot that drops them would audit less than was already observed.
     preserved_kinds = start_kinds | {
+        "wrapper_enter",
         "task_exit",
         "io_exit",
         "checkpoint_exit",
@@ -699,6 +700,34 @@ def _retirement_ownership_errors(
 
     if preserved(before_events) - preserved(after_events):
         errors.append("Retirement omitted or changed previously observed work")
+
+    def sequenced(events: list[Any]) -> dict[Any, list[tuple[int, tuple[Any, ...]]]]:
+        by_request: dict[Any, list[tuple[int, tuple[Any, ...]]]] = {}
+        for event in events:
+            if event.get("kind") not in preserved_kinds or "sequence" not in event:
+                continue
+            sequence = event["sequence"]
+            if type(sequence) is not int or sequence < 0:
+                errors.append("Retirement cannot reconcile a malformed semantic sequence")
+                continue
+            by_request.setdefault(event.get("requestId"), []).append(
+                (sequence, tuple(event.get(key) for key in fields))
+            )
+        return by_request
+
+    # Sequence values can change when additional observations are collected.
+    # Preserve the known relative order, particularly at equal timestamps;
+    # partial events without sequence numbers do not yet establish that order.
+    original_order, final_order = sequenced(before_events), sequenced(after_events)
+    for request_id, records in original_order.items():
+        if len({sequence for sequence, _ in records}) != len(records):
+            errors.append("Retirement cannot reconcile duplicate original semantic sequences")
+            continue
+        remaining_events = iter(sorted(final_order.get(request_id, []), key=lambda item: item[0]))
+        for _, identity in sorted(records, key=lambda item: item[0]):
+            if not any(identity == candidate for _, candidate in remaining_events):
+                errors.append("Retirement changed the semantic order of previously observed work")
+                break
     before_requests, after_requests = original.get("sdkRequests", []), final.get("sdkRequests", [])
     if not isinstance(before_requests, list) or not isinstance(after_requests, list):
         raise ValueError("Retirement SDK request inventories must be lists")
