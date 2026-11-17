@@ -369,7 +369,8 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/fault"
-      }
+      },
+      "$comment": "Optional releasedAtMs records a fixture release receipt or retained release observation. Final semantic validation bounds it by retiredAtMs independently of the provider acknowledgment in retirement.faults; neither observer timestamp is guaranteed to precede the other."
     },
     "retirement": {
       "type": "object",
@@ -486,7 +487,8 @@
                 }
               }
             ]
-          }
+          },
+          "$comment": "releasedAtMs records provider release acknowledgment or retained release confirmation. Semantic validation bounds this timestamp and any faultsCreated release receipt by retiredAtMs without imposing an order between the independent observers."
         }
       }
     },

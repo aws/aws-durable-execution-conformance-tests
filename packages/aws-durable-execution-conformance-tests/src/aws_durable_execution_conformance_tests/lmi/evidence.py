@@ -788,11 +788,6 @@ class _Evidence:
                     if kind == "control" and item.get("outcome") != "DELETED":
                         self.error("control object deletion is not established")
                 if settled_key == "faults":
-                    original = next((fault for fault in created if fault.get("id") == item.get("id")), {})
-                    if "releasedAtMs" in original and time < self.number(
-                        original["releasedAtMs"], "faultsCreated.releasedAtMs"
-                    ):
-                        self.error("fault release acknowledgment precedes its observed release")
                     if item.get("mode") not in ("normal", "emergency"):
                         self.error("fault release must record normal or emergency mode")
                     if self.standard_behavior and self.value.get("requirementId") in (

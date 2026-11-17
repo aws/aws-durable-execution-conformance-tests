@@ -1661,9 +1661,7 @@ def test_successful_retry_requires_its_stored_result_including_null(phase: Any, 
 @pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
 @pytest.mark.parametrize("factory", [deadline_evidence, recovery_evidence])
 @pytest.mark.parametrize("mode", ["normal", "emergency"])
-def test_observed_fault_release_cannot_outlive_retirement_or_its_acknowledgment(
-    validator: Any, factory: Any, mode: str
-) -> None:
+def test_observed_fault_release_cannot_outlive_retirement(validator: Any, factory: Any, mode: str) -> None:
     value = factory()
     complete_retirement_events(value)
     value["retirement"]["faults"][0]["mode"] = mode
@@ -1671,15 +1669,14 @@ def test_observed_fault_release_cannot_outlive_retirement_or_its_acknowledgment(
     value["faultsCreated"][0]["releasedAtMs"] = 230
     errors = validator(value)
     assert any("observed fault release" in error and "retirement" in error for error in errors), errors
-    assert any("fault release acknowledgment precedes" in error for error in errors), errors
 
 
 @pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
 @pytest.mark.parametrize(
     ("observed", "acknowledged", "rejected"),
-    [(None, 210, False), (50, 210, False), (210, 210.0, False), (220, 220, False), (215, 210, True)],
+    [(None, 210, False), (50, 210, False), (210, 210.0, False), (220, 220, False), (215, 210, False), (210, 230, True)],
 )
-def test_fault_release_acknowledgment_may_follow_observation(
+def test_fault_receipt_and_acknowledgment_independently_fit_retirement(
     validator: Any, observed: Any, acknowledged: int | float, rejected: bool
 ) -> None:
     value = deadline_evidence()
@@ -1689,8 +1686,10 @@ def test_fault_release_acknowledgment_may_follow_observation(
     value["retirement"]["faults"][0]["releasedAtMs"] = acknowledged
     errors = validator(value)
     if rejected:
-        assert any("fault release acknowledgment precedes" in error for error in errors), errors
+        assert any("retirement ended before owned work settled" in error for error in errors), errors
     else:
+        # The fixture can poll the release after its provider ACK returned:
+        # request205 -> ACK210 -> receipt215 is a valid completed release.
         assert errors == []
         assert validate_evidence(value, phase="observations") == []
 

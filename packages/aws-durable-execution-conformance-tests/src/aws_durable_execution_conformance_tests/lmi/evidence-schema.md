@@ -201,9 +201,12 @@ enforce these outcomes. Other retained resource kinds need an explicit completio
 contract before the independent audit can permit target reuse.
 `retirement.faults` likewise matches every created fault and records `releasedAtMs`
 and `mode: normal | emergency`. Its timestamp records the provider release
-acknowledgment, which may follow the originally observed release. For the same
-fault ID, it must not precede a supplied `faultsCreated.releasedAtMs`; both times
-must be at or before `retirement.retiredAtMs`. An absent original release time
+acknowledgment or retained release confirmation. The fixture's release receipt
+and the provider's acknowledgment are observations from independent sources;
+either may arrive first, so their timestamps need not equal or order each other.
+For example, a release request at 205, provider acknowledgment at 210, and fixture
+polling receipt at 215 are consistent with retirement at 220. Both supplied
+timestamps must be at or before `retirement.retiredAtMs`. An absent original release time
 remains valid when the final acknowledgment proves release. Releasing a fault
 before the asserted cleanup or recovery is a failure regardless of release mode.
 
