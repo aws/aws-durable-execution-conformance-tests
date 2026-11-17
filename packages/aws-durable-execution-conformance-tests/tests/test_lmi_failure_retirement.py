@@ -16,10 +16,12 @@ import pytest
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Budgets,
     Profile,
+    QuarantinedError,
     ResourceScheduler,
     Scenario,
     ScenarioContext,
     ScenarioResult,
+    _cleanup_behavior_errors,
     run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import (
@@ -276,7 +278,13 @@ def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> No
 
 def _standard_retirement_snapshot(factory: str, runtime: str = "javascript") -> dict[str, Any]:
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
-    value = fixtures[factory](2, runtime) if factory == "evidence" else fixtures[factory](runtime=runtime)
+    value = (
+        fixtures[factory](2, runtime)
+        if factory == "evidence"
+        else fixtures[factory]()
+        if factory == "replay_evidence"
+        else fixtures[factory](runtime=runtime)
+    )
     for attempt in value["attempts"]:
         owner = {key: attempt[key] for key in ("requestId", "executionArn")}
         owner["ownerRequestId"] = attempt["requestId"]
@@ -308,6 +316,7 @@ def _run_standard_cleanup_discovery(
     phase: str,
     path: str,
     originally_failed: bool = False,
+    quiescent: bool = True,
 ) -> ScenarioResult:
     deployment = value["profile"]
     profile = Profile(
@@ -387,14 +396,135 @@ def _run_standard_cleanup_discovery(
             [case], [profile], Adapter(), run_id=value["runId"], validator=validator, scheduler=scheduler
         )
         # A conformance failure is distinct from residual physical work.
-        lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
-        await lease.release(quiescent=True)
+        if quiescent:
+            lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
+            await lease.release(quiescent=True)
+        else:
+            with pytest.raises(QuarantinedError):
+                await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
         return results[0]
 
     result = asyncio.run(exercise())
-    assert finished == [True]
+    assert finished == [quiescent]
     assert validate_retirement_evidence(result.retirement_evidence or result.evidence) == []
     return result
+
+
+@pytest.mark.parametrize("phase", ["release", "retire", "snapshot"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    "change", ["completed-success", "completed-failure", "count", "count-and-oracle", "incomplete-entry", "peer-entry"]
+)
+def test_cleanup_replay_discoveries_use_frozen_operations_and_count_oracles(phase: str, path: str, change: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    frozen_replay = deepcopy(value["replay"])
+    rejected = change not in {"incomplete-entry", "peer-entry"}
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        if change.startswith("count"):
+            count = next(item for item in snapshot["replay"]["sideEffects"] if item["operationId"] == "done")
+            count["count"] = 2
+            if change == "count-and-oracle":
+                count["expectedCount"] = 2
+        else:
+            snapshot["replay"]["operationExecutions"].append(
+                {
+                    "requestId": "request-peer" if change == "peer-entry" else "request-resume",
+                    "operationId": "not-checkpointed"
+                    if change == "incomplete-entry"
+                    else "failed"
+                    if change == "completed-failure"
+                    else "done",
+                }
+            )
+
+    probe = deepcopy(value)
+    mutate(probe)
+    if change not in {"count-and-oracle", "incomplete-entry", "peer-entry"}:
+        assert validate_evidence(probe)
+    else:
+        assert validate_evidence(probe) == []
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["replay"] == frozen_replay
+    if rejected:
+        assert any("completed user code" in error or "side-effect" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("start", [39, 40, 41])
+def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, start: int) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    frozen_attempts = deepcopy(value["attempts"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        next(item for item in snapshot["attempts"] if item["role"] == "resume")["startedAtMs"] = start
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert bool(validate_evidence(probe)) is (start <= 40)
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path=path)
+    assert result.status == ("FAILED" if start <= 40 else "PASSED"), result.errors
+    assert result.evidence["attempts"] == frozen_attempts
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("late_at", [64, 70])
+def test_cleanup_late_activity_cannot_outlive_the_frozen_task_exit(path: str, late_at: int) -> None:
+    value = _standard_retirement_snapshot("warm_evidence", "python")
+    frozen_events = deepcopy(value["events"])
+    victim = next(item for item in value["attempts"] if item["role"] == "victim")
+    owner = {key: victim[key] for key in ("requestId", "executionArn")}
+    owner["ownerRequestId"] = victim["requestId"]
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["events"].extend(
+            [
+                {**owner, "kind": "task_start", "taskId": "discovered-child", "atMs": 55},
+                {**owner, "kind": "late_activity", "atMs": late_at, "observedDuringRequestId": "request-warm"},
+                {**owner, "kind": "task_exit", "taskId": "discovered-child", "atMs": late_at + 0.5},
+            ]
+        )
+
+    probe = deepcopy(value)
+    next(item for item in probe["events"] if item["kind"] == "late_activity")["atMs"] = late_at
+    assert bool(validate_evidence(probe)) is (late_at > 65)
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path=path)
+    assert result.status == ("FAILED" if late_at > 65 else "PASSED"), result.errors
+    assert result.evidence["events"] == frozen_events
+
+
+def test_cleanup_replay_binding_can_arrive_in_later_retirement_evidence() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    entry = {"requestId": "discovered-native", "operationId": "not-checkpointed"}
+    discovered = {"replay": {"operationExecutions": [entry]}}
+    binding = {"attempts": [{"requestId": "discovered-native", "executionArn": "arn:execution:victim"}]}
+    assert _cleanup_behavior_errors(value, discovered, standard=True) == []
+    assert _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered], final=True) == []
+    unresolved = _cleanup_behavior_errors(value, {}, standard=True, known_snapshots=[discovered], final=True)
+    assert any(error.startswith("INCOMPLETE:") and "native request" in error for error in unresolved), unresolved
+    entry["operationId"] = "done"
+    completed = _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered], final=True)
+    assert any("completed user code" in error for error in completed), completed
+    contradictory = {"attempts": [{"requestId": "discovered-native", "executionArn": "arn:execution:peer"}]}
+    conflicts = _cleanup_behavior_errors(
+        value, contradictory, standard=True, known_snapshots=[discovered, binding], final=True
+    )
+    assert any(error.startswith("INCOMPLETE:") and "conflicting execution binding" in error for error in conflicts)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_unbound_cleanup_replay_entries_require_reconciliation(path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["replay"]["operationExecutions"].append(
+            {"requestId": "unknown-native", "operationId": "not-checkpointed"}
+        )
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path=path, quiescent=False)
+    assert result.status != "PASSED"
+    assert any(error.startswith("INCOMPLETE:") and "native request" in error for error in result.errors), result.errors
 
 
 @pytest.mark.parametrize("phase", ["retire", "snapshot"])

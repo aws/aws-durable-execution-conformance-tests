@@ -1367,6 +1367,153 @@ def _cleanup_behavior_errors(
             and start < end
         ):
             findings.append("PLACEMENT: cleanup evidence places Python recovery before victim native completion")
+    if requirement in ("lmi-lifecycle-5", "lmi-lifecycle-6"):
+        sources = (original, *known_snapshots, snapshot)
+        executions_by_request: dict[str, set[str]] = {}
+        for source in sources:
+            for attempt in records(source.get("attempts")):
+                request_id, execution_arn = attempt.get("requestId"), attempt.get("executionArn")
+                if (
+                    isinstance(request_id, str)
+                    and request_id.strip()
+                    and isinstance(execution_arn, str)
+                    and execution_arn.strip()
+                ):
+                    executions_by_request.setdefault(request_id, set()).add(execution_arn)
+
+        def bound_execution(request_id: Any) -> str | None:
+            # A new native request may only gain its execution binding during
+            # retirement. Do not turn that provisional absence into a failure.
+            if not isinstance(request_id, str) or not request_id.strip():
+                if final:
+                    findings.append("INCOMPLETE: cleanup replay/activity lacks an identified native request")
+                return None
+            if request_id not in attempts and not final:
+                return None
+            bindings = executions_by_request.get(request_id, set())
+            if len(bindings) != 1:
+                if final:
+                    findings.append(
+                        f"INCOMPLETE: cleanup native request {request_id} has an unresolved or conflicting execution binding"
+                    )
+                return None
+            return next(iter(bindings))
+
+        if requirement == "lmi-lifecycle-5":
+            replay = original.get("replay")
+            replay = replay if isinstance(replay, Mapping) else {}
+            completed = {
+                operation["id"]
+                for operation in records(replay.get("before"))
+                if isinstance(operation.get("id"), str) and operation.get("status") in _OPERATION_TERMINAL_STATUSES
+            }
+            expected_counts = {
+                item["operationId"]: item["expectedCount"]
+                for item in records(replay.get("sideEffects"))
+                if isinstance(item.get("operationId"), str) and type(item.get("expectedCount")) is int
+            }
+            victim = role("victim")
+            returned = boundary("victim", "wrapper_return")
+            resume_id = role("resume").get("requestId")
+            for source in sources:
+                for attempt in records(source.get("attempts")):
+                    started = timestamp(attempt.get("startedAtMs"))
+                    if (
+                        isinstance(resume_id, str)
+                        and attempt.get("requestId") == resume_id
+                        and started is not None
+                        and returned is not None
+                        and started <= returned
+                    ):
+                        findings.append(
+                            "ASSERTION: cleanup evidence places resume before the frozen PENDING wrapper return"
+                        )
+                if "replay" not in source:
+                    continue
+                observed_replay = source["replay"]
+                if not isinstance(observed_replay, Mapping):
+                    if final:
+                        findings.append("INCOMPLETE: cleanup replay observations must be an object")
+                    continue
+                entries = observed_replay.get("operationExecutions", [])
+                if not isinstance(entries, list):
+                    if final:
+                        findings.append("INCOMPLETE: cleanup operation executions must be an array")
+                    entries = []
+                for entry in entries:
+                    if not isinstance(entry, Mapping):
+                        if final:
+                            findings.append("INCOMPLETE: cleanup operation execution must be an object")
+                        continue
+                    request_id, operation_id = entry.get("requestId"), entry.get("operationId")
+                    execution_arn = bound_execution(request_id)
+                    if not isinstance(operation_id, str) or not operation_id.strip():
+                        if final:
+                            findings.append("INCOMPLETE: cleanup operation execution lacks an operationId")
+                        continue
+                    if (
+                        execution_arn is not None
+                        and execution_arn == victim.get("executionArn")
+                        and request_id != victim.get("requestId")
+                        and operation_id in completed
+                    ):
+                        findings.append(
+                            f"ASSERTION: cleanup evidence reports repeated completed user code for {operation_id}"
+                        )
+                if final:
+                    findings.extend(_side_effect_observation_errors(source))
+                counts = observed_replay.get("sideEffects", [])
+                if not isinstance(counts, list):
+                    if final:
+                        findings.append("INCOMPLETE: cleanup side-effect observations must be an array")
+                    counts = []
+                for count in counts:
+                    if not isinstance(count, Mapping):
+                        if final:
+                            findings.append("INCOMPLETE: cleanup side-effect observation must be an object")
+                        continue
+                    operation_id = count.get("operationId")
+                    if not isinstance(operation_id, str) or not operation_id.strip():
+                        if final:
+                            findings.append("INCOMPLETE: cleanup side-effect observation lacks an operationId")
+                        continue
+                    expected = expected_counts.get(operation_id)
+                    if expected is None:
+                        continue  # Cleanup cannot invent an oracle for an unasserted operation.
+                    if "expectedCount" in count and not same_json(count["expectedCount"], expected):
+                        findings.append(
+                            f"ASSERTION: cleanup side-effect expectation for {operation_id} changed the frozen fixture oracle"
+                        )
+                    if type(count.get("count")) is int and count["count"] != expected:
+                        findings.append(
+                            f"ASSERTION: cleanup side-effect count for {operation_id} differs from the frozen fixture oracle"
+                        )
+        else:
+            victim_id = role("victim").get("requestId")
+            exited = boundary("victim", "task_exit")
+            for source in sources:
+                for event in records(source.get("events")):
+                    if event.get("kind") != "late_activity":
+                        continue
+                    request_id = event.get("requestId")
+                    execution_arn = bound_execution(request_id)
+                    if execution_arn is None:
+                        continue
+                    if event.get("ownerRequestId") != request_id or event.get("executionArn") != execution_arn:
+                        if final:
+                            findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
+                        continue
+                    during = event.get("observedDuringRequestId")
+                    if during is not None and bound_execution(during) is None:
+                        continue
+                    observed_at = timestamp(event.get("atMs"))
+                    if (
+                        request_id == victim_id
+                        and observed_at is not None
+                        and exited is not None
+                        and observed_at > exited
+                    ):
+                        findings.append("ASSERTION: cleanup late activity continued after the frozen victim task exit")
     return findings
 
 
@@ -1844,6 +1991,7 @@ async def run_scenarios(
                                 "events",
                                 "sdkRequests",
                                 "faultsCreated",
+                                "replay",
                             )
                             if key in evidence
                         }
