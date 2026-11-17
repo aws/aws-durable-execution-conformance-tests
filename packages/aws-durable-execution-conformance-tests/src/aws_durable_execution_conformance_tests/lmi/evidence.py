@@ -113,23 +113,33 @@ class _Evidence:
         return not missing
 
     def operation_shape(
-        self, operation: Mapping[str, Any], path: str, *, completed: bool = False, check_interval: bool = False
+        self,
+        operation: Mapping[str, Any],
+        path: str,
+        *,
+        completed: bool = False,
+        check_interval: bool = False,
+        partial: bool = False,
     ) -> None:
+        """Validate checkpoint fields, allowing omissions in provisional cleanup fragments."""
         for key in ("id", "type", "status"):
-            self.string(operation.get(key), f"{path}.{key}")
+            if not partial or key in operation:
+                self.string(operation.get(key), f"{path}.{key}")
         if "name" not in operation:
-            self.error(f"{path}.name is required (null for an unnamed operation)")
+            if not partial:
+                self.error(f"{path}.name is required (null for an unnamed operation)")
         elif operation["name"] is not None:
             self.string(operation["name"], f"{path}.name")
         if "parentId" not in operation:
-            self.error(f"{path}.parentId is required (null for the root)")
+            if not partial:
+                self.error(f"{path}.parentId is required (null for the root)")
         elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
             self.error(f"{path}.parentId must be a string or null")
         start = self.number(operation["startedAtMs"], f"{path}.startedAtMs") if "startedAtMs" in operation else None
         end = self.number(operation["endedAtMs"], f"{path}.endedAtMs") if "endedAtMs" in operation else None
         if check_interval and start is not None and end is not None and end < start:
             self.error(f"{path} endedAtMs precedes startedAtMs")
-        if completed:
+        if completed and not partial:
             outcome_key = "result" if operation.get("status") == "SUCCEEDED" else "error"
             if outcome_key not in operation:
                 self.error(f"{path} must preserve the stored {outcome_key}")

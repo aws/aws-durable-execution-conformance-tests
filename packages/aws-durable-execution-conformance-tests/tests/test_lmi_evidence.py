@@ -9,6 +9,7 @@ from typing import Any, Literal
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    _Evidence,
     same_json,
     validate_common_evidence,
     validate_evidence,
@@ -1821,3 +1822,36 @@ def test_physical_retirement_rejects_uncertain_completion(mutation: str) -> None
         expected = "service history still permits execution resume"
     errors = validate_retirement_evidence(value)
     assert any(expected in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "fragment", [{}, {"status": "SUCCEEDED", "result": None}, {"startedAtMs": 10, "endedAtMs": 20}]
+)
+def test_partial_cleanup_operation_preserves_provisional_omissions(fragment: dict[str, Any]) -> None:
+    # Cleanup can collect a checkpoint fragment before its complete identity or
+    # outcome is available. This cannot certify the same fragment as evidence.
+    partial = _Evidence({})
+    partial.operation_shape(fragment, "cleanup.operation", completed=True, check_interval=True, partial=True)
+    assert partial.errors == []
+    complete = _Evidence({})
+    complete.operation_shape(fragment, "history.operation", completed=True, check_interval=True)
+    assert complete.errors
+
+
+@pytest.mark.parametrize(
+    ("fragment", "diagnostic"),
+    [
+        ({"id": ""}, "id must be a non-empty string"),
+        ({"type": False}, "type must be a non-empty string"),
+        ({"status": False}, "status must be a non-empty string"),
+        ({"name": False}, "name must be a non-empty string"),
+        ({"parentId": False}, "parentId must be a string or null"),
+        ({"startedAtMs": False}, "startedAtMs must be a finite non-negative number"),
+        ({"endedAtMs": float("inf")}, "endedAtMs must be a finite non-negative number"),
+        ({"startedAtMs": 20, "endedAtMs": 10}, "endedAtMs precedes startedAtMs"),
+    ],
+)
+def test_partial_cleanup_cannot_hide_supplied_checkpoint_diagnostics(fragment: dict[str, Any], diagnostic: str) -> None:
+    partial = _Evidence({})
+    partial.operation_shape(fragment, "cleanup.operation", completed=True, check_interval=True, partial=True)
+    assert any(diagnostic in error for error in partial.errors), partial.errors
