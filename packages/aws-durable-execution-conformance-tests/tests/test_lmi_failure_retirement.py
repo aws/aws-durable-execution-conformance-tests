@@ -950,6 +950,110 @@ def test_passing_case_cannot_add_a_new_native_request_only_during_retirement() -
     assert scheduler.quarantine_reason(PROFILE.resource_id)
 
 
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("initial", ["sdk-only", "empty", "extra"])
+def test_retirement_can_complete_provisional_artifact_metadata(phase: str, initial: str) -> None:
+    class ArtifactAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if phase == "normal":
+                observed["behaviorErrors"] = []
+            return observed
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                self.snapshots["failed"]["artifact"].update(extra={"source": "fixture"}, compiler="python")
+                context.evidence = self.observations(context)
+                context.evidence["artifact"] = {} if initial == "empty" else {"sdk": context.profile.artifact_id}
+                if initial == "extra":
+                    context.evidence["artifact"]["extra"] = {"source": "fixture"}
+
+    adapter = ArtifactAdapter(phase="assertion" if phase == "normal" else "placement")
+    (completed, following), scheduler = _run(adapter)
+    if phase == "normal":
+        assert completed.status == "PASSED", completed.errors
+    else:
+        assert ORIGINAL_FAILURE in completed.errors
+    assert completed.evidence["artifact"]["conformance"] == "tested-validator"
+    assert completed.retirement_evidence["artifact"]["extra"] == {"source": "fixture"}
+    assert validate_retirement_evidence(completed.retirement_evidence) == []
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("field", ["sdk", "conformance", "extra"])
+@pytest.mark.parametrize("change", ["replace", "drop"])
+def test_completed_artifacts_preserve_every_previously_declared_field(field: str, change: str) -> None:
+    class ChangedArtifactAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["artifact"]["extra"] = True
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            if change == "drop":
+                final["artifact"].pop(field)
+            else:
+                # Python equality treats True and 1 as equal; persisted JSON does not.
+                final["artifact"][field] = 1 if field == "extra" else "different-revision"
+
+    adapter = ChangedArtifactAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert any(f"artifact.{field}" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_retirement_cannot_drop_a_declared_null_artifact_field() -> None:
+    class NullArtifactAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["artifact"]["extra"] = None
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["artifact"].pop("extra")
+
+    (failed, following), scheduler = _run(NullArtifactAdapter(phase="assertion"))
+    assert any("artifact.extra" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("source", ["original", "final"])
+@pytest.mark.parametrize("malformed", [None, [], 42])
+def test_retirement_artifact_completion_rejects_malformed_objects(source: str, malformed: Any) -> None:
+    class MalformedArtifactAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed" and source == "original":
+                context.evidence = self.observations(context)
+                context.evidence["artifact"] = malformed
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            if source == "final":
+                final["artifact"] = malformed
+
+    adapter = MalformedArtifactAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert any("artifact" in error.lower() for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_artifact_completion_does_not_allow_changing_the_observed_runtime() -> None:
+    class ChangedRuntimeAdapter(FailureAdapter):
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["runtime"] = "python"
+
+    (failed, following), scheduler = _run(ChangedRuntimeAdapter(phase="assertion"))
+    assert any("Retirement runtime differs" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
 @pytest.mark.parametrize(
     ("native_start", "native_end", "contains_original"),
     [(90, 1000, True), (50, 1000, True), (90, 1200, True), (50, 1200, True), (95, 1200, False), (50, 999, False)],

@@ -707,9 +707,18 @@ def _retirement_ownership_errors(
     errors = _ownership_errors(context, final, complete_cohort=False)
     if final.get("coverageProfile", "standard") != context.scenario.coverage_profile:
         errors.append("Retirement coverageProfile changed the admitted case")
-    for key in ("runtime", "artifact"):
-        if key in original and original[key] != final.get(key):
-            errors.append(f"Retirement {key} differs from the original observations")
+    if "runtime" in original and not same_json(original["runtime"], final.get("runtime")):
+        errors.append("Retirement runtime differs from the original observations")
+    if "artifact" in original:
+        # Provisional observations may know only the deployed SDK revision.
+        # Completion can add metadata while keeping every known field intact.
+        original_artifact, final_artifact = original["artifact"], final.get("artifact")
+        if not isinstance(original_artifact, Mapping) or not isinstance(final_artifact, Mapping):
+            errors.append("Retirement artifact metadata must remain an object")
+        else:
+            for key, value in original_artifact.items():
+                if key not in final_artifact or not same_json(value, final_artifact[key]):
+                    errors.append(f"Retirement artifact.{key} differs from the original observations")
     original_attempts = original.get("attempts", [])
     observed = final.get("attempts", [])
     if not isinstance(original_attempts, list) or not isinstance(observed, list):
