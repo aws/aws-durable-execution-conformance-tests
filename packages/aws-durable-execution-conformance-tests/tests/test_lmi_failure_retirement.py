@@ -318,6 +318,7 @@ def _run_standard_cleanup_discovery(
     originally_failed: bool = False,
     quiescent: bool = True,
     observe_retirement: bool = False,
+    retirement_valid: bool = True,
 ) -> ScenarioResult:
     deployment = value["profile"]
     profile = Profile(
@@ -410,7 +411,7 @@ def _run_standard_cleanup_discovery(
 
     result = asyncio.run(exercise())
     assert finished == [quiescent]
-    assert validate_retirement_evidence(result.retirement_evidence or result.evidence) == []
+    assert (validate_retirement_evidence(result.retirement_evidence or result.evidence) == []) is retirement_valid
     return result
 
 
@@ -1210,6 +1211,112 @@ def test_early_retirement_release_cannot_be_erased_from_original_observations() 
     result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="normal", observe_retirement=True)
     assert result.status == "FAILED", result.errors
     assert any("fault release" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("location", ["faultsCreated", "retirement"])
+@pytest.mark.parametrize("restoration", ["remove", "replace"])
+@pytest.mark.parametrize("invalid", [False, True, None, "210", -1, float("inf"), float("-inf"), float("nan")])
+def test_cleanup_invalid_fault_release_timestamps_survive_restoration(
+    path: str, location: str, restoration: str, invalid: Any
+) -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        fault = snapshot["faultsCreated"][0] if location == "faultsCreated" else snapshot["retirement"]["faults"][0]
+        if calls == 1:
+            fault["releasedAtMs"] = invalid
+        elif restoration == "replace":
+            fault["releasedAtMs"] = 210
+        else:
+            fault.pop("releasedAtMs")
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert any(error.startswith("INCOMPLETE:") and "releasedAtMs" in error for error in validate_evidence(probe))
+    calls = 0
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="both", path=path, quiescent=False, observe_retirement=True
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(error.startswith("INCOMPLETE:") and "releasedAtMs" in error for error in result.errors), result.errors
+    assert result.evidence["faultsCreated"] == value["faultsCreated"]
+
+
+@pytest.mark.parametrize(
+    ("location", "phase", "path", "retirement_valid"),
+    [
+        ("faultsCreated", "release", "normal", False),
+        ("faultsCreated", "retire", "normal", False),
+        ("faultsCreated", "snapshot", "independent", False),
+        ("retirement", "release", "normal", True),
+        ("retirement", "retire", "normal", True),
+        ("retirement", "retirement", "independent", False),
+    ],
+)
+def test_cleanup_invalid_fault_release_timestamps_are_checked_in_each_phase(
+    location: str, phase: str, path: str, retirement_valid: bool
+) -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        fault = snapshot["faultsCreated"][0] if location == "faultsCreated" else snapshot["retirement"]["faults"][0]
+        fault["releasedAtMs"] = False
+
+    result = _run_standard_cleanup_discovery(
+        value,
+        mutate,
+        phase=phase,
+        path=path,
+        quiescent=False,
+        observe_retirement=True,
+        retirement_valid=retirement_valid,
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(error.startswith("INCOMPLETE:") and "releasedAtMs" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("location", ["faultsCreated", "retirement"])
+@pytest.mark.parametrize("released", [None, 210, 210.5])
+def test_cleanup_missing_fault_release_timestamp_can_be_completed(location: str, released: float | None) -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        fault = snapshot["faultsCreated"][0] if location == "faultsCreated" else snapshot["retirement"]["faults"][0]
+        if calls == 1 or released is None:
+            fault.pop("releasedAtMs", None)
+        else:
+            fault["releasedAtMs"] = released
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent", observe_retirement=True)
+    assert result.status == "PASSED", result.errors
+
+
+def test_cleanup_invalid_fault_release_is_rejected_outside_deadline_scenarios() -> None:
+    value = _standard_retirement_snapshot("evidence")
+    fault = {"id": "auxiliary-fault", "ownerCaseId": value["caseId"]}
+    value["faultsCreated"].append(fault)
+    value["retirement"]["faults"].append({**fault, "releasedAtMs": 210, "mode": "normal"})
+    assert validate_evidence(value) == []
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        observed = snapshot["faultsCreated"][0]
+        if calls == 1:
+            observed["releasedAtMs"] = False
+        else:
+            observed.pop("releasedAtMs")
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="normal", quiescent=False)
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
 
 
 def test_retirement_release_discovery_preserves_an_existing_sdk_failure() -> None:

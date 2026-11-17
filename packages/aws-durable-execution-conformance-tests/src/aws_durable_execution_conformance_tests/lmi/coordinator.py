@@ -1507,6 +1507,23 @@ def _cleanup_behavior_errors(
     }
     events = records(original.get("events"))
     admission_sources = (original, *known_snapshots, snapshot)
+    releases: list[float] = []
+    # Absence can be completed later; an explicitly malformed release time is
+    # invalid evidence even if a later snapshot replaces or omits that field.
+    for source in admission_sources:
+        fault_collections = [("faultsCreated", source.get("faultsCreated"))]
+        retirement = source.get("retirement")
+        if isinstance(retirement, Mapping):
+            fault_collections.append(("retirement.faults", retirement.get("faults")))
+        for location, collection in fault_collections:
+            for fault in records(collection):
+                if "releasedAtMs" not in fault:
+                    continue
+                released = timestamp(fault["releasedAtMs"])
+                if released is None:
+                    findings.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
+                else:
+                    releases.append(released)
     known_requests = {
         attempt["requestId"]
         for source in admission_sources
@@ -1699,18 +1716,8 @@ def _cleanup_behavior_errors(
         if requirement == "lmi-lifecycle-4":
             limits.extend(timestamp(event.get("atMs")) for event in observed_events("recovery", "worker_recovered"))
         known_limits = [time for time in limits if time is not None]
-        releases: list[float] = []
         # A later release acknowledgment cannot erase an earlier release from
         # either observation records or a provisional/final retirement record.
-        for source in (original, *known_snapshots, snapshot):
-            faults = records(source.get("faultsCreated"))
-            retirement = source.get("retirement")
-            if isinstance(retirement, Mapping):
-                faults.extend(records(retirement.get("faults")))
-            for fault in faults:
-                released = timestamp(fault.get("releasedAtMs"))
-                if released is not None:
-                    releases.append(released)
         if releases and known_limits and min(releases) <= max(known_limits):
             findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
     if requirement == "lmi-lifecycle-6" and (
