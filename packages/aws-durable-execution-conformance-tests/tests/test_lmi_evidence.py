@@ -4,7 +4,7 @@
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -153,8 +153,9 @@ def deadline_evidence(requirement: int = 3, runtime: str = "javascript") -> dict
     return value
 
 
-def recovery_evidence(runtime: str = "javascript") -> dict[str, Any]:
+def recovery_evidence(runtime: str = "javascript", *, native_concurrency: int = 2) -> dict[str, Any]:
     value = deadline_evidence(4, runtime)
+    value["profile"]["nativeConcurrency"] = native_concurrency
     peer = value["attempts"][1]
     peer["endedAtMs"] = 100
     recovery = attempt("recovery", start=40, end=60)
@@ -171,6 +172,15 @@ def recovery_evidence(runtime: str = "javascript") -> dict[str, Any]:
             event(peer, "wrapper_return", 100),
         ]
     )
+    for index in range(2, native_concurrency):
+        peer = attempt(
+            f"peer{index}", start=12, end=100, process=f"process-{index + 1}" if runtime == "python" else "process-1"
+        )
+        value["attempts"].append(peer)
+        value["selectedRequests"][peer["role"]] = peer["requestId"]
+        value["events"].extend(
+            [event(peer, "peer_progress", 25), event(peer, "peer_progress", 44), event(peer, "wrapper_return", 100)]
+        )
     refresh_histories(value)
     record_owned_resources(value)
     return value
@@ -397,6 +407,44 @@ def test_recovery_cannot_use_unrelated_capacity(field: str) -> None:
     value = recovery_evidence()
     value["attempts"][-1][field] = "replacement"
     assert any(error.startswith("PLACEMENT:") for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("peer_role", ["peer", "peer2", "peer3"])
+def test_python_recovery_cannot_replace_victim_with_an_occupied_peer_process(
+    phase: Literal["observations", "final"], peer_role: str
+) -> None:
+    value = recovery_evidence("python", native_concurrency=4)
+    value["profile"]["recoveryPolicy"] = "replace-worker"
+    selected = {item["role"]: item for item in value["attempts"]}
+    recovery = selected["recovery"]
+    recovery.update(workerId="replacement-worker", processId="replacement-process", replacesWorkerId="process-1")
+    assert validate_evidence(value, phase=phase) == []
+
+    peer = selected[peer_role]
+    recovery.update(workerId=peer["workerId"], processId=peer["processId"])
+    assert any("occupied Python peer process" in error for error in validate_evidence(value, phase=phase))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("existing_role", ["victim", "peer", "peer2", "peer3"])
+def test_recovery_execution_is_independent_of_every_selected_peer(
+    phase: Literal["observations", "final"], runtime: str, existing_role: str
+) -> None:
+    value = recovery_evidence(runtime, native_concurrency=4)
+    # Reusing the victim process remains valid, including shared JavaScript/JVM
+    # processes, provided the recovery has its own durable execution identity.
+    assert validate_evidence(value, phase=phase) == []
+    selected = {item["role"]: item for item in value["attempts"]}
+    recovery = selected["recovery"]
+    recovery["executionArn"] = selected[existing_role]["executionArn"]
+    for item in value["events"]:
+        if item["requestId"] == recovery["requestId"]:
+            item["executionArn"] = recovery["executionArn"]
+    refresh_histories(value)
+    record_owned_resources(value)
+    assert any("independent request" in error for error in validate_evidence(value, phase=phase))
 
 
 def test_recovery_requires_healthy_peer_progress_and_occupied_capacity() -> None:
