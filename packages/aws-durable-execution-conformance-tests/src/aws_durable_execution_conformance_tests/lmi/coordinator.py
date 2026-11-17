@@ -1368,6 +1368,118 @@ def _cleanup_retry_errors(
     return findings
 
 
+def _cleanup_checkpoint_errors(
+    frozen_replay: Mapping[str, Any], sources: Sequence[Mapping[str, Any]], execution_arn: Any, *, final: bool
+) -> tuple[list[str], set[str]]:
+    """Reconcile supplied checkpoint facts without replacing partial views."""
+    findings: list[str] = []
+
+    def records(value: Any) -> list[Mapping[str, Any]]:
+        return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+    frozen_before = {
+        item["id"]: item for item in records(frozen_replay.get("before")) if isinstance(item.get("id"), str)
+    }
+    frozen_after = {item["id"]: item for item in records(frozen_replay.get("after")) if isinstance(item.get("id"), str)}
+    before_ids: set[str] = set(frozen_before)
+    after_ids: set[str] = set(frozen_after)
+    # The accepted original after snapshot was checked against service history.
+    history_ids: set[str] = set(frozen_after)
+    observations: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
+    for source in sources:
+        replay = source.get("replay")
+        if isinstance(replay, Mapping):
+            for view in ("before", "after"):
+                if view not in replay:
+                    continue
+                operations = replay[view]
+                if not isinstance(operations, list):
+                    if final:
+                        findings.append(f"ASSERTION: cleanup replay.{view} checkpoints must be an array")
+                    continue
+                seen: set[str] = set()
+                for operation in operations:
+                    operation_id = operation.get("id") if isinstance(operation, Mapping) else None
+                    if not isinstance(operation_id, str) or not operation_id.strip():
+                        if final:
+                            findings.append(f"ASSERTION: cleanup replay.{view} checkpoint lacks an operation ID")
+                        continue
+                    if operation_id in seen:
+                        findings.append(f"ASSERTION: cleanup replay.{view} repeats checkpoint {operation_id}")
+                    seen.add(operation_id)
+                    (before_ids if view == "before" else after_ids).add(operation_id)
+                    observations.setdefault(operation_id, []).append((view, operation))
+                    if (
+                        view == "before"
+                        and "status" in operation
+                        and operation["status"] not in _OPERATION_TERMINAL_STATUSES
+                    ):
+                        findings.append(f"ASSERTION: cleanup replay.before checkpoint {operation_id} is not completed")
+                    prior = frozen_before.get(operation_id, frozen_after.get(operation_id))
+                    if prior is not None:
+                        path = ("replay", "before" if view == "before" or operation_id in frozen_before else "after")
+                        _, changes = _retain_observations(prior, operation, path)
+                        if changes.conflicts:
+                            findings.append(
+                                f"ASSERTION: cleanup replay.{view} changed frozen checkpoint {operation_id}"
+                            )
+        for history in records(source.get("histories")):
+            if history.get("executionArn") != execution_arn:
+                continue
+            for operation in records(history.get("operations")):
+                operation_id = operation.get("id")
+                if isinstance(operation_id, str) and operation_id.strip():
+                    history_ids.add(operation_id)
+                    observations.setdefault(operation_id, []).append(("history", operation))
+
+    for operation_id, observed in observations.items():
+        identity: dict[str, Any] = {"id": operation_id}
+        terminal: list[Mapping[str, Any]] = []
+        for view, operation in observed:
+            for key in ("name", "type", "parentId"):
+                if key in operation:
+                    if key in identity and not same_json(identity[key], operation[key]):
+                        findings.append(f"ASSERTION: cleanup checkpoint {operation_id} changed its {key}")
+                    else:
+                        identity[key] = operation[key]
+            if view == "before" or operation.get("status") in _OPERATION_TERMINAL_STATUSES:
+                terminal.append(operation)
+            if (
+                view == "after"
+                and operation_id in before_ids
+                and "status" in operation
+                and operation["status"] not in _OPERATION_TERMINAL_STATUSES
+            ):
+                findings.append(
+                    f"ASSERTION: cleanup after checkpoint {operation_id} is incomplete despite before completion"
+                )
+        for index, operation in enumerate(terminal):
+            for previous in terminal[:index]:
+                _, changes = _retain_observations(previous, operation, ("replay", "before"))
+                if changes.conflicts:
+                    findings.append(
+                        f"ASSERTION: cleanup completed checkpoint {operation_id} has contradictory observations"
+                    )
+            for view, partial in observed:
+                if view != "history" and "status" not in partial:
+                    _, changes = _retain_observations(operation, partial, ("replay", "before"))
+                    if changes.conflicts:
+                        findings.append(
+                            f"ASSERTION: cleanup partial checkpoint {operation_id} contradicts its completed outcome"
+                        )
+    retry = frozen_replay.get("retry")
+    if isinstance(retry, Mapping) and isinstance(retry.get("operationId"), str) and retry["operationId"] in before_ids:
+        findings.append("ASSERTION: cleanup replay.before checkpoint contains the frozen retry operation")
+    if final:
+        for operation_id in before_ids - after_ids:
+            findings.append(
+                f"ASSERTION: cleanup before checkpoint {operation_id} lacks an after-checkpoint correlation"
+            )
+        for operation_id in after_ids - history_ids:
+            findings.append(f"ASSERTION: cleanup after checkpoint {operation_id} lacks a service-history correlation")
+    return findings, before_ids
+
+
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -1677,6 +1789,11 @@ def _cleanup_behavior_errors(
                 if isinstance(item.get("operationId"), str) and type(item.get("expectedCount")) is int
             }
             victim = role("victim")
+            checkpoint_errors, observed_before = _cleanup_checkpoint_errors(
+                replay, sources, victim.get("executionArn"), final=final
+            )
+            findings.extend(checkpoint_errors)
+            completed.update(observed_before)
             returned = boundary("victim", "wrapper_return")
             resume_id = role("resume").get("requestId")
             for source in sources:
