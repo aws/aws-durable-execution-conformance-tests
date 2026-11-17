@@ -130,17 +130,33 @@ nonzero on failure. `setup` runs independently in the harness and cloud jobs.
 `LMI_ARTIFACT_DIRECTORY`. The shared workflow owns setup of driver Python,
 OIDC credentials and refreshes, account verification, deployment/test budgets,
 always-run collection/cleanup, artifact upload and the job summary. Cloud work
-runs only for same-repository PRs and manual dispatch. Fork and Dependabot PRs
-use the hosted unprivileged harness. Trusted jobs require the repository's
-`codebuild-github-actions-runner-<run_id>-<run_attempt>` runner integration.
+runs for trusted pushes, same-repository PRs and manual dispatch. Fork PRs and
+Dependabot events use the hosted unprivileged harness. Trusted jobs require the
+repository's `codebuild-github-actions-runner-<run_id>-<run_attempt>` runner integration.
 
-GitHub Actions concurrency is the sole cross-run guard. The fixed
+GitHub Actions concurrency serializes scheduled runs. The fixed
 `lmi-e2e-shared-capacity-provider` group covers deployment through cleanup and
 uses `cancel-in-progress: false`. Concurrency groups are scoped to a calling
 repository; SDK repositories must use separately provisioned test capacity if
 they run at the same time. Direct CLI runs are not serialized with Actions.
-There is no S3 shared lock. Within a run, the coordinator still verifies
-case ownership, capacity, cancellation and retirement before reusing a target.
+
+The shared adapter also acquires a persistent retirement fence before using each
+qualified Lambda target. Its object is
+`s3://<deployment bucket>/quarantine/<sha256 of full qualified function ARN>.json`
+and records `resourceId`, `runId`, `commit` and the prior run's `evidencePrefix`
+(`runs/<runId>/`). Only that owner can clear the fence after independently
+validated quiescence. Failed retirement, cancellation or an abrupt controller
+exit leaves it in place. Later preparation and deployment reject the fenced
+target and report its exact S3 URI, even if its service executions are terminal.
+
+There is no automatic recovery or recovery CLI. Before manually removing a
+fence, inspect its retained evidence prefix and reconcile all prior invocations,
+tasks, I/O, checkpoints, polls and callbacks. Confirm that no runtime work remains
+and that the target artifact/configuration is correct. A terminal Lambda execution
+status alone does not prove retirement. Within a run, the coordinator still
+verifies case ownership, capacity, cancellation and retirement before reusing a
+target.
+
 Retirement inventories service callbacks and case controls. Callback completion
 requires a terminal service-history event; controls are deleted after runtime
 quiescence, with S3 absence verified and deletion receipts retained.

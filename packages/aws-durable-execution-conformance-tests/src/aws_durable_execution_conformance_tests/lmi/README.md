@@ -232,6 +232,12 @@ ended. Failed retirement quarantines the affected profile. Explicit external
 recovery must prove residual work is settled and the artifact is correct before
 clearing quarantine. Unaffected targets remain usable.
 
+The shared AWS adapter retains a per-target S3 retirement fence across failed
+retirement, cancellation and controller termination. Later runs refuse target
+preparation or deployment until that fence is safely cleared. See the
+[SDK reuse guide](REUSE.md#reusable-github-actions-workflow) for its location and
+the evidence required for explicit recovery.
+
 Never clear a shared bucket, remove another case's evidence, stop another case's
 execution or reset shared runtime state. All controls, callbacks, logs,
 requests and service histories must carry run/case ownership. Preserve
