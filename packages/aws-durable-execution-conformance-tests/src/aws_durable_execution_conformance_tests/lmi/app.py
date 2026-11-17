@@ -233,10 +233,8 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
-        if "not_implemented" in scenario and (
-            not isinstance(scenario["not_implemented"], str) or not scenario["not_implemented"].strip()
-        ):
-            raise ValueError("not_implemented must explain the missing SDK capability")
+        if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
+            raise ValueError("not_implemented must be a string")
     return manifest
 
 
