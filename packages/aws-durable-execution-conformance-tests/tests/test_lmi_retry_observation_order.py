@@ -20,7 +20,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ScenarioResult,
     run_scenarios,
 )
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import same_json, validate_evidence
 
 
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
@@ -303,6 +303,8 @@ def test_invalid_counter_observations_cannot_be_erased_by_valid_collection(field
 
 
 def _inventory(value: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    if name in {"before", "after"}:
+        return value["replay"][name]
     if name == "operations":
         return next(history["operations"] for history in value["histories"] if history["operations"])
     if name == "retry":
@@ -323,7 +325,18 @@ def _replay_with_fault() -> dict[str, Any]:
 
 @pytest.mark.parametrize("phase", ["place", "execute"])
 @pytest.mark.parametrize(
-    "inventory", ["attempts", "histories", "operations", "faultsCreated", "resourcesCreated", "retry", "sideEffects"]
+    "inventory",
+    [
+        "attempts",
+        "histories",
+        "operations",
+        "faultsCreated",
+        "resourcesCreated",
+        "retry",
+        "sideEffects",
+        "before",
+        "after",
+    ],
 )
 def test_in_place_identity_occurrence_increases_survive_later_deduplication(phase: str, inventory: str) -> None:
     value = _replay_with_fault()
@@ -394,3 +407,149 @@ def test_new_unique_retry_observation_is_retained_without_replaying_other_fields
     result, _ = _run(RetryObservationAdapter(value, [[attempts[0], attempts[2]], attempts]))
     assert result.status == "PASSED", result.errors
     assert result.evidence["replay"]["retry"]["attempts"] == attempts
+
+
+def _checkpoint_views(value: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        *value["replay"]["before"],
+        *value["replay"]["after"],
+        *(operation for history in value["histories"] for operation in history["operations"]),
+    ]
+
+
+class CheckpointObservationAdapter(RetryObservationAdapter):
+    def __init__(
+        self, value: dict[str, Any], snapshot: str, initial: list[dict[str, Any]], mode: str = "normal"
+    ) -> None:
+        super().__init__(value, [value["replay"]["retry"]["attempts"]], partial=mode == "partial")
+        self.snapshot = snapshot
+        self.initial = initial
+        self.mode = mode
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        context.evidence["replay"][self.snapshot] = deepcopy(self.initial)
+
+    async def place(self, context: ScenarioContext) -> None:
+        if self.mode == "phase":
+            context.evidence["replay"][self.snapshot] = deepcopy(self.collected["replay"][self.snapshot])
+        await super().place(context)
+
+
+@pytest.mark.parametrize("snapshot", ["before", "after"])
+@pytest.mark.parametrize("mode", ["normal", "partial", "phase"])
+@pytest.mark.parametrize("timestamp", ["startedAtMs", "endedAtMs"])
+@pytest.mark.parametrize("operation_id", ["done", "failed"])
+def test_checkpoint_snapshots_can_fill_missing_operation_metadata(
+    snapshot: str, mode: str, timestamp: str, operation_id: str
+) -> None:
+    value = _replay_evidence()
+    for operation in _checkpoint_views(value):
+        operation[timestamp] = 10 if operation["id"] == operation_id else 20
+    assert validate_evidence(value) == []
+    initial = list(reversed(deepcopy(value["replay"][snapshot])))
+    next(operation for operation in initial if operation["id"] == operation_id).pop(timestamp)
+    result, _ = _run(CheckpointObservationAdapter(value, snapshot, initial, mode))
+    if mode == "partial":
+        assert result.status != "PASSED"
+    else:
+        assert result.status == "PASSED", result.errors
+    assert validate_evidence(result.evidence) == [], result.errors
+    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
+    assert result.evidence["replay"][snapshot] == value["replay"][snapshot]
+
+
+@pytest.mark.parametrize("snapshot", ["before", "after"])
+@pytest.mark.parametrize("outcome", ["result", "error"])
+@pytest.mark.parametrize("original,changed", [([1, 2], [2, 1]), ({"value": 1}, {"value": 1, "extra": True})])
+def test_completed_snapshot_outcomes_remain_atomic(snapshot: str, outcome: str, original: Any, changed: Any) -> None:
+    value = _replay_evidence()
+    operation_id = "done" if outcome == "result" else "failed"
+    for operation in _checkpoint_views(value):
+        if operation["id"] == operation_id:
+            operation[outcome] = deepcopy(changed)
+    assert validate_evidence(value) == []
+    initial = deepcopy(value["replay"][snapshot])
+    next(operation for operation in initial if operation["id"] == operation_id)[outcome] = deepcopy(original)
+    result, _ = _run(CheckpointObservationAdapter(value, snapshot, initial))
+    assert result.status != "PASSED", result.errors
+    retained = [operation for operation in result.evidence["replay"][snapshot] if operation["id"] == operation_id]
+    assert len(retained) == 1
+    assert same_json(retained[0][outcome], original)
+
+
+@pytest.mark.parametrize("snapshot", ["before", "after"])
+@pytest.mark.parametrize("field,changed", [("name", "renamed"), ("type", "CONTEXT"), ("parentId", "other-parent")])
+def test_checkpoint_snapshot_identity_fields_cannot_change(snapshot: str, field: str, changed: str) -> None:
+    value = _replay_evidence()
+    original = deepcopy(value["replay"][snapshot][0])
+    for operation in _checkpoint_views(value):
+        if operation["id"] == original["id"]:
+            operation[field] = changed
+    assert validate_evidence(value) == []
+    initial = deepcopy(value["replay"][snapshot])
+    initial[0] = original
+    result, _ = _run(CheckpointObservationAdapter(value, snapshot, initial))
+    assert result.status != "PASSED", result.errors
+    retained = next(operation for operation in result.evidence["replay"][snapshot] if operation["id"] == original["id"])
+    assert retained[field] == original[field]
+
+
+@pytest.mark.parametrize("mode", ["normal", "partial", "phase"])
+@pytest.mark.parametrize("status", ["STARTED", "PENDING", "READY"])
+def test_after_snapshot_can_complete_an_unfinished_operation(mode: str, status: str) -> None:
+    value = _replay_evidence()
+    initial = deepcopy(value["replay"]["after"])
+    retry = next(operation for operation in initial if operation["id"] == "retry")
+    retry["status"] = status
+    if status == "PENDING":
+        retry.pop("result")
+        retry["error"] = {"type": "TransientError"}
+    else:
+        retry["result"] = {"poll": 1}
+    result, _ = _run(CheckpointObservationAdapter(value, "after", initial, mode))
+    if mode != "partial":
+        assert result.status == "PASSED", result.errors
+    assert validate_evidence(result.evidence) == [], result.errors
+    assert result.evidence["replay"]["after"] == value["replay"]["after"]
+
+
+def test_before_snapshot_cannot_promote_an_unfinished_operation_to_completed() -> None:
+    value = _replay_evidence()
+    initial = deepcopy(value["replay"]["before"])
+    initial[0]["status"] = "STARTED"
+    result, _ = _run(CheckpointObservationAdapter(value, "before", initial, "phase"))
+    assert result.status != "PASSED"
+    retained = next(
+        operation for operation in result.evidence["replay"]["before"] if operation["id"] == initial[0]["id"]
+    )
+    assert retained["status"] == "STARTED"
+
+
+@pytest.mark.parametrize("rewrite", [False, True])
+def test_after_status_delta_retains_an_unchanged_terminal_null_outcome(rewrite: bool) -> None:
+    value = _replay_evidence()
+    if not rewrite:
+        for operation in _checkpoint_views(value):
+            if operation["id"] == "retry":
+                operation["result"] = None
+    assert validate_evidence(value) == []
+    initial = deepcopy(value["replay"]["after"])
+    next(operation for operation in initial if operation["id"] == "retry").update(status="STARTED", result=None)
+
+    class StatusOnlyAfterAdapter(CheckpointObservationAdapter):
+        async def place(self, context: ScenarioContext) -> None:
+            next(operation for operation in context.evidence["replay"]["after"] if operation["id"] == "retry")[
+                "status"
+            ] = "SUCCEEDED"
+
+        async def execute(self, context: ScenarioContext) -> None:
+            if rewrite:
+                next(operation for operation in context.evidence["replay"]["after"] if operation["id"] == "retry")[
+                    "result"
+                ] = "recovered"
+
+    result, _ = _run(StatusOnlyAfterAdapter(value, "after", initial))
+    assert (result.status == "PASSED") is (not rewrite), result.errors
+    retained = next(operation for operation in result.evidence["replay"]["after"] if operation["id"] == "retry")
+    assert retained["result"] is None

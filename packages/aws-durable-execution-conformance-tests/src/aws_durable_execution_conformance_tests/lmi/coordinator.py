@@ -562,12 +562,17 @@ def _ownership_errors(
 # Lambda OperationStatus differs from the execution-level status vocabulary.
 _OPERATION_NONTERMINAL_STATUSES = ("STARTED", "PENDING", "READY")
 _OPERATION_TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED")
+# replay.before contains completed checkpoints; only current operation views progress.
+_OPERATION_RECORD_PATHS: frozenset[tuple[str, ...]] = frozenset({("histories", "operations"), ("replay", "after")})
+_OUTCOME_RECORD_PATHS = _OPERATION_RECORD_PATHS | {("histories",), ("replay", "before")}
 _OBSERVATION_IDENTITIES: dict[tuple[str, ...], str] = {
     ("attempts",): "requestId",
     ("histories",): "executionArn",
     ("histories", "operations"): "id",
     ("faultsCreated",): "id",
     ("resourcesCreated",): "id",
+    ("replay", "before"): "id",
+    ("replay", "after"): "id",
     ("replay", "retry", "attempts"): "attemptId",
     ("replay", "sideEffects"): "operationId",
 }
@@ -616,7 +621,7 @@ def _side_effect_observation_errors(evidence: Mapping[str, Any]) -> list[str]:
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
     if path == ("histories", "status"):
         return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
-    if path == ("histories", "operations", "status"):
+    if path[:-1] in _OPERATION_RECORD_PATHS and path[-1:] == ("status",):
         return previous in _OPERATION_NONTERMINAL_STATUSES and current in (
             *_OPERATION_NONTERMINAL_STATUSES,
             *_OPERATION_TERMINAL_STATUSES,
@@ -668,9 +673,7 @@ def _observation_updates(
     for key, value in current.items():
         if key in previous and same_json(previous[key], value):
             continue
-        atomic = path == ("expectedHistories",) or (
-            path in (("histories",), ("histories", "operations")) and key in ("result", "error")
-        )
+        atomic = path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error"))
         if key not in previous or atomic:
             updates[key] = copy.deepcopy(value)
         elif isinstance(previous[key], Mapping) and isinstance(value, Mapping):
@@ -716,7 +719,7 @@ def _observation_updates(
                 if nested:
                     nested[identity] = record[identity]
                     if (
-                        (*path, key) in (("histories",), ("histories", "operations"))
+                        (*path, key) in _OUTCOME_RECORD_PATHS
                         and {"status", "result", "error"} & nested.keys()
                         and "status" in record
                     ):
@@ -751,7 +754,7 @@ def _retain_observations(
         and original.get("status") in ("RUNNING", "PENDING")
         and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
     )
-    progressing_operation = path == ("histories", "operations") and _observation_advanced(
+    progressing_operation = path in _OPERATION_RECORD_PATHS and _observation_advanced(
         original.get("status"), captured.get("status"), (*path, "status")
     )
     for key, previous in original.items():
@@ -760,9 +763,7 @@ def _retain_observations(
             # errors. Terminal checkpoints and non-null execution outcomes stay
             # immutable; an unfinished execution's null is only a placeholder.
             continue
-        if path == ("expectedHistories",) or (
-            path in (("histories",), ("histories", "operations")) and key in ("result", "error")
-        ):
+        if path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error")):
             # Checkpoint JSON and each predeclared execution expectation are
             # atomic contracts: arrays, object contents and status allowances
             # cannot be rewritten to accommodate the observed result.
