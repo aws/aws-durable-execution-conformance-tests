@@ -532,6 +532,24 @@ def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: s
     assert validate_evidence(value)
 
 
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("native_end", [29, 30, 40])
+def test_native_interval_contains_the_asserted_platform_timeout(
+    runtime: str, requirement: int, phase: Literal["observations", "final"], native_end: int
+) -> None:
+    value = deadline_evidence(runtime=runtime) if requirement == 3 else recovery_evidence(runtime)
+    # Admission at 10 plus timeoutMs=20 establishes the timeout at 30.
+    # Closure, probes and task exit may still follow native completion.
+    value["attempts"][0]["endedAtMs"] = native_end
+    errors = validate_evidence(value, phase=phase)
+    if native_end < 30:
+        assert any("platform timeout follows native invocation completion" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
 @pytest.mark.parametrize("field", ["environmentId", "workerId", "processId"])
 def test_recovery_cannot_use_unrelated_capacity(field: str) -> None:
     value = recovery_evidence()
