@@ -455,6 +455,133 @@ def test_cleanup_replay_discoveries_use_frozen_operations_and_count_oracles(phas
         assert any("completed user code" in error or "side-effect" in error for error in result.errors), result.errors
 
 
+@pytest.mark.parametrize("phase", ["release", "retire", "snapshot"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    "change", ["reverse", "operation", "first", "last", "request", "missing-entry", "duplicate", "metadata", "partial"]
+)
+def test_cleanup_retry_observations_preserve_frozen_identity_and_order(phase: str, path: str, change: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    frozen = deepcopy(value["replay"])
+    rejected = change not in {"metadata", "partial"}
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        retry = snapshot["replay"]["retry"]
+        attempts = retry["attempts"]
+        if change == "reverse":
+            attempts.reverse()
+        elif change == "operation":
+            retry["operationId"] = "other-operation"
+        elif change == "first":
+            attempts[0]["outcome"] = "SUCCEEDED"
+        elif change == "last":
+            attempts[-1]["outcome"] = "FAILED"
+        elif change == "request":
+            attempts[0]["requestId"] = "request-resume"
+            next(item for item in snapshot["replay"]["operationExecutions"] if item.get("attemptId") == "retry-1")[
+                "requestId"
+            ] = "request-resume"
+        elif change == "missing-entry":
+            attempts.insert(1, {"attemptId": "uncorroborated", "requestId": "request-victim", "outcome": "FAILED"})
+        elif change == "duplicate":
+            attempts.insert(1, deepcopy(attempts[0]))
+        elif change == "metadata":
+            attempts[0]["evidenceUri"] = "memory://retry-observation"
+        else:
+            snapshot["replay"]["retry"] = {"attempts": [{"attemptId": "retry-2"}]}
+
+    probe = deepcopy(value)
+    mutate(probe)
+    if rejected and change != "request":
+        assert validate_evidence(probe)
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence["replay"] == frozen
+    if rejected:
+        assert any("retry" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_cleanup_retry_order_conflict_survives_restoration(path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["replay"]["retry"]["attempts"].reverse()
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "FAILED", result.errors
+    assert result.evidence["replay"] == value["replay"]
+
+
+@pytest.mark.parametrize(
+    "position,outcome,rejected",
+    [(0, "SUCCEEDED", True), (2, "FAILED", True), (0, "FAILED", False), (1, "FAILED", False), (2, "SUCCEEDED", False)],
+)
+def test_new_cleanup_retry_attempts_preserve_standard_endpoint_semantics(
+    position: int, outcome: str, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        attempt = {"attemptId": "additional", "requestId": "request-resume", "outcome": outcome}
+        snapshot["replay"]["retry"]["attempts"].insert(position, attempt)
+        snapshot["replay"]["operationExecutions"].append({**attempt, "operationId": "retry"})
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert bool(validate_evidence(probe)) is rejected
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+
+
+def test_cleanup_retry_correlation_can_be_supplied_after_the_attempt_fragment() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        attempt = {"attemptId": "additional", "requestId": "request-victim", "outcome": "FAILED"}
+        if calls == 1:
+            snapshot["replay"]["retry"]["attempts"].insert(1, attempt)
+        else:
+            snapshot["replay"]["operationExecutions"].append({**attempt, "operationId": "retry"})
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize("cycle", [False, True])
+def test_cleanup_retry_partial_orders_are_combined_without_inventing_edges(cycle: bool) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    extra = {"attemptId": "additional", "requestId": "request-victim", "outcome": "FAILED"}
+    value["replay"]["operationExecutions"].append({**extra, "operationId": "retry"})
+    a, b = deepcopy(value["replay"]["retry"]["attempts"])
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        fragment = ([extra, a] if calls == 1 else [b, extra]) if cycle else ([extra] if calls == 1 else [b])
+        snapshot["replay"]["retry"] = {"attempts": deepcopy(fragment)}
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == ("FAILED" if cycle else "PASSED"), result.errors
+
+
+def test_cleanup_retry_unbound_native_reference_requires_reconciliation() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["replay"]["retry"]["attempts"].insert(
+            1, {"attemptId": "unbound", "requestId": "unknown-native", "outcome": "FAILED"}
+        )
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path="normal", quiescent=False)
+    assert result.status != "PASSED"
+    assert any(error.startswith("INCOMPLETE:") and "native request" in error for error in result.errors), result.errors
+
+
 @pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize("start", [39, 40, 41])
 def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, start: int) -> None:

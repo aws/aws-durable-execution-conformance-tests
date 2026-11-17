@@ -1220,6 +1220,154 @@ def _retirement_ownership_errors(
     return errors
 
 
+def _cleanup_retry_errors(
+    frozen_replay: Mapping[str, Any],
+    sources: Sequence[Mapping[str, Any]],
+    execution_arn: Any,
+    bound_execution: Callable[[Any], str | None],
+    *,
+    final: bool,
+) -> list[str]:
+    """Check retry claims without promoting partial fragments to whole runs."""
+    findings: list[str] = []
+    frozen_retry = frozen_replay.get("retry")
+    if not isinstance(frozen_retry, Mapping) or not isinstance(frozen_retry.get("operationId"), str):
+        return findings
+    operation_id = frozen_retry["operationId"]
+    frozen_attempts = frozen_retry.get("attempts", [])
+    frozen_ids = (
+        {
+            item["attemptId"]
+            for item in frozen_attempts
+            if isinstance(item, Mapping) and isinstance(item.get("attemptId"), str)
+        }
+        if isinstance(frozen_attempts, list)
+        else set()
+    )
+    facts: dict[str, dict[str, Any]] = {}
+    orders: list[list[str]] = []
+    entries: dict[str, list[Mapping[str, Any]]] = {}
+    for source in sources:
+        replay = source.get("replay")
+        if not isinstance(replay, Mapping):
+            continue
+        observed_entries = replay.get("operationExecutions", [])
+        if isinstance(observed_entries, list):
+            for entry in observed_entries:
+                if (
+                    isinstance(entry, Mapping)
+                    and entry.get("operationId") == operation_id
+                    and isinstance(entry.get("attemptId"), str)
+                ):
+                    entries.setdefault(entry["attemptId"], []).append(entry)
+        if "retry" not in replay:
+            continue
+        retry = replay["retry"]
+        if not isinstance(retry, Mapping):
+            if final:
+                findings.append("ASSERTION: cleanup retry observations must be an object")
+            continue
+        same_operation = "operationId" not in retry or same_json(retry["operationId"], operation_id)
+        if not same_operation:
+            findings.append("ASSERTION: cleanup retry operationId changed the frozen retry operation")
+        attempts = retry.get("attempts", [])
+        if not isinstance(attempts, list):
+            if final:
+                findings.append("ASSERTION: cleanup retry attempts must be an array")
+            continue
+        order = []
+        for attempt in attempts:
+            if not isinstance(attempt, Mapping):
+                if final:
+                    findings.append("ASSERTION: cleanup retry attempt must be an object")
+                continue
+            if "requestId" in attempt:
+                bound_execution(attempt["requestId"])
+            if not same_operation:
+                continue
+            attempt_id = attempt.get("attemptId")
+            if not isinstance(attempt_id, str) or not attempt_id.strip():
+                if final:
+                    findings.append("ASSERTION: cleanup retry attempt lacks a non-empty attemptId")
+                continue
+            order.append(attempt_id)
+            known = facts.setdefault(attempt_id, {})
+            for key in ("requestId", "outcome"):
+                if key not in attempt:
+                    continue
+                if key in known and not same_json(known[key], attempt[key]):
+                    findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} changed its known {key}")
+                else:
+                    known[key] = attempt[key]
+        if len(set(order)) != len(order):
+            findings.append("ASSERTION: cleanup retry observations repeat an attemptId")
+        elif order:
+            orders.append(order)
+
+    # Each source contributes only its observed ordering edges. In particular,
+    # separate singleton fragments do not imply a temporal relationship.
+    successors: dict[str, set[str]] = {attempt_id: set() for attempt_id in facts}
+    indegree = dict.fromkeys(facts, 0)
+    for order in orders:
+        for before, after in pairwise(order):
+            if after not in successors[before]:
+                successors[before].add(after)
+                indegree[after] += 1
+    ready = deque(attempt_id for attempt_id, degree in indegree.items() if degree == 0)
+    visited = 0
+    while ready:
+        attempt_id = ready.popleft()
+        visited += 1
+        for following in successors[attempt_id]:
+            indegree[following] -= 1
+            if indegree[following] == 0:
+                ready.append(following)
+    if visited != len(facts):
+        findings.append("ASSERTION: cleanup retry attempt order contradicts retained observations")
+
+    if not final:
+        return findings
+    for attempt_id, known in facts.items():
+        candidates = entries.get(attempt_id, [])
+        request_id = known.get("requestId")
+        if "requestId" not in known:
+            candidate_requests = {
+                item["requestId"]
+                for item in candidates
+                if isinstance(item.get("requestId"), str) and item["requestId"].strip()
+            }
+            if len(candidate_requests) == 1:
+                request_id = next(iter(candidate_requests))
+            else:
+                if not candidate_requests:
+                    bound_execution(None)
+                findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} has unresolved native correlation")
+                continue
+        owner = bound_execution(request_id)
+        if owner is None:
+            continue
+        if owner != execution_arn:
+            findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} did not run on the suspended execution")
+        matching = [item for item in candidates if item.get("requestId") == request_id]
+        if not matching:
+            findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} lacks a correlated user-code entry")
+            continue
+        outcomes = [item["outcome"] for item in matching if "outcome" in item]
+        if "outcome" not in known and outcomes and all(same_json(item, outcomes[0]) for item in outcomes):
+            known["outcome"] = outcomes[0]
+        if "outcome" in known and any(not same_json(known["outcome"], item) for item in outcomes):
+            findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} contradicts its user-code outcome")
+    for order in orders:
+        # A subset is not a new declaration of the full retry's endpoints.
+        if (
+            frozen_ids
+            and frozen_ids <= set(order)
+            and (facts[order[0]].get("outcome") != "FAILED" or facts[order[-1]].get("outcome") != "SUCCEEDED")
+        ):
+            findings.append("ASSERTION: cleanup retry observations do not start with failure and end with success")
+    return findings
+
+
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -1489,6 +1637,9 @@ def _cleanup_behavior_errors(
                         findings.append(
                             f"ASSERTION: cleanup side-effect count for {operation_id} differs from the frozen fixture oracle"
                         )
+            findings.extend(
+                _cleanup_retry_errors(replay, sources, victim.get("executionArn"), bound_execution, final=final)
+            )
         else:
             victim_id = role("victim").get("requestId")
             exited = boundary("victim", "task_exit")
