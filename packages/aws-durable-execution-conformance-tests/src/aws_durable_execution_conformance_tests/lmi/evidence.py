@@ -692,11 +692,15 @@ class _Evidence:
         if end < self.value.get("observationEndedAtMs", 0):
             self.error("retirement precedes completion of assertions")
         created_resources = self.records(self.value.get("resourcesCreated"), "resourcesCreated")
-        identities = {(item.get("kind"), item.get("id")) for item in created_resources}
+        identities = {
+            (item.get("kind"), item.get("id"))
+            for item in created_resources
+            if item.get("kind") in ("invocation", "execution")
+        }
         required = {("invocation", item["requestId"]) for item in self.attempts.values()}
         required.update(("execution", item["executionArn"]) for item in self.attempts.values())
-        if not required <= identities:
-            self.error("resourcesCreated must retain ownership of every launched invocation and execution")
+        if required != identities:
+            self.error("resourcesCreated must match observations for every launched invocation and execution")
         for created_key, settled_key, time_key in (
             ("resourcesCreated", "resources", "settledAtMs"),
             ("faultsCreated", "faults", "releasedAtMs"),

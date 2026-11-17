@@ -164,6 +164,10 @@ comparing it to cleanup or recovery; release cannot establish the earlier
 cleanup/recovery assertion.
 
 In `final` validation, `retirement.retiredAtMs` follows observation completion.
+Inventoried invocation and execution IDs must match the observed requests and
+their service histories in both directions. The independent retirement audit
+enforces the same correspondence; a settlement entry alone cannot account for
+an unobserved invocation or execution.
 `retirement.resources` matches every created resource exactly once, preserving
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
 be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,

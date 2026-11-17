@@ -925,6 +925,63 @@ def test_retirement_cannot_omit_suspended_executions_or_invocations() -> None:
     assert any("still resume" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
+@pytest.mark.parametrize("kind", ["invocation", "execution"])
+@pytest.mark.parametrize("mismatch", ["extra-inventory", "missing-inventory"])
+def test_retirement_inventory_matches_observations_in_both_directions(validator: Any, kind: str, mismatch: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    assert validator(value) == []
+    if mismatch == "extra-inventory":
+        resource = {"id": f"unobserved-{kind}", "kind": kind, "ownerCaseId": value["caseId"]}
+        value["resourcesCreated"].append(resource)
+        value["retirement"]["resources"].append(
+            {
+                **resource,
+                "settledAtMs": 210,
+                "evidenceUri": "s3://evidence/unobserved-resource.json",
+                "outcome": "QUIESCENT" if kind == "invocation" else "SUCCEEDED",
+            }
+        )
+    else:
+        resource = next(item for item in value["resourcesCreated"] if item["kind"] == kind)
+        for records in (value["resourcesCreated"], value["retirement"]["resources"]):
+            records[:] = [item for item in records if item["id"] != resource["id"]]
+
+    assert validate_evidence(value, phase="observations") == []
+    assert validate_common_evidence(value, phase="observations") == []
+    assert any("resourcesCreated" in error for error in validator(value))
+
+
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
+@pytest.mark.parametrize(("kind", "outcome"), [("callback", "SUCCEEDED"), ("control", "DELETED")])
+def test_retirement_inventory_keeps_other_owned_resource_kinds(validator: Any, kind: str, outcome: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    resource = {"id": f"owned-{kind}", "kind": kind, "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/owned-resource.json", "outcome": outcome}
+    )
+    assert validator(value) == []
+
+
+@pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
+@pytest.mark.parametrize("shared_execution", [False, True])
+def test_retirement_inventory_accepts_every_observed_request_and_execution(
+    validator: Any, shared_execution: bool
+) -> None:
+    value = evidence()
+    extra = attempt("extra", start=60, end=80)
+    if shared_execution:
+        extra["executionArn"] = value["attempts"][0]["executionArn"]
+    value["attempts"].append(extra)
+    refresh_histories(value)
+    record_owned_resources(value)
+    complete_retirement_events(value)
+    assert validator(value) == []
+
+
 @pytest.mark.parametrize(
     "diagnostics",
     [
