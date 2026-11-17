@@ -572,7 +572,9 @@ class _Evidence:
         closed = self.event(victim, "wrapper_return")
         if any(victim.get(key) != warm.get(key) for key in ("environmentId", "workerId", "processId")):
             self.error("warm reuse must identify the original process and worker", "PLACEMENT")
-        if warm.get("startedAtMs", 0) <= closed.get("atMs", 0):
+        if warm.get("startedAtMs", 0) <= closed.get("atMs", 0) or warm.get("startedAtMs", 0) < victim.get(
+            "endedAtMs", 0
+        ):
             self.error("warm invocation was not sequential reuse", "PLACEMENT")
         late = self.event(victim, "late_activity")
         if late.get("observedDuringRequestId") != warm.get("requestId") or not warm.get("startedAtMs", 0) <= late.get(

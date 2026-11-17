@@ -534,6 +534,23 @@ def test_warm_reuse_requires_the_original_process() -> None:
     assert any("original process" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("native_end", [49, 50, 70])
+def test_warm_reuse_requires_native_completion_before_warm_admission(
+    runtime: str, phase: Literal["observations", "final"], native_end: int
+) -> None:
+    value = warm_evidence(runtime)
+    # Wrapper return at 40 precedes warm admission at 50 in every case.
+    # Late activity at 60 and task exit at 65 may outlive native completion.
+    value["attempts"][0]["endedAtMs"] = native_end
+    errors = validate_evidence(value, phase=phase)
+    if native_end > 50:
+        assert any("warm invocation was not sequential reuse" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
 def test_case_owned_cleanup_and_retirement_completeness() -> None:
     value = evidence()
     value["resourcesCreated"] = [{"id": "callback-1", "ownerCaseId": "case-1"}]
