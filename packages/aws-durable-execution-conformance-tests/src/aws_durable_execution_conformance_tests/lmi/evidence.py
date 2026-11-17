@@ -107,6 +107,73 @@ class _Evidence:
             self.error(f"selectedRequests is missing roles: {', '.join(missing)}")
         return not missing
 
+    def operation_shape(
+        self, operation: Mapping[str, Any], path: str, *, completed: bool = False, check_interval: bool = False
+    ) -> None:
+        for key in ("id", "type", "status"):
+            self.string(operation.get(key), f"{path}.{key}")
+        if "name" not in operation:
+            self.error(f"{path}.name is required (null for an unnamed operation)")
+        elif operation["name"] is not None:
+            self.string(operation["name"], f"{path}.name")
+        if "parentId" not in operation:
+            self.error(f"{path}.parentId is required (null for the root)")
+        elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
+            self.error(f"{path}.parentId must be a string or null")
+        start = self.number(operation["startedAtMs"], f"{path}.startedAtMs") if "startedAtMs" in operation else None
+        end = self.number(operation["endedAtMs"], f"{path}.endedAtMs") if "endedAtMs" in operation else None
+        if check_interval and start is not None and end is not None and end < start:
+            self.error(f"{path} endedAtMs precedes startedAtMs")
+        if completed:
+            outcome_key = "result" if operation.get("status") == "SUCCEEDED" else "error"
+            if outcome_key not in operation:
+                self.error(f"{path} must preserve the stored {outcome_key}")
+
+    def optional_shapes(self) -> None:
+        """Check supplied wire fields without enabling another scenario's behavior."""
+        if "scenario" in self.value:
+            self.string(self.value["scenario"], "scenario")
+        if "coverageProfile" in self.value:
+            self.string(self.value["coverageProfile"], "coverageProfile")
+            if self.standard_behavior and self.value["coverageProfile"] != "standard":
+                self.error("coverageProfile must be standard for shared lifecycle evidence")
+        if "recoveryPolicy" in self.profile and self.profile["recoveryPolicy"] not in (
+            "reuse-worker",
+            "replace-worker",
+        ):
+            self.error("profile.recoveryPolicy must be reuse-worker or replace-worker")
+        if "budgets" in self.value:
+            budgets = self.mapping(self.value["budgets"], "budgets")
+            for field in ("admissionMs", "cleanupMs", "recoveryMs", "observationGraceMs"):
+                if field in budgets:
+                    self.number(budgets[field], f"budgets.{field}")
+        if "replay" not in self.value:
+            return
+        replay = self.mapping(self.value["replay"], "replay")
+        for field in ("before", "after"):
+            if field in replay:
+                for operation in self.records(replay[field], f"replay.{field}", nonempty=True):
+                    self.operation_shape(operation, f"replay.{field}", completed=field == "before")
+        if "operationExecutions" in replay:
+            for execution in self.records(replay["operationExecutions"], "replay.operationExecutions", nonempty=True):
+                for field in ("requestId", "operationId"):
+                    self.string(execution.get(field), f"replay.operationExecutions.{field}")
+        if "retry" in replay:
+            retry = self.mapping(replay["retry"], "replay.retry")
+            self.string(retry.get("operationId"), "replay.retry.operationId")
+            attempts = self.records(retry.get("attempts"), "replay.retry.attempts")
+            if len(attempts) < 2:
+                self.error("retry requires at least two observed attempts")
+            for attempt in attempts:
+                for field in ("attemptId", "requestId", "outcome"):
+                    self.string(attempt.get(field), f"retry.{field}")
+        if "sideEffects" in replay:
+            for count in self.records(replay["sideEffects"], "replay.sideEffects", nonempty=True):
+                self.string(count.get("operationId"), "replay.sideEffects.operationId")
+                for field in ("count", "expectedCount"):
+                    if type(count.get(field)) is not int or count[field] < 0:
+                        self.error(f"replay.sideEffects.{field} must be a non-negative integer")
+
     def common(self, *, validate_behavior: bool = True) -> None:
         value = self.value
         if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION:
@@ -128,6 +195,10 @@ class _Evidence:
             self.error("profile.nativeConcurrency must be a positive integer")
         if self.number(self.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
             self.error("profile.timeoutMs must be positive")
+        if validate_behavior:
+            # Physical retirement can retain partial behavior diagnostics;
+            # only the observation validators require their supplied shapes.
+            self.optional_shapes()
         observation_end = self.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
         attempt_ordinals: set[tuple[str, int]] = set()
         for attempt in self.records(value.get("attempts"), "attempts", nonempty=True):
@@ -256,28 +327,7 @@ class _Evidence:
             operations = self.records(history.get("operations"), "history.operations")
             ids: set[str] = set()
             for operation in operations:
-                for key in ("id", "type", "status"):
-                    self.string(operation.get(key), f"history operation.{key}")
-                if "name" not in operation:
-                    self.error("history operation.name is required (null for an unnamed operation)")
-                elif operation["name"] is not None:
-                    self.string(operation["name"], "history operation.name")
-                if "parentId" not in operation:
-                    self.error("history operation.parentId is required (null for the root)")
-                elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
-                    self.error("history operation.parentId must be a string or null")
-                operation_start = (
-                    self.number(operation["startedAtMs"], "history operation.startedAtMs")
-                    if "startedAtMs" in operation
-                    else None
-                )
-                operation_end = (
-                    self.number(operation["endedAtMs"], "history operation.endedAtMs")
-                    if "endedAtMs" in operation
-                    else None
-                )
-                if operation_start is not None and operation_end is not None and operation_end < operation_start:
-                    self.error("history operation endedAtMs precedes startedAtMs")
+                self.operation_shape(operation, "history operation", check_interval=True)
                 operation_id = operation.get("id")
                 if operation_id in ids:
                     self.error("duplicate operation identity in service history")
@@ -525,22 +575,11 @@ class _Evidence:
             self.error("replay changed completed operation identity, result, or failure", "ASSERTION")
         ids: set[str] = set()
         for operation in before:
-            for field in ("id", "type", "status"):
-                self.string(operation.get(field), f"replay.before.{field}")
-            if "name" not in operation:
-                self.error("replay.before.name is required (null for an unnamed operation)")
-            elif operation["name"] is not None:
-                self.string(operation["name"], "replay.before.name")
-            if "parentId" not in operation:
-                self.error("replay.before requires stable parentId")
             operation_id = operation.get("id")
             if operation_id in ids:
                 self.error("replay.before repeats an operation identity")
             if isinstance(operation_id, str):
                 ids.add(operation_id)
-            outcome_key = "result" if operation.get("status") == "SUCCEEDED" else "error"
-            if outcome_key not in operation:
-                self.error(f"replay.before must preserve the stored {outcome_key}")
         final_history = next(
             history for history in self.value["histories"] if history["executionArn"] == victim["executionArn"]
         )

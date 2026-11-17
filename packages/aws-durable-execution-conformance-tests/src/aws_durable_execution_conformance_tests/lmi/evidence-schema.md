@@ -7,6 +7,14 @@ fields; they cannot omit required version 1 observations. `evidence-schema.json`
 describes the structural wire format; the Python validator also checks ownership,
 ordering, placement, outcomes, and coverage.
 
+Observation validation checks the structure of supplied, recognized optional
+fields in every scenario. Presence and behavioral requirements remain scoped to
+the applicable scenario; unknown extension fields stay permitted. Caller-owned
+common validation preserves custom coverage-profile names. The separate physical
+retirement audit may retain partial behavior diagnostics while proving ownership
+and quiescence, and does not require those diagnostics to form complete replay
+or budget observations.
+
 All times are finite, nonnegative milliseconds on a single observation clock.
 Adapters must reconcile clocks before producing this document and preserve raw
 source times and correlation records in `collection.evidenceUris`. An arbitrary
