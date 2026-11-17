@@ -21,6 +21,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    EvidenceValidator,
     same_json,
     validate_common_evidence,
     validate_retirement_evidence,
@@ -245,11 +246,13 @@ class FailureAdapter:
             start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
 
 
-def _run(adapter: FailureAdapter, *, retry: bool = False) -> tuple[list[ScenarioResult], ResourceScheduler]:
+def _run(
+    adapter: FailureAdapter, *, retry: bool = False, validator: EvidenceValidator = _validator
+) -> tuple[list[ScenarioResult], ResourceScheduler]:
     scheduler = ResourceScheduler()
     cases = [_case("failed", retry=retry), _case("next")]
     results = asyncio.run(
-        run_scenarios(cases, [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler)
+        run_scenarios(cases, [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler)
     )
     return results, scheduler
 
@@ -379,6 +382,215 @@ def test_malformed_partial_evidence_cannot_release_the_target(damage: str) -> No
     assert PHASE_FAILURE in results[0].errors[0]
     assert results[1].status == "INFRASTRUCTURE_ERROR"
     assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+def test_reordered_cleanup_inventories_do_not_require_a_new_independent_audit(cleanup_phase: str) -> None:
+    class ReorderedAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            # Normal collection does not require the semantic sequence metadata
+            # that the stronger independent physical retirement audit needs.
+            for event in observed["events"]:
+                event.pop("sequence")
+            return observed
+
+        def reorder(self, context: ScenarioContext) -> None:
+            for inventory in ("attempts", "resourcesCreated", "faultsCreated", "histories", "sdkRequests", "events"):
+                context.evidence[inventory].reverse()
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if cleanup_phase == "release":
+                self.reorder(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if cleanup_phase == "retire":
+                self.reorder(context)
+            context.evidence["retirement"] = deepcopy(self.snapshots[context.scenario.case_id]["retirement"])
+            return True
+
+    adapter = ReorderedAdapter(phase="assertion")
+    (observed, following), scheduler = _run(adapter)
+    assert observed.status == following.status == "PASSED", observed.errors
+    assert observed.retirement_evidence == {}
+    assert observed.cleanup_evidence[cleanup_phase]
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("outcome", ["return", "raise", "replace-none"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+@pytest.mark.parametrize("original_failed", [False, True])
+def test_cleanup_discoveries_require_retirement_without_rewriting_behavior(
+    cleanup_phase: str, path: str, outcome: str, complete_retirement: bool, original_failed: bool
+) -> None:
+    checked_phases: list[str] = []
+
+    def validate_frozen(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        if evidence["caseId"] == "failed":
+            checked_phases.append(phase)
+            assert evidence["behaviorErrors"] == ([ORIGINAL_FAILURE] if original_failed else [])
+        return _validator(evidence, phase=phase)
+
+    class DiscoveryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if not original_failed:
+                observed["behaviorErrors"] = []
+            return observed
+
+        def discover(self, context: ScenarioContext) -> None:
+            context.evidence["resourcesCreated"].append(
+                {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+            )
+            if outcome == "raise":
+                raise RuntimeError("cleanup failed after discovering a control")
+            if outcome == "replace-none":
+                context.evidence = None  # type: ignore[assignment]
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed" and cleanup_phase == "release":
+                self.discover(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            self.steps.append(("failed", "retire"))
+            final = deepcopy(self.snapshots["failed"])
+            if complete_retirement:
+                _add_retained_resource(final, "control", "DELETED")
+            if path == "independent":
+                context.retirement_evidence = deepcopy(final)
+            if cleanup_phase == "retire":
+                self.discover(context)
+            if outcome != "replace-none" or cleanup_phase != "retire":
+                context.evidence = final
+            return True
+
+    adapter = DiscoveryAdapter(phase="assertion")
+    (observed, following), scheduler = _run(adapter, validator=validate_frozen)
+    assert observed.evidence["behaviorErrors"] == ([ORIGINAL_FAILURE] if original_failed else [])
+    assert all(resource["id"] != "control:failed" for resource in observed.evidence["resourcesCreated"])
+    if original_failed:
+        assert observed.status == "FAILED"
+        assert ORIGINAL_FAILURE in observed.errors
+    valid_cleanup = complete_retirement and outcome == "return" and (path == "independent" or not original_failed)
+    if valid_cleanup:
+        assert validate_retirement_evidence(observed.retirement_evidence) == []
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+        if not original_failed:
+            assert observed.status == "PASSED", observed.errors
+            assert checked_phases == ["observations", "final"]
+            original_retirement = observed.evidence["retirement"]
+            full_retirement = observed.retirement_evidence["retirement"]
+            assert original_retirement["retiredAtMs"] == full_retirement["retiredAtMs"]
+            assert all(resource["id"] != "control:failed" for resource in original_retirement["resources"])
+            assert any(resource["id"] == "control:failed" for resource in full_retirement["resources"])
+    else:
+        assert observed.status != "PASSED"
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any(
+        resource.get("id") == "control:failed"
+        for snapshot in observed.cleanup_evidence[cleanup_phase]
+        for resource in snapshot.get("resourcesCreated", [])
+    )
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+@pytest.mark.parametrize("inventory", ["attempts", "faultsCreated", "histories", "events", "sdkRequests"])
+def test_cleanup_cannot_omit_other_discovered_ownership_or_activity(cleanup_phase: str, inventory: str) -> None:
+    class DiscoveryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            return observed
+
+        def discover(self, context: ScenarioContext) -> None:
+            attempt = context.evidence["attempts"][0]
+            record = {
+                "requestId": attempt["requestId"],
+                "ownerRequestId": attempt["requestId"],
+                "executionArn": attempt["executionArn"],
+                "atMs": 1500,
+            }
+            extra = {
+                "attempts": {**attempt, "requestId": "new-request", "executionArn": "new-execution"},
+                "faultsCreated": {"id": "new-fault", "ownerCaseId": "failed"},
+                "histories": {"executionArn": "new-execution", "ownerCaseId": "failed", "status": "RUNNING"},
+                "events": {**record, "kind": "io_start", "taskId": "cleanup-io"},
+                "sdkRequests": {**record, "method": "CheckpointDurableExecution", "outcome": "REJECTED"},
+            }
+            context.evidence[inventory].append(extra[inventory])
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed" and cleanup_phase == "release":
+                self.discover(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            if cleanup_phase == "retire":
+                self.discover(context)
+            context.evidence = deepcopy(self.snapshots["failed"])
+            return True
+
+    adapter = DiscoveryAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert any(
+        len(snapshot.get(inventory, [])) > len(failed.evidence[inventory])
+        for snapshot in failed.cleanup_evidence[cleanup_phase]
+    )
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+def test_cleanup_discoveries_without_original_work_still_require_an_audit(cleanup_phase: str) -> None:
+    class EmptyOriginalAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed":
+                self.started.append("failed")
+                raise RuntimeError("failed before launching work")
+            await super().start(context)
+
+        def discover(self, context: ScenarioContext) -> None:
+            context.evidence["resourcesCreated"] = [{"id": "new-control", "kind": "control", "ownerCaseId": "failed"}]
+
+        async def release(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id != "failed":
+                await super().release(context)
+            elif cleanup_phase == "release":
+                self.discover(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            if cleanup_phase == "retire":
+                self.discover(context)
+            context.evidence = {}
+            return True
+
+    adapter = EmptyOriginalAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.evidence == {}
+    assert failed.attempts == []
+    assert any(snapshot.get("resourcesCreated") for snapshot in failed.cleanup_evidence[cleanup_phase])
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)
 

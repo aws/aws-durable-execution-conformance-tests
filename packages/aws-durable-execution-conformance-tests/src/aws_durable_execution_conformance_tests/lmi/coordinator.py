@@ -430,6 +430,15 @@ class ScenarioAdapter(Protocol):
     only when ``retire`` additionally supplies ``context.retirement_evidence``:
     independently auditable post-cleanup facts. That snapshot never replaces the
     original behavior evidence or makes its result pass.
+
+    Cleanup may discover additional owned work. Retain it on ``context.evidence``
+    even when a cleanup method raises. The coordinator preserves each cleanup
+    phase's snapshots separately in ``ScenarioResult.cleanup_evidence``. A case
+    that passed observations may supply its complete physical retirement snapshot
+    through the normal ``context.evidence`` path; failed cases still require
+    ``context.retirement_evidence``. All discovered work must be reconciled by
+    that snapshot under the independent physical retirement checks. Cleanup
+    cannot replace the original behavioral observations.
     """
 
     async def prepare(self, profile: Profile) -> None: ...
@@ -444,6 +453,8 @@ class ScenarioAdapter(Protocol):
 
 @dataclass
 class ScenarioResult:
+    """Frozen behavior, physical retirement, and separately retained cleanup snapshots."""
+
     case_id: str
     requirement_id: str
     profile_id: str
@@ -453,6 +464,7 @@ class ScenarioResult:
     attempts: list[dict[str, Any]]
     timings: dict[str, dict[str, float]]
     retirement_evidence: dict[str, Any] = field(default_factory=dict)
+    cleanup_evidence: dict[str, list[dict[str, Any]]] = field(default_factory=dict, kw_only=True)
 
 
 async def _bounded(
@@ -875,8 +887,9 @@ async def run_scenarios(
     """Prepare each profile once, then run compatible cases concurrently.
 
     Results preserve pre-release failures. Normal final collection can only add
-    the retirement record. Failed cases retain a separate audited retirement
-    snapshot, so cleanup cannot rewrite their original behavior observations.
+    the retirement record. Failed cases and cleanup discoveries retain a separate
+    audited retirement snapshot, so cleanup cannot rewrite their original behavior
+    observations.
     Missing handlers, infrastructure failures and evidence gaps are never passes.
     ``on_attempt`` is a synchronous durable journal sink called before transport
     dispatch. ``on_result`` receives case retirement and final profile-retirement
@@ -940,6 +953,8 @@ async def run_scenarios(
         evidence: dict[str, Any] = {}
         observation_baselines: list[dict[str, Any]] = []
         retirement_evidence: dict[str, Any] = {}
+        cleanup_evidence: dict[str, list[dict[str, Any]]] = {}
+        cleanup_changed = False
         collected_normally = False
         errors: list[str] = []
         status = "PASSED"
@@ -1052,7 +1067,51 @@ async def run_scenarios(
         finally:
             if lease is not None:
                 retired = False
+                physical_retirement_verified = False
                 cleanup_errors: list[str] = []
+                owned_inventories = (
+                    "attempts",
+                    "resourcesCreated",
+                    "faultsCreated",
+                    "histories",
+                    "sdkRequests",
+                    "events",
+                )
+
+                def inventory_changed(previous: Any, current: Any) -> bool:
+                    if not isinstance(previous, list) or not isinstance(current, list):
+                        return not same_json(previous, current)
+                    remaining = list(previous)
+                    for record in current:
+                        match = next((index for index, item in enumerate(remaining) if same_json(record, item)), None)
+                        if match is None:
+                            return True
+                        remaining.pop(match)
+                    return bool(remaining)
+
+                def retain_cleanup(phase: str, retained: Any) -> None:
+                    nonlocal cleanup_changed
+                    # Retain the object handed to the adapter as well as its
+                    # replacement: additions made before assigning None or a
+                    # fresh snapshot must survive that replacement.
+                    sources = [retained]
+                    if context.evidence is not retained:
+                        sources.append(context.evidence)
+                    for source in sources:
+                        try:
+                            if not isinstance(source, Mapping):
+                                raise ValueError("Cleanup observations must remain an evidence object")
+                            snapshot = copy.deepcopy(dict(source))
+                            snapshots = cleanup_evidence.setdefault(phase, [])
+                            if not any(same_json(snapshot, previous) for previous in snapshots):
+                                snapshots.append(snapshot)
+                            cleanup_changed |= any(
+                                inventory_changed(evidence.get(name, []), snapshot.get(name, []))
+                                for name in owned_inventories
+                            )
+                        except (Exception, asyncio.CancelledError) as exc:
+                            cleanup_errors.append(f"Cleanup evidence retention ({phase}): {type(exc).__name__}: {exc}")
+
                 if not collected_normally:
                     # Freeze context-held work before even a read-only collector
                     # can mutate it, fail, or be cancelled.
@@ -1103,10 +1162,14 @@ async def run_scenarios(
                     except Exception as exc:
                         errors.append(f"Context observation validation: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Context did not retain trustworthy observations")
+                release_evidence = context.evidence
                 try:
                     await _bounded(adapter.release(context), "release", limits.release, context, residual)
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"fault release: {type(exc).__name__}: {exc}")
+                finally:
+                    retain_cleanup("release", release_evidence)
+                retire_evidence = context.evidence
                 try:
                     retired = (
                         await _bounded(adapter.retire(context), "retirement", limits.retirement, context, residual)
@@ -1116,6 +1179,8 @@ async def run_scenarios(
                         cleanup_errors.append("Retirement did not prove case-owned quiescence")
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"retirement: {type(exc).__name__}: {exc}")
+                finally:
+                    retain_cleanup("retire", retire_evidence)
                 # A timed-out adapter can continue sending requests despite
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
@@ -1123,47 +1188,56 @@ async def run_scenarios(
                 try:
                     if not isinstance(context.evidence, Mapping):
                         raise ValueError("Cleanup observations must remain an evidence object")
-                    if evidence and "retirement" in context.evidence:
+                    if evidence and not cleanup_changed and "retirement" in context.evidence:
                         evidence["retirement"] = copy.deepcopy(context.evidence["retirement"])
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"Cleanup evidence retention: {type(exc).__name__}: {exc}")
+                cleanup_snapshots = [item for snapshots in cleanup_evidence.values() for item in snapshots]
                 owned_work = (
                     context.attempts
                     or context.retirement_evidence
+                    or cleanup_changed
                     or any(
-                        evidence.get(name)
-                        for name in (
-                            "attempts",
-                            "resourcesCreated",
-                            "faultsCreated",
-                            "histories",
-                            "sdkRequests",
-                            "events",
-                        )
+                        snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
-                if owned_work and (status != "PASSED" or context.retirement_evidence):
+                if owned_work and (status != "PASSED" or context.retirement_evidence or cleanup_changed):
                     try:
                         if not isinstance(context.retirement_evidence, Mapping):
                             raise ValueError("Independent retirement snapshot must be an object")
                         retirement_evidence = copy.deepcopy(dict(context.retirement_evidence))
+                        if not retirement_evidence and status == "PASSED" and cleanup_changed:
+                            if not isinstance(context.evidence, Mapping):
+                                raise ValueError("Normal cleanup did not retain a complete retirement snapshot")
+                            retirement_evidence = copy.deepcopy(dict(context.evidence))
                         if not retirement_evidence:
                             work = "Launched work" if context.attempts else "Owned work"
                             cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
                             audit = [
                                 error
-                                for baseline in [*observation_baselines, evidence]
+                                for baseline in [*observation_baselines, evidence, *cleanup_snapshots]
                                 for error in _retirement_ownership_errors(context, baseline, retirement_evidence)
                             ]
                             audit.extend(validate_retirement_evidence(retirement_evidence))
                             if audit:
                                 errors.extend(error for error in audit if error not in errors)
                                 cleanup_errors.append("Independent retirement evidence did not establish quiescence")
+                            else:
+                                physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
                 if evidence and status == "PASSED":
                     try:
+                        if cleanup_changed and physical_retirement_verified:
+                            # The full expanded inventory was audited above.
+                            # Final behavior validation still receives only its
+                            # frozen observations and their retirement records.
+                            retirement = copy.deepcopy(retirement_evidence["retirement"])
+                            for field, inventory in (("resources", "resourcesCreated"), ("faults", "faultsCreated")):
+                                original_ids = {item["id"] for item in evidence.get(inventory, [])}
+                                retirement[field] = [item for item in retirement[field] if item["id"] in original_ids]
+                            evidence["retirement"] = retirement
                         final_errors = _ownership_errors(context, evidence) + list(validator(evidence, phase="final"))
                         new_errors = [error for error in final_errors if error not in errors]
                         errors.extend(new_errors)
@@ -1190,6 +1264,7 @@ async def run_scenarios(
                 copy.deepcopy(context.attempts),
                 context.timings,
                 retirement_evidence=retirement_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
         )
         if cancelled:
