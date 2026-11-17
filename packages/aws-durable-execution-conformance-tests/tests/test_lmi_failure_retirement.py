@@ -478,6 +478,130 @@ def test_passing_case_cannot_add_a_new_native_request_only_during_retirement() -
     assert scheduler.quarantine_reason(PROFILE.resource_id)
 
 
+@pytest.mark.parametrize(
+    ("native_start", "native_end", "contains_original"),
+    [(90, 1000, True), (50, 1000, True), (90, 1200, True), (50, 1200, True), (95, 1200, False), (50, 999, False)],
+)
+def test_retirement_can_complete_but_not_shrink_provisional_native_intervals(
+    native_start: int, native_end: int, contains_original: bool
+) -> None:
+    class NativeIntervalAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["attempts"][0]["startedAtMs"] = 90
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["attempts"][0].update(startedAtMs=native_start, endedAtMs=native_end)
+
+    adapter = NativeIntervalAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status != "PASSED"
+    assert ORIGINAL_FAILURE in failed.errors
+    assert failed.evidence["attempts"][0]["startedAtMs"] == 90
+    assert failed.evidence["attempts"][0]["endedAtMs"] == 1000
+    assert failed.retirement_evidence["attempts"][0]["startedAtMs"] == native_start
+    assert failed.retirement_evidence["attempts"][0]["endedAtMs"] == native_end
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    if contains_original:
+        assert following.status == "PASSED", following.errors
+        assert adapter.started == ["failed", "next"]
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("identity", ["executionArn", "environmentId", "workerId", "processId", "role", "attempt"])
+def test_completing_native_intervals_cannot_change_invocation_identity(identity: str) -> None:
+    class ChangedIdentityAdapter(FailureAdapter):
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["attempts"][0].update(startedAtMs=50, endedAtMs=1200)
+            final["attempts"][0][identity] = 2 if identity == "attempt" else "different-identity"
+
+    adapter = ChangedIdentityAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert any(f"original invocation's {identity}" in error for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("source", ["original", "final"])
+@pytest.mark.parametrize("endpoint", ["startedAtMs", "endedAtMs"])
+@pytest.mark.parametrize("timestamp", [False, -1, float("inf"), float("nan"), "100"])
+def test_native_interval_completion_rejects_malformed_timestamps(source: str, endpoint: str, timestamp: Any) -> None:
+    class MalformedIntervalAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed" and source == "original":
+                observed["attempts"][0][endpoint] = timestamp
+            return observed
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["attempts"][0].update(startedAtMs=50, endedAtMs=1200)
+            if source == "final":
+                final["attempts"][0][endpoint] = timestamp
+
+    adapter = MalformedIntervalAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status != "PASSED"
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("source", ["native-end", "event", "sdk-request"])
+@pytest.mark.parametrize("settled_at", [18999, 19000])
+def test_completed_native_intervals_still_settle_after_original_activity(source: str, settled_at: int) -> None:
+    class OriginalActivityAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id != "failed":
+                return
+            snapshot = self.snapshots[context.scenario.case_id]
+            attempt = snapshot["attempts"][0]
+            if source == "native-end":
+                attempt["endedAtMs"] = 19000
+            else:
+                record = {
+                    "requestId": attempt["requestId"],
+                    "ownerRequestId": attempt["requestId"],
+                    "executionArn": attempt["executionArn"],
+                    "atMs": 19000,
+                }
+                if source == "event":
+                    snapshot["events"].append({**record, "kind": "late_activity"})
+                    _resequence(snapshot)
+                else:
+                    snapshot["sdkRequests"].append(
+                        {**record, "method": "CheckpointDurableExecution", "outcome": "REJECTED"}
+                    )
+
+        def damage_retirement(self, final: dict[str, Any]) -> None:
+            final["attempts"][0]["startedAtMs"] = 50
+            final["retirement"]["resources"][0]["settledAtMs"] = settled_at
+
+    adapter = OriginalActivityAdapter()
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status != "PASSED"
+    assert ORIGINAL_FAILURE in failed.errors
+    if settled_at < 19000:
+        assert any("settled before its originally observed activity" in error for error in failed.errors), failed.errors
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+    else:
+        assert following.status == "PASSED", following.errors
+        assert adapter.started == ["failed", "next"]
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
 class StaleSnapshotAdapter(FailureAdapter):
     """Observes late activity that its retirement snapshot does not cover."""
 

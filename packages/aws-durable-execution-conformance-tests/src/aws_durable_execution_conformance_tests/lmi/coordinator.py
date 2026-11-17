@@ -554,11 +554,22 @@ def _retirement_ownership_errors(
             "processId",
             "role",
             "attempt",
-            "startedAtMs",
-            "endedAtMs",
         ):
             if key in attempt and attempt[key] != settled.get(key):
                 errors.append(f"Retirement changed an original invocation's {key}")
+        # Native completion can widen a provisional fixture-observed interval,
+        # but it cannot erase any part of the original observation window.
+        for key in ("startedAtMs", "endedAtMs"):
+            if key not in attempt:
+                continue
+            before, after = attempt[key], settled.get(key)
+            if any(
+                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+                for value in (before, after)
+            ):
+                errors.append(f"Retirement cannot reconcile a malformed invocation {key}")
+            elif (key == "startedAtMs" and after > before) or (key == "endedAtMs" and after < before):
+                errors.append(f"Retirement narrowed an original invocation's {key}")
     for name, identity_fields in (
         ("resourcesCreated", ("kind", "id", "ownerCaseId")),
         ("faultsCreated", ("id", "ownerCaseId")),
