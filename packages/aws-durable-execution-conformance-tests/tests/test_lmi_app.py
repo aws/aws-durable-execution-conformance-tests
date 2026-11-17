@@ -151,7 +151,7 @@ def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
         lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
         lambda plan: plan["scenarios"][0].update(slots=1),
         lambda plan: plan["scenarios"][0].update(roles=["victim"]),
-        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-6").update(
+        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-4").update(
             exclusive=False
         ),
     ],
