@@ -584,6 +584,13 @@ def _retain_observations(
             # An unfinished record's null outcome is a placeholder. A completed
             # checkpoint's result/error, including JSON null, stays immutable.
             continue
+        if path in (("histories",), ("histories", "operations")) and key in ("result", "error"):
+            # Checkpoint JSON is one persisted value, not an observation
+            # inventory: array order and complete object contents are meaningful.
+            if key not in retained or not same_json(previous, retained[key]):
+                retained[key] = copy.deepcopy(previous)
+                changed = True
+            continue
         if key not in retained:
             retained[key] = copy.deepcopy(previous)
             changed = True
@@ -596,6 +603,8 @@ def _retain_observations(
                 ("attempts",): "requestId",
                 ("histories",): "executionArn",
                 ("histories", "operations"): "id",
+                ("faultsCreated",): "id",
+                ("resourcesCreated",): "id",
             }
             identity = identities.get((*path, key))
             events = (*path, key) == ("events",)

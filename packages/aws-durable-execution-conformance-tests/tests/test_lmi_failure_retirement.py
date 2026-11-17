@@ -20,6 +20,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    same_json,
     validate_common_evidence,
     validate_retirement_evidence,
 )
@@ -1205,4 +1206,153 @@ def test_event_resequencing_cannot_collapse_duplicate_observations() -> None:
     (collected, _), _scheduler = _run(DuplicateEventAdapter(phase="none"))
     assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
     assert sum(event["kind"] == "effect" for event in collected.evidence["events"]) == 2
+    assert any("omitted or changed retained" in error for error in collected.errors)
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("scope", ["history", "operation"])
+@pytest.mark.parametrize("field", ["result", "error"])
+@pytest.mark.parametrize(
+    ("original", "substituted"),
+    [
+        ([1, 2], [2, 1]),
+        ([1], [1, 2]),
+        ({"a": 1}, {"a": 1, "b": 2}),
+        ({"a": [1, 2]}, {"a": [2, 1]}),
+        ({"a": [1]}, {"a": [True]}),
+    ],
+)
+def test_checkpoint_outcome_json_is_retained_atomically(
+    phase: str, scope: str, field: str, original: Any, substituted: Any
+) -> None:
+    class OutcomeMutationAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id != "failed":
+                return
+            status = "SUCCEEDED" if field == "result" else "FAILED"
+            before, after = context.evidence["histories"][0], self.snapshots["failed"]["histories"][0]
+            if scope == "operation":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None, "status": status}
+                before["operations"], after["operations"] = [deepcopy(operation)], [deepcopy(operation)]
+                before, after = before["operations"][0], after["operations"][0]
+            else:
+                before["status"] = after["status"] = status
+                for resource in self.snapshots["failed"]["retirement"]["resources"]:
+                    if resource["kind"] == "execution":
+                        resource["outcome"] = status
+            before[field], after[field] = deepcopy(original), deepcopy(substituted)
+
+    (collected, _), _scheduler = _run(OutcomeMutationAdapter(phase="none" if phase == "normal" else "placement"))
+    assert collected.status != "PASSED", collected.errors
+    assert any("omitted or changed retained" in error for error in collected.errors)
+    outcome = collected.evidence["histories"][0]
+    if scope == "operation":
+        assert len(outcome["operations"]) == 1
+        outcome = outcome["operations"][0]
+    assert same_json(outcome[field], original), outcome[field]
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("inventory", ["faultsCreated", "resourcesCreated"])
+def test_collection_enriches_owned_inventory_without_duplicating_identity(phase: str, inventory: str) -> None:
+    class InventoryEnrichmentAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                record = self.snapshots["failed"][inventory][0]
+                if inventory == "faultsCreated":
+                    record["releasedAtMs"] = 790
+                else:
+                    record["evidenceUri"] = "memory://resource-observation"
+
+    adapter = InventoryEnrichmentAdapter(phase="none" if phase == "normal" else "placement")
+    (collected, following), scheduler = _run(adapter)
+    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+        assert ORIGINAL_FAILURE in collected.errors
+    assert collected.evidence[inventory] == adapter.snapshots["failed"][inventory]
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize(
+    ("inventory", "field", "substituted"),
+    [
+        ("faultsCreated", "ownerCaseId", "other-case"),
+        ("faultsCreated", "id", "other-fault"),
+        ("faultsCreated", "releasedAtMs", 900),
+        ("resourcesCreated", "ownerCaseId", "other-case"),
+        ("resourcesCreated", "id", "other-resource"),
+        ("resourcesCreated", "kind", "control"),
+        ("resourcesCreated", "evidenceUri", "memory://substituted-source"),
+    ],
+)
+def test_inventory_enrichment_cannot_replace_known_identity_or_metadata(
+    phase: str, inventory: str, field: str, substituted: Any
+) -> None:
+    class ConflictingInventoryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id != "failed":
+                return
+            if field == "releasedAtMs":
+                context.evidence[inventory][0][field] = 790
+            elif field == "evidenceUri":
+                context.evidence[inventory][0][field] = "memory://original-source"
+            self.original = deepcopy(context.evidence[inventory][0])
+            self.snapshots["failed"][inventory][0][field] = substituted
+
+    adapter = ConflictingInventoryAdapter(phase="none" if phase == "normal" else "placement")
+    (collected, _), _scheduler = _run(adapter)
+    assert collected.status != "PASSED", collected.errors
+    assert any("omitted or changed retained" in error for error in collected.errors)
+    original = next(record for record in collected.evidence[inventory] if record["id"] == adapter.original["id"])
+    assert original[field] == adapter.original[field]
+
+
+@pytest.mark.parametrize("inventory", ["faultsCreated", "resourcesCreated"])
+def test_inventory_identity_matching_preserves_observed_multiplicity(inventory: str) -> None:
+    class DuplicateInventoryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                context.evidence[inventory].append(deepcopy(context.evidence[inventory][0]))
+
+    adapter = DuplicateInventoryAdapter(phase="none")
+    (collected, _), _scheduler = _run(adapter)
+    assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
+    assert len(collected.evidence[inventory]) == len(adapter.snapshots["failed"][inventory]) + 1
     assert any("omitted or changed retained" in error for error in collected.errors)
