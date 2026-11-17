@@ -6,6 +6,7 @@
 import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -380,6 +381,92 @@ def test_malformed_partial_evidence_cannot_release_the_target(damage: str) -> No
     assert adapter.started == ["failed"]
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+@pytest.mark.parametrize("raises", [False, True])
+@pytest.mark.parametrize("original_failed", [False, True])
+@pytest.mark.parametrize("malformed", [None, [], ["retirement"], "retirement", 42])
+def test_malformed_cleanup_context_preserves_results_and_quarantines_only_its_target(
+    cleanup_phase: str, raises: bool, original_failed: bool, malformed: Any
+) -> None:
+    other = replace(PROFILE, profile_id="other", resource_id="arn:function:other")
+    finished: dict[str, bool] = {}
+    failed_admitted = asyncio.Event()
+
+    class CorruptingAdapter(FailureAdapter):
+        async def prepare(self, profile: Profile) -> None:
+            if profile.profile_id == other.profile_id:
+                await failed_admitted.wait()
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                failed_admitted.set()
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if not original_failed:
+                observed["behaviorErrors"] = []
+            return observed
+
+        def corrupt(self, context: ScenarioContext) -> None:
+            context.evidence = deepcopy(malformed)
+            if raises:
+                raise RuntimeError("cleanup failed after corrupting context evidence")
+
+        async def release(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed" and cleanup_phase == "release":
+                self.steps.append(("failed", "release"))
+                self.corrupt(context)
+            else:
+                await super().release(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            self.steps.append(("failed", "retire"))
+            # An independently valid snapshot and True result cannot excuse
+            # malformed cleanup output or bypass case-lease reconciliation.
+            context.retirement_evidence = deepcopy(self.snapshots["failed"])
+            if cleanup_phase == "retire":
+                self.corrupt(context)
+            return True
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            finished[profile.profile_id] = quiescent
+
+    adapter = CorruptingAdapter(phase="assertion")
+    scheduler = ResourceScheduler()
+    emitted: list[ScenarioResult] = []
+    cases = [_case("failed"), _case("next"), replace(_case("unrelated"), profile_id=other.profile_id)]
+    failed, following, unrelated = asyncio.run(
+        run_scenarios(
+            cases,
+            [PROFILE, other],
+            adapter,
+            run_id="run",
+            validator=_validator,
+            scheduler=scheduler,
+            scenario_concurrency=1,
+            on_result=emitted.append,
+        )
+    )
+    assert failed.status == ("FAILED" if original_failed else "INFRASTRUCTURE_ERROR")
+    assert any("Cleanup evidence retention" in error for error in failed.errors), failed.errors
+    assert failed.evidence["capturedBeforeCleanup"] is True
+    assert failed.evidence["behaviorErrors"] == ([ORIGINAL_FAILURE] if original_failed else [])
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert any("QuarantinedError" in error for error in following.errors)
+    assert unrelated.status == "PASSED", unrelated.errors
+    assert adapter.started == ["failed", "unrelated"]
+    assert {result.case_id for result in emitted} == {"failed", "next", "unrelated"}
+    assert finished == {PROFILE.profile_id: False, other.profile_id: True}
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert scheduler.quarantine_reason(other.resource_id) is None
+    assert scheduler._resources[PROFILE.resource_id].owners == {}
+    assert scheduler._active["run"] == 0
 
 
 @pytest.mark.parametrize("cancel_run", [False, True])

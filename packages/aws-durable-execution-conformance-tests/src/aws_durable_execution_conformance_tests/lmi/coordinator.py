@@ -1106,8 +1106,13 @@ async def run_scenarios(
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
-                if evidence and "retirement" in context.evidence:
-                    evidence["retirement"] = copy.deepcopy(context.evidence["retirement"])
+                try:
+                    if not isinstance(context.evidence, Mapping):
+                        raise ValueError("Cleanup observations must remain an evidence object")
+                    if evidence and "retirement" in context.evidence:
+                        evidence["retirement"] = copy.deepcopy(context.evidence["retirement"])
+                except (Exception, asyncio.CancelledError) as exc:
+                    cleanup_errors.append(f"Cleanup evidence retention: {type(exc).__name__}: {exc}")
                 owned_work = (
                     context.attempts
                     or context.retirement_evidence
