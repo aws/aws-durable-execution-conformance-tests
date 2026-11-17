@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     HISTORY_STATUSES,
+    TERMINAL_STATUSES,
     EvidenceValidator,
     same_json,
     validate_retirement_evidence,
@@ -835,6 +836,46 @@ def _retirement_ownership_errors(
                 for item in after
             ):
                 errors.append(f"Retirement omitted or changed an original {name} entry")
+
+    # Cleanup may complete active work, but cannot rewrite already terminal
+    # service facts. Fixture expectations are separate behavioral evidence.
+    def preserve_history_fields(
+        before: Mapping[str, Any], after: Mapping[str, Any] | None, owner: str, fields: tuple[str, ...]
+    ) -> None:
+        if after is None:
+            errors.append(f"Retirement omitted {owner}")
+            return
+        for key in fields:
+            if key in before and (key not in after or not same_json(before[key], after[key])):
+                errors.append(f"Retirement changed {owner}.{key}")
+
+    final_histories = {
+        item.get("executionArn"): item for item in final.get("histories", []) if isinstance(item, Mapping)
+    }
+    for history in original.get("histories", []):
+        if not isinstance(history, Mapping):
+            raise ValueError("Original history inventory is malformed")
+        arn = history.get("executionArn")
+        completed_history = final_histories.get(arn)
+        if history.get("status") in TERMINAL_STATUSES:
+            preserve_history_fields(
+                history, completed_history, f"terminal execution {arn}", ("status", "result", "error")
+            )
+        before_operations = history.get("operations", [])
+        after_operations = completed_history.get("operations", []) if completed_history is not None else []
+        if not isinstance(before_operations, list) or not isinstance(after_operations, list):
+            raise ValueError("Retirement operation inventories must be lists")
+        indexed_operations = {item.get("id"): item for item in after_operations if isinstance(item, Mapping)}
+        for operation in before_operations:
+            if not isinstance(operation, Mapping):
+                raise ValueError("Original operation inventory is malformed")
+            operation_id = operation.get("id")
+            operation_fields: tuple[str, ...] = ("name", "type", "parentId")
+            owner = f"operation {operation_id} in {arn}"
+            if operation.get("status") in _OPERATION_TERMINAL_STATUSES:
+                operation_fields += ("status", "result", "error")
+                owner = f"terminal {owner}"
+            preserve_history_fields(operation, indexed_operations.get(operation_id), owner, operation_fields)
     before_events, after_events = original.get("events", []), final.get("events", [])
     if not isinstance(before_events, list) or not isinstance(after_events, list):
         raise ValueError("Retirement observation inventories must be lists")

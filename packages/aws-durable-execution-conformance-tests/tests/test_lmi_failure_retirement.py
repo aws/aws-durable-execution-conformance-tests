@@ -151,6 +151,12 @@ def _validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str
     return list(evidence.get("behaviorErrors", []))
 
 
+def _service_fact_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+    return validate_common_evidence(
+        evidence, phase="observations" if phase == "observations" else "final", requirement_ids=("fixture-check",)
+    ) + _validator(evidence, phase=phase)
+
+
 class FailureAdapter:
     def __init__(self, *, phase: str = "execute", damage: str | None = None) -> None:
         self.phase = phase
@@ -948,6 +954,263 @@ def test_passing_case_cannot_add_a_new_native_request_only_during_retirement() -
     assert adapter.started == ["failed"]
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent", "failed"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "execution-result",
+        "execution-error",
+        "execution-status",
+        "execution-null",
+        "operation-result",
+        "operation-error",
+        "operation-status",
+        "operation-null",
+        "operation-drop",
+        "operation-name",
+        "operation-type",
+        "operation-parentId",
+    ],
+)
+def test_retirement_preserves_observed_terminal_service_facts(path: str, change: str) -> None:
+    initial: dict[str, Any] = {"status": "SUCCEEDED", "result": "A", "operations": []}
+    if change == "execution-error":
+        initial = {"status": "FAILED", "error": {"message": "A"}, "operations": []}
+    elif change == "execution-null":
+        initial["result"] = None
+    elif change.startswith("operation"):
+        operation: dict[str, Any] = {
+            "id": "step",
+            "name": "stable-step",
+            "type": "STEP",
+            "parentId": None,
+            "status": "SUCCEEDED",
+            "result": "A",
+        }
+        if change == "operation-error":
+            operation.update(status="FAILED", error={"value": True})
+            operation.pop("result")
+        elif change == "operation-null":
+            operation["result"] = None
+        initial["operations"] = [operation]
+
+    class ChangedTerminalAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            snapshot = self.snapshots[context.scenario.case_id]
+            snapshot["histories"][0].update(deepcopy(initial))
+            for resource in snapshot["retirement"]["resources"]:
+                if resource["kind"] == "execution":
+                    resource["outcome"] = initial["status"]
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if path != "failed":
+                observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: deepcopy(initial) for history in observed["histories"]
+            }
+            return observed
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["resourcesCreated"].append(
+                    {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+                )
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            final = deepcopy(self.snapshots["failed"])
+            _add_retained_resource(final, "control", "DELETED")
+            history = final["histories"][0]
+            if change == "operation-drop":
+                history["operations"] = []
+            else:
+                target = history["operations"][0] if change.startswith("operation") else history
+                if change.endswith("result"):
+                    target["result"] = "B"
+                elif change.endswith("error"):
+                    target["error"] = {"value": 1} if change.startswith("operation") else {"message": "B"}
+                elif change.endswith("null"):
+                    target.pop("result")
+                elif change.removeprefix("operation-") in ("name", "type", "parentId"):
+                    target[change.removeprefix("operation-")] = "different-identity"
+                else:
+                    target.update(status="FAILED", error={"message": "B"})
+                    target.pop("result")
+            for resource in final["retirement"]["resources"]:
+                if resource["kind"] == "execution":
+                    resource["outcome"] = history["status"]
+            if path == "normal":
+                context.evidence = final
+            else:
+                context.retirement_evidence = final
+                context.evidence["retirement"] = deepcopy(final["retirement"])
+            return True
+
+    adapter = ChangedTerminalAdapter(phase="assertion")
+    (observed, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert observed.status != "PASSED", observed.errors
+    assert any("Retirement" in error and "terminal" in error for error in observed.errors), observed.errors
+    assert validate_retirement_evidence(observed.retirement_evidence) == []
+    if path == "failed":
+        assert ORIGINAL_FAILURE in observed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent", "failed"])
+@pytest.mark.parametrize(
+    "progress", ["RUNNING", "PENDING", "operation-STARTED", "operation-PENDING", "operation-READY", "completion-only"]
+)
+def test_retirement_allows_actual_service_progress_and_additional_history_fields(path: str, progress: str) -> None:
+    initial: dict[str, Any] = {"status": "RUNNING", "result": None, "operations": []}
+    final_history: dict[str, Any] = {"status": "SUCCEEDED", "result": "completed", "operations": []}
+    if progress in ("RUNNING", "PENDING"):
+        initial["status"] = progress
+    elif progress.startswith("operation-"):
+        status = progress.removeprefix("operation-")
+        operation = {"id": "step", "name": "stable-step", "type": "STEP", "parentId": None, "status": status}
+        initial["operations"] = [{**operation, "error" if status == "PENDING" else "result": {"attempt": 1}}]
+        final_history["operations"] = [{**operation, "status": "SUCCEEDED", "result": {"attempt": 3}}]
+    else:
+        first = {"id": "first", "name": "first", "type": "STEP", "parentId": None, "status": "SUCCEEDED"}
+        second = {
+            "id": "second",
+            "name": "second",
+            "type": "STEP",
+            "parentId": None,
+            "status": "FAILED",
+            "error": {"message": "known"},
+        }
+        initial = {"status": "SUCCEEDED", "operations": [first, second]}
+        final_history["operations"] = [
+            deepcopy(second),
+            {**first, "result": None},
+            {**first, "id": "new", "name": "new", "result": "later-collected"},
+        ]
+
+    class ProgressingAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                self.snapshots["failed"]["histories"][0].update(deepcopy(initial))
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if path != "failed":
+                observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: {"allowedStatuses": ["RUNNING", "PENDING", "SUCCEEDED"]}
+                for history in observed["histories"]
+            }
+            return observed
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["resourcesCreated"].append(
+                    {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+                )
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            final = deepcopy(self.snapshots["failed"])
+            final["histories"][0].update(deepcopy(final_history))
+            _add_retained_resource(final, "control", "DELETED")
+            if path == "normal":
+                context.evidence = final
+            else:
+                context.retirement_evidence = final
+                context.evidence["retirement"] = deepcopy(final["retirement"])
+            return True
+
+    adapter = ProgressingAdapter(phase="assertion")
+    (observed, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert observed.status == ("FAILED" if path == "failed" else "PASSED"), observed.errors
+    assert validate_retirement_evidence(observed.retirement_evidence) == []
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("status", ["STARTED", "PENDING", "READY"])
+@pytest.mark.parametrize("field", ["name", "type", "parentId"])
+def test_active_operations_keep_their_observed_identity_during_retirement(status: str, field: str) -> None:
+    class ChangedIdentityAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["histories"][0].update(
+                status="RUNNING",
+                operations=[{"id": "step", "name": None, "type": "STEP", "parentId": None, "status": status}],
+            )
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            history = context.retirement_evidence["histories"][0]
+            history["status"] = "SUCCEEDED"
+            history["operations"][0].update(status="SUCCEEDED", result="completed")
+            if context.scenario.case_id == "failed":
+                history["operations"][0][field] = "different-identity"
+            return True
+
+    adapter = ChangedIdentityAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert any("Retirement changed operation" in error and field in error for error in failed.errors), failed.errors
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert following.status == "INFRASTRUCTURE_ERROR"
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_retirement_can_fill_previously_unobserved_operation_identity_fields() -> None:
+    class CompletedIdentityAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            history = self.snapshots[context.scenario.case_id]["histories"][0]
+            history["result"] = "completion-result"
+            if context.scenario.case_id == "failed":
+                history["operations"] = [
+                    {
+                        "id": "step",
+                        "name": None,
+                        "type": "STEP",
+                        "parentId": None,
+                        "status": "SUCCEEDED",
+                        "result": None,
+                    }
+                ]
+                context.evidence = {
+                    "histories": [
+                        {
+                            "executionArn": history["executionArn"],
+                            "ownerCaseId": "failed",
+                            "status": "RUNNING",
+                            "operations": [{"id": "step", "status": "STARTED"}],
+                        }
+                    ]
+                }
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: {"status": "SUCCEEDED", "result": "completion-result"}
+                for history in observed["histories"]
+            }
+            return observed
+
+    adapter = CompletedIdentityAdapter(phase="assertion")
+    (completed, following), scheduler = _run(adapter, validator=_service_fact_validator)
+    assert completed.status == following.status == "PASSED", completed.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
 
 
 @pytest.mark.parametrize("phase", ["normal", "partial"])
@@ -2287,7 +2550,15 @@ def test_retained_immutable_conflicts_survive_a_later_matching_collection(phase:
     assert collected.status != "PASSED", collected.errors
     assert any("conflict with retained facts" in error for error in collected.errors), collected.errors
     assert validate_common_evidence(collected.evidence, requirement_ids=("fixture-check",)) == []
-    assert following.status == "PASSED", following.errors
+    if scope == "expectation":
+        # A business-expectation conflict does not contradict the fetched
+        # service history used to prove physical retirement.
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+    else:
+        assert any("Retirement changed terminal" in error for error in collected.errors), collected.errors
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.finished == [False]
 
 
 @pytest.mark.parametrize("phase", ["place", "collect"])
