@@ -1230,9 +1230,27 @@ async def run_scenarios(
         raise ValueError("Profiles must have unique identities and target resources")
     if len({case.case_id for case in scenarios}) != len(scenarios):
         raise ValueError("Case IDs must be unique within a run")
+    admission_identities: dict[str, dict[str, Any]] = {}
     for case in scenarios:
         if case.profile_id not in profile_map or case.slots > profile_map[case.profile_id].capacity:
             raise ValueError(f"Invalid profile or capacity budget for {case.case_id}")
+        profile = profile_map[case.profile_id]
+        deployment: dict[str, Any] = {
+            "functionArn": profile.resource_id,
+            "configurationDigest": profile.configuration_id,
+            "nativeConcurrency": profile.native_concurrency,
+        }
+        if profile.recovery_policy is not None:
+            deployment["recoveryPolicy"] = profile.recovery_policy
+        # Capture admission before adapter callbacks can replace context metadata.
+        admission_identities[case.case_id] = {
+            "runId": run_id,
+            "caseId": case.case_id,
+            "requirementId": case.requirement_id,
+            "coverageProfile": case.coverage_profile,
+            "artifact": {"sdk": profile.artifact_id},
+            "profile": deployment,
+        }
     for profile in profiles:
         leases.register(profile.resource_id, profile.capacity)
     if not callable(getattr(adapter, "finish", None)):
@@ -1276,6 +1294,7 @@ async def run_scenarios(
 
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
+        admitted_identity = admission_identities[case.case_id]
         evidence: dict[str, Any] = {}
         observation_baselines: list[dict[str, Any]] = []
         retry_orderings: list[tuple[str, ...]] = []
@@ -1477,6 +1496,7 @@ async def run_scenarios(
                 retired = False
                 physical_retirement_verified = False
                 cleanup_errors: list[str] = []
+                frozen_cleanup_identity: dict[str, Any] = {}
                 owned_inventories = (
                     "attempts",
                     "resourcesCreated",
@@ -1497,6 +1517,35 @@ async def run_scenarios(
                         remaining.pop(match)
                     return bool(remaining)
 
+                def check_cleanup_identity(snapshot: Mapping[str, Any], phase: str) -> None:
+                    # Partial snapshots may omit metadata, but every supplied
+                    # identity must agree with admission and known observations.
+                    for key in ("runId", "caseId", "requirementId", "coverageProfile"):
+                        if key in snapshot and not same_json(snapshot[key], admitted_identity[key]):
+                            cleanup_errors.append(f"Cleanup {phase}: {key} differs from the admitted identity")
+                    if (
+                        "runtime" in snapshot
+                        and "runtime" in frozen_cleanup_identity
+                        and not same_json(snapshot["runtime"], frozen_cleanup_identity["runtime"])
+                    ):
+                        cleanup_errors.append(f"Cleanup {phase}: runtime differs from the observed identity")
+                    for section in ("artifact", "profile"):
+                        if section not in snapshot:
+                            continue
+                        supplied = snapshot[section]
+                        if not isinstance(supplied, Mapping):
+                            cleanup_errors.append(f"Cleanup {phase}: {section} must be an object")
+                            continue
+                        expected = (admitted_identity[section], frozen_cleanup_identity.get(section, {}))
+                        for key, value in supplied.items():
+                            if any(
+                                isinstance(fields, Mapping) and key in fields and not same_json(value, fields[key])
+                                for fields in expected
+                            ):
+                                cleanup_errors.append(
+                                    f"Cleanup {phase}: {section}.{key} differs from the frozen identity"
+                                )
+
                 def retain_cleanup(phase: str, retained: Any) -> None:
                     nonlocal cleanup_changed
                     # Retain the object handed to the adapter as well as its
@@ -1513,6 +1562,7 @@ async def run_scenarios(
                             snapshots = cleanup_evidence.setdefault(phase, [])
                             if not any(same_json(snapshot, previous) for previous in snapshots):
                                 snapshots.append(snapshot)
+                                check_cleanup_identity(snapshot, phase)
                                 # Source failures invalidate cleanup evidence
                                 # even when ownership inventories did not change
                                 # or a later phase removes the diagnostics.
@@ -1591,6 +1641,12 @@ async def run_scenarios(
                     except Exception as exc:
                         errors.append(f"Context observation validation: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Context did not retain trustworthy observations")
+                try:
+                    frozen_cleanup_identity = copy.deepcopy(
+                        {key: evidence[key] for key in ("runtime", "artifact", "profile") if key in evidence}
+                    )
+                except (Exception, asyncio.CancelledError) as exc:
+                    cleanup_errors.append(f"Cleanup identity retention: {type(exc).__name__}: {exc}")
                 release_evidence = context.evidence
                 try:
                     await _bounded(adapter.release(context), "release", limits.release, context, residual)

@@ -600,6 +600,217 @@ def test_reordered_cleanup_inventories_do_not_require_a_new_independent_audit(cl
     assert scheduler.quarantine_reason(PROFILE.resource_id) is None
 
 
+class CleanupIdentityAdapter(FailureAdapter):
+    def __init__(
+        self, phase: str, path: tuple[str, ...], value: Any, *, restore: bool = False, mutate_context: bool = False
+    ) -> None:
+        super().__init__(phase="assertion")
+        self.cleanup_phase, self.path, self.value = phase, path, value
+        self.restore, self.mutate_context = restore, mutate_context
+        self.original_run_id = ""
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        self.original_run_id = context.run_id
+        snapshot = self.snapshots[context.scenario.case_id]
+        snapshot["histories"][0]["result"] = None
+        snapshot["profile"]["recoveryPolicy"] = "reuse-worker"
+        snapshot["artifact"]["build"] = 1
+
+    def observations(self, context: ScenarioContext) -> dict[str, Any]:
+        observed = super().observations(context)
+        observed["behaviorErrors"] = []
+        observed["expectedHistories"] = {
+            history["executionArn"]: {"status": "SUCCEEDED", "result": None} for history in observed["histories"]
+        }
+        return observed
+
+    def change_identity(self, context: ScenarioContext) -> None:
+        if not self.path:
+            context.evidence["artifact"] = {}
+            context.evidence["profile"] = {}
+            return
+        target = context.evidence
+        for key in self.path[:-1]:
+            target = target[key]
+        target[self.path[-1]] = deepcopy(self.value)
+        if self.mutate_context:
+            context.run_id = self.value
+
+    async def release(self, context: ScenarioContext) -> None:
+        await super().release(context)
+        if context.scenario.case_id == "failed" and self.cleanup_phase == "release":
+            self.change_identity(context)
+
+    async def retire(self, context: ScenarioContext) -> bool:
+        if context.scenario.case_id != "failed":
+            return await super().retire(context)
+        if self.cleanup_phase == "retire":
+            self.change_identity(context)
+        if self.restore:
+            context.run_id = self.original_run_id
+            context.evidence = self.observations(context)
+        context.evidence["retirement"] = deepcopy(self.snapshots["failed"]["retirement"])
+        return True
+
+
+@pytest.mark.parametrize("phase", ["release", "retire"])
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("runId",), "other-run"),
+        (("caseId",), "other-case"),
+        (("requirementId",), "other-requirement"),
+        (("coverageProfile",), "other-suite"),
+        (("runtime",), "python"),
+        (("artifact", "sdk"), "sdk@other"),
+        (("artifact", "conformance"), "other-validator"),
+        (("artifact", "build"), True),
+        (("profile", "functionArn"), "arn:function:other"),
+        (("profile", "configurationDigest"), "sha256:other"),
+        (("profile", "nativeConcurrency"), True),
+        (("profile", "recoveryPolicy"), "replace-worker"),
+        (("profile", "timeoutMs"), 501),
+        (("artifact",), None),
+        (("profile",), []),
+    ],
+)
+def test_cleanup_cannot_change_reported_case_or_deployment_identity(
+    phase: str, restore: bool, path: tuple[str, ...], value: Any
+) -> None:
+    adapter = CleanupIdentityAdapter(phase, path, value, restore=restore)
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    scheduler = ResourceScheduler()
+    failed, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+        )
+    )
+    assert failed.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert any(".".join(path) in error for error in failed.errors), failed.errors
+    assert failed.evidence["artifact"]["sdk"] == profile.artifact_id
+    assert failed.evidence["profile"]["configurationDigest"] == profile.configuration_id
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(profile.resource_id)
+
+
+@pytest.mark.parametrize("phase", ["release", "retire"])
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("artifact", "sdk"), PROFILE.artifact_id),
+        (("artifact", "extra"), {"new": True}),
+        (("profile", "extra"), "new"),
+        ((), None),
+    ],
+)
+def test_cleanup_accepts_unchanged_and_completed_identity_metadata(
+    phase: str, path: tuple[str, ...], value: Any
+) -> None:
+    adapter = CleanupIdentityAdapter(phase, path, value, restore=True)
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    scheduler = ResourceScheduler()
+    result, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+        )
+    )
+    assert result.status == following.status == "PASSED", result.errors
+    assert result.retirement_evidence == {}
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(profile.resource_id) is None
+
+
+@pytest.mark.parametrize("phase", ["release", "retire"])
+def test_cleanup_identity_checks_use_frozen_admission_when_context_changes(phase: str) -> None:
+    adapter = CleanupIdentityAdapter(phase, ("runId",), "other-run", restore=True, mutate_context=True)
+    failed, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+        )
+    )
+    assert failed.status == following.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert any("runId" in error for error in failed.errors), failed.errors
+    assert adapter.finished == [False]
+
+
+def test_cleanup_recovery_policy_uses_declared_admission_when_not_observed_earlier() -> None:
+    class InitiallyUndeclaredAdapter(CleanupIdentityAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["profile"].pop("recoveryPolicy")
+
+    adapter = InitiallyUndeclaredAdapter("retire", ("profile", "recoveryPolicy"), "replace-worker")
+    profile = replace(PROFILE, recovery_policy="reuse-worker")
+    failed, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [profile],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+        )
+    )
+    assert failed.status == following.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert "recoveryPolicy" not in failed.evidence["profile"]
+    assert any("profile.recoveryPolicy" in error for error in failed.errors), failed.errors
+    assert adapter.finished == [False]
+
+
+def test_cleanup_identity_failure_does_not_block_other_profiles() -> None:
+    other = replace(PROFILE, profile_id="other", resource_id="arn:function:other")
+    finished: dict[str, bool] = {}
+    first_admitted = asyncio.Event()
+
+    class IsolatedAdapter(CleanupIdentityAdapter):
+        async def prepare(self, profile: Profile) -> None:
+            if profile.profile_id == other.profile_id:
+                await first_admitted.wait()
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                first_admitted.set()
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            finished[profile.profile_id] = quiescent
+
+    adapter = IsolatedAdapter("release", ("artifact", "sdk"), "sdk@other", restore=True)
+    scheduler = ResourceScheduler()
+    failed, following, independent = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next"), replace(_case("independent"), profile_id=other.profile_id)],
+            [PROFILE, other],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+            scenario_concurrency=1,
+        )
+    )
+    assert failed.status == following.status == "INFRASTRUCTURE_ERROR", failed.errors
+    assert independent.status == "PASSED", independent.errors
+    assert finished == {PROFILE.profile_id: False, other.profile_id: True}
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert scheduler.quarantine_reason(other.resource_id) is None
+
+
 @pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
 @pytest.mark.parametrize("clear_later", [False, True])
 @pytest.mark.parametrize(
