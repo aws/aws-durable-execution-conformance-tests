@@ -544,9 +544,11 @@ class _Evidence:
         }
         executions = self.records(replay.get("operationExecutions"), "replay.operationExecutions", nonempty=True)
         for execution in executions:
-            if execution.get("requestId") not in self.attempts:
+            request_id = self.string(execution.get("requestId"), "replay.operationExecutions.requestId")
+            operation_id = self.string(execution.get("operationId"), "replay.operationExecutions.operationId")
+            if request_id not in self.attempts:
                 self.error("operationExecutions references an unrecorded request")
-            if execution.get("requestId") in later and execution.get("operationId") in completed:
+            if request_id in later and operation_id in completed:
                 self.error("resume repeated completed user code", "ASSERTION")
         retry = self.mapping(replay.get("retry"), "replay.retry")
         retry_id = self.string(retry.get("operationId"), "replay.retry.operationId")

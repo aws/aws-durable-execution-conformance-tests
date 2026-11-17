@@ -679,6 +679,47 @@ def test_replay_checks_stored_failures_and_completed_side_effects() -> None:
     assert any("side-effect count" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("field", ["requestId", "operationId"])
+@pytest.mark.parametrize("invalid", [None, False, 1, "", " ", [], {}])
+def test_replay_execution_identities_must_be_nonempty_strings(
+    phase: Literal["observations", "final"], field: str, invalid: Any
+) -> None:
+    value = replay_evidence()
+    execution = {"requestId": "request-resume", "operationId": "unfinished"}
+    execution[field] = invalid
+    value["replay"]["operationExecutions"].append(execution)
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"replay.operationExecutions.{field} must be a non-empty string" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("field", ["requestId", "operationId"])
+def test_replay_execution_cannot_omit_either_identity(phase: Literal["observations", "final"], field: str) -> None:
+    value = replay_evidence()
+    execution = {"requestId": "request-resume", "operationId": "unfinished"}
+    del execution[field]
+    value["replay"]["operationExecutions"].append(execution)
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"replay.operationExecutions.{field} must be a non-empty string" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("operation_id", ["done", "failed", "unfinished"])
+def test_replay_execution_distinguishes_completed_from_uncheckpointed_operations(
+    phase: Literal["observations", "final"], operation_id: str
+) -> None:
+    value = replay_evidence()
+    value["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": operation_id})
+    errors = validate_evidence(value, phase=phase)
+    if operation_id == "unfinished":
+        # A real body entry can precede its checkpoint, so its nonempty ID need
+        # not be present in the completed snapshots or final service history.
+        assert errors == [], errors
+    else:
+        assert any("repeated completed user code" in error for error in errors), errors
+
+
 def test_no_later_invocation_may_repeat_completed_user_code() -> None:
     # A side-effect count cannot catch this when the body has no external
     # effect, so every request after the victim on the same execution is
