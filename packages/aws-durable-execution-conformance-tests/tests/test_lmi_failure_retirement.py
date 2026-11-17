@@ -1443,3 +1443,150 @@ def test_inventory_identity_matching_preserves_observed_multiplicity(inventory: 
     assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
     assert len(collected.evidence[inventory]) == len(adapter.snapshots["failed"][inventory]) + 1
     assert any("omitted or changed retained" in error for error in collected.errors)
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize(
+    ("declared", "substituted", "actual"),
+    [
+        ({"status": "SUCCEEDED", "result": [1, 2]}, {"status": "SUCCEEDED", "result": [2, 1]}, {"result": [2, 1]}),
+        ({"status": "SUCCEEDED", "result": [1]}, {"status": "SUCCEEDED", "result": [1, 2]}, {"result": [1, 2]}),
+        (
+            {"status": "SUCCEEDED", "result": {"a": 1}},
+            {"status": "SUCCEEDED", "result": {"a": 1, "b": 2}},
+            {"result": {"a": 1, "b": 2}},
+        ),
+        (
+            {"status": "FAILED", "error": {"type": "Failure"}},
+            {"status": "FAILED", "error": {"type": "Failure", "details": "changed"}},
+            {"status": "FAILED", "error": {"type": "Failure", "details": "changed"}},
+        ),
+        (
+            {"status": "SUCCEEDED", "result": None},
+            {"status": "FAILED", "result": None},
+            {"status": "FAILED", "result": None},
+        ),
+        (
+            {"allowedStatuses": ["SUCCEEDED"], "result": None},
+            {"allowedStatuses": ["SUCCEEDED", "FAILED"], "result": None},
+            {"status": "FAILED", "result": None},
+        ),
+        (
+            {"status": "SUCCEEDED", "result": {"value": 1}},
+            {"status": "SUCCEEDED", "result": {"value": True}},
+            {"result": {"value": True}},
+        ),
+    ],
+)
+def test_collection_cannot_rewrite_a_predeclared_history_expectation(
+    phase: str, declared: dict[str, Any], substituted: dict[str, Any], actual: dict[str, Any]
+) -> None:
+    class RewrittenExpectationAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            history = self.snapshots[context.scenario.case_id]["histories"][0]
+            history.update(actual if context.scenario.case_id == "failed" else {"result": None})
+            if context.scenario.case_id == "failed":
+                context.evidence = {"expectedHistories": {history["executionArn"]: deepcopy(declared)}}
+            for resource in self.snapshots[context.scenario.case_id]["retirement"]["resources"]:
+                if resource["kind"] == "execution":
+                    resource["outcome"] = history["status"]
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            arn = value["histories"][0]["executionArn"]
+            expected = substituted if context.scenario.case_id == "failed" else {"status": "SUCCEEDED", "result": None}
+            value["expectedHistories"] = {arn: deepcopy(expected)}
+            return value
+
+    adapter = RewrittenExpectationAdapter(phase="none" if phase == "normal" else "placement")
+    results = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=lambda evidence, *, phase="final": validate_common_evidence(
+                evidence,
+                phase="observations" if phase == "observations" else "final",
+                requirement_ids=("fixture-check",),
+            ),
+        )
+    )
+    collected, following = results
+    assert collected.status != "PASSED", collected.errors
+    assert any("omitted or changed retained" in error for error in collected.errors)
+    assert any(
+        "fixture expectation" in error or "outside the declared allowedStatuses" in error for error in collected.errors
+    )
+    arn = collected.evidence["histories"][0]["executionArn"]
+    assert same_json(collected.evidence["expectedHistories"][arn], declared)
+    assert following.status == "PASSED", following.errors
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+def test_collection_can_add_an_expectation_for_a_newly_observed_execution(phase: str) -> None:
+    class AdditionalExecutionAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            final = self.snapshots[context.scenario.case_id]
+            final["histories"][0]["result"] = None
+            original_arn = final["histories"][0]["executionArn"]
+            context.evidence = {"expectedHistories": {original_arn: {"status": "SUCCEEDED", "result": None}}}
+            if context.scenario.case_id != "failed":
+                return
+            extra = _snapshot(ScenarioContext(context.run_id, _case("additional"), PROFILE))
+            request = extra["attempts"][0]
+            request["attempt"] = 2
+            request["startedAtMs"] += 2000
+            request["endedAtMs"] += 2000
+            context.record_attempt(
+                request["requestId"],
+                role="victim",
+                requestId=request["requestId"],
+                executionArn=request["executionArn"],
+            )
+            for event in extra["events"]:
+                event["atMs"] += 2000
+            extra["histories"][0]["result"] = None
+            for key in ("resourcesCreated", "faultsCreated", "histories"):
+                for item in extra[key]:
+                    item["ownerCaseId"] = context.scenario.case_id
+            for key in ("resources", "faults"):
+                for item in extra["retirement"][key]:
+                    item["ownerCaseId"] = context.scenario.case_id
+                    if key == "faults":
+                        item["releasedAtMs"] += 2000
+                final["retirement"][key].extend(extra["retirement"][key])
+            for key in ("attempts", "events", "histories", "resourcesCreated", "faultsCreated"):
+                final[key].extend(extra[key])
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["expectedHistories"] = {
+                history["executionArn"]: {"status": "SUCCEEDED", "result": None} for history in value["histories"]
+            }
+            return value
+
+    adapter = AdditionalExecutionAdapter(phase="none" if phase == "normal" else "placement")
+    collected, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=lambda evidence, *, phase="final": validate_common_evidence(
+                evidence,
+                phase="observations" if phase == "observations" else "final",
+                requirement_ids=("fixture-check",),
+            ),
+        )
+    )
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+    assert not any("omitted or changed retained" in error for error in collected.errors)
+    assert len(collected.evidence["expectedHistories"]) == len(collected.evidence["histories"]) == 2
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
