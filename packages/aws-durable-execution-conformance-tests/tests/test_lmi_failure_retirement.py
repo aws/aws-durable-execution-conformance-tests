@@ -1062,3 +1062,147 @@ def test_normal_collection_can_enrich_provisional_context_observations(history_s
     assert all(value == 20000 for value in enriched.evidence["collection"]["watermarks"].values())
     assert adapter.finished == [True]
     assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("enrichment", ["history-result", "operation-result", "event-sequence"])
+def test_collection_accepts_completion_and_semantic_event_resequencing(phase: str, enrichment: str) -> None:
+    class CompletingAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id != "failed":
+                return
+            before = context.evidence
+            final = self.snapshots[context.scenario.case_id]
+            if enrichment == "history-result":
+                before["histories"][0].update(status="RUNNING", result=None)
+                final["histories"][0]["result"] = {"completed": True}
+            elif enrichment == "operation-result":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None, "status": "RUNNING"}
+                before["histories"][0]["operations"] = [{**operation, "result": None}]
+                final["histories"][0]["operations"] = [
+                    {**operation, "status": "SUCCEEDED", "result": {"completed": True}}
+                ]
+            else:
+                owner = {key: final["attempts"][0][key] for key in ("requestId", "executionArn")}
+                final["events"].append({**owner, "ownerRequestId": owner["requestId"], "kind": "effect", "atMs": 100.5})
+                _resequence(final)
+
+    adapter = CompletingAdapter(phase="none" if phase == "normal" else "placement")
+    (collected, following), scheduler = _run(adapter)
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+        assert ORIGINAL_FAILURE in collected.errors
+    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
+    if enrichment == "history-result":
+        assert collected.evidence["histories"][0]["result"] == {"completed": True}
+    elif enrichment == "operation-result":
+        operations = collected.evidence["histories"][0]["operations"]
+        assert len(operations) == 1
+        assert operations[0]["status"] == "SUCCEEDED"
+        assert operations[0]["result"] == {"completed": True}
+    else:
+        assert len(collected.evidence["events"]) == len(adapter.snapshots["failed"]["events"])
+        assert len({event["sequence"] for event in collected.evidence["events"]}) == len(collected.evidence["events"])
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("scope", ["history", "operation"])
+@pytest.mark.parametrize("original_result", [None, {"completed": "original"}])
+def test_collection_cannot_replace_a_completed_outcome(scope: str, original_result: Any) -> None:
+    class CompletedOutcomeAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id != "failed":
+                return
+            before, after = context.evidence["histories"][0], self.snapshots["failed"]["histories"][0]
+            if scope == "operation":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None, "status": "SUCCEEDED"}
+                before["operations"], after["operations"] = [deepcopy(operation)], [deepcopy(operation)]
+                before, after = before["operations"][0], after["operations"][0]
+            before["result"] = deepcopy(original_result)
+            after["result"] = {"completed": "substituted"}
+
+    (collected, _), _scheduler = _run(CompletedOutcomeAdapter(phase="none"))
+    assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
+    assert any("omitted or changed retained" in error for error in collected.errors)
+    result = collected.evidence["histories"][0]
+    if scope == "operation":
+        assert len(result["operations"]) == 1
+        result = result["operations"][0]
+    assert result["result"] == original_result
+
+
+@pytest.mark.parametrize("repair_original_order", [False, True])
+def test_normal_collection_cannot_reverse_observed_order_without_an_independent_audit(
+    repair_original_order: bool,
+) -> None:
+    class ReorderedAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            final = self.snapshots[context.scenario.case_id]
+            start = next(event for event in final["events"] if event["kind"] == "io_start")
+            end = next(event for event in final["events"] if event["kind"] == "io_exit")
+            end["atMs"] = start["atMs"]
+            _resequence(final)
+            context.evidence = self.observations(context)
+            changed = context.evidence if repair_original_order else final
+            start = next(event for event in changed["events"] if event["kind"] == "io_start")
+            end = next(event for event in changed["events"] if event["kind"] == "io_exit")
+            start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            context.evidence["retirement"] = deepcopy(self.snapshots[context.scenario.case_id]["retirement"])
+            return True
+
+    adapter = ReorderedAdapter(phase="none")
+    (collected, following), scheduler = _run(adapter)
+    assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
+    assert any("omitted or changed retained" in error for error in collected.errors)
+    assert any("independent retirement evidence" in error for error in collected.errors)
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_event_resequencing_cannot_collapse_duplicate_observations() -> None:
+    class DuplicateEventAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                observed = next(event for event in context.evidence["events"] if event["kind"] == "effect")
+                context.evidence["events"].append(deepcopy(observed))
+                _resequence(context.evidence)
+
+    (collected, _), _scheduler = _run(DuplicateEventAdapter(phase="none"))
+    assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
+    assert sum(event["kind"] == "effect" for event in collected.evidence["events"]) == 2
+    assert any("omitted or changed retained" in error for error in collected.errors)

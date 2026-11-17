@@ -19,6 +19,7 @@ from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
@@ -535,7 +536,7 @@ def _ownership_errors(
 
 
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
-    if path == ("histories", "status"):
+    if path in (("histories", "status"), ("histories", "operations", "status")):
         return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
     increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
     increasing |= path == ("attempts", "endedAtMs")
@@ -545,6 +546,20 @@ def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) ->
     if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in (previous, current)):
         return False
     return current >= previous if increasing else current <= previous
+
+
+def _same_event_observation(previous: Any, current: Any) -> bool:
+    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
+        return False
+    for event in (previous, current):
+        if "sequence" in event and (type(event["sequence"]) is not int or event["sequence"] < 0):
+            return False
+    if "sequence" in previous and "sequence" not in current:
+        return False
+    return same_json(
+        {key: value for key, value in previous.items() if key != "sequence"},
+        {key: value for key, value in current.items() if key != "sequence"},
+    )
 
 
 def _retain_observations(
@@ -559,7 +574,16 @@ def _retain_observations(
     """
     retained = copy.deepcopy(dict(captured))
     changed = False
+    completing = (
+        path in (("histories",), ("histories", "operations"))
+        and original.get("status") in ("RUNNING", "PENDING")
+        and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
+    )
     for key, previous in original.items():
+        if completing and key in ("result", "error") and previous is None:
+            # An unfinished record's null outcome is a placeholder. A completed
+            # checkpoint's result/error, including JSON null, stays immutable.
+            continue
         if key not in retained:
             retained[key] = copy.deepcopy(previous)
             changed = True
@@ -568,13 +592,28 @@ def _retain_observations(
             changed |= nested_changed
         elif isinstance(previous, list) and isinstance(retained[key], list):
             remaining = list(range(len(retained[key])))
-            identity = {("attempts",): "requestId", ("histories",): "executionArn"}.get((*path, key))
-            for record in previous:
+            identities: dict[tuple[str, ...], str] = {
+                ("attempts",): "requestId",
+                ("histories",): "executionArn",
+                ("histories", "operations"): "id",
+            }
+            identity = identities.get((*path, key))
+            events = (*path, key) == ("events",)
+            event_order: dict[str, list[tuple[int, int]]] = {}
+            prior_records = previous
+            if events and all(
+                isinstance(record, Mapping) and type(record.get("sequence")) is int
+                for record in [*previous, *retained[key]]
+            ):
+                prior_records = sorted(previous, key=lambda record: record["sequence"])
+                remaining.sort(key=lambda index: retained[key][index]["sequence"])
+            for record in prior_records:
                 match = next(
                     (
                         index
                         for index in remaining
                         if same_json(record, retained[key][index])
+                        or (events and _same_event_observation(record, retained[key][index]))
                         or (
                             identity is not None
                             and isinstance(record, Mapping)
@@ -590,11 +629,21 @@ def _retain_observations(
                     changed = True
                 else:
                     remaining.remove(match)
+                    if events and isinstance(record, Mapping):
+                        old_sequence, new_sequence = record.get("sequence"), retained[key][match].get("sequence")
+                        request_id = record.get("requestId")
+                        if isinstance(request_id, str) and type(old_sequence) is int and type(new_sequence) is int:
+                            event_order.setdefault(request_id, []).append((old_sequence, new_sequence))
                     if identity is not None and isinstance(record, Mapping):
                         retained[key][match], nested_changed = _retain_observations(
                             record, retained[key][match], (*path, key)
                         )
                         changed |= nested_changed
+            for order in event_order.values():
+                # Numerical renumbering is harmless; reversing known local
+                # event order would erase a lifecycle failure before its audit.
+                if any(first[0] < second[0] and first[1] >= second[1] for first, second in pairwise(sorted(order))):
+                    changed = True
         elif not same_json(previous, retained[key]) and not _observation_advanced(
             previous, retained[key], (*path, key)
         ):
@@ -995,6 +1044,7 @@ async def run_scenarios(
                         cleanup_errors.append("Context did not retain trustworthy observations")
                 partial = getattr(adapter, "collect_partial", None)
                 if not collected_normally and context.attempts and not cancelled and not residual and callable(partial):
+                    partial_baseline = copy.deepcopy(evidence)
                     try:
                         captured = await _bounded(
                             partial(context), "partialCollection", limits.collection, context, residual
@@ -1016,7 +1066,8 @@ async def run_scenarios(
                                 raise ValueError("Context observations must be an evidence object")
                             if context.evidence:
                                 observation_baselines.append(copy.deepcopy(dict(context.evidence)))
-                            evidence, _ = _retain_observations(evidence, context.evidence)
+                            context_observations, _ = _retain_observations(partial_baseline, context.evidence)
+                            evidence, _ = _retain_observations(context_observations, evidence)
                         except Exception as exc:
                             errors.append(f"Partial context retention: {type(exc).__name__}: {exc}")
                             cleanup_errors.append("Context did not retain trustworthy observations")
