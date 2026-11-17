@@ -607,19 +607,19 @@ def _retain_observations(
     """
     retained = copy.deepcopy(dict(captured))
     changed = False
-    completing = (
+    completing_execution = (
         path == ("histories",)
         and original.get("status") in ("RUNNING", "PENDING")
         and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
-    ) or (
-        path == ("histories", "operations")
-        and original.get("status") in _OPERATION_NONTERMINAL_STATUSES
-        and captured.get("status") in _OPERATION_TERMINAL_STATUSES
+    )
+    progressing_operation = path == ("histories", "operations") and _observation_advanced(
+        original.get("status"), captured.get("status"), (*path, "status")
     )
     for key, previous in original.items():
-        if completing and key in ("result", "error") and previous is None:
-            # An unfinished record's null outcome is a placeholder. A completed
-            # checkpoint's result/error, including JSON null, stays immutable.
+        if key in ("result", "error") and (progressing_operation or (completing_execution and previous is None)):
+            # Active operations can replace intermediate poll results or retry
+            # errors. Terminal checkpoints and non-null execution outcomes stay
+            # immutable; an unfinished execution's null is only a placeholder.
             continue
         if path == ("expectedHistories",) or (
             path in (("histories",), ("histories", "operations")) and key in ("result", "error")

@@ -1846,9 +1846,10 @@ def test_collection_accepts_real_operation_state_completion(phase: str, initial:
 
 
 @pytest.mark.parametrize("original", ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED", "RUNNING", "UNKNOWN"])
-def test_collection_cannot_advance_a_terminal_or_unknown_operation_state(original: str) -> None:
+@pytest.mark.parametrize("keep_status", [False, True])
+def test_collection_cannot_advance_a_terminal_or_unknown_operation_state(original: str, keep_status: bool) -> None:
     unknown = original in {"RUNNING", "UNKNOWN"}
-    updated = "SUCCEEDED" if unknown else "STARTED"
+    updated = original if keep_status else "SUCCEEDED" if unknown else "STARTED"
     outcome_field = "result" if original == "SUCCEEDED" or unknown else "error"
     original_outcome = None if unknown else {"value": "original"}
 
@@ -1875,3 +1876,54 @@ def test_collection_cannot_advance_a_terminal_or_unknown_operation_state(origina
     operation = collected.evidence["histories"][0]["operations"][0]
     assert operation["status"] == original
     assert same_json(operation[outcome_field], original_outcome)
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("kind", ["poll-result", "retry-error"])
+def test_collection_retains_evolving_nonterminal_operation_outcomes(phase: str, kind: str) -> None:
+    class IntermediateOutcomeAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
+                status, field = ("STARTED", "result") if kind == "poll-result" else ("PENDING", "error")
+                context.evidence["histories"][0]["operations"] = [
+                    {**operation, "status": status, field: {"attempt": 1, "values": [1]}}
+                ]
+                self.snapshots["failed"]["histories"][0]["operations"] = [
+                    {**operation, "status": "SUCCEEDED", "result": {"attempt": 3, "values": [3]}}
+                ]
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            if context.scenario.case_id == "failed":
+                operation = context.evidence["histories"][0]["operations"][0]
+                operation["status"] = "READY"
+                field = "result" if kind == "poll-result" else "error"
+                operation[field] = {"attempt": 2, "values": [2]}
+            return self.observations(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Mapping[str, Any]:
+            return await self.collect(context)
+
+    adapter = IntermediateOutcomeAdapter(phase="none" if phase == "normal" else "placement")
+    (collected, following), scheduler = _run(adapter)
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+        assert ORIGINAL_FAILURE in collected.errors
+    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
+    operations = collected.evidence["histories"][0]["operations"]
+    assert len(operations) == 1
+    assert operations[0]["status"] == "SUCCEEDED"
+    assert operations[0]["result"] == {"attempt": 3, "values": [3]}
+    assert "error" not in operations[0]
+    assert following.status == "PASSED", following.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
