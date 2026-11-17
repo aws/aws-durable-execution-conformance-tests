@@ -265,6 +265,178 @@ def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> No
     )
 
 
+class ReplacingEvidenceAdapter(FailureAdapter):
+    def __init__(self, phase: str, inventory: str, outcome: str, complete_retirement: bool) -> None:
+        super().__init__(phase="placement" if phase == "partial" else "assertion")
+        self.discovery_phase = phase
+        self.inventory = inventory
+        self.outcome = outcome
+        self.complete_retirement = complete_retirement
+
+    def discover(self, context: ScenarioContext, phase: str) -> None:
+        if context.scenario.case_id != "failed" or phase != self.discovery_phase:
+            return
+        if self.inventory == "control":
+            context.evidence.setdefault("resourcesCreated", []).append(
+                {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+            )
+        else:
+            context.evidence.setdefault("faultsCreated", []).append({"id": "new-fault", "ownerCaseId": "failed"})
+        # The discovery exists only on the object supplied to this method;
+        # neither the replacement nor the collector's response contains it.
+        context.evidence = self.observations(context)
+        if self.outcome == "exception":
+            raise RuntimeError("adapter failed after replacing its input evidence")
+        if self.outcome == "cancelled":
+            raise asyncio.CancelledError
+
+    async def start(self, context: ScenarioContext) -> None:
+        await super().start(context)
+        self.discover(context, "start")
+        context.evidence = self.observations(context)
+
+    async def place(self, context: ScenarioContext) -> None:
+        self.discover(context, "place")
+        await super().place(context)
+
+    async def execute(self, context: ScenarioContext) -> None:
+        self.discover(context, "execute")
+        await super().execute(context)
+
+    async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+        self.discover(context, "normal")
+        return await super().collect(context)
+
+    async def collect_partial(self, context: ScenarioContext) -> Any:
+        self.discover(context, "partial")
+        return await super().collect_partial(context)
+
+    async def retire(self, context: ScenarioContext) -> bool:
+        await super().retire(context)
+        if context.scenario.case_id == "failed" and self.complete_retirement:
+            final = context.retirement_evidence
+            if self.inventory == "control":
+                _add_retained_resource(final, "control", "DELETED")
+            else:
+                final["faultsCreated"].append({"id": "new-fault", "ownerCaseId": "failed"})
+                final["retirement"]["faults"].append(
+                    {"id": "new-fault", "ownerCaseId": "failed", "releasedAtMs": 20900, "mode": "normal"}
+                )
+        return True
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial", "start", "place", "execute"])
+@pytest.mark.parametrize("inventory", ["control", "fault"])
+@pytest.mark.parametrize("outcome", ["response", "exception"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+def test_phase_input_objects_retain_discoveries_when_context_is_replaced(
+    phase: str, inventory: str, outcome: str, complete_retirement: bool
+) -> None:
+    adapter = ReplacingEvidenceAdapter(phase, inventory, outcome, complete_retirement)
+    (failed, following), scheduler = _run(adapter)
+    records = failed.evidence["resourcesCreated" if inventory == "control" else "faultsCreated"]
+    assert any(item["id"] == ("control:failed" if inventory == "control" else "new-fault") for item in records)
+    assert failed.status != "PASSED"
+    assert ORIGINAL_FAILURE in failed.errors
+    if complete_retirement and (phase != "partial" or outcome == "response"):
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+def test_replaced_collector_input_keeps_newest_returned_completion_and_sequence(phase: str) -> None:
+    class EnrichingCollectorAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if phase == "normal":
+                observed["behaviorErrors"] = []
+            return observed
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                context.evidence["attempts"][0].update(startedAtMs=150, endedAtMs=800)
+                context.evidence["histories"][0].update(status="RUNNING", result=None)
+
+        def completed(self, context: ScenarioContext) -> dict[str, Any]:
+            context.evidence["resourcesCreated"].append(
+                {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
+            )
+            context.evidence = self.observations(context)
+            final = deepcopy(self.snapshots["failed"])
+            _add_retained_resource(final, "control", "DELETED")
+            final["histories"][0]["result"] = {"completed": True}
+            for event in final["events"]:
+                event["sequence"] += 1000
+            self.snapshots["failed"] = final
+            return self.observations(context)
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            if context.scenario.case_id == "failed":
+                return self.completed(context)
+            return await super().collect(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            return self.completed(context)
+
+    adapter = EnrichingCollectorAdapter(phase="assertion" if phase == "normal" else "placement")
+    (collected, following), scheduler = _run(adapter)
+    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
+    assert any(item["id"] == "control:failed" for item in collected.evidence["resourcesCreated"])
+    assert len(collected.evidence["histories"]) == 1
+    assert collected.evidence["histories"][0]["result"] == {"completed": True}
+    assert collected.evidence["attempts"][0]["startedAtMs"] == 100
+    assert collected.evidence["attempts"][0]["endedAtMs"] == 1000
+    assert all(event["sequence"] >= 1000 for event in collected.evidence["events"])
+    assert len({event["sequence"] for event in collected.evidence["events"]}) == len(collected.evidence["events"])
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert ORIGINAL_FAILURE in collected.errors
+    assert following.status == "PASSED", following.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("complete_retirement", [False, True])
+def test_cancelled_collectors_retain_discoveries_from_replaced_input_objects(
+    phase: str, complete_retirement: bool
+) -> None:
+    adapter = ReplacingEvidenceAdapter(phase, "control", "cancelled", complete_retirement)
+    scheduler = ResourceScheduler()
+    emitted: list[ScenarioResult] = []
+
+    async def exercise() -> None:
+        try:
+            await run_scenarios(
+                [_case("failed")],
+                [PROFILE],
+                adapter,
+                run_id="run",
+                validator=_validator,
+                scheduler=scheduler,
+                on_result=emitted.append,
+            )
+        except asyncio.CancelledError:
+            assert phase == "normal"
+
+    asyncio.run(exercise())
+    failed = emitted[-1]
+    assert any(item["id"] == "control:failed" for item in failed.evidence["resourcesCreated"])
+    assert failed.status != "PASSED"
+    assert not scheduler._resources[PROFILE.resource_id].owners
+    if not complete_retirement or phase == "partial":
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
 @pytest.mark.parametrize(
     "kind,outcome",
     [("callback", "SUCCEEDED"), ("callback", "FAILED"), ("callback", "TIMED_OUT"), ("control", "DELETED")],

@@ -971,10 +971,32 @@ async def run_scenarios(
         cleanup_changed = False
         collected_normally = False
         errors: list[str] = []
+        context_retention_failed = False
         status = "PASSED"
         residual: list[asyncio.Task[Any]] = []
         lease: Lease | None = None
         cancelled = False
+
+        def retain_context(previous: dict[str, Any], provided: Any, phase: str) -> dict[str, Any]:
+            """Freeze known mappings without requiring provisional evidence to be complete."""
+            nonlocal context_retention_failed
+            retained = previous
+            sources = [provided]
+            if context.evidence is not provided:
+                sources.append(context.evidence)
+            for source in sources:
+                try:
+                    if not isinstance(source, Mapping):
+                        raise ValueError("Context observations must be an evidence object")
+                    snapshot = copy.deepcopy(dict(source))
+                    if snapshot:
+                        observation_baselines.append(snapshot)
+                    retained, _ = _retain_observations(retained, snapshot)
+                except (Exception, asyncio.CancelledError) as exc:
+                    errors.append(f"Context observation retention ({phase}): {type(exc).__name__}: {exc}")
+                    context_retention_failed = True
+            return retained
+
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
         try:
@@ -1038,32 +1060,51 @@ async def run_scenarios(
 
             # Start and placement share a single budget: repeated placement
             # attempts cannot reset the clock or silently replace a cohort.
-            async def establish() -> None:
-                await adapter.start(context)
-                await adapter.place(context)
+            establishment_inputs: list[Any] = []
 
-            await _bounded(establish(), "placement", limits.placement, context, residual)
-            await _bounded(adapter.execute(context), "execution", limits.execution, context, residual)
-            if not isinstance(context.evidence, Mapping):
-                raise ValueError("Context observations must be an evidence object")
-            evidence = copy.deepcopy(dict(context.evidence))
-            if evidence:
-                observation_baselines.append(copy.deepcopy(evidence))
-            collected = await _bounded(adapter.collect(context), "collection", limits.collection, context, residual)
+            async def establish() -> None:
+                nonlocal evidence
+                for phase, operation in (("start", adapter.start), ("place", adapter.place)):
+                    provided = context.evidence
+                    establishment_inputs.append(provided)
+                    evidence = retain_context(evidence, provided, phase)
+                    try:
+                        await operation(context)
+                    finally:
+                        evidence = retain_context(evidence, provided, phase)
+
+            try:
+                await _bounded(establish(), "placement", limits.placement, context, residual)
+            finally:
+                # A bounded phase can return before a cancelled adapter settles.
+                # Capture discoveries already present on every supplied object.
+                for provided in establishment_inputs:
+                    evidence = retain_context(evidence, provided, "placement")
+            execution_input = context.evidence
+            evidence = retain_context(evidence, execution_input, "execution")
+            try:
+                await _bounded(adapter.execute(context), "execution", limits.execution, context, residual)
+            finally:
+                evidence = retain_context(evidence, execution_input, "execution")
+            collection_input = context.evidence
+            evidence = retain_context(evidence, collection_input, "collection")
+            try:
+                collected = await _bounded(adapter.collect(context), "collection", limits.collection, context, residual)
+            finally:
+                evidence = retain_context(evidence, collection_input, "collection")
             if not isinstance(collected, Mapping):
                 raise ValueError("Adapter collection must return an evidence object")
             observation_baselines.append(copy.deepcopy(dict(collected)))
-            if not isinstance(context.evidence, Mapping):
-                raise ValueError("Context observations must be an evidence object")
-            if context.evidence:
-                observation_baselines.append(copy.deepcopy(dict(context.evidence)))
-            captured, changed = _retain_observations(context.evidence, collected)
-            evidence, prior_changed = _retain_observations(evidence, captured)
+            # Returned observations are newest, so valid sequence enrichment and
+            # monotonic completion win after all input-object discoveries survive.
+            evidence, changed = _retain_observations(evidence, collected)
             context.evidence = copy.deepcopy(evidence)
             collected_normally = True
             ownership_errors = _ownership_errors(context, evidence)
-            if changed or prior_changed:
+            if changed:
                 ownership_errors.append("Collection omitted or changed retained observations")
+            if context_retention_failed:
+                ownership_errors.append("Context did not retain trustworthy observations")
             errors.extend(ownership_errors)
             errors.extend(validator(evidence, phase="observations"))
             if errors:
@@ -1140,33 +1181,34 @@ async def run_scenarios(
                         cleanup_errors.append("Context did not retain trustworthy observations")
                 partial = getattr(adapter, "collect_partial", None)
                 if not collected_normally and context.attempts and not cancelled and not residual and callable(partial):
-                    partial_baseline = copy.deepcopy(evidence)
+                    partial_input = context.evidence
+                    partial_baseline = retain_context(evidence, partial_input, "partial collection")
+                    partial_captured: dict[str, Any] | None = None
                     try:
                         captured = await _bounded(
                             partial(context), "partialCollection", limits.collection, context, residual
                         )
                         if not isinstance(captured, Mapping):
                             raise ValueError("Partial collection must return an evidence object")
-                        observation_baselines.append(copy.deepcopy(dict(captured)))
-                        evidence, changed = _retain_observations(evidence, captured)
-                        if changed:
-                            errors.append("Partial collection omitted or changed retained observations")
+                        partial_captured = copy.deepcopy(dict(captured))
+                        observation_baselines.append(partial_captured)
                     except (Exception, asyncio.CancelledError) as exc:
                         errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Partial collection did not retain trustworthy observations")
                     finally:
-                        # A collector can retain additional work directly on the
-                        # context before returning a different snapshot or raising.
+                        # Preserve mutations to the supplied object even when
+                        # the collector replaced the attribute before returning.
                         try:
-                            if not isinstance(context.evidence, Mapping):
-                                raise ValueError("Context observations must be an evidence object")
-                            if context.evidence:
-                                observation_baselines.append(copy.deepcopy(dict(context.evidence)))
-                            context_observations, _ = _retain_observations(partial_baseline, context.evidence)
-                            evidence, _ = _retain_observations(context_observations, evidence)
-                        except Exception as exc:
+                            evidence = retain_context(partial_baseline, partial_input, "partial collection")
+                            if partial_captured is not None:
+                                evidence, changed = _retain_observations(evidence, partial_captured)
+                                if changed:
+                                    errors.append("Partial collection omitted or changed retained observations")
+                        except (Exception, asyncio.CancelledError) as exc:
                             errors.append(f"Partial context retention: {type(exc).__name__}: {exc}")
                             cleanup_errors.append("Context did not retain trustworthy observations")
+                if context_retention_failed:
+                    cleanup_errors.append("Context did not retain trustworthy observations")
                 if not collected_normally:
                     context.evidence = copy.deepcopy(evidence)
                     try:
