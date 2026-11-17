@@ -568,7 +568,27 @@ _OBSERVATION_IDENTITIES: dict[tuple[str, ...], str] = {
     ("histories", "operations"): "id",
     ("faultsCreated",): "id",
     ("resourcesCreated",): "id",
+    ("replay", "retry", "attempts"): "attemptId",
 }
+
+
+def _retry_attempt_order(evidence: Mapping[str, Any]) -> tuple[str, ...] | None:
+    replay = evidence.get("replay")
+    retry = replay.get("retry") if isinstance(replay, Mapping) else None
+    attempts = retry.get("attempts") if isinstance(retry, Mapping) else None
+    if not isinstance(attempts, list):
+        return None
+    identifiers = []
+    for attempt in attempts:
+        identifier = attempt.get("attemptId") if isinstance(attempt, Mapping) else None
+        if not isinstance(identifier, str) or not identifier.strip():
+            return None
+        identifiers.append(identifier)
+    # Invalid or singleton fragments establish no ordering constraint. Their
+    # records remain retained for the normal shape and multiplicity validators.
+    if len(identifiers) < 2 or len(set(identifiers)) != len(identifiers):
+        return None
+    return tuple(identifiers)
 
 
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
@@ -1091,6 +1111,7 @@ async def run_scenarios(
         context = contexts[case.case_id]
         evidence: dict[str, Any] = {}
         observation_baselines: list[dict[str, Any]] = []
+        retry_orderings: list[tuple[str, ...]] = []
         retirement_evidence: dict[str, Any] = {}
         cleanup_evidence: dict[str, list[dict[str, Any]]] = {}
         cleanup_changed = False
@@ -1102,6 +1123,23 @@ async def run_scenarios(
         residual: list[asyncio.Task[Any]] = []
         lease: Lease | None = None
         cancelled = False
+
+        def record_observations(snapshot: dict[str, Any], phase: str) -> None:
+            order = _retry_attempt_order(snapshot)
+            if order is not None:
+                for previous in retry_orderings:
+                    shared = set(previous) & set(order)
+                    if tuple(item for item in previous if item in shared) != tuple(
+                        item for item in order if item in shared
+                    ):
+                        diagnostic = f"Observed retry attempt order conflicts with earlier observations ({phase})"
+                        if diagnostic not in errors:
+                            errors.append(diagnostic)
+                if order not in retry_orderings:
+                    retry_orderings.append(order)
+            # Use raw source orders, before delta extraction or inventory merging:
+            # merging disjoint fragments must not invent order between them.
+            observation_baselines.append(snapshot)
 
         def retain_context(previous: dict[str, Any], provided: Any, phase: str) -> dict[str, Any]:
             """Freeze known mappings without requiring provisional evidence to be complete."""
@@ -1116,7 +1154,7 @@ async def run_scenarios(
                         raise ValueError("Context observations must be an evidence object")
                     snapshot = copy.deepcopy(dict(source))
                     if snapshot:
-                        observation_baselines.append(snapshot)
+                        record_observations(snapshot, phase)
                     previous_observation = context_observations.get(id(source))
                     # Keep the object alive with its last snapshot: an unchanged
                     # supplied object can legitimately predate newer context data.
@@ -1234,7 +1272,7 @@ async def run_scenarios(
                 evidence = retain_context(evidence, collection_input, "collection")
             if not isinstance(collected, Mapping):
                 raise ValueError("Adapter collection must return an evidence object")
-            observation_baselines.append(copy.deepcopy(dict(collected)))
+            record_observations(copy.deepcopy(dict(collected)), "collection")
             # Returned observations are newest, so valid sequence enrichment and
             # monotonic completion win after all input-object discoveries survive.
             evidence, changed = _retain_observations(evidence, collected)
@@ -1351,7 +1389,7 @@ async def run_scenarios(
                         if not isinstance(captured, Mapping):
                             raise ValueError("Partial collection must return an evidence object")
                         partial_captured = copy.deepcopy(dict(captured))
-                        observation_baselines.append(partial_captured)
+                        record_observations(partial_captured, "partial collection")
                     except (Exception, asyncio.CancelledError) as exc:
                         errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Partial collection did not retain trustworthy observations")
