@@ -638,17 +638,27 @@ def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) ->
     return current >= previous if increasing else current <= previous
 
 
-def _same_event_observation(previous: Any, current: Any) -> bool:
+def _owned_record_enriches(previous: Any, current: Any, *, event: bool = False) -> bool:
     if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
         return False
-    for event in (previous, current):
-        if "sequence" in event and (type(event["sequence"]) is not int or event["sequence"] < 0):
+    metadata = {"observedDuringRequestId"}
+    if event:
+        metadata.add("sequence")
+        for record in (previous, current):
+            if "sequence" in record and (type(record["sequence"]) is not int or record["sequence"] < 0):
+                return False
+        if "sequence" in previous and "sequence" not in current:
             return False
-    if "sequence" in previous and "sequence" not in current:
+    # The shared owned-record validator treats missing and null correlation as
+    # unassigned. Once an invocation ID is present it cannot be replaced.
+    if previous.get("observedDuringRequestId") is not None and (
+        "observedDuringRequestId" not in current
+        or not same_json(previous["observedDuringRequestId"], current["observedDuringRequestId"])
+    ):
         return False
     return same_json(
-        {key: value for key, value in previous.items() if key != "sequence"},
-        {key: value for key, value in current.items() if key != "sequence"},
+        {key: value for key, value in previous.items() if key not in metadata},
+        {key: value for key, value in current.items() if key not in metadata},
     )
 
 
@@ -784,6 +794,7 @@ def _retain_observations(
             remaining = list(range(len(retained[key])))
             identity = _OBSERVATION_IDENTITIES.get((*path, key))
             events = (*path, key) == ("events",)
+            owned_records = (*path, key) in (("events",), ("sdkRequests",))
             event_order: dict[str, list[tuple[int, int]]] = {}
             prior_records = previous
             if events and all(
@@ -792,13 +803,26 @@ def _retain_observations(
             ):
                 prior_records = sorted(previous, key=lambda record: record["sequence"])
                 remaining.sort(key=lambda index: retained[key][index]["sequence"])
+            elif owned_records:
+                # Reserve already correlated occurrences before matching an
+                # unattributed record that could fit more than one occurrence.
+                prior_records = sorted(
+                    previous,
+                    key=lambda record: not isinstance(record, Mapping) or record.get("observedDuringRequestId") is None,
+                )
             for record in prior_records:
                 match = next(
                     (
                         index
                         for index in remaining
                         if same_json(record, retained[key][index])
-                        or (events and _same_event_observation(record, retained[key][index]))
+                        or (
+                            owned_records
+                            and (
+                                _owned_record_enriches(record, retained[key][index], event=events)
+                                or _owned_record_enriches(retained[key][index], record, event=events)
+                            )
+                        )
                         or (
                             identity is not None
                             and isinstance(record, Mapping)
@@ -814,6 +838,18 @@ def _retain_observations(
                     changed.omitted = True
                 else:
                     remaining.remove(match)
+                    if owned_records and isinstance(record, Mapping):
+                        for metadata in (
+                            ("observedDuringRequestId", "sequence") if events else ("observedDuringRequestId",)
+                        ):
+                            if metadata == "observedDuringRequestId" and record.get(metadata) is None:
+                                continue
+                            if metadata in record and (
+                                metadata not in retained[key][match]
+                                or (metadata == "observedDuringRequestId" and retained[key][match][metadata] is None)
+                            ):
+                                retained[key][match][metadata] = copy.deepcopy(record[metadata])
+                                changed.omitted = True
                     if events and isinstance(record, Mapping):
                         old_sequence, new_sequence = record.get("sequence"), retained[key][match].get("sequence")
                         request_id = record.get("requestId")
@@ -977,18 +1013,29 @@ def _retirement_ownership_errors(
         "late_activity",
     }
 
-    def preserved(events: list[Any]) -> Counter[tuple[Any, ...]]:
+    def event_identity(event: Mapping[str, Any]) -> dict[str, Any]:
+        identity = {key: event.get(key) for key in fields}
+        if "observedDuringRequestId" in event:
+            identity["observedDuringRequestId"] = event["observedDuringRequestId"]
+        return identity
+
+    def preserved(events: list[Any]) -> list[dict[str, Any]]:
         if any(not isinstance(event, Mapping) for event in events):
             raise ValueError("Retirement observations must be objects")
-        return Counter(
-            tuple(event.get(key) for key in fields) for event in events if event.get("kind") in preserved_kinds
+        return [event_identity(event) for event in events if event.get("kind") in preserved_kinds]
+
+    remaining_events = preserved(after_events)
+    for event in sorted(preserved(before_events), key=lambda item: item.get("observedDuringRequestId") is None):
+        match = next(
+            (index for index, item in enumerate(remaining_events) if _owned_record_enriches(event, item)), None
         )
+        if match is None:
+            errors.append("Retirement omitted or changed previously observed work")
+        else:
+            remaining_events.pop(match)
 
-    if preserved(before_events) - preserved(after_events):
-        errors.append("Retirement omitted or changed previously observed work")
-
-    def sequenced(events: list[Any]) -> dict[Any, list[tuple[int, tuple[Any, ...]]]]:
-        by_request: dict[Any, list[tuple[int, tuple[Any, ...]]]] = {}
+    def sequenced(events: list[Any]) -> dict[Any, list[tuple[int, dict[str, Any]]]]:
+        by_request: dict[Any, list[tuple[int, dict[str, Any]]]] = {}
         for event in events:
             if event.get("kind") not in preserved_kinds or "sequence" not in event:
                 continue
@@ -996,9 +1043,7 @@ def _retirement_ownership_errors(
             if type(sequence) is not int or sequence < 0:
                 errors.append("Retirement cannot reconcile a malformed semantic sequence")
                 continue
-            by_request.setdefault(event.get("requestId"), []).append(
-                (sequence, tuple(event.get(key) for key in fields))
-            )
+            by_request.setdefault(event.get("requestId"), []).append((sequence, event_identity(event)))
         return by_request
 
     # Sequence values can change when additional observations are collected.
@@ -1009,22 +1054,25 @@ def _retirement_ownership_errors(
         if len({sequence for sequence, _ in records}) != len(records):
             errors.append("Retirement cannot reconcile duplicate original semantic sequences")
             continue
-        remaining_events = iter(sorted(final_order.get(request_id, []), key=lambda item: item[0]))
+        remaining_order = iter(sorted(final_order.get(request_id, []), key=lambda item: item[0]))
         for _, identity in sorted(records, key=lambda item: item[0]):
-            if not any(identity == candidate for _, candidate in remaining_events):
+            if not any(_owned_record_enriches(identity, candidate) for _, candidate in remaining_order):
                 errors.append("Retirement changed the semantic order of previously observed work")
                 break
     before_requests, after_requests = original.get("sdkRequests", []), final.get("sdkRequests", [])
     if not isinstance(before_requests, list) or not isinstance(after_requests, list):
         raise ValueError("Retirement SDK request inventories must be lists")
     remaining = list(after_requests)
-    for request in before_requests:
+    for request in sorted(
+        before_requests, key=lambda item: not isinstance(item, Mapping) or item.get("observedDuringRequestId") is None
+    ):
         if not isinstance(request, Mapping):
             raise ValueError("Original SDK request inventory is malformed")
-        if request not in remaining:
+        match = next((index for index, item in enumerate(remaining) if _owned_record_enriches(request, item)), None)
+        if match is None:
             errors.append("Retirement omitted or changed a previously observed SDK request")
         else:
-            remaining.remove(request)
+            remaining.pop(match)
 
     def latest_time(values: Sequence[Any]) -> float:
         return max(
