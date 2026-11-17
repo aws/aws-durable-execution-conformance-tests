@@ -2203,3 +2203,213 @@ def test_collection_retains_evolving_nonterminal_operation_outcomes(phase: str, 
     assert "error" not in operations[0]
     assert following.status == "PASSED", following.errors
     assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("phase", ["place", "execute", "collect", "partial"])
+@pytest.mark.parametrize("scope", ["execution", "operation", "expectation"])
+@pytest.mark.parametrize("field", ["result", "error"])
+def test_retained_immutable_conflicts_survive_a_later_matching_collection(phase: str, scope: str, field: str) -> None:
+    original, conflicting = {"value": [1, 2]}, {"value": [2, 1]}
+
+    class ConflictingContextAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            final = self.snapshots[context.scenario.case_id]
+            history = final["histories"][0]
+            history["result"] = None
+            if context.scenario.case_id == "failed":
+                target = history
+                status = "SUCCEEDED" if field == "result" else "FAILED"
+                if scope == "operation":
+                    target = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
+                    history["operations"] = [target]
+                target.update(status=status, **{field: deepcopy(original)})
+                for resource in final["retirement"]["resources"]:
+                    if resource["kind"] == "execution":
+                        resource["outcome"] = history["status"]
+            context.evidence = self.observations(context)
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            history = value["histories"][0]
+            expected = {key: deepcopy(item) for key, item in history.items() if key in {"status", "result", "error"}}
+            value["expectedHistories"] = {history["executionArn"]: expected}
+            return value
+
+        def conflict(self, context: ScenarioContext) -> None:
+            value = context.evidence
+            history = value["histories"][0]
+            if scope == "operation":
+                target = history["operations"][0]
+            elif scope == "expectation":
+                target = value["expectedHistories"][history["executionArn"]]
+            else:
+                target = history
+            target[field] = deepcopy(conflicting)
+
+        async def place(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed" and phase == "place":
+                self.conflict(context)
+            await super().place(context)
+
+        async def execute(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed":
+                if phase == "execute":
+                    self.conflict(context)
+                elif phase == "place":
+                    context.evidence = self.observations(context)
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            if context.scenario.case_id == "failed" and phase == "collect":
+                self.conflict(context)
+            context.evidence = self.observations(context)
+            return self.observations(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Mapping[str, Any]:
+            self.conflict(context)
+            context.evidence = self.observations(context)
+            return self.observations(context)
+
+    adapter = ConflictingContextAdapter(phase="placement" if phase == "partial" else "none")
+    collected, following = asyncio.run(
+        run_scenarios(
+            [_case("failed"), _case("next")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=lambda evidence, *, phase="final": validate_common_evidence(
+                evidence,
+                phase="observations" if phase == "observations" else "final",
+                requirement_ids=("fixture-check",),
+            ),
+        )
+    )
+    assert collected.status != "PASSED", collected.errors
+    assert any("conflict with retained facts" in error for error in collected.errors), collected.errors
+    assert validate_common_evidence(collected.evidence, requirement_ids=("fixture-check",)) == []
+    assert following.status == "PASSED", following.errors
+
+
+@pytest.mark.parametrize("phase", ["place", "collect"])
+def test_provisional_context_omissions_do_not_invent_immutable_conflicts(phase: str) -> None:
+    class IncompleteContextAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["histories"][0]["result"] = None
+            context.evidence = self.observations(context)
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            arn = value["histories"][0]["executionArn"]
+            value["expectedHistories"] = {arn: {"status": "SUCCEEDED", "result": None}}
+            return value
+
+        async def place(self, context: ScenarioContext) -> None:
+            if phase == "place":
+                context.evidence = {}
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            if phase == "collect":
+                context.evidence = {}
+            return self.observations(context)
+
+    results = asyncio.run(
+        run_scenarios(
+            [_case("failed")],
+            [PROFILE],
+            IncompleteContextAdapter(phase="none"),
+            run_id="run",
+            validator=lambda evidence, *, phase="final": validate_common_evidence(
+                evidence,
+                phase="observations" if phase == "observations" else "final",
+                requirement_ids=("fixture-check",),
+            ),
+        )
+    )
+    assert results[0].status == "PASSED", results[0].errors
+
+
+@pytest.mark.parametrize("damage", ["identity", "event-order"])
+def test_retained_identity_and_event_order_conflicts_survive_restoration(damage: str) -> None:
+    class RestoredContextAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if damage == "event-order":
+                value = self.snapshots[context.scenario.case_id]
+                start = next(event for event in value["events"] if event["kind"] == "io_start")
+                end = next(event for event in value["events"] if event["kind"] == "io_exit")
+                end["atMs"] = start["atMs"]
+                _resequence(value)
+            context.evidence = self.observations(context)
+
+        async def place(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id != "failed":
+                return
+            if damage == "identity":
+                context.evidence["attempts"][0]["workerId"] = "substituted-worker"
+            else:
+                start = next(event for event in context.evidence["events"] if event["kind"] == "io_start")
+                end = next(event for event in context.evidence["events"] if event["kind"] == "io_exit")
+                start["sequence"], end["sequence"] = end["sequence"], start["sequence"]
+
+        async def execute(self, context: ScenarioContext) -> None:
+            context.evidence = self.observations(context)
+
+    (collected, following), scheduler = _run(RestoredContextAdapter(phase="none"))
+    assert collected.status != "PASSED"
+    path = "attempts.workerId" if damage == "identity" else "events.sequence"
+    assert any("conflict with retained facts" in error and path in error for error in collected.errors), (
+        collected.errors
+    )
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("discover_control", [False, True])
+def test_rereading_provisional_fields_does_not_reverse_observed_progress(discover_control: bool) -> None:
+    class ReplacedProvisionalAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            provided = context.evidence
+            await super().start(context)
+            operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
+            self.snapshots[context.scenario.case_id]["histories"][0]["operations"] = [
+                {**operation, "status": "SUCCEEDED", "result": {"poll": 2}}
+            ]
+            context.evidence = self.observations(context)
+            context.evidence["histories"][0].update(status="RUNNING")
+            context.evidence["histories"][0]["operations"] = [{**operation, "status": "STARTED", "result": {"poll": 1}}]
+            # Both objects have been observed before place provides completion.
+            provided.update(deepcopy(context.evidence))
+            self.original_input = provided
+
+        async def place(self, context: ScenarioContext) -> None:
+            # The coordinator later revisits the object supplied to place even
+            # though this replacement already retained its monotonic completion.
+            context.evidence = self.observations(context)
+            if discover_control:
+                self.original_input["resourcesCreated"].append(
+                    {
+                        "id": f"control:{context.scenario.case_id}",
+                        "kind": "control",
+                        "ownerCaseId": context.scenario.case_id,
+                    }
+                )
+                _add_retained_resource(self.snapshots[context.scenario.case_id], "control", "DELETED")
+
+    (collected, following), scheduler = _run(ReplacedProvisionalAdapter(phase="none"))
+    assert collected.status == following.status == "PASSED", collected.errors
+    assert not any("conflict with retained facts" in error for error in collected.errors)
+    assert collected.evidence["histories"][0]["operations"][0]["result"] == {"poll": 2}
+    if discover_control:
+        assert any(resource["kind"] == "control" for resource in collected.evidence["resourcesCreated"])
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
