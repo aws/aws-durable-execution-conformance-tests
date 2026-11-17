@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeGuard
 
 SCHEMA_VERSION = 1
 REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
@@ -24,6 +24,11 @@ TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
 
 class EvidenceValidator(Protocol):
     def __call__(self, evidence: Mapping[str, Any], *, phase: str = "final") -> Sequence[str]: ...
+
+
+def is_json_integer(value: Any) -> TypeGuard[int | float]:
+    """Accept finite integral JSON numbers, independently of their spelling."""
+    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
 def same_json(left: Any, right: Any) -> bool:
@@ -171,12 +176,12 @@ class _Evidence:
             for count in self.records(replay["sideEffects"], "replay.sideEffects", nonempty=True):
                 self.string(count.get("operationId"), "replay.sideEffects.operationId")
                 for field in ("count", "expectedCount"):
-                    if type(count.get(field)) is not int or count[field] < 0:
+                    if not is_json_integer(count.get(field)) or count[field] < 0:
                         self.error(f"replay.sideEffects.{field} must be a non-negative integer")
 
     def common(self, *, validate_behavior: bool = True) -> None:
         value = self.value
-        if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION:
+        if not is_json_integer(value.get("schemaVersion")) or value.get("schemaVersion") != SCHEMA_VERSION:
             self.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
         for key in ("runId", "caseId"):
             self.string(value.get(key), key)
@@ -191,7 +196,7 @@ class _Evidence:
         for key in ("functionArn", "configurationDigest"):
             self.string(self.profile.get(key), f"profile.{key}")
         concurrency = self.profile.get("nativeConcurrency")
-        if type(concurrency) is not int or concurrency < 1:
+        if not is_json_integer(concurrency) or concurrency < 1:
             self.error("profile.nativeConcurrency must be a positive integer")
         if self.number(self.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
             self.error("profile.timeoutMs must be positive")
@@ -210,10 +215,10 @@ class _Evidence:
                 self.string(attempt.get(key), f"attempt {request_id}.{key}")
             role = self.string(attempt.get("role"), f"attempt {request_id}.role")
             ordinal = attempt.get("attempt")
-            if type(ordinal) is not int or ordinal < 1:
+            if not is_json_integer(ordinal) or ordinal < 1:
                 self.error(f"attempt {request_id}.attempt must be a positive integer")
             else:
-                identity = (role, ordinal)
+                identity = (role, int(ordinal))
                 if identity in attempt_ordinals:
                     self.error(f"duplicate attempt ordinal {ordinal} for role {role}")
                 attempt_ordinals.add(identity)
@@ -644,7 +649,7 @@ class _Evidence:
         for count in counts:
             actual = count.get("count")
             expected = count.get("expectedCount")
-            if type(actual) is not int or type(expected) is not int or actual < 0 or expected < 0:
+            if not is_json_integer(actual) or not is_json_integer(expected) or actual < 0 or expected < 0:
                 self.error("side-effect counts must be non-negative integers")
             elif actual != expected:
                 self.error("side-effect count differs from the fixture's retry policy", "ASSERTION")
@@ -905,7 +910,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
         for request_id in validator.attempts:
             local = [event for event in validator.events if event["requestId"] == request_id]
             sequences = [event.get("sequence") for event in local]
-            if any(type(sequence) is not int or sequence < 0 for sequence in sequences) or len(sequences) != len(
+            if any(not is_json_integer(sequence) or sequence < 0 for sequence in sequences) or len(sequences) != len(
                 set(sequences)
             ):
                 validator.error("retirement requires unique per-request semantic sequence numbers")
@@ -915,7 +920,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 validator.error("retirement sequence contradicts its normalized timestamps")
 
             def boundary(event: Mapping[str, Any]) -> tuple[float, int]:
-                return event["atMs"], event["sequence"]
+                return event["atMs"], int(event["sequence"])
 
             wrappers = [event for event in local if event["kind"] in {"wrapper_return", "wrapper_raise"}]
             entries = [event for event in local if event["kind"] == "wrapper_enter"]

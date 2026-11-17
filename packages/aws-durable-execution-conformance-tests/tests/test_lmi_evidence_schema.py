@@ -380,3 +380,71 @@ def test_common_validation_does_not_require_scenario_specific_optional_sections(
     del value["replay" if factory == "replay_evidence" else "budgets"]
     assert validate_common_evidence(value) == []
     assert validate_evidence(value)
+
+
+INTEGER_WIRE_PATHS = (
+    ("schemaVersion",),
+    ("profile", "nativeConcurrency"),
+    ("attempts", 0, "attempt"),
+    ("replay", "sideEffects", 0, "count"),
+    ("replay", "sideEffects", 0, "expectedCount"),
+)
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("encoding", [".0", "e0"])
+@pytest.mark.parametrize("path", INTEGER_WIRE_PATHS)
+def test_integral_json_number_encodings_match_the_integer_wire_schema(
+    schema_validator, evidence_factories, phase, encoding, path
+):
+    value = evidence_factories["replay_evidence"]()
+    target = value
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = json.loads(f"{target[path[-1]]}{encoding}")
+    assert type(target[path[-1]]) is float
+
+    schema_validator.validate(value)
+    assert validate_evidence(value, phase=phase) == []
+    assert validate_common_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("path", INTEGER_WIRE_PATHS)
+@pytest.mark.parametrize("invalid", [True, False, 1.5, float("inf"), float("nan")])
+def test_integer_wire_fields_still_reject_booleans_fractions_and_nonfinite_values(
+    schema_validator, evidence_factories, phase, path, invalid
+):
+    value = evidence_factories["replay_evidence"]()
+    target = value
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = invalid
+    assert not schema_validator.is_valid(value)
+    assert validate_evidence(value, phase=phase)
+
+
+def test_large_integer_wire_values_do_not_require_float_conversion(schema_validator, evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    large = 10**1000
+    value["profile"]["nativeConcurrency"] = large
+    value["replay"]["sideEffects"][0].update(count=large, expectedCount=large)
+    schema_validator.validate(value)
+    assert validate_evidence(value) == []
+
+
+@pytest.mark.parametrize("encoding", [".0", "e0"])
+def test_physical_retirement_accepts_integral_json_sequence_numbers(evidence_factories, encoding):
+    value = evidence_factories["evidence"]()
+    evidence_factories["complete_retirement_events"](value)
+    for event in value["events"]:
+        event["sequence"] = json.loads(f"{event['sequence']}{encoding}")
+    assert validate_retirement_evidence(value) == []
+
+
+@pytest.mark.parametrize("invalid", [True, 0.5, float("inf"), float("nan")])
+def test_physical_retirement_rejects_noninteger_sequence_numbers(evidence_factories, invalid):
+    value = evidence_factories["evidence"]()
+    evidence_factories["complete_retirement_events"](value)
+    value["events"][0]["sequence"] = invalid
+    assert any("sequence" in error for error in validate_retirement_evidence(value))

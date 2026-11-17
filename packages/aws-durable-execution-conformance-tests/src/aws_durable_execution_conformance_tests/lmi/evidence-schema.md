@@ -7,6 +7,11 @@ fields; they cannot omit required version 1 observations. `evidence-schema.json`
 describes the structural wire format; the Python validator also checks ownership,
 ordering, placement, outcomes, and coverage.
 
+Integer-valued wire fields accept finite, mathematically integral JSON numbers,
+including decimal and exponent spellings such as `2.0` and `2e0`. Booleans remain
+distinct from numbers. Manifest loading normalizes these quantities to Python
+integers before passing them to typed configuration and coverage APIs.
+
 Observation validation checks the structure of supplied, recognized optional
 fields in every scenario. Presence and behavioral requirements remain scoped to
 the applicable scenario; unknown extension fields stay permitted. Caller-owned

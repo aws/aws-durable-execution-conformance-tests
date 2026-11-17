@@ -4,6 +4,7 @@
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
@@ -71,6 +72,64 @@ def passed_results(plan):
         {"case_id": case["case_id"], "requirement_id": case["requirement_id"], "status": "PASSED", "errors": []}
         for case in plan["scenarios"]
     ]
+
+
+@pytest.mark.parametrize("encoding", [".0", "e0"])
+def test_manifest_normalizes_integral_json_numbers_before_typed_consumers(tmp_path, encoding):
+    plan = manifest()
+    plan["scenarioConcurrency"] = 8
+    for scenario in plan["scenarios"]:
+        scenario["slots"] = 2
+    raw = re.sub(
+        r'("(?:schemaVersion|capacity|native_concurrency|scenarioConcurrency|slots)"\s*:\s*)(\d+)',
+        lambda match: f"{match[1]}{match[2]}{encoding}",
+        json.dumps(plan),
+    )
+    assert type(json.loads(raw)["schemaVersion"]) is float
+    path = tmp_path / "manifest.json"
+    path.write_text(raw)
+
+    admitted = load_manifest(path)
+
+    assert type(admitted["schemaVersion"]) is int
+    assert type(admitted["scenarioConcurrency"]) is int
+    assert all(
+        type(profile[key]) is int for profile in admitted["profiles"] for key in ("capacity", "native_concurrency")
+    )
+    assert all(type(scenario["slots"]) is int for scenario in admitted["scenarios"])
+    assert build_report(admitted, passed_results(admitted)).exit_code() == 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("schemaVersion",),
+        ("profiles", 0, "capacity"),
+        ("profiles", 1, "native_concurrency"),
+        ("scenarioConcurrency",),
+        ("scenarios", 0, "slots"),
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, 0.5, float("inf"), float("nan")])
+def test_manifest_integer_fields_reject_booleans_fractions_and_nonfinite_values(tmp_path, path, invalid):
+    plan = manifest()
+    target = plan
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = invalid
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(manifest_path)
+
+
+def test_manifest_preserves_large_integer_capacity_without_float_conversion(tmp_path):
+    plan = manifest()
+    plan["profiles"][1]["capacity"] = 10**1000
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    admitted = load_manifest(path)
+    assert admitted["profiles"][1]["capacity"] == 10**1000
 
 
 def test_strict_acceptance_requires_every_mandatory_requirement():

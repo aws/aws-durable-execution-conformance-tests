@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
-from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, same_json
+from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, is_json_integer, same_json
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_STRICT,
@@ -141,10 +141,11 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
     manifest = json.loads(path.read_text())
     if (
         not isinstance(manifest, dict)
-        or type(manifest.get("schemaVersion")) is not int
+        or not is_json_integer(manifest.get("schemaVersion"))
         or manifest["schemaVersion"] != 1
     ):
         raise ValueError("manifest.schemaVersion must be 1")
+    manifest["schemaVersion"] = int(manifest["schemaVersion"])
     if manifest.get("runtime") not in RUNTIMES:
         raise ValueError(f"runtime must be one of {RUNTIMES}")
     if manifest.get("capabilityProfile") not in CAPABILITIES:
@@ -169,8 +170,9 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         ids.add(profile["profile_id"])
         resources.add(profile["resource_id"])
         for key in ("capacity", "native_concurrency"):
-            if type(profile.get(key)) is not int or profile[key] < 1:
+            if not is_json_integer(profile.get(key)) or profile[key] < 1:
                 raise ValueError(f"profile.{key} must be a positive integer")
+            profile[key] = int(profile[key])
     if not {1, 2} <= {profile["native_concurrency"] for profile in profiles}:
         raise ValueError("profiles must include native concurrency 1 and 2")
     # Extra profiles must have an incompatibility, even if their concurrency is 1 or 2.
@@ -183,8 +185,10 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
             raise ValueError("additional profiles require an incompatibilityReason")
         default_profiles.add(concurrency)
     count = manifest.get("scenarioConcurrency", 8)
-    if type(count) is not int or count < 1:
+    if not is_json_integer(count) or count < 1:
         raise ValueError("scenarioConcurrency must be a positive integer")
+    if "scenarioConcurrency" in manifest:
+        manifest["scenarioConcurrency"] = int(count)
     budgets = manifest.get("budgets", {})
     if not isinstance(budgets, dict):
         raise ValueError("budgets must be an object")
@@ -220,6 +224,8 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         if definition.exclusive and scenario.get("exclusive") is False:
             raise ValueError("this measurement requires exclusive resource ownership")
         slots = scenario.get("slots", definition.minimum_native_concurrency)
+        if "slots" in scenario and is_json_integer(slots):
+            slots = scenario["slots"] = int(slots)
         if type(slots) is not int or not definition.minimum_native_concurrency <= slots <= profile["capacity"]:
             raise ValueError("scenario slots must reserve the required cohort within profile capacity")
         roles = scenario.get("roles", list(definition.roles))
