@@ -601,6 +601,120 @@ def test_reordered_cleanup_inventories_do_not_require_a_new_independent_audit(cl
 
 
 @pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
+@pytest.mark.parametrize("clear_later", [False, True])
+@pytest.mark.parametrize(
+    ("kind", "payload", "valid"),
+    [
+        ("collectionErrors", ["history query failed"], False),
+        ("collectionErrors", None, False),
+        ("collectionErrors", "history query failed", False),
+        ("collectionErrors", {}, False),
+        ("collectionErrors", [""], False),
+        ("collectionErrors", ["   "], False),
+        ("collectionErrors", [None], False),
+        ("collectionErrors", [False], False),
+        ("collectionErrors", [], True),
+        ("observation_error", None, False),
+        ("control_error", None, False),
+    ],
+)
+def test_cleanup_source_failures_remain_visible_and_quarantine_only_their_profile(
+    cleanup_phase: str, clear_later: bool, kind: str, payload: Any, valid: bool
+) -> None:
+    other = replace(PROFILE, profile_id="other", resource_id="arn:function:other")
+    first_admitted = asyncio.Event()
+    finished: dict[str, bool] = {}
+
+    class SourceErrorAdapter(FailureAdapter):
+        async def prepare(self, profile: Profile) -> None:
+            if profile.profile_id == other.profile_id:
+                await first_admitted.wait()
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            self.snapshots[context.scenario.case_id]["histories"][0]["result"] = None
+            if context.scenario.case_id == "failed":
+                first_admitted.set()
+
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            observed["expectedHistories"] = {
+                history["executionArn"]: {"status": "SUCCEEDED", "result": None} for history in observed["histories"]
+            }
+            return observed
+
+        def report_failure(self, context: ScenarioContext) -> None:
+            if kind == "collectionErrors":
+                context.evidence["collectionErrors"] = deepcopy(payload)
+            else:
+                attempt = context.evidence["attempts"][0]
+                context.evidence["events"].append(
+                    {
+                        "kind": kind,
+                        "requestId": attempt["requestId"],
+                        "ownerRequestId": attempt["requestId"],
+                        "executionArn": attempt["executionArn"],
+                        "atMs": 1500,
+                        "sequence": max(event["sequence"] for event in context.evidence["events"]) + 1,
+                    }
+                )
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            if context.scenario.case_id == "failed" and cleanup_phase == "release":
+                self.report_failure(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            if cleanup_phase == "retire":
+                self.report_failure(context)
+            if clear_later:
+                context.evidence = self.observations(context)
+            context.evidence["retirement"] = deepcopy(self.snapshots["failed"]["retirement"])
+            return True
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            finished[profile.profile_id] = quiescent
+
+    adapter = SourceErrorAdapter(phase="assertion")
+    scheduler = ResourceScheduler()
+    cases = [_case("failed"), _case("next"), replace(_case("unrelated"), profile_id=other.profile_id)]
+    first, following, unrelated = asyncio.run(
+        run_scenarios(
+            cases,
+            [PROFILE, other],
+            adapter,
+            run_id="run",
+            validator=_service_fact_validator,
+            scheduler=scheduler,
+            scenario_concurrency=1,
+        )
+    )
+    assert first.evidence.get("collectionErrors", []) == []
+    assert not any(event["kind"] in ("observation_error", "control_error") for event in first.evidence["events"])
+    snapshots = first.cleanup_evidence[cleanup_phase]
+    if kind == "collectionErrors":
+        assert any("collectionErrors" in snapshot and snapshot["collectionErrors"] == payload for snapshot in snapshots)
+    else:
+        assert any(event["kind"] == kind for snapshot in snapshots for event in snapshot.get("events", []))
+    assert unrelated.status == "PASSED", unrelated.errors
+    assert finished[other.profile_id] is True
+    assert scheduler.quarantine_reason(other.resource_id) is None
+    if valid:
+        assert first.status == following.status == "PASSED", first.errors
+        assert finished[PROFILE.profile_id] is True
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+        assert any(kind in error for error in first.errors), first.errors
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert finished[PROFILE.profile_id] is False
+        assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("cleanup_phase", ["release", "retire"])
 @pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize("outcome", ["return", "raise", "replace-none"])
 @pytest.mark.parametrize("complete_retirement", [False, True])

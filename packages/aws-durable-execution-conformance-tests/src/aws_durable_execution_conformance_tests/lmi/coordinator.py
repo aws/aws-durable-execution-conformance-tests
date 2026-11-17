@@ -1300,6 +1300,34 @@ async def run_scenarios(
                             snapshots = cleanup_evidence.setdefault(phase, [])
                             if not any(same_json(snapshot, previous) for previous in snapshots):
                                 snapshots.append(snapshot)
+                                # Source failures invalidate cleanup evidence
+                                # even when ownership inventories did not change
+                                # or a later phase removes the diagnostics.
+                                source_errors = snapshot.get("collectionErrors", [])
+                                if not isinstance(source_errors, list):
+                                    cleanup_errors.append(
+                                        f"Cleanup {phase}: collectionErrors must be an array of non-empty strings"
+                                    )
+                                else:
+                                    for index, message in enumerate(source_errors):
+                                        if not isinstance(message, str) or not message.strip():
+                                            cleanup_errors.append(
+                                                f"Cleanup {phase}: collectionErrors[{index}] must be a non-empty string"
+                                            )
+                                        else:
+                                            cleanup_errors.append(
+                                                f"Cleanup {phase}: collectionErrors[{index}]: {message}"
+                                            )
+                                source_events = snapshot.get("events", [])
+                                if isinstance(source_events, list):
+                                    for event in source_events:
+                                        if isinstance(event, Mapping) and event.get("kind") in (
+                                            "observation_error",
+                                            "control_error",
+                                        ):
+                                            cleanup_errors.append(
+                                                f"Cleanup {phase}: {event['kind']} reports failed observation or control publication"
+                                            )
                             cleanup_changed |= any(
                                 inventory_changed(evidence.get(name, []), snapshot.get(name, []))
                                 for name in owned_inventories
