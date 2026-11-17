@@ -461,3 +461,24 @@ def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requi
     assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
     if tightened is not None:
         assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("released", "expected_status"), [(230, "FAILED"), (215, "PASSED")])
+def test_offline_cli_final_validation_rejects_observed_fault_release_after_retirement(
+    tmp_path, requirement, released, expected_status
+):
+    plan, value = timed_plan(requirement)
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    assert value["retirement"]["retiredAtMs"] == 220
+    assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+
+    assert result["status"] == expected_status
+    assert result["errors"] == (
+        ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
+    )
