@@ -64,7 +64,8 @@ def render_console(report: Report) -> str:
     _section("Passed", ReportStatus.PASSED)
     _section("Failed", ReportStatus.FAILED, show_errors=True)
     _section("Optional (failed, non-blocking)", ReportStatus.OPTIONAL_FAILED, show_errors=True)
-    _section("Not implemented (declared SDK gap, non-blocking)", ReportStatus.NOT_IMPLEMENTED, show_reason=True)
+    gap_qualifier = "" if ReportStatus.NOT_IMPLEMENTED in report.blocking_statuses() else ", non-blocking"
+    _section(f"Not implemented (declared SDK gap{gap_qualifier})", ReportStatus.NOT_IMPLEMENTED, show_reason=True)
     _section("Uncovered (no example found)", ReportStatus.UNCOVERED)
 
     lines.append(f"\nExit code: {report.exit_code()} (fail-on: {report.fail_on})")

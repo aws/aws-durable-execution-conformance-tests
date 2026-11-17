@@ -1,0 +1,17 @@
+---
+id: lmi-lifecycle-5
+description: Real suspension, replay and retry
+scenario: suspension-retry
+scheduling: shared
+minimumNativeConcurrency: 1
+contract: Use public durable waits or callbacks to reach PENDING and resume through the service. Retain
+  all attempts. Compare stable operation identity, parent/nesting and stored success/failure outcomes;
+  completed bodies are skipped and observed side-effect counts match retry semantics. Preserve each language
+  suspension model. Operation names remain static; run/case IDs only namespace diagnostics and
+  controls.
+limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
+  user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
+  is NOT_IMPLEMENTED, never not applicable.
+roles:
+  - victim
+  - resume

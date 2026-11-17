@@ -1,0 +1,484 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
+"""Strict coverage and explicit LMI selection cannot silently accept missing work."""
+
+import json
+import re
+import xml.etree.ElementTree as ET
+from copy import deepcopy
+from pathlib import Path
+from runpy import run_path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from aws_durable_execution_conformance_tests.lmi.app import (
+    build_report,
+    evidence_results,
+    load_manifest,
+    run,
+)
+from aws_durable_execution_conformance_tests.lmi.catalog import requirements
+from aws_durable_execution_conformance_tests.report import (
+    FAIL_ON_FAILED,
+    FAIL_ON_STRICT,
+    Report,
+    ReportEntry,
+    ReportStatus,
+    RunMetadata,
+)
+
+
+def manifest():
+    return {
+        "schemaVersion": 1,
+        "runId": "run-1",
+        "runtime": "python",
+        "capabilityProfile": "lifecycle",
+        "profiles": [
+            {
+                "profile_id": f"native-{n}",
+                "resource_id": f"arn:function:{n}",
+                "capacity": n,
+                "native_concurrency": n,
+                "artifact_id": "sdk-commit",
+                "configuration_id": f"config-{n}",
+            }
+            for n in (1, 2)
+        ],
+        "scenarios": [
+            {
+                "case_id": definition["scenario"],
+                "requirement_id": req,
+                "profile_id": "native-2",
+                "scenario": definition["scenario"],
+                # Track the catalog so a newly declared budget cannot be
+                # left undeclared by this fixture.
+                **(
+                    {"behavior_budgets": {name: 5 for name in definition["behaviorBudgets"]}}
+                    if definition.get("behaviorBudgets")
+                    else {}
+                ),
+            }
+            for req, definition in requirements("lifecycle").items()
+        ],
+    }
+
+
+def passed_results(plan):
+    return [
+        {"case_id": case["case_id"], "requirement_id": case["requirement_id"], "status": "PASSED", "errors": []}
+        for case in plan["scenarios"]
+    ]
+
+
+@pytest.mark.parametrize("encoding", [".0", "e0"])
+def test_manifest_normalizes_integral_json_numbers_before_typed_consumers(tmp_path, encoding):
+    plan = manifest()
+    plan["scenarioConcurrency"] = 8
+    for scenario in plan["scenarios"]:
+        scenario["slots"] = 2
+    raw = re.sub(
+        r'("(?:schemaVersion|capacity|native_concurrency|scenarioConcurrency|slots)"\s*:\s*)(\d+)',
+        lambda match: f"{match[1]}{match[2]}{encoding}",
+        json.dumps(plan),
+    )
+    assert type(json.loads(raw)["schemaVersion"]) is float
+    path = tmp_path / "manifest.json"
+    path.write_text(raw)
+
+    admitted = load_manifest(path)
+
+    assert type(admitted["schemaVersion"]) is int
+    assert type(admitted["scenarioConcurrency"]) is int
+    assert all(
+        type(profile[key]) is int for profile in admitted["profiles"] for key in ("capacity", "native_concurrency")
+    )
+    assert all(type(scenario["slots"]) is int for scenario in admitted["scenarios"])
+    assert build_report(admitted, passed_results(admitted)).exit_code() == 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("schemaVersion",),
+        ("profiles", 0, "capacity"),
+        ("profiles", 1, "native_concurrency"),
+        ("scenarioConcurrency",),
+        ("scenarios", 0, "slots"),
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, 0.5, float("inf"), float("nan")])
+def test_manifest_integer_fields_reject_booleans_fractions_and_nonfinite_values(tmp_path, path, invalid):
+    plan = manifest()
+    target = plan
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = invalid
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(manifest_path)
+
+
+def test_manifest_preserves_large_integer_capacity_without_float_conversion(tmp_path):
+    plan = manifest()
+    plan["profiles"][1]["capacity"] = 10**1000
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    admitted = load_manifest(path)
+    assert admitted["profiles"][1]["capacity"] == 10**1000
+
+
+def test_strict_acceptance_requires_every_mandatory_requirement():
+    plan = manifest()
+    results = passed_results(plan)
+    assert build_report(plan, results).exit_code() == 0
+    for index in range(len(results)):
+        incomplete = results[:index] + results[index + 1 :]
+        # Every missing required case must remain visible in its requirement report.
+        assert build_report(plan, incomplete).exit_code() == 1
+
+
+@pytest.mark.parametrize("status", ["FAILED", "INCOMPLETE_EVIDENCE", "INFRASTRUCTURE_ERROR", "NOT_IMPLEMENTED"])
+def test_later_success_cannot_replace_failure_or_gap(status):
+    plan = manifest()
+    results = passed_results(plan)
+    results.append(
+        {**results[0], "case_id": "original-failed-attempt", "status": status, "errors": ["original failure"]}
+    )
+    assert build_report(plan, results).exit_code() == 1
+
+
+@pytest.mark.parametrize("missing_id", ["lmi-lifecycle-2", "lmi-lifecycle-7"])
+def test_missing_disposal_requirement_is_reported_independently(missing_id):
+    plan = manifest()
+    plan["scenarios"] = [case for case in plan["scenarios"] if case["requirement_id"] != missing_id]
+    report = build_report(plan, passed_results(plan))
+    assert report.exit_code() == 1
+    statuses = {entry.id: entry.status for entry in report.entries}
+    assert statuses.pop(missing_id) == ReportStatus.UNCOVERED
+    assert all(status == ReportStatus.PASSED for status in statuses.values())
+
+
+@pytest.mark.parametrize(
+    "scope,key,value",
+    [
+        ("run", "capabilityProfile", "lifecycle-otel"),
+        ("run", "coverageProfile", "export-lifecycle"),
+        ("case", "scenario", "otel-attribution"),
+        ("case", "requirement_id", "lmi-lifecycle-8"),
+        ("case", "requirement_id", "lmi-lifecycle-16"),
+        ("case", "otel_view", "invocation"),
+        ("case", "export_mode", "sync"),
+    ],
+)
+def test_deferred_telemetry_configuration_cannot_claim_lifecycle_acceptance(tmp_path, scope, key, value):
+    plan = manifest()
+    target = plan if scope == "run" else plan["scenarios"][0]
+    target[key] = value
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
+    entry = ReportEntry("requirement", "suite", ReportStatus.NOT_IMPLEMENTED)
+    metadata = RunMetadata("run", "template", "region")
+    assert Report(metadata, [entry], fail_on=FAIL_ON_FAILED).exit_code() == 0
+    assert Report(metadata, [entry], fail_on=FAIL_ON_STRICT).exit_code() == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda plan: plan.update(schemaVersion=True),
+        lambda plan: plan.update(runtime="unknown"),
+        lambda plan: plan.update(scenarioConcurrency=0),
+        lambda plan: plan.update(budgets={"placement": float("nan")}),
+        lambda plan: plan["profiles"].pop(),
+        lambda plan: plan["profiles"][1].update(native_concurrency=1),
+        lambda plan: plan["profiles"].append({**plan["profiles"][1], "profile_id": "extra", "resource_id": "extra"}),
+        lambda plan: plan["scenarios"].append(plan["scenarios"][0]),
+        lambda plan: plan["scenarios"][0].update(requirement_id="not-an-id"),
+        lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
+    ],
+)
+def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
+    plan = manifest()
+    mutation(plan)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
+    plan = manifest()
+    plan["scenarioConcurrency"] = 16
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    assert load_manifest(path) == plan
+
+
+def test_evidence_cannot_be_substituted_between_cases_or_artifacts(tmp_path):
+    plan = manifest()
+    case = plan["scenarios"][0]
+    case["evidence_file"] = "evidence.json"
+    evidence = {
+        "caseId": "other-case",
+        "runId": "other-run",
+        "runtime": "python",
+        "requirementId": case["requirement_id"],
+        "profile": {"functionArn": "other-function"},
+        "artifact": {"sdk": "other-commit"},
+    }
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
+        result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "FAILED"
+    assert any("artifact" in error for error in result["errors"])
+    assert any("caseId" in error for error in result["errors"])
+
+
+def test_retained_evidence_must_cover_every_declared_cohort_role(tmp_path):
+    """A manifest may declare roles beyond the requirement's defaults.
+
+    Live runs reject an incomplete cohort through the coordinator's ownership
+    check, so retained evidence must be held to the same declared role set.
+    """
+    plan = manifest()
+    case = next(item for item in plan["scenarios"] if item["scenario"] == "native-overlap")
+    plan["scenarios"] = [case]
+    case["evidence_file"] = "evidence.json"
+    case["roles"] = ["victim", "peer", "spare"]
+    profile = next(item for item in plan["profiles"] if item["profile_id"] == case["profile_id"])
+    evidence = {
+        "caseId": case["case_id"],
+        "runId": plan["runId"],
+        "runtime": plan["runtime"],
+        "requirementId": case["requirement_id"],
+        "profile": {
+            "functionArn": profile["resource_id"],
+            "configurationDigest": profile["configuration_id"],
+            "nativeConcurrency": profile["native_concurrency"],
+        },
+        "artifact": {"sdk": profile["artifact_id"]},
+        "selectedRequests": {"victim": "request-1", "peer": "request-2"},
+    }
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
+        result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "FAILED"
+    assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
+    evidence["selectedRequests"]["spare"] = "request-3"
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
+        assert evidence_results(plan, tmp_path)[0]["status"] == "PASSED"
+
+
+def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
+    plan = manifest()
+    plan["scenarios"] = []
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(path), "--output", str(tmp_path / "out")])
+    assert exc.value.code == 1
+    report = json.loads((tmp_path / "out/report.json").read_text())
+    assert report["summary"]["uncovered"] == 7
+    assert report["ci"]["exit_code"] == 1
+    assert (tmp_path / "out/report.xml").is_file()
+
+
+@pytest.mark.parametrize("reason", ["", "handler unavailable"])
+def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reason):
+    plan = manifest()
+    for case in plan["scenarios"]:
+        case["not_implemented"] = reason
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    output = tmp_path / "out"
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(path), "--output", str(output)])
+    assert exc.value.code == 1
+    console = capsys.readouterr().out
+    assert "Not implemented (declared SDK gap):" in console
+    assert "non-blocking" not in console
+    assert "Exit code: 1 (fail-on: strict)" in console
+
+    results = json.loads((output / "evidence.json").read_text())
+    assert len(results) == len(plan["scenarios"])
+    assert all(result["status"] == "NOT_IMPLEMENTED" and result["errors"] == [reason] for result in results)
+    report = json.loads((output / "report.json").read_text())
+    assert report["summary"]["not_implemented"] == 7
+    assert report["summary"]["failed"] == report["summary"]["uncovered"] == 0
+    assert report["ci"]["fail_on"] == FAIL_ON_STRICT
+    assert report["ci"]["exit_code"] == 1
+    assert all(entry["status"] == "NOT_IMPLEMENTED" for entry in report["results"])
+
+    junit = ET.parse(output / "report.xml").getroot()
+    assert junit.attrib["tests"] == junit.attrib["skipped"] == "7"
+    assert junit.attrib["failures"] == "0"
+    for testcase in junit.findall("testcase"):
+        skipped = testcase.find("skipped")
+        assert skipped is not None
+        assert skipped.attrib["message"].startswith("NOT_IMPLEMENTED")
+
+
+def test_dispatch_is_opt_in():
+    from aws_durable_execution_conformance_tests.app import run as main
+
+    with patch("aws_durable_execution_conformance_tests.lmi.app.run") as lmi:
+        main(["lmi-lifecycle", "--help"])
+        lmi.assert_called_once_with(["--help"])
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"exclusive": False},
+        {"exclusive": "false"},
+        {"profile_id": "native-1"},
+        {"slots": 1},
+        {"roles": ["victim"]},
+        {"scenario": "some-other-fixture"},
+    ],
+)
+def test_recovery_cannot_weaken_its_measurement_window(tmp_path, changes):
+    plan = manifest()
+    recovery = next(case for case in plan["scenarios"] if case["scenario"] == "peer-recovery")
+    recovery.update(changes)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_normal_failure_cannot_reuse_success_evidence():
+    from aws_durable_execution_conformance_tests.lmi.app import _identity_errors
+
+    plan = manifest()
+    scenario = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")
+    value = {"selectedRequests": {"victim": "r"}, "attempts": [{"requestId": "r", "outcome": "SUCCEEDED"}]}
+    assert any(
+        "requires the selected victim outcome FAILED" in error for error in _identity_errors(plan, scenario, value)
+    )
+
+
+def test_output_reuse_preserves_previous_run(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest()))
+    output = tmp_path / "out"
+    output.mkdir()
+    original = output / "evidence.json"
+    original.write_text("retained original evidence")
+    with pytest.raises(SystemExit) as error:
+        run(["--manifest", str(path), "--output", str(output)])
+    assert error.value.code == 2
+    assert original.read_text() == "retained original evidence"
+
+
+def test_python_regressions_are_not_a_builtin_shared_profile(tmp_path):
+    plan = manifest()
+    plan.update(coverageProfile="python-lifecycle", scenarios=[])
+    for profile in plan["profiles"]:
+        profile["recovery_policy"] = "reuse-worker"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="coverage profile"):
+        load_manifest(path)
+
+
+def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["deadline_evidence" if requirement == 3 else "recovery_evidence"]()
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    plan["scenarios"] = [case for case in plan["scenarios"] if case["requirement_id"] == value["requirementId"]]
+    case = plan["scenarios"][0]
+    case.update(
+        case_id=value["caseId"],
+        evidence_file="evidence.json",
+        behavior_budgets=deepcopy(value["budgets"]),
+        roles=list(value["selectedRequests"]),
+        slots=2,
+    )
+    plan["profiles"][1].update(
+        resource_id=value["profile"]["functionArn"],
+        artifact_id=value["artifact"]["sdk"],
+        configuration_id=value["profile"]["configurationDigest"],
+    )
+    return plan, value
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("declared", "observed", "matches"), [(1, True, False), (1, 1.0, True), (1.0, 1, True)])
+def test_standard_extension_budget_binding_preserves_json_types(tmp_path, requirement, declared, observed, matches):
+    plan, value = timed_plan(requirement)
+    plan["scenarios"][0]["behavior_budgets"]["extensionAllowance"] = declared
+    value["budgets"]["extensionAllowance"] = observed
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    admitted = load_manifest(path)
+
+    result = evidence_results(admitted, tmp_path)[0]
+
+    assert result["status"] == ("PASSED" if matches else "FAILED")
+    if not matches:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("missing", ["all", "admissionMs", "cleanupMs"])
+def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requirement, missing):
+    plan, _ = timed_plan(requirement)
+    if missing == "all":
+        plan["scenarios"][0].pop("behavior_budgets")
+    else:
+        plan["scenarios"][0]["behavior_budgets"].pop(missing)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("tightened", [None, "admissionMs", "cleanupMs"])
+def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requirement, tightened):
+    plan, value = timed_plan(requirement)
+    if tightened is not None:
+        plan["scenarios"][0]["behavior_budgets"][tightened] = 0.5
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+    assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
+    if tightened is not None:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("released", "expected_status"), [(230, "FAILED"), (215, "PASSED")])
+def test_offline_cli_final_validation_rejects_observed_fault_release_after_retirement(
+    tmp_path, requirement, released, expected_status
+):
+    plan, value = timed_plan(requirement)
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    assert value["retirement"]["retiredAtMs"] == 220
+    assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+
+    assert result["status"] == expected_status
+    assert result["errors"] == (
+        ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
+    )
