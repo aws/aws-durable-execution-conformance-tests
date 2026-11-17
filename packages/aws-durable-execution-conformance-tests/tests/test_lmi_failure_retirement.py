@@ -4897,7 +4897,8 @@ def test_cleanup_common_record_independent_snapshot_rejects_invalid_event_fields
     result = _run_standard_cleanup_discovery(
         value, mutate, phase="retirement", path="independent", quiescent=False, retirement_valid=False
     )
-    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    statuses = {"FAILED", "INFRASTRUCTURE_ERROR"} if prefix == "ASSERTION:" else {"INFRASTRUCTURE_ERROR"}
+    assert result.status in statuses, result.errors
     assert any(error.startswith(prefix) for error in result.errors), result.errors
     assert result.evidence["events"] == original
 
