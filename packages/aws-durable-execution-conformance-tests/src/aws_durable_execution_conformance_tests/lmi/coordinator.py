@@ -1025,7 +1025,7 @@ async def run_scenarios(
                     case.requirement_id,
                     case.profile_id,
                     "INFRASTRUCTURE_ERROR",
-                    preparation_errors,
+                    list(preparation_errors),
                     {},
                     [],
                     context.timings,

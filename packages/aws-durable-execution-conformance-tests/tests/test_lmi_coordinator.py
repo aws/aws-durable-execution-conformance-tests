@@ -746,6 +746,37 @@ def test_failed_profile_preparation_does_not_block_other_profile():
     assert sorted(adapter.finished) == [(PROFILE.profile_id, False), ("other", True)]
 
 
+@pytest.mark.parametrize("finish_failure", ["raise", "timeout"])
+def test_preparation_failure_diagnostics_are_owned_by_each_case(finish_failure):
+    class PreparationAndFinishFailure(Adapter):
+        async def prepare(self, profile):
+            await super().prepare(profile)
+            raise RuntimeError("deployment failed")
+
+        async def finish(self, profile, *, quiescent):
+            await super().finish(profile, quiescent=quiescent)
+            if finish_failure == "raise":
+                raise RuntimeError("lock reconciliation failed")
+            await asyncio.Event().wait()
+
+    adapter = PreparationAndFinishFailure()
+    reported = []
+    results = run(
+        [case("first"), case("second"), case("third")],
+        adapter,
+        budgets=Budgets(retirement=0.02),
+        on_result=lambda result: reported.append(copy.deepcopy(result)),
+    )
+    final_reports = {result.case_id: result for result in reported}
+    assert len(results) == len(final_reports) == 3
+    assert adapter.preparations == [PROFILE.profile_id]
+    assert adapter.finished == [(PROFILE.profile_id, False)]
+    for result in (*results, *final_reports.values()):
+        assert result.status == "INFRASTRUCTURE_ERROR"
+        assert sum("deployment failed" in error for error in result.errors) == 1
+        assert sum("Run ownership release failed" in error for error in result.errors) == 1
+
+
 def test_external_run_lock_release_failure_cannot_report_pass():
     class FinishFailure(Adapter):
         async def finish(self, profile, *, quiescent):
