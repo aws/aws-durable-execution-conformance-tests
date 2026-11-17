@@ -4811,3 +4811,316 @@ def test_final_retirement_ownership_still_must_be_complete(inventory: str, field
     assert collected.status != "PASSED"
     assert following.status == "INFRASTRUCTURE_ERROR"
     assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("field", "supplied", "canonical_prefix", "unresolved"),
+    [
+        ("kind", None, "INCOMPLETE:", True),
+        ("kind", "", "INCOMPLETE:", True),
+        ("kind", " ", "INCOMPLETE:", True),
+        ("kind", 42, "INCOMPLETE:", True),
+        ("requestId", "request-unknown", "INCOMPLETE:", True),
+        ("requestId", None, "INCOMPLETE:", True),
+        ("requestId", "", "INCOMPLETE:", True),
+        ("requestId", False, "INCOMPLETE:", True),
+        ("requestId", [], "INCOMPLETE:", True),
+        ("ownerRequestId", "request-peer", "ASSERTION:", False),
+        ("ownerRequestId", "request-unknown", "ASSERTION:", True),
+        ("ownerRequestId", None, "ASSERTION:", True),
+        ("ownerRequestId", "", "ASSERTION:", True),
+        ("ownerRequestId", 42, "ASSERTION:", True),
+        ("executionArn", "arn:execution:peer", "ASSERTION:", False),
+        ("executionArn", "arn:execution:unknown", "ASSERTION:", True),
+        ("executionArn", None, "ASSERTION:", True),
+        ("executionArn", "", "ASSERTION:", True),
+        ("executionArn", 42, "ASSERTION:", True),
+        ("observedDuringRequestId", "request-unknown", "INCOMPLETE:", True),
+        ("observedDuringRequestId", "", "INCOMPLETE:", True),
+        ("observedDuringRequestId", False, "INCOMPLETE:", True),
+        ("observedDuringRequestId", [], "INCOMPLETE:", True),
+        ("observedDuringRequestId", "request-peer", "ASSERTION:", False),
+    ],
+)
+def test_cleanup_common_record_event_fields_survive_restoration(
+    path: str, field: str, supplied: Any, canonical_prefix: str, unresolved: bool
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+    probe_index = next(index for index, event in enumerate(original) if event["kind"] == "admission_probe")
+    damaged = deepcopy(value)
+    damaged["events"][probe_index][field] = supplied
+    canonical = validate_common_evidence(damaged, phase="observations")
+    assert canonical and all(error.startswith(canonical_prefix) for error in canonical), canonical
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            snapshot["events"][probe_index][field] = supplied
+        else:
+            snapshot["events"] = deepcopy(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=not unresolved)
+    assert result.status == ("INFRASTRUCTURE_ERROR" if unresolved else "FAILED"), result.errors
+    # Unknown or malformed ownership additionally prevents physical retirement,
+    # even where the common validator reports an attribution assertion.
+    expected_prefix = "INCOMPLETE:" if unresolved else "ASSERTION:"
+    assert any(error.startswith(expected_prefix) for error in result.errors), result.errors
+    assert result.evidence["events"] == original
+    assert same_json(result.cleanup_evidence["release"][0]["events"][probe_index][field], supplied)
+
+
+@pytest.mark.parametrize(
+    ("field", "supplied", "prefix"),
+    [
+        ("kind", None, "INCOMPLETE:"),
+        ("requestId", "request-unknown", "INCOMPLETE:"),
+        ("ownerRequestId", "request-peer", "ASSERTION:"),
+        ("executionArn", "arn:execution:peer", "ASSERTION:"),
+        ("observedDuringRequestId", "request-unknown", "INCOMPLETE:"),
+    ],
+)
+def test_cleanup_common_record_independent_snapshot_rejects_invalid_event_fields(
+    field: str, supplied: Any, prefix: str
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        next(event for event in snapshot["events"] if event["kind"] == "admission_probe")[field] = supplied
+        canonical = validate_common_evidence(snapshot, phase="observations")
+        assert canonical and all(error.startswith(prefix) for error in canonical), canonical
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="retirement", path="independent", quiescent=False, retirement_valid=False
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(error.startswith(prefix) for error in result.errors), result.errors
+    assert result.evidence["events"] == original
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("field", ["kind", "requestId", "ownerRequestId", "executionArn", "observedDuringRequestId"])
+def test_cleanup_common_record_absent_event_fields_remain_provisional(path: str, field: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            event = next(event for event in snapshot["events"] if event["kind"] == "admission_probe")
+            event.pop(field, None)
+        else:
+            snapshot["events"] = deepcopy(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["events"] == original
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("phase", ["both", "snapshot"])
+@pytest.mark.parametrize("kind", ["effect_observed", "adapter.custom.diagnostic"])
+def test_cleanup_common_record_accepts_custom_diagnostic_kinds(path: str, phase: str, kind: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            event = deepcopy(next(event for event in snapshot["events"] if event["kind"] == "admission_probe"))
+            event["kind"] = kind
+            snapshot["events"].append(event)
+            _resequence(snapshot)
+            assert validate_evidence(snapshot, phase="observations") == []
+        else:
+            snapshot["events"] = deepcopy(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["events"] == original
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("phase", ["both", "snapshot"])
+def test_cleanup_common_record_accepts_unassigned_observation_correlation(path: str, phase: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            next(event for event in snapshot["events"] if event["kind"] == "admission_probe")[
+                "observedDuringRequestId"
+            ] = None
+            assert validate_common_evidence(snapshot, phase="observations") == []
+        else:
+            snapshot["events"] = deepcopy(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == "PASSED", result.errors
+    assert result.evidence["events"] == original
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("unknown", ["requestId", "ownerRequestId", "executionArn"])
+def test_cleanup_common_record_cannot_drop_custom_event_with_unknown_owner(path: str, unknown: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    original = deepcopy(value["events"])
+    event = {
+        "kind": "effect_observed",
+        "requestId": "request-victim",
+        "ownerRequestId": "request-victim",
+        "executionArn": "arn:execution:victim",
+        "atMs": 25,
+    }
+    event[unknown] = "arn:execution:unknown" if unknown == "executionArn" else "request-unknown"
+    damaged = deepcopy(value)
+    damaged["events"].append(event)
+    canonical = validate_common_evidence(damaged, phase="observations")
+    expected_prefix = "INCOMPLETE:" if unknown == "requestId" else "ASSERTION:"
+    assert canonical and all(error.startswith(expected_prefix) for error in canonical), canonical
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        snapshot["events"] = [*deepcopy(original), deepcopy(event)] if calls == 1 else deepcopy(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=False)
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(error.startswith("INCOMPLETE:") for error in result.errors), result.errors
+    assert result.evidence["events"] == original
+    assert result.cleanup_evidence["release"][0]["events"][-1] == event
+
+
+def test_cleanup_common_record_late_native_binding_can_establish_physical_retirement() -> None:
+    value = _standard_retirement_snapshot("evidence")
+    deployment = value["profile"]
+    profile = Profile(
+        "standard", deployment["functionArn"], 2, 2, value["artifact"]["sdk"], deployment["configurationDigest"]
+    )
+    case = Scenario(
+        value["caseId"], value["requirementId"], profile.profile_id, "fixture", roles=tuple(value["selectedRequests"])
+    )
+    event = {
+        "kind": "effect_observed",
+        "requestId": "request-late",
+        "ownerRequestId": "request-late",
+        "executionArn": "arn:execution:late",
+        "atMs": 25,
+    }
+    final = deepcopy(value)
+    request = {
+        **value["attempts"][0],
+        "requestId": event["requestId"],
+        "executionArn": event["executionArn"],
+        "attempt": 2,
+        "startedAtMs": 20,
+        "endedAtMs": 30,
+    }
+    final["attempts"].append(request)
+    owner = {key: event[key] for key in ("requestId", "ownerRequestId", "executionArn")}
+    final["events"].extend(
+        [
+            {**owner, "kind": "wrapper_enter", "atMs": 20},
+            {**owner, "kind": "task_start", "taskId": "root", "atMs": 20.1},
+            event,
+            {**owner, "kind": "task_exit", "taskId": "root", "atMs": 29.9},
+            {**owner, "kind": "wrapper_return", "atMs": 30},
+        ]
+    )
+    final["histories"].append(
+        {
+            "executionArn": event["executionArn"],
+            "ownerCaseId": value["caseId"],
+            "status": "SUCCEEDED",
+            "result": None,
+            "operations": [],
+        }
+    )
+    final["expectedHistories"][event["executionArn"]] = {"status": "SUCCEEDED", "result": None}
+    for kind, identifier, outcome in (
+        ("invocation", event["requestId"], "QUIESCENT"),
+        ("execution", event["executionArn"], "SUCCEEDED"),
+    ):
+        resource = {"id": identifier, "kind": kind, "ownerCaseId": value["caseId"]}
+        final["resourcesCreated"].append(resource)
+        final["retirement"]["resources"].append(
+            {
+                **resource,
+                "outcome": outcome,
+                "settledAtMs": 100,
+                "evidenceUri": f"s3://raw/{value['runId']}/{value['caseId']}/{identifier}",
+            }
+        )
+    _resequence(final)
+    assert validate_common_evidence(final) == []
+    assert validate_retirement_evidence(final) == []
+    finished: list[bool] = []
+
+    class Adapter:
+        async def prepare(self, profile: Profile) -> None:
+            pass
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            finished.append(quiescent)
+
+        async def start(self, context: ScenarioContext) -> None:
+            for attempt in value["attempts"]:
+                context.record_attempt(
+                    attempt["requestId"],
+                    role=attempt["role"],
+                    requestId=attempt["requestId"],
+                    executionArn=attempt["executionArn"],
+                )
+            context.record_attempt("late-launch", role="victim")
+
+        async def place(self, context: ScenarioContext) -> None:
+            pass
+
+        async def execute(self, context: ScenarioContext) -> None:
+            pass
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            observed = deepcopy(value)
+            observed.pop("retirement")
+            assert validate_evidence(observed, phase="observations") == []
+            return observed
+
+        async def release(self, context: ScenarioContext) -> None:
+            context.evidence["events"].append(deepcopy(event))
+            canonical = validate_common_evidence(context.evidence, phase="observations")
+            assert canonical == ["INCOMPLETE: event references an unrecorded request"]
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            context.update_attempt("late-launch", requestId=event["requestId"], executionArn=event["executionArn"])
+            context.retirement_evidence = deepcopy(final)
+            return True
+
+    scheduler = ResourceScheduler()
+
+    async def exercise() -> ScenarioResult:
+        (result,) = await run_scenarios(
+            [case], [profile], Adapter(), run_id=value["runId"], validator=validate_evidence, scheduler=scheduler
+        )
+        lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
+        await lease.release(quiescent=True)
+        return result
+
+    result = asyncio.run(exercise())
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+    assert "Every launched attempt must retain an identified invocation request" in result.errors
+    assert finished == [True]
+    assert result.evidence["events"] == value["events"]
+    assert validate_retirement_evidence(result.retirement_evidence) == []
+    assert any(attempt.get("requestId") == event["requestId"] for attempt in result.attempts)
