@@ -504,3 +504,121 @@ def test_retirement_snapshot_must_cover_previously_observed_activity(late_at: in
     failed = results[0]
     assert any(reason in error for error in failed.errors), failed.errors
     assert scheduler.quarantine_reason(PROFILE.resource_id) is not None
+
+
+@pytest.mark.parametrize(
+    "damage", ["dropped-dispatch", "changed-dispatch", "early-settlement", "changed-completion", "dropped-late-event"]
+)
+def test_retirement_preserves_sdk_requests_and_invocation_completion(damage: str) -> None:
+    class LostActivityAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                attempt = observed["attempts"][0]
+                if damage == "changed-completion":
+                    attempt["endedAtMs"] = 19000
+                elif damage == "dropped-late-event":
+                    observed["events"].append(
+                        {
+                            "requestId": attempt["requestId"],
+                            "ownerRequestId": attempt["requestId"],
+                            "executionArn": attempt["executionArn"],
+                            "kind": "effect",
+                            "atMs": 19000,
+                        }
+                    )
+                else:
+                    observed["sdkRequests"] = [
+                        {
+                            "requestId": attempt["requestId"],
+                            "ownerRequestId": attempt["requestId"],
+                            "executionArn": attempt["executionArn"],
+                            "atMs": 19000,
+                            "method": "CheckpointDurableExecution",
+                            "outcome": "DISPATCHED",
+                        }
+                    ]
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                final = context.retirement_evidence
+                if damage == "early-settlement":
+                    final["sdkRequests"] = deepcopy(self.observations(context)["sdkRequests"])
+                elif damage == "changed-dispatch":
+                    final["sdkRequests"] = deepcopy(self.observations(context)["sdkRequests"])
+                    final["sdkRequests"][0]["outcome"] = "REJECTED"
+                final["retirement"]["resources"][0]["settledAtMs"] = 19500 if damage == "changed-dispatch" else 15000
+                # All except the unchanged SDK dispatch form internally valid
+                # snapshots; only the original observations expose their lies.
+                if damage != "early-settlement":
+                    assert validate_retirement_evidence(final) == []
+            return True
+
+    adapter = LostActivityAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status == "FAILED"
+    assert any("retirement" in error.lower() for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("provide_audit", [False, True])
+def test_unjournaled_collected_attempts_cannot_release_the_target(provide_audit: bool) -> None:
+    class UnjournaledAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            self.started.append(context.scenario.case_id)
+            self.snapshots[context.scenario.case_id] = _snapshot(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if not provide_audit:
+                context.retirement_evidence = {}
+            return True
+
+    adapter = UnjournaledAdapter(phase="assertion")
+    (failed, following), scheduler = _run(adapter)
+    assert failed.status == "INCOMPLETE_EVIDENCE"
+    assert failed.attempts == []
+    assert failed.evidence["attempts"]
+    assert any("identified invocation request" in error for error in failed.errors)
+    assert any("retirement" in error.lower() for error in failed.errors), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.started == ["failed"]
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("damage", [None, "dropped-known-start", "dropped-known-fault"])
+def test_early_failure_freezes_context_observations_without_partial_collection(damage: str | None) -> None:
+    class ContextEvidenceAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+
+        async def release(self, context: ScenarioContext) -> None:
+            await super().release(context)
+            context.evidence["events"].clear()
+            context.evidence["faultsCreated"].clear()
+
+    adapter = ContextEvidenceAdapter(phase="placement", damage=damage)
+    adapter.collect_partial = None  # type: ignore[assignment, method-assign]
+    (failed, following), scheduler = _run(adapter)
+    assert PHASE_FAILURE in failed.errors[0]
+    assert failed.evidence["capturedBeforeCleanup"] is True
+    assert failed.evidence["behaviorErrors"] == [ORIGINAL_FAILURE]
+    assert any(event["kind"] == "io_start" for event in failed.evidence["events"])
+    assert failed.evidence["faultsCreated"]
+    assert ("failed", "partial") not in adapter.steps
+    if damage is None:
+        assert following.status == "PASSED", following.errors
+        assert adapter.finished == [True]
+        assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    else:
+        assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+        assert adapter.started == ["failed"]
+        assert adapter.finished == [False]
+        assert scheduler.quarantine_reason(PROFILE.resource_id)

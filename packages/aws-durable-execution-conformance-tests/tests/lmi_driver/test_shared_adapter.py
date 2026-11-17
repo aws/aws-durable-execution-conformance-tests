@@ -3,15 +3,17 @@
 """Ownership, native-request journaling and cancellation of the shared driver."""
 
 import asyncio
+import io
 import json
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from threading import Event
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import Mock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests.lmi import adapter as adapter_module
 from aws_durable_execution_conformance_tests.lmi import cloud as cloud_module
@@ -252,6 +254,8 @@ class FakeCloud:
         self.artifacts_dir, self.case_context = Path(artifacts_dir), case_context
         self.cancel_event = Event()
         self.actions = []
+        self.s3: Any = Mock()
+        self.s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
         self.instances.append(self)
 
     def verify(self):
@@ -562,3 +566,91 @@ def test_canonical_observations_keep_authoritative_outer_identity_and_hook_misma
     assert records[0]["executionArn"] == "execution"
     assert records[1]["requestId"] == "wrong-hook-request"
     assert records[1]["ownerRequestId"] == "outer"
+
+
+def test_late_original_stream_is_rejected_across_refreshes(cloud):
+    item = cloud.start("replay", role="victim", resume_roles=("resume",))
+    refresh_entries(cloud, enter(item, "retry", 2))
+    with pytest.raises(CollectionError, match="chronology"):
+        refresh_entries(cloud, enter(item, "original", 1))
+    assert cloud.case_context.attempts[0]["requestId"] == "retry"
+    assert "original" not in cloud.request_roles
+    with pytest.raises(CollectionError, match="chronology"):
+        cloud.refresh()
+
+
+def test_later_retry_remains_bindable_across_refreshes(cloud):
+    item = cloud.start("replay", role="victim", resume_roles=("resume",))
+    refresh_entries(cloud, enter(item, "original", 1))
+    refresh_entries(cloud, enter(item, "retry", 2))
+    assert [(item["role"], item["requestId"]) for item in cloud.case_context.attempts] == [
+        ("victim", "original"),
+        ("resume", "retry"),
+    ]
+
+
+def test_failed_retirement_fences_a_second_run_with_terminal_execution_and_live_task(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.quarantine import fence_key, require_unfenced
+
+    objects: dict[str, bytes] = {}
+
+    class Storage:
+        def get_object(self, *, Bucket, Key):
+            if Key not in objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+            return {"Body": io.BytesIO(objects[Key])}
+
+        def put_object(self, *, Bucket, Key, Body, IfNoneMatch):
+            assert IfNoneMatch == "*"
+            assert Key not in objects
+            objects[Key] = Body
+
+        def delete_object(self, *, Bucket, Key):
+            del objects[Key]
+
+    storage = Storage()
+
+    class PersistentCloud(FakeCloud):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.s3 = storage
+
+    valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    first = adapter(tmp_path / "first", factory=PersistentCloud)
+    asyncio.run(first.prepare(valid))
+    # The durable execution is terminal, but its root task has not exited.
+    driver, events = settled_cloud()
+    events[:] = [event for event in events if event.get("observation", {}).get("kind") != "task_exit"]
+    assert not driver.quiescent()
+    asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
+    record = json.loads(objects[fence_key(FUNCTION)])
+    assert record["runId"] == "run"
+    assert record["evidencePrefix"] == "runs/run/"
+    second = adapter(tmp_path / "second", factory=PersistentCloud)
+    second.deployment["run"] = "second"
+    second_valid = replace(valid, configuration_id=configuration_identity(second.deployment, "c1"))
+    with pytest.raises(ProvisioningError, match="quarantined by run run"):
+        asyncio.run(second.prepare(second_valid))
+    with pytest.raises(ProvisioningError, match="reconcile its runtime work"):
+        require_unfenced(storage, deployment()["bucket"], FUNCTION)
+    assert fence_key(FUNCTION) in objects
+    # A positive audited retirement in the owning run permits reuse.
+    events.append(
+        {"phase": "CONFORMANCE", "observation": {"kind": "task_exit", "taskId": "root", "requestId": "native"}}
+    )
+    assert driver.quiescent()
+    asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
+    asyncio.run(second.prepare(second_valid))
+    assert json.loads(objects[fence_key(FUNCTION)])["runId"] == "second"
+
+
+def test_quiescent_finish_cannot_clear_a_foreign_run_fence(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.quarantine import release_fence
+
+    storage = Mock()
+    storage.get_object.return_value = {
+        "Body": io.BytesIO(json.dumps({"resourceId": FUNCTION, "runId": "foreign", "commit": "sdk-sha"}).encode())
+    }
+    with pytest.raises(ProvisioningError, match="another run"):
+        release_fence(storage, deployment(), FUNCTION)
+    storage.delete_object.assert_not_called()

@@ -129,6 +129,16 @@ class Cloud:
                 raise CollectionError("An invocation changed its original durable execution")
             self._require_execution_target(event["execution"])
             item["arn"] = event["execution"]
+            # Ledger publication may lag a later retry. Once a request has
+            # been bound to a launch, never silently relabel an earlier stream
+            # as a retry on another refresh.
+            prior_entries = [
+                entry
+                for entry in events
+                if entry["phase"] == "WRAPPER_ENTER" and entry["request"] in item["native_requests"]
+            ]
+            if prior_entries and event["time"] <= max(entry["time"] for entry in prior_entries):
+                raise CollectionError("Native invocation chronology changed after launch binding")
             ordinal = len(item["native_requests"])
             role = item["role"]
             if ordinal and item["resume_roles"]:

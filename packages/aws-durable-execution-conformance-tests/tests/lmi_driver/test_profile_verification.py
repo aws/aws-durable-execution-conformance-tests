@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import Mock, call
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
@@ -20,12 +21,14 @@ def verification(tmp_path):
         "region": "us-west-2",
         "run": "run",
         "bucket": "evidence",
+        "commit": "sdk",
         "functions": {
             key: f"arn:aws:lambda:us-west-2:123456789012:function:lmi-{key}:{QUALIFIER}" for key in CONCURRENCIES
         },
         "concurrencies": dict(CONCURRENCIES),
     }
     lam = Mock()
+    lam.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
     verify_profile = Mock()
 
     def factory(manifest, configuration=None, **options):

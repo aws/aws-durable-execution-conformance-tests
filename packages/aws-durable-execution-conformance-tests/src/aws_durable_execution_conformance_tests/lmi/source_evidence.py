@@ -657,9 +657,7 @@ def build_evidence(
             continue
         fault: dict[str, Any] = {"id": gate, "ownerCaseId": context.scenario.case_id}
         receipts = [
-            event["atMs"]
-            for event in events
-            if event.get("gateId") == gate and event.get("kind") in {"fault_released"} and event.get("mode") == "normal"
+            event["atMs"] for event in events if event.get("gateId") == gate and event.get("kind") == "fault_released"
         ]
         releases = [
             record

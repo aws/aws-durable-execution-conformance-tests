@@ -118,3 +118,47 @@ def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
         evidence = build_evidence(context(), cloud)
     assert evidence["faultsCreated"] == [{"id": "fault", "ownerCaseId": "case"}]
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_emergency_fault_release_preserves_the_earliest_release_timestamp(tmp_path, phase):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from .support import build_evidence
+    from .test_shared_partial_evidence import context
+
+    cloud = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        control_prefix="runs/run/cases/case/control/",
+        retired_at=3 if phase == "final" else None,
+        observation_ended_at=2,
+        source_uris=set(),
+        control_records=[
+            {"action": "hold", "gate": "fault"},
+            {"action": "release", "gate": "fault", "started": 2, "time": 2.1},
+        ],
+        invocations=[{"role": "victim", "payload": {"gate": "fault"}}],
+        _save=lambda *args: None,
+        artifacts_dir=tmp_path,
+    )
+    sources = SimpleNamespace(
+        observations=lambda: (
+            [
+                {
+                    "kind": "fault_released",
+                    "mode": "emergency",
+                    "gateId": "fault",
+                    "atMs": 1000,
+                    "requestId": "native",
+                    "source": {"sequence": 0},
+                }
+            ],
+            [],
+        ),
+        histories=lambda: ([], {}, []),
+        attempts=lambda _: ([], {}, []),
+    )
+    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
+        evidence = build_evidence(context(), cloud, phase=phase)
+    assert evidence["faultsCreated"] == [{"id": "fault", "ownerCaseId": "case", "releasedAtMs": 1000}]

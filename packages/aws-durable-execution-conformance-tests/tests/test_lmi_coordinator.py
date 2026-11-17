@@ -884,3 +884,51 @@ def test_cancellation_during_preparation_reports_waiting_cases():
     assert [result.case_id for result in reported][:1] == ["waiting"], reported
     assert reported[0].status == "INFRASTRUCTURE_ERROR"
     assert any("preparation" in error for error in reported[0].errors), reported[0].errors
+
+
+def test_single_run_cancellation_allows_slower_case_retirement_to_finish():
+    async def exercise():
+        all_started = asyncio.Event()
+        slow_retiring = asyncio.Event()
+
+        class UnevenRetirement(Adapter):
+            def __init__(self):
+                super().__init__()
+                self.completed_retirements = []
+
+            async def execute(self, context):
+                if len(self.started) == 2:
+                    all_started.set()
+                await asyncio.Event().wait()
+
+            async def retire(self, context):
+                if context.scenario.case_id == "slow":
+                    slow_retiring.set()
+                    await asyncio.sleep(0.03)
+                else:
+                    await slow_retiring.wait()
+                self.completed_retirements.append(context.scenario.case_id)
+                return await super().retire(context)
+
+        adapter = UnevenRetirement()
+        reported: list[ScenarioResult] = []
+        running = asyncio.create_task(
+            run_scenarios(
+                [case("fast"), case("slow")],
+                [PROFILE],
+                adapter,
+                run_id="cancelled",
+                validator=validator,
+                budgets=Budgets(retirement=1),
+                on_result=reported.append,
+            )
+        )
+        await all_started.wait()
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        assert set(adapter.completed_retirements) == {"fast", "slow"}
+        assert {result.case_id for result in reported} == {"fast", "slow"}
+        assert not any("retirement: CancelledError" in error for result in reported for error in result.errors)
+
+    asyncio.run(exercise())
