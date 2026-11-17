@@ -558,9 +558,19 @@ def _ownership_errors(
     return errors
 
 
+# Lambda OperationStatus differs from the execution-level status vocabulary.
+_OPERATION_NONTERMINAL_STATUSES = ("STARTED", "PENDING", "READY")
+_OPERATION_TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED")
+
+
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
-    if path in (("histories", "status"), ("histories", "operations", "status")):
+    if path == ("histories", "status"):
         return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
+    if path == ("histories", "operations", "status"):
+        return previous in _OPERATION_NONTERMINAL_STATUSES and current in (
+            *_OPERATION_NONTERMINAL_STATUSES,
+            *_OPERATION_TERMINAL_STATUSES,
+        )
     increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
     increasing |= path == ("attempts", "endedAtMs")
     decreasing = path == ("attempts", "startedAtMs")
@@ -598,9 +608,13 @@ def _retain_observations(
     retained = copy.deepcopy(dict(captured))
     changed = False
     completing = (
-        path in (("histories",), ("histories", "operations"))
+        path == ("histories",)
         and original.get("status") in ("RUNNING", "PENDING")
         and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
+    ) or (
+        path == ("histories", "operations")
+        and original.get("status") in _OPERATION_NONTERMINAL_STATUSES
+        and captured.get("status") in _OPERATION_TERMINAL_STATUSES
     )
     for key, previous in original.items():
         if completing and key in ("result", "error") and previous is None:

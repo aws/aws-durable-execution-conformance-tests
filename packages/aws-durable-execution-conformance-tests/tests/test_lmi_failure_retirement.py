@@ -1385,7 +1385,7 @@ def test_collection_accepts_completion_and_semantic_event_resequencing(phase: st
                 before["histories"][0].update(status="RUNNING", result=None)
                 final["histories"][0]["result"] = {"completed": True}
             elif enrichment == "operation-result":
-                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None, "status": "RUNNING"}
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None, "status": "STARTED"}
                 before["histories"][0]["operations"] = [{**operation, "result": None}]
                 final["histories"][0]["operations"] = [
                     {**operation, "status": "SUCCEEDED", "result": {"completed": True}}
@@ -1802,3 +1802,76 @@ def test_collection_can_add_an_expectation_for_a_newly_observed_execution(phase:
     assert len(collected.evidence["expectedHistories"]) == len(collected.evidence["histories"]) == 2
     assert following.status == "PASSED", following.errors
     assert adapter.finished == [True]
+
+
+@pytest.mark.parametrize("phase", ["normal", "partial"])
+@pytest.mark.parametrize("initial", ["STARTED", "PENDING", "READY"])
+@pytest.mark.parametrize("terminal", ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED"])
+def test_collection_accepts_real_operation_state_completion(phase: str, initial: str, terminal: str) -> None:
+    outcome_field = "result" if terminal == "SUCCEEDED" else "error"
+    outcome = {"terminal": terminal}
+
+    class OperationCompletionAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            if phase == "normal":
+                value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
+                context.evidence["histories"][0]["operations"] = [{**operation, "status": initial, outcome_field: None}]
+                self.snapshots["failed"]["histories"][0]["operations"] = [
+                    {**operation, "status": terminal, outcome_field: outcome}
+                ]
+
+    adapter = OperationCompletionAdapter(phase="none" if phase == "normal" else "placement")
+    (collected, following), scheduler = _run(adapter)
+    if phase == "normal":
+        assert collected.status == "PASSED", collected.errors
+    else:
+        assert collected.status != "PASSED"
+        assert ORIGINAL_FAILURE in collected.errors
+    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
+    operations = collected.evidence["histories"][0]["operations"]
+    assert len(operations) == 1
+    assert operations[0]["status"] == terminal
+    assert operations[0][outcome_field] == outcome
+    assert following.status == "PASSED", following.errors
+    assert adapter.finished == [True]
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+@pytest.mark.parametrize("original", ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED", "RUNNING", "UNKNOWN"])
+def test_collection_cannot_advance_a_terminal_or_unknown_operation_state(original: str) -> None:
+    unknown = original in {"RUNNING", "UNKNOWN"}
+    updated = "SUCCEEDED" if unknown else "STARTED"
+    outcome_field = "result" if original == "SUCCEEDED" or unknown else "error"
+    original_outcome = None if unknown else {"value": "original"}
+
+    class InvalidProgressAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            value = super().observations(context)
+            value["behaviorErrors"] = []
+            return value
+
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            context.evidence = self.observations(context)
+            if context.scenario.case_id == "failed":
+                operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
+                context.evidence["histories"][0]["operations"] = [
+                    {**operation, "status": original, outcome_field: deepcopy(original_outcome)}
+                ]
+                self.snapshots["failed"]["histories"][0]["operations"] = [
+                    {**operation, "status": updated, outcome_field: {"value": "changed"}}
+                ]
+
+    (collected, _), _scheduler = _run(InvalidProgressAdapter(phase="none"))
+    assert collected.status == "INCOMPLETE_EVIDENCE", collected.errors
+    operation = collected.evidence["histories"][0]["operations"][0]
+    assert operation["status"] == original
+    assert same_json(operation[outcome_field], original_outcome)
