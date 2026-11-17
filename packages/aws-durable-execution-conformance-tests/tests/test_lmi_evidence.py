@@ -898,7 +898,9 @@ def test_replay_cannot_retype_a_stored_number_as_a_boolean() -> None:
         (1, True),
         (True, 1),
         (0, False),
+        (False, 0),
         ({"value": [1]}, {"value": [True]}),
+        ({"value": [True]}, {"value": [1]}),
         ([{"nested": False}], [{"nested": 0}]),
     ],
 )

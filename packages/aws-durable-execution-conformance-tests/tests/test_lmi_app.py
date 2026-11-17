@@ -358,6 +358,24 @@ def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("declared", "observed", "matches"), [(1, True, False), (1, 1.0, True), (1.0, 1, True)])
+def test_standard_extension_budget_binding_preserves_json_types(tmp_path, requirement, declared, observed, matches):
+    plan, value = timed_plan(requirement)
+    plan["scenarios"][0]["behavior_budgets"]["extensionAllowance"] = declared
+    value["budgets"]["extensionAllowance"] = observed
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    admitted = load_manifest(path)
+
+    result = evidence_results(admitted, tmp_path)[0]
+
+    assert result["status"] == ("PASSED" if matches else "FAILED")
+    if not matches:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
 @pytest.mark.parametrize("missing", ["all", "admissionMs", "cleanupMs"])
 def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requirement, missing):
     plan, _ = timed_plan(requirement)

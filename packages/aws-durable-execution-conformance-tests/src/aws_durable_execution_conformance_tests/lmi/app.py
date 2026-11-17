@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
-from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator
+from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, same_json
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_STRICT,
@@ -280,8 +280,8 @@ def _identity_errors(
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
         errors.append("INCOMPLETE: selectedRequests does not cover every declared cohort role")
     if suite is None:
-        if (definition.budget_names or "behavior_budgets" in scenario) and evidence.get("budgets") != scenario.get(
-            "behavior_budgets", {}
+        if (definition.budget_names or "behavior_budgets" in scenario) and not same_json(
+            evidence.get("budgets"), scenario.get("behavior_budgets", {})
         ):
             errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
     else:
@@ -290,7 +290,9 @@ def _identity_errors(
         policy_key = suite.evidence_policy_key
         if policy_key is not None:
             policy = evidence.get(policy_key)
-            if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
+            if not isinstance(policy, Mapping) or not same_json(
+                policy.get("budgets"), scenario.get("behavior_budgets", {})
+            ):
                 errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
     if suite is None and coverage_profile == "standard" and scenario["scenario"] in ("normal-return", "normal-failure"):
         outcome = "SUCCEEDED" if scenario["scenario"] == "normal-return" else "FAILED"

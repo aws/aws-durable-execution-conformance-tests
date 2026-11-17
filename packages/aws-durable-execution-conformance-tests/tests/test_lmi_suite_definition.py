@@ -186,6 +186,30 @@ def test_local_budget_allowance_is_still_numeric_finite_and_nonnegative(tmp_path
         load_manifest(path, suite=definition())
 
 
+@pytest.mark.parametrize(
+    ("declared", "observed", "matches"),
+    [(0, False, False), (1, True, False), (0, 0, True), (0, 0.0, True), (0.0, 0, True), (1, 1.0, True), (1.0, 1, True)],
+)
+def test_caller_owned_budget_binding_preserves_json_types(
+    tmp_path: Path, declared: int | float, observed: Any, matches: bool
+) -> None:
+    plan, value = plan_and_evidence()
+    plan["scenarios"][0]["behavior_budgets"]["allowance"] = declared
+    value["sdkPolicy"]["budgets"]["allowance"] = observed
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    suite = definition()
+    admitted = load_manifest(path, suite=suite)
+
+    results = evidence_results(admitted, tmp_path, suite=suite)
+
+    assert results[0]["status"] == ("PASSED" if matches else "FAILED")
+    if not matches:
+        assert any("behavior budgets" in error for error in results[0]["errors"])
+    assert build_report(admitted, results, suite=suite).exit_code() == (0 if matches else 1)
+
+
 @pytest.mark.parametrize("reserved", ["profile", "report", "requirement"])
 def test_caller_owned_rules_cannot_masquerade_as_shared_conformance(tmp_path: Path, reserved: str) -> None:
     plan, _ = plan_and_evidence()
