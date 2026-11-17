@@ -365,6 +365,15 @@ class _Evidence:
             self.error("task exit preceded root completion in the disposal fixture", "ASSERTION")
 
     def rejected_probe(self, victim: Mapping[str, Any], closed: float) -> None:
+        first_closed = min(
+            [closed]
+            + [
+                event["atMs"]
+                for event in self.events
+                if event.get("requestId") == victim.get("requestId")
+                and event.get("kind") in ("wrapper_return", "admission_closed")
+            ]
+        )
         for probe in ("operation", "checkpoint"):
             observations = [
                 event
@@ -372,9 +381,11 @@ class _Evidence:
                 if event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
                 and event.get("probe") == probe
-                and event.get("atMs", -1) >= closed
+                and event.get("atMs", -1) >= first_closed
             ]
-            if not observations:
+            # Earlier closure broadens the outcome checks, but cannot replace
+            # the required probes after this scenario's closure boundary.
+            if not any(event.get("atMs", -1) >= closed for event in observations):
                 self.error(f"missing post-closure {probe} admission probe")
             if any(event.get("outcome") != "REJECTED" for event in observations):
                 self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")

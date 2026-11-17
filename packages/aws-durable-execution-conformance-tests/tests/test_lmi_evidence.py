@@ -385,6 +385,81 @@ def test_admission_rejection_requires_actual_probes() -> None:
     assert any("admission probe" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+@pytest.mark.parametrize(
+    ("at", "outcome", "rejected"),
+    [(35, "ACCEPTED", False), (36, "ACCEPTED", True), (37, "ACCEPTED", True), (37, "REJECTED", False)],
+)
+def test_disposal_checks_probe_outcomes_from_the_first_closure(
+    requirement: int, phase: Literal["observations", "final"], probe: str, at: int, outcome: str, rejected: bool
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    victim = value["attempts"][0]
+    # Keep the rejected probes after wrapper return at 40. They must not hide
+    # an accepted probe at or after the earlier admission closure at 36.
+    value["events"].extend(
+        [event(victim, "admission_closed", 36), event(victim, "admission_probe", at, probe=probe, outcome=outcome)]
+    )
+    errors = validate_evidence(value, phase=phase)
+    if rejected:
+        assert any(f"closed invocation admitted a {probe} probe" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+def test_deadline_checks_probes_from_an_earlier_wrapper_return(
+    requirement: int, phase: Literal["observations", "final"], probe: str
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    victim = value["attempts"][0]
+    wrapper = next(
+        item
+        for item in value["events"]
+        if item["requestId"] == victim["requestId"] and item["kind"] == "wrapper_return"
+    )
+    wrapper["atMs"] = 30
+    assert validate_evidence(value, phase=phase) == []
+    # Admission closure at 31 cannot hide acceptance after wrapper return.
+    value["events"].append(event(victim, "admission_probe", 30, probe=probe, outcome="ACCEPTED"))
+    assert any(
+        f"closed invocation admitted a {probe} probe" in error for error in validate_evidence(value, phase=phase)
+    )
+
+
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+def test_disposal_still_requires_probes_after_wrapper_return(
+    requirement: int, phase: Literal["observations", "final"], probe: str
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    victim = value["attempts"][0]
+    value["events"] = [item for item in value["events"] if item.get("probe") != probe]
+    value["events"].extend(
+        [event(victim, "admission_closed", 36), event(victim, "admission_probe", 37, probe=probe, outcome="REJECTED")]
+    )
+    errors = validate_evidence(value, phase=phase)
+    assert any(f"missing post-closure {probe} admission probe" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_probe_outcomes_ignore_another_invocations_closure(phase: Literal["observations", "final"]) -> None:
+    value = evidence(2)
+    victim, peer = value["attempts"]
+    value["events"].extend(
+        [
+            event(peer, "admission_closed", 36),
+            event(victim, "admission_probe", 37, probe="operation", outcome="ACCEPTED"),
+        ]
+    )
+    assert validate_evidence(value, phase=phase) == []
+
+
 @pytest.mark.parametrize("change", ["early", "simulated", "no-inflight", "accepted", "budget"])
 def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: str) -> None:
     value = deadline_evidence()
