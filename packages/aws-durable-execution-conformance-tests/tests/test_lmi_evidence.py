@@ -502,6 +502,52 @@ def test_python_recovery_cannot_replace_victim_with_an_occupied_peer_process(
 
 
 @pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("runtime", ["python", "javascript", "java"])
+@pytest.mark.parametrize("policy", ["reuse-worker", "replace-worker"])
+@pytest.mark.parametrize("victim_end", [39, 40, 50])
+def test_python_recovery_waits_for_same_process_native_completion(
+    phase: Literal["observations", "final"], runtime: str, policy: str, victim_end: int
+) -> None:
+    value = recovery_evidence(runtime)
+    victim, recovery = value["attempts"][0], value["attempts"][-1]
+    victim["endedAtMs"] = victim_end
+    next(item for item in value["events"] if item["kind"] == "wrapper_return")["atMs"] = min(40, victim_end)
+    value["profile"]["recoveryPolicy"] = policy
+    if policy == "replace-worker":
+        # A different worker label cannot make an occupied Python process free.
+        recovery.update(workerId="replacement-worker", replacesWorkerId=victim["workerId"])
+    errors = validate_evidence(value, phase=phase)
+    if runtime == "python" and victim_end > recovery["startedAtMs"]:
+        assert any("native invocation completion" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_python_recovery_can_replace_a_process_with_an_unfinished_native_invocation(
+    phase: Literal["observations", "final"],
+) -> None:
+    value = recovery_evidence("python")
+    victim, recovery = value["attempts"][0], value["attempts"][-1]
+    victim["endedAtMs"] = 50
+    value["profile"]["recoveryPolicy"] = "replace-worker"
+    recovery.update(workerId="replacement-worker", processId="replacement-process", replacesWorkerId=victim["workerId"])
+    assert validate_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_python_recovery_uses_native_completion_separately_from_background_task_exit(
+    phase: Literal["observations", "final"],
+) -> None:
+    value = recovery_evidence("python")
+    value["budgets"]["cleanupMs"] = 15
+    next(item for item in value["events"] if item["kind"] == "task_exit")["atMs"] = 45
+    # Native completion at 40 releases the process for recovery at 40, even
+    # though a victim-owned background task exits later within its budget.
+    assert validate_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
 @pytest.mark.parametrize("existing_role", ["victim", "peer", "peer2", "peer3"])
 def test_recovery_execution_is_independent_of_every_selected_peer(

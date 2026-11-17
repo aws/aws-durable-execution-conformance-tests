@@ -459,6 +459,10 @@ class _Evidence:
                 self.error("recovery peers must occupy distinct Python processes", "PLACEMENT")
             if any(recovery.get("processId") == peer.get("processId") for peer in peers):
                 self.error("recovery cannot use an occupied Python peer process", "PLACEMENT")
+            if recovery.get("processId") == victim.get("processId") and recovery.get("startedAtMs", 0) < victim.get(
+                "endedAtMs", 0
+            ):
+                self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
         for peer in peers:
             if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
                 "startedAtMs", 0
