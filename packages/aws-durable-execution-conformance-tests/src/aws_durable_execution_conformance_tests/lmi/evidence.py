@@ -170,6 +170,9 @@ class _Evidence:
             self.string(request.get("method"), "sdkRequest.method")
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
+        for fault in self.records(value.get("faultsCreated"), "faultsCreated"):
+            if "releasedAtMs" in fault:
+                self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
         self.histories(check_expectations=validate_behavior)
         collection_errors = value.get("collectionErrors", [])
         if not isinstance(collection_errors, list):

@@ -847,6 +847,34 @@ def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(rele
     )
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("released", [None, False, True, "34", -1, float("inf"), float("nan"), [], {}])
+def test_observed_fault_release_requires_a_finite_nonnegative_timestamp(
+    phase: Any, requirement: int, released: Any
+) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    # A later valid retirement release cannot repair malformed observations.
+    assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
+    for validate in (validate_evidence, validate_common_evidence):
+        errors = validate(value, phase=phase)
+        assert any("faultsCreated.releasedAtMs must be a finite non-negative number" in error for error in errors), (
+            errors
+        )
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("released", [50, 50.5])
+def test_observed_fault_release_accepts_valid_timestamps(phase: Any, requirement: int, released: int | float) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence()
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    value["retirement"]["faults"][0]["releasedAtMs"] = released
+    for validate in (validate_evidence, validate_common_evidence):
+        assert validate(value, phase=phase) == []
+
+
 def test_expected_null_does_not_match_a_missing_history_field() -> None:
     # dict.get() turns an absent field into None, so an expected null result
     # matched a history that never recorded any output.

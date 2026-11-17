@@ -662,6 +662,10 @@
         "ownerCaseId": {
           "type": "string",
           "minLength": 1
+        },
+        "releasedAtMs": {
+          "type": "number",
+          "minimum": 0
         }
       }
     }
