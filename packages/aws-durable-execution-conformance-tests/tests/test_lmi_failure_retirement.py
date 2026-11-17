@@ -337,6 +337,7 @@ def _run_standard_cleanup_discovery(
         "fixture",
         roles=tuple(value["selectedRequests"]),
         exclusive=True,
+        coverage_profile=value.get("coverageProfile", "standard"),
         behavior_budgets=value.get("budgets", {}),
     )
     finished: list[bool] = []
@@ -1143,7 +1144,10 @@ def test_cleanup_replay_binding_can_arrive_in_later_retirement_evidence() -> Non
     value = _standard_retirement_snapshot("replay_evidence")
     entry = {"requestId": "discovered-native", "operationId": "not-checkpointed"}
     discovered = {"replay": {"operationExecutions": [entry]}}
-    binding = {"attempts": [{"requestId": "discovered-native", "executionArn": "arn:execution:victim"}]}
+    binding = {
+        "attempts": [{"requestId": "discovered-native", "executionArn": "arn:execution:victim"}],
+        "retirement": deepcopy(value["retirement"]),
+    }
     assert _cleanup_behavior_errors(value, discovered, standard=True) == []
     assert _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered], final=True) == []
     unresolved = _cleanup_behavior_errors(value, {}, standard=True, known_snapshots=[discovered], final=True)
@@ -1381,6 +1385,163 @@ def test_early_retirement_release_cannot_be_erased_from_original_observations() 
     result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="normal", observe_retirement=True)
     assert result.status == "FAILED", result.errors
     assert any("fault release" in error for error in result.errors)
+
+
+def _cleanup_time_record(value: dict[str, Any], kind: str) -> dict[str, Any]:
+    if kind == "sdk_request":
+        return value["sdkRequests"][0]
+    return next(item for item in value["events"] if item["kind"] == kind)
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("factory", "kind"),
+    [
+        ("evidence", "admission_probe"),
+        ("deadline_evidence", "admission_closed"),
+        ("recovery_evidence", "peer_progress"),
+        ("evidence", "sdk_request"),
+    ],
+)
+@pytest.mark.parametrize("invalid", [False, True, None, "45", -1, float("inf"), float("-inf"), float("nan")])
+def test_cleanup_record_invalid_time_survives_restoration(path: str, factory: str, kind: str, invalid: Any) -> None:
+    value = _standard_retirement_snapshot(factory)
+    original = _cleanup_time_record(value, kind)["atMs"]
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        _cleanup_time_record(snapshot, kind)["atMs"] = invalid if calls == 1 else original
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert any(error.startswith("INCOMPLETE:") and ".atMs" in error for error in validate_evidence(probe))
+    calls = 0
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=False)
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any(error.startswith("INCOMPLETE:") and ".atMs" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    "during,observed,rejected",
+    [(False, 5, True), (False, 205, True), (False, 45, False), (True, 11, True), (True, 43, True), (True, 20, False)],
+)
+def test_cleanup_record_time_respects_all_known_intervals(
+    path: str, during: bool, observed: int, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    kind = "barrier_arrived" if during else "admission_probe"
+    record = _cleanup_time_record(value, kind)
+    original = record["atMs"]
+    if during:
+        record["observedDuringRequestId"] = "request-peer"
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        _cleanup_time_record(snapshot, kind)["atMs"] = observed if calls == 1 else original
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert bool(validate_evidence(probe)) is rejected
+    calls = 0
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=during or not rejected)
+    expected = "FAILED" if during and rejected else "INFRASTRUCTURE_ERROR" if rejected else "PASSED"
+    assert result.status == expected, result.errors
+
+
+@pytest.mark.parametrize("completion", ["native-start", "observation-end", "during-start", "during-end"])
+def test_cleanup_record_time_allows_later_interval_completion(completion: str) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    during = completion.startswith("during-")
+    kind = "barrier_arrived" if during else "admission_probe"
+    record = _cleanup_time_record(value, kind)
+    original = record["atMs"]
+    if during:
+        record["observedDuringRequestId"] = "request-peer"
+    observed = {"native-start": 5, "observation-end": 205, "during-start": 11, "during-end": 43}[completion]
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        _cleanup_time_record(snapshot, kind)["atMs"] = observed if calls == 1 else original
+        if calls == 2:
+            if completion == "observation-end":
+                snapshot["observationEndedAtMs"] = 208
+                snapshot["collection"]["watermarks"] = dict.fromkeys(("lifecycle", "sdkRequests", "history"), 208)
+            else:
+                native = next(item for item in snapshot["attempts"] if item["role"] == ("peer" if during else "victim"))
+                native["endedAtMs" if completion == "during-end" else "startedAtMs"] = {
+                    "native-start": 4,
+                    "during-start": 10,
+                    "during-end": 44,
+                }[completion]
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize("complete_window", [False, True])
+def test_cleanup_record_time_keeps_integer_boundary_precision(complete_window: bool) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    boundary = 2**53
+    value["observationEndedAtMs"] = boundary
+    value["collection"]["watermarks"] = dict.fromkeys(("lifecycle", "sdkRequests", "history"), boundary)
+    value["retirement"]["retiredAtMs"] = boundary + 4
+    for resource in value["retirement"]["resources"]:
+        resource["settledAtMs"] = boundary + 2
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        _cleanup_time_record(snapshot, "admission_probe")["atMs"] = boundary + 1 if calls == 1 else 45
+        if calls == 2 and complete_window:
+            snapshot["observationEndedAtMs"] = boundary + 1
+            snapshot["collection"]["watermarks"] = dict.fromkeys(("lifecycle", "sdkRequests", "history"), boundary + 1)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent", quiescent=complete_window)
+    assert result.status == ("PASSED" if complete_window else "INFRASTRUCTURE_ERROR"), result.errors
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("kind", ["admission_probe", "admission_closed", "peer_progress"])
+def test_cleanup_record_time_allows_provisional_and_valid_values(kind: str, missing: bool) -> None:
+    factory = {"admission_closed": "deadline_evidence", "peer_progress": "recovery_evidence"}.get(kind, "evidence")
+    value = _standard_retirement_snapshot(factory)
+    original = _cleanup_time_record(value, kind)["atMs"]
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        record = _cleanup_time_record(snapshot, kind)
+        if calls == 1 and missing:
+            record.pop("atMs")
+        else:
+            record["atMs"] = float(original)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize("observed", [False, 5, 205])
+def test_cleanup_record_time_checks_also_apply_to_custom_catalogs(observed: Any) -> None:
+    value = _standard_retirement_snapshot("evidence")
+    value["coverageProfile"] = "sdk-local"
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        _cleanup_time_record(snapshot, "admission_probe")["atMs"] = observed if calls == 1 else 45
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent", quiescent=False)
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])

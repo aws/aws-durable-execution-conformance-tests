@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     HISTORY_STATUSES,
@@ -1540,6 +1540,154 @@ def _cleanup_checkpoint_errors(
     return findings, before_ids
 
 
+def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot: Mapping[str, Any] | None) -> list[str]:
+    """Reconcile every raw record's native owner, even for opaque event kinds."""
+    findings: list[str] = []
+
+    def records(value: Any) -> list[Mapping[str, Any]]:
+        return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+    def identifier(value: Any) -> TypeGuard[str]:
+        return isinstance(value, str) and bool(value.strip())
+
+    def timestamp(value: Any) -> int | float | None:
+        try:
+            if type(value) in (int, float) and value >= 0 and math.isfinite(value):
+                return value
+        except OverflowError:
+            pass
+        return None
+
+    bindings: dict[str, set[str]] = {}
+    starts: dict[str, int | float] = {}
+    ends: dict[str, int | float] = {}
+    windows: list[int | float] = []
+    for source in sources:
+        end = timestamp(source.get("observationEndedAtMs"))
+        if end is not None:
+            windows.append(end)
+        for attempt in records(source.get("attempts")):
+            request_id = attempt.get("requestId")
+            if not identifier(request_id):
+                continue
+            known = bindings.setdefault(request_id, set())
+            execution_arn = attempt.get("executionArn")
+            if identifier(execution_arn):
+                known.add(execution_arn)
+            start, end = timestamp(attempt.get("startedAtMs")), timestamp(attempt.get("endedAtMs"))
+            if start is not None:
+                starts[request_id] = min(starts.get(request_id, start), start)
+            if end is not None:
+                ends[request_id] = max(ends.get(request_id, end), end)
+    known_executions = {execution for observed in bindings.values() for execution in observed}
+    retirement = final_snapshot.get("retirement") if final_snapshot is not None else None
+    settlements = {
+        (item.get("kind"), item.get("id")): item
+        for item in records(retirement.get("resources") if isinstance(retirement, Mapping) else None)
+        if identifier(item.get("kind")) and identifier(item.get("id"))
+    }
+
+    for source in sources:
+        for collection in ("events", "sdkRequests"):
+            for record in records(source.get(collection)):
+                field = "kind" if collection == "events" else "method"
+                if field in record and not identifier(record[field]):
+                    findings.append(f"INCOMPLETE: cleanup {collection}.{field} must be a non-empty string")
+                if (
+                    collection == "sdkRequests"
+                    and "outcome" in record
+                    and record["outcome"] not in ("DISPATCHED", "REJECTED")
+                ):
+                    findings.append("INCOMPLETE: cleanup sdkRequests.outcome must be DISPATCHED or REJECTED")
+                observed_at = timestamp(record.get("atMs"))
+                if "atMs" in record and observed_at is None:
+                    findings.append(f"INCOMPLETE: cleanup {collection}.atMs must be a finite non-negative number")
+                for key in ("requestId", "ownerRequestId", "executionArn", "observedDuringRequestId"):
+                    if (
+                        key in record
+                        and not (key == "observedDuringRequestId" and record[key] is None)
+                        and not identifier(record[key])
+                    ):
+                        findings.append(f"INCOMPLETE: cleanup {collection}.{key} must identify its native owner")
+                if final_snapshot is None:
+                    continue
+
+                referenced_requests: set[str] = set()
+                for key in ("requestId", "ownerRequestId", "observedDuringRequestId"):
+                    request_id = record.get(key)
+                    if not identifier(request_id):
+                        continue
+                    referenced_requests.add(request_id)
+                    if len(bindings.get(request_id, set())) != 1:
+                        findings.append(f"INCOMPLETE: cleanup {collection}.{key} has an unresolved native binding")
+                request_id = record.get("requestId", record.get("ownerRequestId"))
+                execution_arn = record.get("executionArn")
+                if not referenced_requests and identifier(execution_arn):
+                    candidates = {request for request, known in bindings.items() if known == {execution_arn}}
+                    if len(candidates) == 1:
+                        referenced_requests.update(candidates)
+                        request_id = next(iter(candidates))
+                if not referenced_requests:
+                    findings.append(f"INCOMPLETE: cleanup {collection} has no resolved native owner")
+                expected = bindings.get(request_id, set()) if identifier(request_id) else set()
+                if identifier(execution_arn) and execution_arn not in known_executions:
+                    findings.append(f"INCOMPLETE: cleanup {collection}.executionArn has an unresolved execution owner")
+                elif identifier(execution_arn) and len(expected) == 1 and execution_arn not in expected:
+                    findings.append(f"ASSERTION: cleanup {collection} is attributed to a different execution")
+                owner = record.get("ownerRequestId")
+                if (
+                    identifier(record.get("requestId"))
+                    and identifier(owner)
+                    and len(bindings.get(record["requestId"], set())) == 1
+                    and len(bindings.get(owner, set())) == 1
+                    and owner != record["requestId"]
+                ):
+                    findings.append(f"ASSERTION: cleanup {collection} is attributed to a different invocation")
+
+                # Event-only discoveries need settlement coverage too: the
+                # snapshot containing an event may predate its native binding.
+                for referenced in referenced_requests:
+                    settlement = settlements.get(("invocation", referenced), {})
+                    settled_at = timestamp(settlement.get("settledAtMs"))
+                    if (
+                        settlement.get("outcome") != "QUIESCENT"
+                        or settled_at is None
+                        or (observed_at is not None and settled_at < observed_at)
+                    ):
+                        findings.append(f"INCOMPLETE: cleanup {collection} native owner {referenced} is not settled")
+                referenced_executions = {
+                    execution for referenced in referenced_requests for execution in bindings.get(referenced, set())
+                }
+                if identifier(execution_arn):
+                    referenced_executions.add(execution_arn)
+                for execution in referenced_executions:
+                    settlement = settlements.get(("execution", execution), {})
+                    if (
+                        settlement.get("outcome") not in TERMINAL_STATUSES
+                        or timestamp(settlement.get("settledAtMs")) is None
+                    ):
+                        findings.append(f"INCOMPLETE: cleanup {collection} execution owner {execution} is not settled")
+
+                if observed_at is None:
+                    continue  # Omitted timestamp metadata can still be completed.
+                started = starts.get(request_id) if identifier(request_id) else None
+                if (windows and observed_at > max(windows)) or (started is not None and observed_at < started):
+                    findings.append(
+                        f"INCOMPLETE: cleanup {collection}.atMs lies outside the retained observation window"
+                    )
+                during = record.get("observedDuringRequestId")
+                if identifier(during):
+                    if during not in starts or during not in ends:
+                        findings.append(
+                            f"INCOMPLETE: cleanup {collection}.observedDuringRequestId lacks a native interval"
+                        )
+                    elif not starts[during] <= observed_at <= ends[during]:
+                        findings.append(
+                            f"ASSERTION: cleanup {collection}.atMs lies outside its observedDuringRequestId interval"
+                        )
+    return findings
+
+
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -1567,6 +1715,7 @@ def _cleanup_behavior_errors(
     }
     events = records(original.get("events"))
     admission_sources = (original, *known_snapshots, snapshot)
+    findings.extend(_cleanup_record_errors(admission_sources, snapshot if final else None))
     releases: list[float] = []
     # Absence can be completed later; an explicitly malformed release time is
     # invalid evidence even if a later snapshot replaces or omits that field.
@@ -2461,6 +2610,7 @@ async def run_scenarios(
                                 "runtime",
                                 "profile",
                                 "budgets",
+                                "observationEndedAtMs",
                                 "selectedRequests",
                                 "attempts",
                                 "events",
