@@ -583,6 +583,70 @@ def test_cleanup_retry_unbound_native_reference_requires_reconciliation() -> Non
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("phase", ["release", "retire", "snapshot", "both"])
+@pytest.mark.parametrize("pending_at", [39, 40, 40.5])
+def test_cleanup_pending_timing_uses_the_frozen_wrapper_return(path: str, phase: str, pending_at: float) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    frozen_events = deepcopy(value["events"])
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        event = next(item for item in snapshot["events"] if item["kind"] == "pending")
+        event["atMs"] = 35 if phase == "both" and calls > 1 else pending_at
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert bool(validate_evidence(probe)) is (pending_at > 40)
+    calls = 0
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if pending_at > 40 else "PASSED"), result.errors
+    assert result.evidence["events"] == frozen_events
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [("ownerRequestId", "other"), ("executionArn", "other"), ("atMs", None), ("atMs", True), ("atMs", -1)],
+)
+def test_cleanup_pending_invalid_facts_survive_restoration(path: str, field: str, changed: Any) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    original = next(item for item in value["events"] if item["kind"] == "pending")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        event = next(item for item in snapshot["events"] if item["kind"] == "pending")
+        event[field] = changed if calls == 1 else original[field]
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path, quiescent=False)
+    assert result.status != "PASSED"
+    assert any(error.startswith("INCOMPLETE: cleanup PENDING event") for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+def test_cleanup_pending_partial_metadata_can_be_completed(path: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    original = next(item for item in value["events"] if item["kind"] == "pending")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        event = next(item for item in snapshot["events"] if item["kind"] == "pending")
+        for key in ("ownerRequestId", "executionArn", "atMs"):
+            if calls == 1:
+                event.pop(key)
+            else:
+                event[key] = original[key]
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path=path)
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize("start", [39, 40, 41])
 def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, start: int) -> None:
     value = _standard_retirement_snapshot("replay_evidence")
@@ -597,6 +661,95 @@ def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, star
     result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path=path)
     assert result.status == ("FAILED" if start <= 40 else "PASSED"), result.errors
     assert result.evidence["attempts"] == frozen_attempts
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("phase", ["release", "retire", "snapshot", "both"])
+@pytest.mark.parametrize(
+    ("factory", "kind", "field", "changed", "rejected"),
+    [
+        ("evidence", "root_completed", "outcome", "FAILED", True),
+        ("evidence", "root_completed", "atMs", 41, True),
+        ("evidence", "root_completed", "atMs", 39, False),
+        ("deadline_evidence", "platform_timeout", "source", "sdk", True),
+        ("deadline_evidence", "platform_timeout", "source", "platform", False),
+        ("deadline_evidence", "platform_timeout", "atMs", 29, True),
+        ("deadline_evidence", "platform_timeout", "atMs", 31, False),
+        ("recovery_evidence", "worker_recovered", "atMs", 46, True),
+        ("recovery_evidence", "worker_recovered", "atMs", 44, False),
+        ("evidence", "barrier_arrived", "atMs", 41, True),
+        ("evidence", "barrier_arrived", "atMs", 39, False),
+        ("recovery_evidence", "replacement", "replacesWorkerId", "unrelated-worker", True),
+        ("recovery_evidence", "replacement", "replacesWorkerId", "process-1", False),
+    ],
+)
+def test_cleanup_singleton_facts_refute_frozen_measurements(
+    path: str, phase: str, factory: str, kind: str, field: str, changed: Any, rejected: bool
+) -> None:
+    value = _standard_retirement_snapshot(factory, "python" if kind == "replacement" else "javascript")
+    if kind == "barrier_arrived":
+        value["requirementId"] = "lmi-lifecycle-1"
+    if kind == "replacement":
+        value["profile"]["recoveryPolicy"] = "replace-worker"
+        recovery = next(item for item in value["attempts"] if item["role"] == "recovery")
+        recovery.update(workerId="replacement-worker", processId="replacement-process", replacesWorkerId="process-1")
+    assert validate_evidence(value) == []
+    frozen = deepcopy(value)
+    collection, identity, selected = (
+        ("attempts", "role", "recovery") if kind == "replacement" else ("events", "kind", kind)
+    )
+    original = next(item for item in value[collection] if item[identity] == selected)
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        target = next(item for item in snapshot[collection] if item[identity] == selected)
+        target[field] = original[field] if phase == "both" and calls > 1 else changed
+
+    probe = deepcopy(value)
+    mutate(probe)
+    assert bool(validate_evidence(probe)) is rejected
+    calls = 0
+    result = _run_standard_cleanup_discovery(value, mutate, phase=phase, path=path)
+    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    assert result.evidence[collection] == frozen[collection]
+
+
+@pytest.mark.parametrize("kind", ["barrier_arrived", "platform_timeout"])
+def test_cleanup_singleton_timing_allows_completed_native_intervals(kind: str) -> None:
+    value = _standard_retirement_snapshot("evidence" if kind == "barrier_arrived" else "deadline_evidence")
+    if kind == "barrier_arrived":
+        value["requirementId"] = "lmi-lifecycle-1"
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        event = next(item for item in snapshot["events"] if item["kind"] == kind)
+        event["atMs"] = 41 if kind == "barrier_arrived" else 29
+        if calls == 2:
+            victim = next(item for item in snapshot["attempts"] if item["role"] == "victim")
+            victim["endedAtMs" if kind == "barrier_arrived" else "startedAtMs"] = 45 if kind == "barrier_arrived" else 9
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize("kind", ["peer_progress", "admission_closed"])
+def test_cleanup_positive_event_discovery_does_not_erase_prior_evidence(kind: str) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        event = next(
+            item
+            for item in snapshot["events"]
+            if item["kind"] == kind and (kind != "peer_progress" or item["atMs"] == 44)
+        )
+        event["atMs"] = 46 if kind == "peer_progress" else 36
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="normal")
+    assert result.status == "PASSED", result.errors
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])

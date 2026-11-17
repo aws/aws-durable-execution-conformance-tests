@@ -1466,11 +1466,126 @@ def _cleanup_behavior_errors(
         current = current_attempts.get(previous.get("requestId"), {})
         return key in current and timestamp(current[key]) is not None and not same_json(current[key], previous.get(key))
 
+    def observed_events(role_name: str, kind: str) -> list[Mapping[str, Any]]:
+        owner = role(role_name)
+        request_id = owner.get("requestId")
+        observed = []
+        for source in admission_sources:
+            for event in records(source.get("events")):
+                if request_id is None or event.get("requestId") != request_id or event.get("kind") != kind:
+                    continue
+                if any(
+                    key in event and not same_json(event[key], expected)
+                    for key, expected in (
+                        ("ownerRequestId", request_id),
+                        ("executionArn", owner.get("executionArn")),
+                    )
+                ):
+                    if final:
+                        findings.append(f"INCOMPLETE: cleanup {kind} event has inconsistent native ownership")
+                    continue
+                if "atMs" in event and timestamp(event["atMs"]) is None and final:
+                    findings.append(f"INCOMPLETE: cleanup {kind} event has an invalid timestamp")
+                observed.append(event)
+        return observed
+
+    def known_interval(role_name: str) -> tuple[float | None, float | None]:
+        request_id = role(role_name).get("requestId")
+        native = [
+            attempt
+            for source in admission_sources
+            for attempt in records(source.get("attempts"))
+            if request_id is not None and attempt.get("requestId") == request_id
+        ]
+        starts = [time for attempt in native if (time := timestamp(attempt.get("startedAtMs"))) is not None]
+        ends = [time for attempt in native if (time := timestamp(attempt.get("endedAtMs"))) is not None]
+        return min(starts) if starts else None, max(ends) if ends else None
+
     requirement = original.get("requirementId")
+    if requirement in ("lmi-lifecycle-2", "lmi-lifecycle-7"):
+        returned, exited = boundary("victim", "wrapper_return"), boundary("victim", "task_exit")
+        for event in observed_events("victim", "root_completed"):
+            if "outcome" in event and not same_json(event["outcome"], role("victim").get("outcome")):
+                findings.append("ASSERTION: cleanup root completion contradicts the frozen invocation outcome")
+            completed_at = timestamp(event.get("atMs"))
+            if completed_at is not None and any(end is not None and completed_at > end for end in (returned, exited)):
+                findings.append("ASSERTION: cleanup root completion follows the frozen wrapper or task exit")
+    if requirement in ("lmi-lifecycle-1", "lmi-lifecycle-4") and final:
+        # Native metadata can widen a provisional interval. A barrier claim is
+        # disproved only after every supplied native interval is available.
+        intervals = [known_interval(name) for name in ("victim", "peer")]
+        starts = [start for start, _ in intervals if start is not None]
+        ends = [end for _, end in intervals if end is not None]
+        if len(starts) == len(ends) == 2:
+            for name in ("victim", "peer"):
+                for event in observed_events(name, "barrier_arrived"):
+                    arrived = timestamp(event.get("atMs"))
+                    if arrived is not None and not max(starts) <= arrived < min(ends):
+                        findings.append("PLACEMENT: cleanup barrier lies outside the established native overlap")
+    if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
+        profile = original.get("profile")
+        profile = profile if isinstance(profile, Mapping) else {}
+        fixture_budgets = original.get("budgets")
+        fixture_budgets = fixture_budgets if isinstance(fixture_budgets, Mapping) else {}
+        start, end = known_interval("victim")
+        configured_timeout = timestamp(profile.get("timeoutMs"))
+        inflight, exited = boundary("victim", "work_in_flight"), boundary("victim", "task_exit")
+        timeout_events = observed_events("victim", "platform_timeout")
+        for event in timeout_events:
+            if "source" in event and event["source"] != "platform":
+                findings.append("ASSERTION: cleanup timeout source is not the observed platform deadline")
+            timed_out = timestamp(event.get("atMs"))
+            if timed_out is None:
+                continue
+            if final and (
+                (start is not None and configured_timeout is not None and timed_out < start + configured_timeout)
+                or (end is not None and timed_out > end)
+            ):
+                findings.append("ASSERTION: cleanup timeout falls outside the configured native deadline")
+            if (inflight is not None and timed_out <= inflight) or (exited is not None and timed_out > exited):
+                findings.append("ASSERTION: cleanup timeout contradicts the frozen in-flight work or task exit")
+            for kind, budget_key in (("admission_closed", "admissionMs"), ("task_exit", "cleanupMs")):
+                measured, budget = boundary("victim", kind), timestamp(fixture_budgets.get(budget_key))
+                if measured is not None and budget is not None and not timed_out <= measured <= timed_out + budget:
+                    findings.append(f"ASSERTION: cleanup timeout contradicts the frozen {budget_key} measurement")
+        if requirement == "lmi-lifecycle-4":
+            if profile.get("recoveryPolicy") == "replace-worker":
+                recovery_id = role("recovery").get("requestId")
+                for source in admission_sources:
+                    for attempt in records(source.get("attempts")):
+                        if (
+                            recovery_id is not None
+                            and attempt.get("requestId") == recovery_id
+                            and "replacesWorkerId" in attempt
+                            and not same_json(attempt["replacesWorkerId"], role("victim").get("workerId"))
+                        ):
+                            findings.append("PLACEMENT: cleanup recovery replacement changed the frozen failed worker")
+            recovery_start, _ = known_interval("recovery")
+            recovery_budget = timestamp(fixture_budgets.get("recoveryMs"))
+            for event in observed_events("recovery", "worker_recovered"):
+                recovered = timestamp(event.get("atMs"))
+                if recovered is None:
+                    continue
+                if final and recovery_start is not None and recovered < recovery_start:
+                    findings.append("ASSERTION: cleanup worker recovery precedes its native invocation")
+                for timeout_event in timeout_events:
+                    timed_out = timestamp(timeout_event.get("atMs"))
+                    if (
+                        timed_out is not None
+                        and recovery_budget is not None
+                        and not (timed_out <= recovered <= timed_out + recovery_budget)
+                    ):
+                        findings.append("ASSERTION: cleanup worker recovery exceeds the frozen recovery measurement")
+                if final:
+                    for peer in selected:
+                        if isinstance(peer, str) and peer.startswith("peer"):
+                            _, peer_end = known_interval(peer)
+                            if peer_end is not None and recovered > peer_end:
+                                findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
     if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
         limits = [boundary("victim", "task_exit")]
         if requirement == "lmi-lifecycle-4":
-            limits.append(boundary("recovery", "worker_recovered"))
+            limits.extend(timestamp(event.get("atMs")) for event in observed_events("recovery", "worker_recovered"))
         known_limits = [time for time in limits if time is not None]
         releases: list[float] = []
         # A later release acknowledgment cannot erase an earlier release from
@@ -1565,6 +1680,28 @@ def _cleanup_behavior_errors(
             returned = boundary("victim", "wrapper_return")
             resume_id = role("resume").get("requestId")
             for source in sources:
+                for event in records(source.get("events")):
+                    if event.get("kind") != "pending" or event.get("requestId") != victim.get("requestId"):
+                        continue
+                    request_id = event.get("requestId")
+                    execution_arn = bound_execution(request_id)
+                    if execution_arn is None:
+                        continue
+                    if any(
+                        key in event and event[key] != expected
+                        for key, expected in (("ownerRequestId", request_id), ("executionArn", execution_arn))
+                    ):
+                        if final:
+                            findings.append("INCOMPLETE: cleanup PENDING event has inconsistent native ownership")
+                        continue
+                    if "atMs" not in event:
+                        continue  # A partial event may gain its timestamp during collection.
+                    pending_at = timestamp(event["atMs"])
+                    if pending_at is None:
+                        if final:
+                            findings.append("INCOMPLETE: cleanup PENDING event has an invalid timestamp")
+                    elif returned is not None and pending_at > returned:
+                        findings.append("ASSERTION: cleanup PENDING event follows the frozen wrapper return")
                 for attempt in records(source.get("attempts")):
                     started = timestamp(attempt.get("startedAtMs"))
                     if (
@@ -2138,6 +2275,8 @@ async def run_scenarios(
                             for key in (
                                 "requirementId",
                                 "runtime",
+                                "profile",
+                                "budgets",
                                 "selectedRequests",
                                 "attempts",
                                 "events",
