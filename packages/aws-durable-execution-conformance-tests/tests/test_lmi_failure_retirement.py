@@ -5271,9 +5271,12 @@ def test_cleanup_common_record_late_native_binding_can_establish_physical_retire
 
     scheduler = ResourceScheduler()
 
+    def validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
+
     async def exercise() -> ScenarioResult:
         (result,) = await run_scenarios(
-            [case], [profile], Adapter(), run_id=value["runId"], validator=validate_evidence, scheduler=scheduler
+            [case], [profile], Adapter(), run_id=value["runId"], validator=validator, scheduler=scheduler
         )
         lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
         await lease.release(quiescent=True)
