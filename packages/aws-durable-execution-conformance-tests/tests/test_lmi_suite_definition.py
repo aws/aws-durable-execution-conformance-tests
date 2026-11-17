@@ -172,6 +172,29 @@ def test_local_budget_allowance_is_still_numeric_finite_and_nonnegative(tmp_path
         load_manifest(path, suite=definition())
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("exclusive", False, "exclusive resource ownership"),
+        ("slots", 1, "required cohort"),
+        ("roles", ["victim"], "required cohort roles"),
+    ],
+)
+def test_local_live_suite_enforces_admission_before_adapter_import(
+    tmp_path: Path, field: str, value: Any, reason: str
+) -> None:
+    plan, _ = plan_and_evidence()
+    suite = definition()
+    suite = replace(suite, cases=(replace(suite.cases[0], exclusive=True),))
+    plan["scenarios"][0][field] = value
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError, match=reason):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
+        load_adapter.assert_not_called()
+
+
 @pytest.mark.parametrize("mutate", [False, True])
 def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(tmp_path: Path, mutate: bool) -> None:
     plan, value = plan_and_evidence()

@@ -137,9 +137,8 @@ def _validate_behavior_budgets(
             raise ValueError("behavior budgets must be finite positive numbers (resource growth may be zero)")
 
 
-def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
-    manifest = json.loads(path.read_text())
     if (
         not isinstance(manifest, dict)
         or type(manifest.get("schemaVersion")) is not int
@@ -239,6 +238,11 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
             raise ValueError("not_implemented must be a string")
     return manifest
+
+
+def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+    """Load a manifest using the same admission rules as direct live runs."""
+    return _validate_manifest(json.loads(path.read_text()), suite=suite)
 
 
 def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
@@ -371,9 +375,8 @@ async def live_results(
 
     # Validation keeps its own snapshot. Adapter and Scenario objects must not
     # be able to change the expected budgets, profile, or coverage after admission.
-    manifest = deepcopy(dict(manifest))
     suite = deepcopy(suite)
-    _required(manifest, suite)
+    manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
     module_name, separator, factory_name = adapter_name.partition(":")
     if not separator or not factory_name:
         raise ValueError("--adapter must be a local Python module:factory")
@@ -386,7 +389,6 @@ async def live_results(
     scenarios = []
     for scenario in active:
         definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
-        _validate_behavior_budgets(scenario, definition, suite)
         configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
         configured.setdefault("exclusive", definition.exclusive)
         configured.setdefault("slots", definition.minimum_native_concurrency)

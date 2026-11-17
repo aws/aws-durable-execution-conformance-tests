@@ -149,6 +149,11 @@ def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
         lambda plan: plan["scenarios"].append(plan["scenarios"][0]),
         lambda plan: plan["scenarios"][0].update(requirement_id="not-an-id"),
         lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
+        lambda plan: plan["scenarios"][0].update(slots=1),
+        lambda plan: plan["scenarios"][0].update(roles=["victim"]),
+        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-6").update(
+            exclusive=False
+        ),
     ],
 )
 def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
@@ -158,6 +163,12 @@ def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
@@ -449,7 +460,8 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib.import_module") as load_adapter:
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
         with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
             asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
         load_adapter.assert_not_called()
