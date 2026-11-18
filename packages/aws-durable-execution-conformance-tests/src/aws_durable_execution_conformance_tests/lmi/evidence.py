@@ -257,6 +257,13 @@ class _Evidence:
         for event in self.events:
             kind = self.string(event.get("kind"), "event.kind")
             self.owned_record(event, "event", observation_end)
+            if validate_behavior and kind == "admission_probe":
+                probe = event.get("probe")
+                if probe not in ("operation", "checkpoint"):
+                    self.error("admission_probe.probe must be operation or checkpoint")
+                if event.get("outcome") not in ("ACCEPTED", "REJECTED"):
+                    subject = f"{probe} probe" if probe in ("operation", "checkpoint") else "admission probe"
+                    self.error(f"{subject} outcome must be ACCEPTED or REJECTED")
             if kind in {"observation_error", "control_error"}:
                 self.error(f"{kind} reports failed observation or control publication")
         for request in self.records(value.get("sdkRequests"), "sdkRequests"):
@@ -381,6 +388,21 @@ class _Evidence:
         if set(actual) != arns or (check_expectations and set(expected) != arns):
             self.error("histories and expectedHistories must cover every launched execution exactly")
 
+    def probe_at_or_after(self, probe: Mapping[str, Any], boundary: Mapping[str, Any]) -> bool:
+        at, closed = probe["atMs"], boundary["atMs"]
+        if at != closed:
+            return at > closed
+        sequences = [row["sequence"] for row in (probe, boundary) if "sequence" in row]
+        if any(not is_json_integer(seq) or seq < 0 for seq in sequences):
+            self.error("same-time admission probe and closure need valid sequence numbers when supplied")
+            return False
+        if len(sequences) < 2:
+            return True  # The observation format permits timestamps alone, with an inclusive return boundary.
+        if sequences[0] == sequences[1]:
+            self.error("same-time admission probe and closure need distinct sequence numbers")
+            return False
+        return sequences[0] > sequences[1]
+
     def no_late_dispatch(self) -> None:
         disposal = self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
         for request_id in self.attempts:
@@ -394,11 +416,13 @@ class _Evidence:
             if not closures:
                 continue
             closed = min(event["atMs"] for event in closures)
-            returned_at = None
+            wrapper = None
             if disposal and request_id == self.selected.get("victim", {}).get("requestId"):
                 exits = [event for event in closures if event["kind"] != "admission_closed"]
                 if len(exits) == 1 and exits[0]["kind"] == "wrapper_return":
-                    returned_at = exits[0]["atMs"]
+                    wrapper = exits[0]
+                elif len(exits) > 1:
+                    self.error("disposal needs exactly one wrapper exit for the selected victim")
             for request in self.value.get("sdkRequests", []):
                 if (
                     isinstance(request, Mapping)
@@ -416,10 +440,12 @@ class _Evidence:
                     and event["atMs"] >= closed
                 ):
                     probe, outcome = event.get("probe"), event.get("outcome")
-                    if returned_at is not None and event["atMs"] >= returned_at and probe == "operation":
-                        if outcome not in ("ACCEPTED", "REJECTED"):
-                            self.error("diagnostic operation probe outcome must be ACCEPTED or REJECTED")
-                    elif outcome != "REJECTED":
+                    if wrapper is not None:
+                        if probe == "operation" and self.probe_at_or_after(event, wrapper):
+                            continue
+                        if not any(self.probe_at_or_after(event, boundary) for boundary in closures):
+                            continue  # The probe was ordered before every closure in the same millisecond.
+                    if outcome != "REJECTED":
                         self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
 
     def overlap(self) -> None:
@@ -460,19 +486,24 @@ class _Evidence:
             self.error(f"disposal requires the selected victim outcome {expected_outcome}", "ASSERTION")
         if root.get("atMs", 0) > wrapper.get("atMs", 0):
             self.error("wrapper return precedes root completion", "ASSERTION")
-        self.require_probes(victim, wrapper.get("atMs", 0), "checkpoint")
+        if wrapper:
+            self.require_probes(victim, wrapper, "checkpoint")
         exited = self.event(victim, "task_exit")
         if exited.get("atMs", -1) < root.get("atMs", 0):
             self.error("task exit preceded root completion in the disposal fixture", "ASSERTION")
 
-    def require_probes(self, victim: Mapping[str, Any], closed: float, *probes: str) -> None:
+    def require_probes(self, victim: Mapping[str, Any], boundary: Mapping[str, Any], *probes: str) -> None:
         # Outcomes are checked separately; only probes at or after this scenario's boundary count as coverage.
         for probe in probes:
             if not any(
                 event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
                 and event.get("probe") == probe
-                and event.get("atMs", -1) >= closed
+                and (
+                    self.probe_at_or_after(event, boundary)
+                    if boundary.get("kind") == "wrapper_return"
+                    else event.get("atMs", -1) >= boundary.get("atMs", 0)
+                )
                 for event in self.events
             ):
                 self.error(f"missing post-closure {probe} admission probe")
@@ -509,7 +540,7 @@ class _Evidence:
                 self.error(f"deadline {field} exceeds the declared fixture budget", "ASSERTION")
         if check_grace:
             self.observation_grace(time)
-        self.require_probes(victim, closed.get("atMs", 0), "operation", "checkpoint")
+        self.require_probes(victim, closed, "operation", "checkpoint")
         for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
             release = fault.get("releasedAtMs")
             if isinstance(release, (int, float)) and release <= exited.get("atMs", 0):

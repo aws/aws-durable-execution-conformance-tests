@@ -545,6 +545,66 @@ def test_disposal_diagnostic_does_not_replace_closure_evidence(
     assert any(diagnostic in error for error in errors), errors
 
 
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_disposal_rejects_mixed_wrapper_exits_without_operation_probe(factory: Any, phase: Any) -> None:
+    value = factory()
+    victim = value["attempts"][0]
+    value["events"] = [item for item in value["events"] if item.get("probe") != "operation"]
+    value["events"].append(event(victim, "wrapper_raise", 39))
+
+    errors = validate_evidence(value, phase=phase)
+    assert any("wrapper exit" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+@pytest.mark.parametrize(
+    ("wrapper_sequence", "probe_sequence", "position"),
+    [
+        (10, 9, "before"),
+        (10, 11, "after"),
+        (None, None, "after"),
+        (10, None, "after"),
+        (None, 9, "after"),
+        (10, 10, "ambiguous"),
+        (10, "9", "ambiguous"),
+        (10, -1, "ambiguous"),
+    ],
+)
+def test_disposal_orders_probes_sharing_the_wrapper_timestamp(
+    factory: Any, phase: Any, probe: str, wrapper_sequence: Any, probe_sequence: Any, position: str
+) -> None:
+    value = factory()
+    victim = value["attempts"][0]
+    wrapper = next(
+        item
+        for item in value["events"]
+        if item["requestId"] == victim["requestId"] and item["kind"] == "wrapper_return"
+    )
+    sample = next(item for item in value["events"] if item.get("probe") == probe)
+    sample.update(atMs=40, outcome="ACCEPTED" if probe == "operation" else "REJECTED")
+    value["events"].append(event(victim, "admission_closed", 36))
+    if wrapper_sequence is not None:
+        wrapper["sequence"] = wrapper_sequence
+    if probe_sequence is not None:
+        sample["sequence"] = probe_sequence
+
+    errors = validate_evidence(value, phase=phase)
+    if position == "ambiguous":
+        assert any("order" in error or "sequence" in error for error in errors), errors
+    elif position == "after":
+        assert errors == [], errors
+    else:
+        diagnostic = (
+            "closed invocation admitted a operation probe"
+            if probe == "operation"
+            else "missing post-closure checkpoint admission probe"
+        )
+        assert any(diagnostic in error for error in errors), errors
+
+
 @pytest.mark.parametrize("factory", [deadline_evidence, recovery_evidence])
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("probe", ["operation", "checkpoint"])

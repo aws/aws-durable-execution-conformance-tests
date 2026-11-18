@@ -83,9 +83,13 @@ and a recorded `outcome`. For the selected `victim` in `lmi-lifecycle-2` or
 `lmi-lifecycle-7`, a `checkpoint` probe with outcome `REJECTED` is required at
 or after actual wrapper return. An `operation` probe at that boundary is
 optional and diagnostic; its outcome may be `ACCEPTED` or `REJECTED`, and it
-must meet the same ownership and observation rules as other events. This
-exception does not permit late SDK dispatch or require forced cancellation
-of previously dispatched work.
+must meet the same ownership and observation rules as other events. The victim
+must have one wrapper exit: a return. If a victim probe and a closure share a
+timestamp, use their per-request `sequence` values to order them when both
+are present; these must be distinct nonnegative integers. With either
+sequence absent, the timestamp boundary remains inclusive. This exception
+does not permit late SDK dispatch or require forced cancellation of previously
+dispatched work.
 
 All other probes at or after their invocation's earliest recorded closure must
 be rejected. In particular, an earlier `admission_closed` or `wrapper_raise`
