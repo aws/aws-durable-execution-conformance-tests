@@ -1,0 +1,104 @@
+---
+# 10.24: A slow plugin hook does not suspend the invocation early
+description: A slow operation-start hook neither delays the operation nor lets the invocation suspend before the operation runs
+async: true
+handler: |
+  A handler, configured with an instrumentation plugin, that:
+  1. creates a callback named from the input and does not yet block on its
+     result;
+  2. runs a step named "after" that returns the string "ok";
+  3. blocks on the callback result and returns it.
+  The plugin's operation-start hook, for the step named "after" only, logs
+  `{"plugin": "CONFPLUGIN", "hook": "operation-start", "op": "<operation_id>"}`
+  to plain stdout and then waits 3 seconds before it returns. The wait must be
+  real elapsed time (an asynchronous sleep, or a blocking sleep where the
+  SDK's hooks are synchronous). Every record also carries a
+  `durableExecutionArn` field (the execution ARN from the invocation-start
+  hook's info parameter) so CloudWatch's execution-scoped log retrieval
+  locates the record.
+
+  Why this matters: while the hook waits, the callback is the only open
+  operation that waits for something outside the invocation. An SDK that
+  waits for the hook on the operation path, and decides to suspend from its
+  operation states alone, suspends the invocation before the step runs. The
+  step then runs only on a later invocation, after the callback completes. In
+  a real workflow the step after a created callback often submits the
+  callback ID to an external system. If that step does not run, nothing
+  completes the callback, and the execution fails when the callback times
+  out. So a plugin hook must not cause the invocation to suspend before the
+  operation it observes has run.
+invocations: |
+  - Invocation 1: the SDK checkpoints CallbackStarted. It then starts the step
+    "after". The plugin's operation-start hook for it logs and waits 3
+    seconds. The step runs and the SDK checkpoints StepStarted and
+    StepSucceeded in this invocation. The handler then blocks on the callback,
+    and the invocation completes and the execution suspends.
+  - The external system completes the callback 15 seconds after it started.
+  - Replay 1: the step replays from its checkpoint. The SDK checkpoints
+    CallbackSucceeded, and the execution succeeds with the callback payload.
+AsyncInvoke: true
+Variables:
+  CB_NAME: ${GEN_STR:10}
+  CB_PAYLOAD: ${GEN_STR:12}
+Input: ${CB_NAME}
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+CallbackActions:
+  - CallbackName: ${CB_NAME}
+    Operation: success
+    Payload: ${CB_PAYLOAD}
+    Delay: 15
+ExpectedExecutionHistory:
+  - EventType: CallbackStarted
+    SubType: Callback
+    EventId: 2
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackStartedDetails:
+      CallbackId: '*'
+  # The step starts and succeeds in the FIRST invocation, before it completes.
+  - EventType: StepStarted
+    SubType: Step
+    EventId: 3
+    Id: ${ID2}
+    Name: after
+    EventTimestamp: '*'
+    StepStartedDetails: {}
+  - EventType: StepSucceeded
+    SubType: Step
+    EventId: 4
+    Id: ${ID2}
+    Name: after
+    EventTimestamp: '*'
+    StepSucceededDetails:
+      Result: {}
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: CallbackSucceeded
+    SubType: Callback
+    EventId: 6
+    Id: ${ID1}
+    Name: ${CB_NAME}
+    EventTimestamp: '*'
+    CallbackSucceededDetails:
+      Result:
+        Payload: '"${CB_PAYLOAD}"'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionSucceeded
+    EventId: 8
+    EventTimestamp: '*'
+    ExecutionSucceededDetails:
+      Result: '*'
+ExpectedLogs:
+  # The slow hook ran once, in the first invocation only.
+  - match:
+      plugin: CONFPLUGIN
+      hook: operation-start
+      op: ${ID2}
+    count: 1
