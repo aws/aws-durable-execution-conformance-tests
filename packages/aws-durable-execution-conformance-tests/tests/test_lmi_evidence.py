@@ -861,25 +861,30 @@ def test_warm_reuse_orders_late_activity_and_task_exit_at_the_same_timestamp(
     errors = validate_evidence(value, phase=phase)
 
     if exit_sequence == 10:
-        assert any("late activity continued after the recorded task exit" in error for error in errors), errors
+        assert errors == ["ASSERTION: late activity continued after the recorded task exit"]
     else:
         assert errors == [], errors
 
 
 @pytest.mark.parametrize(
-    "exit_fields",
-    [{}, {"sequence": 10}, {"sequence": True}, {"sequence": "11"}, {"sequence": -1}, {"sequence": 10.5}],
+    ("kind", "fields", "error"),
+    [
+        ("late_activity", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("task_exit", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("task_exit", {"sequence": 10}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("late_activity", {"sequence": True}, "event.sequence must be a non-negative integer"),
+        ("task_exit", {"sequence": None}, "event.sequence must be a non-negative integer"),
+    ],
 )
-def test_warm_reuse_requires_unambiguous_sequences_for_same_timestamp_events(exit_fields: dict[str, Any]) -> None:
+def test_warm_reuse_requires_unambiguous_sequences_for_same_timestamp_events(
+    kind: str, fields: dict[str, Any], error: str
+) -> None:
     value = warm_evidence()
-    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
-    late = next(item for item in value["events"] if item["kind"] == "late_activity")
-    exited.update(atMs=60, **exit_fields)
-    late["sequence"] = 10
+    for event in value["events"]:
+        if event["kind"] in ("late_activity", "task_exit"):
+            event.update(atMs=60, **(fields if event["kind"] == kind else {"sequence": 10}))
 
-    assert validate_evidence(value) == [
-        "INCOMPLETE: same-timestamp late_activity and task_exit need distinct non-negative integer sequences"
-    ]
+    assert validate_evidence(value) == [f"INCOMPLETE: {error}"]
 
 
 @pytest.mark.parametrize("exit_at", [59, 61])

@@ -53,6 +53,17 @@ def test_schema_accepts_complete_lifecycle_fixtures(schema_validator, evidence_f
     schema_validator.validate(value)
 
 
+@pytest.mark.parametrize(
+    ("sequence", "valid"), [(True, False), (-1, False), (1.5, False), ("1", False), (None, False), (1.0, True)]
+)
+def test_optional_event_sequence_has_schema_and_runner_parity(schema_validator, evidence_factories, sequence, valid):
+    value = evidence_factories["warm_evidence"]()
+    next(event for event in value["events"] if event["kind"] == "task_exit")["sequence"] = sequence
+
+    assert schema_validator.is_valid(value) is valid
+    assert validate_evidence(value) == ([] if valid else ["INCOMPLETE: event.sequence must be a non-negative integer"])
+
+
 @pytest.mark.parametrize("field", ["before", "after", "operationExecutions", "retry", "sideEffects"])
 @pytest.mark.parametrize("mutation", ["missing", "empty", "wrong-type"])
 def test_replay_requires_complete_nonempty_structures(schema_validator, evidence_factories, field, mutation):

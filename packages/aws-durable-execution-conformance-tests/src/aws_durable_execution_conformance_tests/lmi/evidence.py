@@ -257,6 +257,10 @@ class _Evidence:
         for event in self.events:
             kind = self.string(event.get("kind"), "event.kind")
             self.owned_record(event, "event", observation_end)
+            if "sequence" in event:
+                sequence = event["sequence"]
+                if not is_json_integer(sequence) or sequence < 0:
+                    self.error("event.sequence must be a non-negative integer")
             if kind in {"observation_error", "control_error"}:
                 self.error(f"{kind} reports failed observation or control publication")
         for request in self.records(value.get("sdkRequests"), "sdkRequests"):
@@ -690,14 +694,8 @@ class _Evidence:
         late_after_exit = late_at > exit_at
         if late_at == exit_at:
             late_sequence, exit_sequence = late.get("sequence"), exited.get("sequence")
-            if (
-                not is_json_integer(late_sequence)
-                or not is_json_integer(exit_sequence)
-                or late_sequence < 0
-                or exit_sequence < 0
-                or late_sequence == exit_sequence
-            ):
-                self.error("same-timestamp late_activity and task_exit need distinct non-negative integer sequences")
+            if late_sequence is None or exit_sequence is None or late_sequence == exit_sequence:
+                self.error("same-timestamp late_activity and task_exit need distinct sequences")
                 return
             late_after_exit = late_sequence > exit_sequence
         if late_after_exit:

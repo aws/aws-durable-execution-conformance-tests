@@ -69,7 +69,9 @@ must agree with the launch record. Late work keeps its original `requestId` and
 `ownerRequestId`; `observedDuringRequestId` identifies a later invocation during
 which it happened. Reassigning late work to the current invocation is a failure.
 Events may outlive wrapper return and the native invocation interval, but must
-remain inside `observationEndedAtMs`.
+remain inside `observationEndedAtMs`. The optional event field `sequence` must be a
+non-negative integer when present. It is required for both warm-reuse events
+when their timestamps tie, and for every event when proving physical retirement.
 
 `sdkRequests` retains every attempted SDK request, including rejected requests.
 Each has the same ownership/time fields plus `method` and `outcome` (`DISPATCHED`
