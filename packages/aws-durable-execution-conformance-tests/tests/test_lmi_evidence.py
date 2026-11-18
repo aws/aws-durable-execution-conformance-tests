@@ -4,6 +4,7 @@
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
 from copy import deepcopy
+from decimal import Decimal
 from typing import Any, Literal
 
 import pytest
@@ -82,6 +83,13 @@ def evidence(requirement: int = 1, runtime: str = "javascript") -> dict[str, Any
         "faultsCreated": [],
         "retirement": {"retiredAtMs": 220, "resources": [], "faults": []},
     }
+    if requirement == 1:
+        result["sdkRequests"].append(
+            event(peer, "request", 26, method="CheckpointDurableExecution", outcome="DISPATCHED")
+        )
+    if requirement == 1:
+        for index, request in enumerate(result["sdkRequests"]):
+            request["updates"] = [{"id": f"step-{index}", "type": "STEP", "action": "SUCCEED"}]
     refresh_histories(result)
     record_owned_resources(result)
     return result
@@ -108,8 +116,26 @@ def refresh_histories(value: dict[str, Any]) -> None:
     }
     value["expectedHistories"] = expectations
     value["histories"] = [
-        {"executionArn": arn, "ownerCaseId": value["caseId"], "operations": [], **expected}
-        for arn, expected in expectations.items()
+        {
+            "executionArn": arn,
+            "ownerCaseId": value["caseId"],
+            "operations": (
+                [
+                    {
+                        "id": f"step-{index}",
+                        "type": "STEP",
+                        "name": "record-marker",
+                        "parentId": None,
+                        "status": "SUCCEEDED",
+                        "result": deepcopy(expected["result"]),
+                    }
+                ]
+                if value["requirementId"] == "lmi-lifecycle-1"
+                else []
+            ),
+            **expected,
+        }
+        for index, (arn, expected) in enumerate(expectations.items())
     ]
 
 
@@ -142,10 +168,10 @@ def deadline_evidence(requirement: int = 3, runtime: str = "javascript") -> dict
     ]
     value["events"].extend(
         [
-            event(victim, "work_in_flight", 25),
+            event(victim, "work_in_flight", 25, taskId="root"),
             event(victim, "platform_timeout", 30, source="platform"),
             event(victim, "admission_closed", 31),
-            event(victim, "task_exit", 35),
+            event(victim, "task_exit", 35, taskId="root"),
             event(victim, "admission_probe", 32, probe="operation", outcome="REJECTED"),
             event(victim, "admission_probe", 33, probe="checkpoint", outcome="REJECTED"),
         ]
@@ -161,6 +187,8 @@ def recovery_evidence(runtime: str = "javascript", *, native_concurrency: int = 
     peer = value["attempts"][1]
     peer["endedAtMs"] = 100
     recovery = attempt("recovery", start=40, end=60)
+    value["attempts"][0]["endedAtMsSource"] = "platform"
+    recovery["startedAtMsSource"] = "platform"
     value["attempts"].append(recovery)
     value["selectedRequests"]["recovery"] = recovery["requestId"]
     value["events"] = [
@@ -196,7 +224,13 @@ def replay_evidence() -> dict[str, Any]:
     resume["executionArn"] = victim["executionArn"]
     value["attempts"].append(resume)
     value["selectedRequests"]["resume"] = resume["requestId"]
-    value["events"].append(event(victim, "pending", 35))
+    value["events"].extend(
+        [
+            event(victim, "body", 21, operationId="done"),
+            event(victim, "body", 22, operationId="failed"),
+            event(victim, "pending", 35),
+        ]
+    )
     success = {
         "id": "done",
         "name": "completed-success",
@@ -221,9 +255,11 @@ def replay_evidence() -> dict[str, Any]:
         "status": "SUCCEEDED",
         "result": "recovered",
     }
+    wait = {"id": "pause", "name": "pause", "type": "WAIT", "parentId": None, "status": "SUCCEEDED", "endedAtMs": 45}
+    value["sdkRequests"][0]["updates"] = [{"id": "pause", "type": "WAIT", "action": "START"}]
     value["replay"] = {
         "before": [success, failure],
-        "after": [deepcopy(success), deepcopy(failure), retried],
+        "after": [deepcopy(success), deepcopy(failure), retried, wait],
         "operationExecutions": [
             {"requestId": victim["requestId"], "operationId": "done"},
             {"requestId": victim["requestId"], "operationId": "failed"},
@@ -279,7 +315,8 @@ def warm_evidence(runtime: str = "python") -> dict[str, Any]:
     value = evidence(6, runtime)
     victim = value["attempts"][0]
     next(item for item in value["events"] if item["kind"] == "task_exit")["atMs"] = 65
-    warm = attempt("warm", start=50, end=80)
+    victim["endedAtMsSource"] = "platform"
+    warm = {**attempt("warm", start=50, end=80), "startedAtMsSource": "platform"}
     value["attempts"].append(warm)
     value["selectedRequests"]["warm"] = warm["requestId"]
     value["events"].append(event(victim, "late_activity", 60, observedDuringRequestId=warm["requestId"]))
@@ -308,6 +345,20 @@ def test_normal_return_and_failure_require_their_own_outcome(requirement_id: int
     value["requirementId"] = "lmi-lifecycle-7" if requirement_id == 2 else "lmi-lifecycle-2"
     expected = "FAILED" if requirement_id == 2 else "SUCCEEDED"
     assert any(f"requires the selected victim outcome {expected}" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("requirement_id", [2, 7])
+def test_disposal_binds_root_outcome_and_wrapper_order(requirement_id: int) -> None:
+    value = evidence(2) if requirement_id == 2 else failure_evidence()
+    root = next(item for item in value["events"] if item["kind"] == "root_completed")
+    outcome = root["outcome"]
+    root["outcome"] = "FAILED" if outcome == "SUCCEEDED" else "SUCCEEDED"
+    assert "ASSERTION: root completion and actual invocation outcome disagree" in validate_evidence(value)
+
+    root["outcome"] = outcome
+    wrapper = next(item for item in value["events"] if item["kind"] == "wrapper_return")
+    wrapper["atMs"] = root["atMs"] - 1
+    assert "ASSERTION: wrapper return precedes root completion" in validate_evidence(value)
 
 
 @pytest.mark.parametrize(
@@ -416,6 +467,23 @@ def test_barriers_and_intervals_must_both_prove_overlap() -> None:
     assert any("barrier" in error for error in validate_evidence(value))
 
 
+def test_overlap_requires_distinct_executions_and_native_capacity() -> None:
+    value = evidence()
+    value["profile"]["nativeConcurrency"] = 1
+    assert "PLACEMENT: native overlap requires a deployed concurrency of at least two" in validate_evidence(value)
+
+    value = evidence()
+    victim, peer = value["attempts"]
+    peer["executionArn"] = victim["executionArn"]
+    peer["startedAtMs"] = victim["startedAtMs"]
+    for record in (*value["events"], *value["sdkRequests"]):
+        if record["requestId"] == peer["requestId"]:
+            record["executionArn"] = victim["executionArn"]
+    refresh_histories(value)
+    record_owned_resources(value)
+    assert "PLACEMENT: overlap needs distinct durable executions" in validate_evidence(value)
+
+
 @pytest.mark.parametrize("stream", ["events", "sdkRequests"])
 def test_cross_invocation_attribution_is_rejected(stream: str) -> None:
     value = warm_evidence()
@@ -427,6 +495,19 @@ def test_dispatch_after_wrapper_return_is_rejected() -> None:
     value = warm_evidence()
     value["sdkRequests"][0]["atMs"] = 60
     assert any("after admission closed" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(("sequence", "late"), [(None, True), (9, False), (11, True)])
+def test_dispatch_at_closure_timestamp_uses_semantic_sequence(sequence: int | None, late: bool) -> None:
+    value = evidence(2)
+    wrapper = next(item for item in value["events"] if item["kind"] == "wrapper_return")
+    wrapper["sequence"] = 10
+    request = value["sdkRequests"][0]
+    request["atMs"] = wrapper["atMs"]
+    if sequence is not None:
+        request["sequence"] = sequence
+    errors = validate_evidence(value)
+    assert any("dispatched SDK work after admission closed" in error for error in errors) is late, errors
 
 
 def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
@@ -441,7 +522,13 @@ def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
 @pytest.mark.parametrize("probe", ["operation", "checkpoint"])
 @pytest.mark.parametrize(
     ("at", "outcome", "rejected"),
-    [(35, "ACCEPTED", False), (36, "ACCEPTED", True), (37, "ACCEPTED", True), (37, "REJECTED", False)],
+    [
+        (35, "ACCEPTED", False),
+        (36, "ACCEPTED", True),
+        (37, "ACCEPTED", True),
+        (45, "ACCEPTED", True),
+        (37, "REJECTED", False),
+    ],
 )
 def test_disposal_checks_probe_outcomes_from_the_first_closure(
     requirement: int, phase: Literal["observations", "final"], probe: str, at: int, outcome: str, rejected: bool
@@ -520,6 +607,7 @@ def test_disposal_diagnostic_does_not_replace_closure_evidence(
     checkpoint = next(item for item in value["events"] if item.get("probe") == "checkpoint")
     operation["outcome"] = "ACCEPTED"
     if change == "early-checkpoint":
+        operation["outcome"] = "REJECTED"
         value["events"].append(event(victim, "admission_closed", 36))
         checkpoint["atMs"] = 37
     elif change == "accepted-checkpoint":
@@ -585,7 +673,8 @@ def test_disposal_orders_probes_sharing_the_wrapper_timestamp(
     )
     sample = next(item for item in value["events"] if item.get("probe") == probe)
     sample.update(atMs=40, outcome="ACCEPTED" if probe == "operation" else "REJECTED")
-    value["events"].append(event(victim, "admission_closed", 36))
+    if position == "before":
+        value["events"].append(event(victim, "admission_closed", 36))
     if wrapper_sequence is not None:
         wrapper["sequence"] = wrapper_sequence
     if probe_sequence is not None:
@@ -667,6 +756,18 @@ def test_warm_reuse_checks_all_recorded_post_closure_probes(
 
 
 def complete_retirement_events(value: dict[str, Any]) -> None:
+    for index, request in enumerate(value["sdkRequests"]):
+        if request["outcome"] != "DISPATCHED":
+            continue
+        call_id = f"dispatch-{index}"
+        request["callId"] = call_id
+        call_kind = "poll" if request["method"] == "GetDurableExecutionState" else "checkpoint"
+        value["events"].extend(
+            [
+                {**request, "kind": f"{call_kind}_call"},
+                {**request, "kind": f"{call_kind}_exit"},
+            ]
+        )
     for owner in value["attempts"]:
         value["events"].extend(
             [
@@ -690,6 +791,126 @@ def complete_retirement_events(value: dict[str, Any]) -> None:
             item["sequence"] = sequence
 
 
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("none", None),
+        ("missing-pair", "cannot correlate dispatched SDK request"),
+        ("wrong-method", "cannot correlate dispatched SDK request"),
+        ("unknown-method", "no completion contract for dispatched SDK method"),
+        ("missing-id", "dispatched SDK request.callId"),
+        ("wrong-time", "cannot correlate dispatched SDK request"),
+        ("duplicate", "cannot correlate dispatched SDK request"),
+        ("rejected", None),
+    ],
+)
+def test_independent_retirement_correlates_dispatch_with_completion(mutation: str, reason: str | None) -> None:
+    value = evidence()
+    request = value["sdkRequests"][0]
+    request["method"] = "GetDurableExecutionState"
+    if mutation == "rejected":
+        request["outcome"] = "REJECTED"
+    complete_retirement_events(value)
+    if mutation == "missing-pair":
+        value["events"] = [item for item in value["events"] if item.get("callId") != "dispatch-0"]
+    elif mutation == "wrong-method":
+        request["method"] = "CheckpointDurableExecution"
+    elif mutation == "unknown-method":
+        request["method"] = "UnknownMethod"
+    elif mutation == "missing-id":
+        del request["callId"]
+    elif mutation == "wrong-time":
+        request["atMs"] += 1
+    elif mutation == "duplicate":
+        value["sdkRequests"].append(request.copy())
+    errors = validate_retirement_evidence(value)
+    if reason is None:
+        assert errors == [], errors
+    else:
+        assert any(reason in error for error in errors), errors
+
+
+@pytest.mark.parametrize("missing", ["dispatch", "operation", "foreign-result"])
+def test_overlap_requires_activity_attributed_to_each_invocation(missing: str) -> None:
+    value = evidence()
+    if missing == "dispatch":
+        value["sdkRequests"][1]["outcome"] = "REJECTED"
+        reason = "overlap peer lacks an attributed checkpoint dispatch"
+    elif missing == "operation":
+        value["histories"][1]["operations"] = []
+        reason = "overlap peer needs exactly one record-marker step"
+    else:
+        value["histories"][1]["operations"][0]["result"] = value["histories"][0]["operations"][0]["result"]
+        reason = "overlap peer record-marker step does not match the fixture expectation"
+    for phase in ("observations", "final"):
+        assert any(reason in error for error in validate_evidence(value, phase=phase))
+
+
+def test_overlap_requires_distinct_fixture_results() -> None:
+    value = evidence()
+    victim, peer = value["histories"]
+    peer["result"] = victim["result"]
+    peer["operations"][0]["result"] = victim["result"]
+    value["expectedHistories"][peer["executionArn"]]["result"] = victim["result"]
+    assert "INCOMPLETE: overlap fixture must declare distinct expected results for the selected executions" in (
+        validate_evidence(value)
+    )
+
+
+@pytest.mark.parametrize(
+    ("completion_at", "reason"),
+    [
+        (None, "retirement lacks a unique completed io_start/io_exit interval"),
+        (205, None),
+        (199, "completion must follow the behavior observation window"),
+        (211, "interval lies outside settlement"),
+    ],
+)
+def test_final_retirement_checks_observed_work_and_cleanup_completions(
+    completion_at: int | None, reason: str | None
+) -> None:
+    value = evidence()
+    owner = value["attempts"][0]
+    value["events"].append(event(owner, "io_start", 30, taskId="held"))
+    if completion_at is not None:
+        value["retirement"]["completions"] = [event(owner, "io_exit", completion_at, taskId="held")]
+    assert validate_evidence(value, phase="observations") == []
+    errors = validate_evidence(value, phase="final")
+    if reason is None:
+        assert errors == [], errors
+    else:
+        assert any(reason in error for error in errors), errors
+
+
+def test_unlisted_sdk_call_is_incomplete_behavior_but_does_not_block_retirement() -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    dispatch = next(item for item in value["events"] if item.get("kind") == "checkpoint_call")
+    del dispatch["outcome"]
+    assert validate_evidence(value) == []
+    del value["sdkRequests"][0]
+    for phase in ("observations", "final"):
+        assert any(
+            "observed SDK call lacks a unique matching SDK request" in error
+            for error in validate_evidence(value, phase=phase)
+        )
+    assert validate_retirement_evidence(value) == []
+
+
+@pytest.mark.parametrize("source", [None, "fixture"])
+def test_warm_reuse_requires_platform_native_end(source: str | None) -> None:
+    value = warm_evidence()
+    victim = value["attempts"][0]
+    if source is None:
+        del victim["endedAtMsSource"]
+    else:
+        victim["endedAtMsSource"] = source
+    for phase in ("observations", "final"):
+        assert "INCOMPLETE: warm reuse requires the victim's platform native completion time" in validate_evidence(
+            value, phase=phase
+        )
+
+
 def test_independent_retirement_audits_quiescence_without_rechecking_probe_behavior() -> None:
     value = evidence()
     value["events"].append(event(value["attempts"][0], "admission_probe", 60, probe="operation", outcome="ACCEPTED"))
@@ -699,8 +920,19 @@ def test_independent_retirement_audits_quiescence_without_rechecking_probe_behav
     assert validate_retirement_evidence(value) == []
 
 
-@pytest.mark.parametrize("change", ["early", "simulated", "no-inflight", "accepted", "budget"])
-def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: str) -> None:
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("early", "platform timeout did not cross the configured invocation deadline"),
+        ("simulated", "deadline requires an observed platform timeout"),
+        ("no-inflight", "needs exactly one work_in_flight event"),
+        ("late-inflight", "controlled work was not in flight across the real deadline"),
+        ("accepted", "closed invocation admitted a"),
+        ("admission-budget", "deadline admissionMs exceeds the declared fixture budget"),
+        ("cleanup-budget", "deadline cleanupMs exceeds the declared fixture budget"),
+    ],
+)
+def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: str, reason: str) -> None:
     value = deadline_evidence()
     timeout = next(item for item in value["events"] if item["kind"] == "platform_timeout")
     if change == "early":
@@ -709,11 +941,16 @@ def test_deadline_rejects_insufficient_platform_and_admission_evidence(change: s
         timeout["source"] = "fixture"
     elif change == "no-inflight":
         value["events"] = [item for item in value["events"] if item["kind"] != "work_in_flight"]
+    elif change == "late-inflight":
+        next(item for item in value["events"] if item["kind"] == "work_in_flight")["atMs"] = timeout["atMs"] + 1
     elif change == "accepted":
         next(item for item in value["events"] if item["kind"] == "admission_probe")["outcome"] = "ACCEPTED"
+    elif change == "admission-budget":
+        value["budgets"]["admissionMs"] = 0.5
     else:
         value["budgets"]["cleanupMs"] = 1
-    assert validate_evidence(value)
+    errors = validate_evidence(value)
+    assert any(reason in error for error in errors), errors
 
 
 @pytest.mark.parametrize("runtime", ["javascript", "java", "python"])
@@ -732,6 +969,26 @@ def test_native_interval_contains_the_asserted_platform_timeout(
         assert any("platform timeout follows native invocation completion" in error for error in errors), errors
     else:
         assert errors == [], errors
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("failed", "ASSERTION: recovered capacity did not complete the selected recovery request"),
+        ("early", "ASSERTION: recovery preceded the selected victim's timeout"),
+        ("missing-policy", "INCOMPLETE: profile.recoveryPolicy must explicitly select reuse-worker or replace-worker"),
+    ],
+)
+def test_recovery_requires_success_after_timeout_under_declared_policy(change: str, reason: str) -> None:
+    value = recovery_evidence()
+    recovery = value["attempts"][-1]
+    if change == "failed":
+        recovery["outcome"] = "FAILED"
+    elif change == "early":
+        recovery["startedAtMs"] = 29
+    else:
+        del value["profile"]["recoveryPolicy"]
+    assert reason in validate_evidence(value)
 
 
 @pytest.mark.parametrize("field", ["environmentId", "workerId", "processId"])
@@ -947,6 +1204,27 @@ def test_resume_must_have_original_execution_and_real_pending() -> None:
     assert any("pending" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("change", ["wrong-request", "outside-warm-run", "after-task-exit"])
+def test_warm_reuse_orders_late_activity_within_the_selected_invocation(change: str) -> None:
+    value = warm_evidence()
+    victim, peer, _ = value["attempts"]
+    late_activity = next(item for item in value["events"] if item["kind"] == "late_activity")
+    reason = "ASSERTION: late activity was not observed during the selected warm invocation"
+    if change == "wrong-request":
+        peer["endedAtMs"] = 70
+        late_activity["observedDuringRequestId"] = peer["requestId"]
+    elif change == "outside-warm-run":
+        late_activity["atMs"] = 49
+        reason = "ASSERTION: event lies outside its observedDuringRequestId interval"
+    else:
+        task_exit = next(
+            item for item in value["events"] if item["kind"] == "task_exit" and item["requestId"] == victim["requestId"]
+        )
+        task_exit["atMs"] = 59
+        reason = "ASSERTION: late activity continued after the recorded task exit"
+    assert reason in validate_evidence(value)
+
+
 def test_warm_reuse_requires_the_original_process() -> None:
     value = warm_evidence()
     value["attempts"][-1]["processId"] = "new-process"
@@ -988,6 +1266,41 @@ def test_malformed_schema_values_produce_findings_not_exceptions(invalid: Any) -
         assert validate_evidence(value)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate-role",
+        "wrong-execution",
+        "outside-window",
+        "duplicate-request",
+        "duplicate-history",
+        "wrong-history-owner",
+    ],
+)
+def test_shared_evidence_rejects_conflicting_identities_and_observation_windows(change: str) -> None:
+    value = evidence()
+    victim, peer = value["attempts"]
+    if change == "duplicate-role":
+        value["selectedRequests"]["peer"] = victim["requestId"]
+        reason = "PLACEMENT: distinct selected roles must bind distinct original requests"
+    elif change == "wrong-execution":
+        value["events"][0]["executionArn"] = peer["executionArn"]
+        reason = "ASSERTION: event is attributed to a different execution"
+    elif change == "outside-window":
+        value["events"][0]["atMs"] = value["observationEndedAtMs"] + 1
+        reason = "INCOMPLETE: event lies outside its observation window"
+    elif change == "duplicate-request":
+        value["attempts"].append(deepcopy(victim))
+        reason = f"INCOMPLETE: duplicate requestId {victim['requestId']}"
+    elif change == "duplicate-history":
+        value["histories"].append(deepcopy(value["histories"][0]))
+        reason = f"INCOMPLETE: duplicate service history {victim['executionArn']}"
+    else:
+        value["histories"][0]["ownerCaseId"] = "another-case"
+        reason = f"ASSERTION: history {victim['executionArn']} belongs to a different case"
+    assert reason in validate_evidence(value)
+
+
 def test_misattributed_service_history_is_not_a_successful_output() -> None:
     value = evidence()
     value["histories"][0]["result"] = {"marker": "peer"}
@@ -999,6 +1312,42 @@ def test_replay_cannot_omit_retry_or_execution_observations(missing: str) -> Non
     value = replay_evidence()
     del value["replay"][missing]
     assert validate_evidence(value)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("missing-failure", "replay must preserve both a completed success and a completed failure"),
+        ("one-attempt", "retry requires at least two observed attempts"),
+        ("duplicate-attempt", "retry requires distinct observed attempts"),
+        ("wrong-outcome-order", "retry must demonstrate a failed attempt followed by success"),
+        ("missing-body", "retry attempt lacks observed user-code execution"),
+        ("already-completed", "retry must not repeat an already completed operation"),
+        ("missing-count", "side-effect counts must cover stored successes, failures, and retries"),
+    ],
+)
+def test_replay_requires_completed_outcomes_and_independent_retry_evidence(change: str, reason: str) -> None:
+    value = replay_evidence()
+    replay = value["replay"]
+    retries = replay["retry"]["attempts"]
+    if change == "missing-failure":
+        replay["before"].pop()
+    elif change == "one-attempt":
+        retries.pop()
+    elif change == "duplicate-attempt":
+        retries[1]["attemptId"] = retries[0]["attemptId"]
+    elif change == "wrong-outcome-order":
+        retries[0]["outcome"], retries[1]["outcome"] = retries[1]["outcome"], retries[0]["outcome"]
+    elif change == "missing-body":
+        replay["operationExecutions"] = [
+            item for item in replay["operationExecutions"] if item.get("attemptId") != retries[0]["attemptId"]
+        ]
+    elif change == "already-completed":
+        retried = next(item for item in replay["after"] if item["id"] == replay["retry"]["operationId"])
+        replay["before"].append(deepcopy(retried))
+    else:
+        replay["sideEffects"].pop()
+    assert any(error.endswith(reason) for error in validate_evidence(value))
 
 
 def test_replay_snapshot_is_bound_to_service_history() -> None:
@@ -1078,8 +1427,16 @@ def test_retirement_inventory_matches_observations_in_both_directions(validator:
 
 
 @pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
-@pytest.mark.parametrize(("kind", "outcome"), [("callback", "SUCCEEDED"), ("control", "DELETED")])
-def test_retirement_inventory_keeps_other_owned_resource_kinds(validator: Any, kind: str, outcome: str) -> None:
+@pytest.mark.parametrize(
+    ("kind", "outcome", "unfinished", "reason"),
+    [
+        ("callback", "SUCCEEDED", "PENDING", "callback completion is not established"),
+        ("control", "DELETED", "DELETE_REQUESTED", "control object deletion is not established"),
+    ],
+)
+def test_retirement_inventory_keeps_other_owned_resource_kinds(
+    validator: Any, kind: str, outcome: str, unfinished: str, reason: str
+) -> None:
     value = evidence()
     complete_retirement_events(value)
     resource = {"id": f"owned-{kind}", "kind": kind, "ownerCaseId": value["caseId"]}
@@ -1088,6 +1445,8 @@ def test_retirement_inventory_keeps_other_owned_resource_kinds(validator: Any, k
         {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/owned-resource.json", "outcome": outcome}
     )
     assert validator(value) == []
+    value["retirement"]["resources"][-1]["outcome"] = unfinished
+    assert f"INCOMPLETE: {reason}" in validator(value)
 
 
 @pytest.mark.parametrize("validator", [validate_evidence, validate_common_evidence, validate_retirement_evidence])
@@ -1095,7 +1454,7 @@ def test_retirement_inventory_keeps_other_owned_resource_kinds(validator: Any, k
 def test_retirement_inventory_accepts_every_observed_request_and_execution(
     validator: Any, shared_execution: bool
 ) -> None:
-    value = evidence()
+    value = evidence(2)
     extra = attempt("extra", start=60, end=80)
     if shared_execution:
         extra["executionArn"] = value["attempts"][0]["executionArn"]
@@ -1215,7 +1574,7 @@ def test_operation_name_and_parent_still_require_explicit_fields() -> None:
 
 @pytest.mark.parametrize("status", ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"])
 def test_held_execution_has_an_independent_explicit_status_allowance(status: str) -> None:
-    value = evidence()
+    value = evidence(2)
     history = value["histories"][0]
     history["status"] = status
     history.pop("result")
@@ -1223,10 +1582,11 @@ def test_held_execution_has_an_independent_explicit_status_allowance(status: str
         "allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]
     }
     if status != "RUNNING":
+        history["error"] = {"type": "expected fixture termination"}
         # Retirement of an already terminal execution keeps its outcome.
         retired = next(item for item in value["retirement"]["resources"] if item["id"] == history["executionArn"])
         retired["outcome"] = status
-    assert validate_evidence(value) == []
+    assert validate_common_evidence(value) == []
 
 
 @pytest.mark.parametrize("allowed", [None, "RUNNING", [], ["RUNNING", "RUNNING"], ["UNKNOWN"], [False], [{}]])
@@ -1257,7 +1617,7 @@ def test_fixed_terminal_expectations_still_require_result_or_error(expectation: 
 
 
 def test_allowed_statuses_do_not_accept_success_or_ignore_declared_output() -> None:
-    value = evidence()
+    value = evidence(2)
     history = value["histories"][0]
     value["expectedHistories"][history["executionArn"]] = {"allowedStatuses": ["RUNNING", "FAILED"], "result": None}
     assert any("outside the declared" in error for error in validate_evidence(value))
@@ -1535,19 +1895,27 @@ def test_replay_compares_completed_operations_by_identity_not_position() -> None
     assert any("operation identity" in error for error in validate_evidence(value))
 
 
-@pytest.mark.parametrize(("outcome", "rejected"), [(None, True), ("", True), (7, True), ("FIRED", False)])
-def test_every_retired_resource_needs_an_outcome(outcome: Any, rejected: bool) -> None:
-    # The schema requires a non-empty outcome for every retired resource, not
-    # only for the four kinds with their own completion rules.
+@pytest.mark.parametrize("outcome", [None, "", 7])
+def test_every_retired_resource_needs_an_outcome(outcome: Any) -> None:
+    value = evidence()
+    settled = value["retirement"]["resources"][0]
+    if outcome is None:
+        del settled["outcome"]
+    else:
+        settled["outcome"] = outcome
+    errors = validate_evidence(value)
+    assert any("retirement.resources.outcome" in error for error in errors), errors
+
+
+def test_final_evidence_rejects_unknown_resource_kind() -> None:
     value = evidence()
     resource = {"id": "timer-1", "kind": "timer", "ownerCaseId": value["caseId"]}
     value["resourcesCreated"].append(resource)
-    settled = {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/run-1/case-1/timer.json"}
-    if outcome is not None:
-        settled["outcome"] = outcome
-    value["retirement"]["resources"].append(settled)
-    errors = validate_evidence(value)
-    assert any("retirement.resources.outcome" in error for error in errors) is rejected, errors
+    value["retirement"]["resources"].append(
+        {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/timer.json", "outcome": "STILL_RUNNING"}
+    )
+    errors = validate_evidence(value, phase="final")
+    assert any("retirement has no completion contract for resource kind timer" in error for error in errors), errors
 
 
 @pytest.mark.parametrize(
@@ -1656,7 +2024,7 @@ def test_supplied_operation_timestamps_are_finite_nonnegative_numbers(field: str
 def test_operation_interval_preserves_timestamp_order_and_optional_metadata(
     phase: Any, replay: bool, started: int | None, ended: int | None, rejected: bool
 ) -> None:
-    value = replay_evidence() if replay else evidence()
+    value = replay_evidence() if replay else evidence(2)
     operation: dict[str, Any] = {
         "id": "done",
         "name": "completed-step",
@@ -1671,6 +2039,12 @@ def test_operation_interval_preserves_timestamp_order_and_optional_metadata(
     if ended is not None:
         operation["endedAtMs"] = ended
     if replay:
+        if not rejected:
+            body = next(item for item in value["events"] if item.get("operationId") == operation["id"])
+            body_time = started if started is not None else min(body["atMs"], ended if ended is not None else 35)
+            body["atMs"] = body_time
+            victim = value["attempts"][0]
+            victim["startedAtMs"] = min(victim["startedAtMs"], body_time)
         value["replay"]["before"][0] = deepcopy(operation)
         value["replay"]["after"][0] = deepcopy(operation)
         value["histories"][0]["operations"] = deepcopy(value["replay"]["after"])
@@ -1732,7 +2106,7 @@ def test_independent_retirement_does_not_require_a_successful_observation_grace(
 @pytest.mark.parametrize("activity", ["dispatch", "operation", "checkpoint"])
 @pytest.mark.parametrize("later_closure", [False, True])
 def test_raised_wrapper_closes_admission_at_its_first_exit(phase: Any, activity: str, later_closure: bool) -> None:
-    value = evidence()
+    value = evidence(2)
     peer = value["attempts"][1]
     peer["outcome"] = "FAILED"
     wrapper = next(
@@ -1967,7 +2341,7 @@ def test_partial_cleanup_operation_preserves_provisional_omissions(fragment: dic
         ({"type": False}, "type must be a non-empty string"),
         ({"status": False}, "status must be a non-empty string"),
         ({"name": False}, "name must be a non-empty string"),
-        ({"parentId": False}, "parentId must be a string or null"),
+        ({"parentId": False}, "parentId must be a non-empty string"),
         ({"startedAtMs": False}, "startedAtMs must be a finite non-negative number"),
         ({"endedAtMs": float("inf")}, "endedAtMs must be a finite non-negative number"),
         ({"startedAtMs": 20, "endedAtMs": 10}, "endedAtMs precedes startedAtMs"),
@@ -2065,3 +2439,583 @@ def test_fault_causality_each_observer_has_an_independent_scenario_boundary(
             else "fault release cannot satisfy worker recovery"
         )
         assert errors == [f"ASSERTION: {diagnostic}"]
+
+
+def test_retirement_rejects_dispatched_request_matched_to_rejected_call() -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    for item in value["events"]:
+        if item["kind"] == "checkpoint_call" and item.get("callId") == "dispatch-0":
+            item["outcome"] = "REJECTED"
+    value["events"] = [
+        item
+        for item in value["events"]
+        if not (item["kind"] == "checkpoint_exit" and item.get("callId") == "dispatch-0")
+    ]
+    assert any("cannot correlate dispatched SDK request" in error for error in validate_retirement_evidence(value))
+
+
+def test_replay_requires_observed_durable_suspension_checkpoint() -> None:
+    value = replay_evidence()
+    del value["sdkRequests"][0]["updates"]
+    assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
+
+
+def test_replay_rejects_an_extra_unaccounted_retry_body() -> None:
+    value = replay_evidence()
+    value["replay"]["operationExecutions"].append(
+        {"requestId": value["selectedRequests"]["resume"], "operationId": "retry", "attemptId": "extra"}
+    )
+    assert any("retry body executions must match" in error for error in validate_evidence(value))
+
+
+def test_warm_reuse_rejects_a_fixture_sourced_start() -> None:
+    value = warm_evidence()
+    value["attempts"][-1]["startedAtMsSource"] = "fixture"
+    assert any("warm request's platform native start time" in error for error in validate_evidence(value))
+
+
+def test_physical_retirement_audits_completed_launches_after_failed_selection() -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    value["selectedRequests"] = {}
+    assert any("selectedRequests must not be empty" in error for error in validate_evidence(value))
+    assert validate_retirement_evidence(value) == []
+
+
+def test_execution_settlement_cannot_precede_recorded_service_operation() -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    execution = value["histories"][0]
+    execution["operations"][0]["endedAtMs"] = 190
+    settled = next(item for item in value["retirement"]["resources"] if item["id"] == execution["executionArn"])
+    settled["settledAtMs"] = 180
+    for validator in (validate_evidence, validate_retirement_evidence):
+        assert "INCOMPLETE: execution settled before its recorded service operation" in validator(value)
+
+
+def test_deadline_probe_before_tied_close_does_not_count() -> None:
+    value = deadline_evidence()
+    closure = next(item for item in value["events"] if item["kind"] == "admission_closed")
+    closure["sequence"] = 10
+    probe = next(item for item in value["events"] if item.get("probe") == "checkpoint")
+    probe.update(atMs=closure["atMs"], sequence=9)
+    assert "INCOMPLETE: missing post-closure checkpoint admission probe" in validate_evidence(value)
+
+
+def test_overlap_cannot_use_retry_to_attribute_original_marker() -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    victim["outcome"] = "FAILED"
+    value["attempts"].append({**victim, "requestId": "retry-victim", "attempt": 2, "outcome": "SUCCEEDED"})
+    record_owned_resources(value)
+    assert "ASSERTION: overlap victim needs an original successful execution without retry" in validate_evidence(value)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"), [("id", "unrelated-step"), ("type", "WAIT"), ("action", "START"), ("atMs", 41)]
+)
+def test_overlap_requires_marker_completion_in_the_overlap_checkpoint(field: str, replacement: str | int) -> None:
+    value = evidence()
+    request = value["sdkRequests"][1]
+    if field == "atMs":
+        request[field] = replacement
+    else:
+        request["updates"][0][field] = replacement
+    assert any("overlap peer lacks an attributed checkpoint dispatch" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(("field", "replacement"), [("endedAtMs", 30), ("endedAtMs", 60), ("status", "STARTED")])
+def test_replay_requires_completion_between_suspension_and_resume(field: str, replacement: str | int) -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")[field] = replacement
+    assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
+
+
+def test_replay_requires_positive_evidence_of_original_completed_step_bodies() -> None:
+    value = replay_evidence()
+    del value["replay"]["operationExecutions"][0]
+    assert any(
+        "completed replay step lacks observed user-code execution" in error for error in validate_evidence(value)
+    )
+
+
+@pytest.mark.parametrize("requirement", [2, 7])
+def test_disposal_rejects_consistent_but_contradictory_history_and_retirement(requirement: int) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    arn = value["attempts"][0]["executionArn"]
+    expectation = (
+        {"status": "FAILED", "error": {"type": "example"}}
+        if requirement == 2
+        else {"status": "SUCCEEDED", "result": "example"}
+    )
+    history = value["histories"][0]
+    history.pop("result", None)
+    history.pop("error", None)
+    history.update(expectation)
+    value["expectedHistories"][arn] = expectation
+    retirement = next(item for item in value["retirement"]["resources"] if item["id"] == arn)
+    retirement["outcome"] = expectation["status"]
+    assert "ASSERTION: terminal service history disagrees with the single disposal invocation" in validate_evidence(
+        value
+    )
+
+
+def test_disposal_final_retirement_does_not_reverse_observed_success() -> None:
+    value = evidence(2)
+    arn = value["attempts"][0]["executionArn"]
+    value["histories"][0]["status"] = "RUNNING"
+    value["expectedHistories"][arn] = {"allowedStatuses": ["RUNNING", "SUCCEEDED"]}
+    retirement = next(item for item in value["retirement"]["resources"] if item["id"] == arn)
+    retirement["outcome"] = "FAILED"
+    assert validate_evidence(value, phase="observations") == []
+    assert "ASSERTION: terminal retirement outcome disagrees with the single disposal invocation" in validate_evidence(
+        value
+    )
+
+
+@pytest.mark.parametrize("updates", [None, [None], [{}], [{"id": "", "type": "STEP", "action": "SUCCEED"}]])
+def test_supplied_checkpoint_updates_are_structurally_validated(updates: Any) -> None:
+    value = evidence(2)
+    value["sdkRequests"][0]["updates"] = updates
+    for validator in (validate_evidence, validate_common_evidence):
+        assert any("sdkRequest.updates" in error for error in validator(value))
+
+
+@pytest.mark.parametrize("exit_sequence", [9, 11])
+def test_deadline_orders_timeout_and_task_exit_at_same_millisecond(exit_sequence: int) -> None:
+    value = deadline_evidence()
+    timeout = next(item for item in value["events"] if item["kind"] == "platform_timeout")
+    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
+    timeout["sequence"] = 10
+    exited.update(atMs=timeout["atMs"], sequence=exit_sequence)
+    errors = validate_evidence(value)
+    assert any("controlled work was not in flight" in error for error in errors) == (exit_sequence == 9)
+
+
+def test_replay_late_original_body_does_not_prove_execution_before_suspension() -> None:
+    value = replay_evidence()
+    body = next(item for item in value["events"] if item.get("operationId") == "done")
+    body.update(atMs=60, observedDuringRequestId=value["selectedRequests"]["resume"])
+    assert any("original request before suspension" in error for error in validate_evidence(value))
+
+
+def test_replay_rejects_an_earlier_invocation_on_the_selected_execution() -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    previous = attempt("earlier", start=1, end=8)
+    previous["executionArn"] = victim["executionArn"]
+    value["attempts"].append(previous)
+    record_owned_resources(value)
+    assert "PLACEMENT: replay victim is not the original invocation of the selected execution" in validate_evidence(
+        value
+    )
+
+
+@pytest.mark.parametrize("history_type", ["CALLBACK", "WAIT"])
+def test_replay_suspension_checkpoint_type_matches_service_operation(history_type: str) -> None:
+    value = replay_evidence()
+    value["sdkRequests"][0]["updates"][0]["type"] = "CALLBACK"
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "pause")["type"] = history_type
+    errors = validate_evidence(value)
+    if history_type == "CALLBACK":
+        assert errors == [], errors
+    else:
+        assert any("needs an observed wait or callback checkpoint" in error for error in errors)
+
+
+def test_replay_needs_completed_user_code_not_only_durable_control_operations() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        for operation in operations:
+            if operation["id"] in ("done", "failed"):
+                operation["type"] = "CALLBACK"
+    value["replay"]["operationExecutions"] = [
+        item for item in value["replay"]["operationExecutions"] if item["operationId"] not in ("done", "failed")
+    ]
+    assert "INCOMPLETE: replay requires a completed user-code step before suspension" in validate_evidence(value)
+
+
+def test_replay_rejects_later_body_event_even_when_missing_from_execution_journal() -> None:
+    value = replay_evidence()
+    resume = value["attempts"][-1]
+    value["events"].append(event(resume, "body", 55, operationId="done"))
+    assert "ASSERTION: resume repeated completed user code" in validate_evidence(value)
+
+
+def test_replay_rejects_a_completed_snapshot_from_after_suspension() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "done")["endedAtMs"] = 60
+    assert "ASSERTION: replay.before contains an operation that completed after suspension" in validate_evidence(value)
+
+
+def test_deadline_rejects_admission_closed_before_a_tied_timeout() -> None:
+    value = deadline_evidence()
+    timeout = next(item for item in value["events"] if item["kind"] == "platform_timeout")
+    closed = next(item for item in value["events"] if item["kind"] == "admission_closed")
+    timeout["sequence"] = 10
+    closed.update(atMs=timeout["atMs"], sequence=9)
+    assert any("admissionMs" in error and "precedes the timeout" in error for error in validate_evidence(value))
+
+
+def test_role_attempt_ordinals_must_follow_admission_order() -> None:
+    value = evidence()
+    earlier = attempt("victim", start=1, end=5)
+    earlier.update(requestId="earlier-victim", executionArn="arn:earlier-victim", attempt=2)
+    value["attempts"].append(earlier)
+    refresh_histories(value)
+    record_owned_resources(value)
+    assert "PLACEMENT: attempt ordinals contradict the admission order for victim" in validate_evidence(value)
+
+
+def test_deadline_victim_must_be_its_executions_first_admission() -> None:
+    value = deadline_evidence()
+    victim = value["attempts"][0]
+    earlier = attempt("earlier", start=1, end=5)
+    earlier["executionArn"] = victim["executionArn"]
+    value["attempts"].append(earlier)
+    record_owned_resources(value)
+    assert "PLACEMENT: selectedRequests.victim is not the first invocation of its execution" in validate_evidence(value)
+
+
+def test_replay_rejects_late_body_that_retains_victim_ownership() -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "body", 60, operationId="done"))
+    assert "ASSERTION: resume repeated completed user code" in validate_evidence(value)
+
+
+def test_replay_rejects_body_after_recorded_operation_completion() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "done")["endedAtMs"] = 20
+    assert any("lacks observed user-code execution" in error for error in validate_evidence(value))
+
+
+def test_replay_rejects_retry_order_contradicted_by_body_events() -> None:
+    value = replay_evidence()
+    by_request = {item["requestId"]: item for item in value["attempts"]}
+    retries = value["replay"]["retry"]["attempts"]
+    for retry, at in zip(retries, (65, 55), strict=True):
+        value["events"].append(
+            event(by_request[retry["requestId"]], "body", at, operationId="retry", attemptId=retry["attemptId"])
+        )
+    assert "ASSERTION: retry attempt order contradicts timed user-code entries" in validate_evidence(value)
+
+
+@pytest.mark.parametrize("sequence", [None, 9, 11])
+def test_deadline_inflight_sequence_when_timestamp_ties(sequence: int | None) -> None:
+    value = deadline_evidence()
+    timeout = next(item for item in value["events"] if item["kind"] == "platform_timeout")
+    inflight = next(item for item in value["events"] if item["kind"] == "work_in_flight")
+    timeout["sequence"] = 10
+    inflight["atMs"] = timeout["atMs"]
+    if sequence is not None:
+        inflight["sequence"] = sequence
+    errors = validate_evidence(value)
+    if sequence is None:
+        assert errors == ["INCOMPLETE: same-time observations need sequence numbers to establish their order"]
+    elif sequence < timeout["sequence"]:
+        assert errors == [], errors
+    else:
+        assert "ASSERTION: controlled work was not in flight across the real deadline" in errors
+
+
+def test_retirement_only_task_completion_accepts_a_normalized_alias() -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "observed_task_start", 30, taskId="child", sourceKind="task_start"))
+    value["retirement"]["completions"] = [
+        event(victim, "observed_task_exit", 205, taskId="child", sourceKind="task_exit")
+    ]
+    assert validate_evidence(value) == []
+
+
+def test_replay_before_rejects_a_nonterminal_step_even_with_a_stored_error() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        operation = next(item for item in operations if item["id"] == "done")
+        operation.update(status="PENDING", error={"type": "not-terminal"})
+    assert any("replay.before must have a terminal operation status" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("completion_at", [205, 215])
+def test_independent_retirement_audits_cleanup_only_completion(completion_at: int) -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "io_start", 30, taskId="held"))
+    complete_retirement_events(value)
+    value["retirement"]["completions"] = [event(victim, "io_exit", completion_at, taskId="held", sequence=100)]
+    errors = validate_retirement_evidence(value)
+    if completion_at == 205:
+        assert errors == [], errors
+    else:
+        assert any("interval lies outside settlement" in error for error in errors)
+
+
+def test_replay_rejects_snapshot_omitting_known_completed_step() -> None:
+    value = replay_evidence()
+    step = {
+        "id": "omitted",
+        "name": "omitted",
+        "type": "STEP",
+        "status": "SUCCEEDED",
+        "parentId": None,
+        "endedAtMs": 30,
+        "result": None,
+    }
+    value["replay"]["after"].append(step)
+    value["histories"][0]["operations"].append(step)
+    assert (
+        "INCOMPLETE: replay.before omits an operation known to have completed before suspension"
+        in validate_evidence(value)
+    )
+
+
+def test_replay_ignores_service_start_timestamp_when_body_precedes_async_checkpoint() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "done").update(startedAtMs=25, endedAtMs=30)
+    assert validate_evidence(value) == []
+
+
+def test_replay_allows_completed_suspension_callback_in_resume_snapshot() -> None:
+    value = replay_evidence()
+    value["sdkRequests"][0]["updates"][0]["type"] = "CALLBACK"
+    callback = next(item for item in value["replay"]["after"] if item["id"] == "pause")
+    callback.update(type="CALLBACK", result=None)
+    observed = next(item for item in value["histories"][0]["operations"] if item["id"] == "pause")
+    observed.update(callback)
+    value["replay"]["before"].append(deepcopy(callback))
+    value["replay"]["sideEffects"].append({"operationId": "pause", "count": 0, "expectedCount": 0})
+    assert validate_evidence(value) == []
+
+
+def test_replay_unordered_body_tie_is_incomplete_without_asserting_sdk_failure() -> None:
+    value = replay_evidence()
+    next(item for item in value["events"] if item.get("operationId") == "done")["atMs"] = 35
+    errors = validate_evidence(value)
+    assert errors and all(error.startswith("INCOMPLETE:") for error in errors), errors
+
+
+def test_replay_rejects_unaccounted_timed_retry_body() -> None:
+    value = replay_evidence()
+    resume = value["attempts"][-1]
+    value["events"].append(event(resume, "body", 55, operationId="retry", attemptId="unlisted"))
+    assert "INCOMPLETE: observed retry body does not match a declared attempt" in validate_evidence(value)
+
+
+def test_replay_rejects_tied_native_admissions_when_selecting_original() -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    another = attempt("earlier", start=victim["startedAtMs"], end=25)
+    another["executionArn"] = victim["executionArn"]
+    value["attempts"].append(another)
+    record_owned_resources(value)
+    assert "INCOMPLETE: tied native admissions cannot establish the original replay invocation" in validate_evidence(
+        value
+    )
+
+
+def test_replay_requires_one_side_effect_count_per_operation() -> None:
+    value = replay_evidence()
+    value["replay"]["sideEffects"].append({"operationId": "done", "count": 2, "expectedCount": 2})
+    assert "INCOMPLETE: side-effect counts must be unique per operation" in validate_evidence(value)
+
+
+def test_retirement_accepts_an_observed_exit_for_a_rejected_call() -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    record = event(victim, "checkpoint_call", 28, callId="rejected", outcome="REJECTED")
+    value["events"].extend([record, event(victim, "checkpoint_exit", 29, callId="rejected")])
+    value["sdkRequests"].append({**record, "method": "CheckpointDurableExecution"})
+    complete_retirement_events(value)
+    assert validate_evidence(value) == []
+    assert validate_retirement_evidence(value) == []
+
+
+def test_final_retirement_requires_sequence_for_tied_io_interval() -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    value["events"].extend(
+        [
+            event(victim, "io_start", 30, taskId="tied"),
+            event(victim, "io_exit", 30, taskId="tied"),
+        ]
+    )
+    errors = validate_evidence(value, phase="final")
+    assert errors == ["INCOMPLETE: same-time observations need sequence numbers to establish their order"]
+
+
+def test_physical_audit_requires_sdk_request_to_corroborate_rejection() -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "checkpoint_call", 28, callId="uncorroborated", outcome="REJECTED"))
+    complete_retirement_events(value)
+    assert "INCOMPLETE: retirement lacks the unique checkpoint_call/checkpoint_exit completion pair" in (
+        validate_retirement_evidence(value)
+    )
+    value["sdkRequests"].append(
+        event(victim, "request", 28, method="CheckpointDurableExecution", callId="uncorroborated", outcome="REJECTED")
+    )
+    assert validate_retirement_evidence(value) == []
+
+
+def test_deadline_requires_cleanup_of_the_controlled_task() -> None:
+    value = deadline_evidence()
+    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
+    exited["taskId"] = "unrelated"
+    assert "ASSERTION: deadline task exit is not the controlled in-flight task" in validate_evidence(value)
+
+
+def test_single_timed_retry_body_cannot_follow_recorded_success() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "retry")["endedAtMs"] = 55
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "body", 60, operationId="retry", attemptId="retry-1"))
+    assert "ASSERTION: timed retry body occurred after the recorded operation completion" in validate_evidence(value)
+
+
+@pytest.mark.parametrize("kind", ["task_start", "observed_task_start"])
+def test_deadline_rejects_controlled_task_start_after_inflight_observation(kind: str) -> None:
+    value = deadline_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, kind, 33, taskId="root", sourceKind="task_start"))
+    assert "ASSERTION: controlled task started after it was observed in flight" in validate_evidence(value)
+
+
+def test_untimed_retry_cannot_complete_before_its_owner_is_admitted() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "retry")["endedAtMs"] = 45
+    assert "ASSERTION: retry owner was admitted after the recorded operation completion" in validate_evidence(value)
+
+
+@pytest.mark.parametrize("start_sequence", [None, 9, 11])
+def test_deadline_orders_task_start_tied_with_inflight_observation(start_sequence: int | None) -> None:
+    value = deadline_evidence()
+    victim = value["attempts"][0]
+    inflight = next(item for item in value["events"] if item["kind"] == "work_in_flight")
+    inflight["sequence"] = 10
+    start = event(victim, "task_start", inflight["atMs"], taskId="root")
+    if start_sequence is not None:
+        start["sequence"] = start_sequence
+    value["events"].append(start)
+    errors = validate_evidence(value)
+    if start_sequence is None:
+        assert errors == ["INCOMPLETE: same-time observations need sequence numbers to establish their order"]
+    elif start_sequence < 10:
+        assert not errors
+    else:
+        assert "ASSERTION: controlled task started after it was observed in flight" in errors
+
+
+def test_timed_retry_cannot_precede_an_untimed_predecessors_admission() -> None:
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    resume = value["attempts"][-1]
+    late = attempt("extra", start=90, end=100)
+    late["executionArn"] = victim["executionArn"]
+    value["attempts"].append(late)
+    record_owned_resources(value)
+    value["replay"]["retry"]["attempts"][0]["requestId"] = late["requestId"]
+    next(item for item in value["replay"]["operationExecutions"] if item.get("attemptId") == "retry-1")["requestId"] = (
+        late["requestId"]
+    )
+    value["events"].append(event(resume, "body", 60, operationId="retry", attemptId="retry-2"))
+    assert "ASSERTION: retry body precedes a prior attempt's admission" in validate_evidence(value)
+
+
+def test_same_process_recovery_requires_platform_interval() -> None:
+    value = recovery_evidence("python")
+    del value["attempts"][0]["endedAtMsSource"]
+    assert (
+        "INCOMPLETE: same-process Python recovery requires platform native completion and admission"
+        in validate_evidence(value)
+    )
+
+
+def test_integral_float_retry_body_attempt_uses_normalized_identity() -> None:
+    value = replay_evidence()
+    resume = value["attempts"][-1]
+    identity = f"{resume['requestId']}:2"
+    value["replay"]["retry"]["attempts"][-1]["attemptId"] = identity
+    value["replay"]["operationExecutions"][-1]["attemptId"] = identity
+    value["events"].append(event(resume, "body", 60, operationId="retry", attempt=2.0))
+    assert validate_evidence(value) == []
+
+
+def test_recovery_requires_unambiguous_original_admission() -> None:
+    value = recovery_evidence()
+    recovery = value["attempts"][-1]
+    extra = attempt("extra", start=recovery["startedAtMs"], end=recovery["endedAtMs"])
+    extra["executionArn"] = recovery["executionArn"]
+    value["attempts"].append(extra)
+    record_owned_resources(value)
+    assert "INCOMPLETE: tied native admissions cannot establish the original recovery invocation" in validate_evidence(
+        value
+    )
+
+
+def test_retry_body_cannot_match_a_synthetic_none_identifier() -> None:
+    value = replay_evidence()
+    resume = value["attempts"][-1]
+    identity = f"{resume['requestId']}:None"
+    value["replay"]["retry"]["attempts"][-1]["attemptId"] = identity
+    value["replay"]["operationExecutions"][-1]["attemptId"] = identity
+    value["events"].append(event(resume, "body", 60, operationId="retry"))
+    assert "INCOMPLETE: observed retry body does not match a declared attempt" in validate_evidence(value)
+
+
+def test_deadline_rejects_an_extra_aliased_exit_for_controlled_task() -> None:
+    value = deadline_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "observed_task_exit", 28, taskId="root", sourceKind="task_exit"))
+    for phase in ("observations", "final"):
+        assert "INCOMPLETE: deadline controlled task must have exactly one recorded exit" in validate_evidence(
+            value, phase=phase
+        )
+
+
+def test_same_json_compares_exact_numbers_across_decoders() -> None:
+    assert same_json(Decimal("0.500000000000000000000"), 0.5)
+    assert not same_json(Decimal("0.500000000000000000001"), 0.5)
+    assert not same_json(Decimal(1), True)
+
+
+@pytest.mark.parametrize("role", ["victim", "peer", "peer2"])
+def test_recovery_cohort_requires_unambiguous_original_admission(role: str) -> None:
+    value = recovery_evidence(native_concurrency=3)
+    original = next(item for item in value["attempts"] if item["role"] == role)
+    extra = attempt("extra", start=original["startedAtMs"], end=original["endedAtMs"])
+    extra["executionArn"] = original["executionArn"]
+    value["attempts"].append(extra)
+    record_owned_resources(value)
+    assert f"INCOMPLETE: tied native admissions cannot establish the original {role} invocation" in validate_evidence(
+        value
+    )
+
+
+@pytest.mark.parametrize("last_sequence", [8, None, 12])
+def test_retry_sequences_order_nonadjacent_bodies_on_the_same_request(last_sequence: int | None) -> None:
+    value = replay_evidence()
+    victim, resume = value["attempts"][0], value["attempts"][-1]
+    retries = value["replay"]["retry"]["attempts"]
+    retries.insert(0, {"requestId": resume["requestId"], "attemptId": "resume-first", "outcome": "FAILED"})
+    value["replay"]["operationExecutions"].append({**retries[0], "operationId": "retry"})
+    for owner, retry, sequence in zip((resume, victim, resume), retries, (10, 11, last_sequence), strict=True):
+        observation = event(owner, "body", 60, operationId="retry", attemptId=retry["attemptId"])
+        if sequence is not None:
+            observation["sequence"] = sequence
+        value["events"].append(observation)
+    errors = validate_evidence(value)
+    if last_sequence is None:
+        assert "INCOMPLETE: same-time observations need sequence numbers to establish their order" in errors
+    elif last_sequence < 10:
+        assert "ASSERTION: retry attempt order contradicts timed user-code entries" in errors
+    else:
+        assert not errors
