@@ -429,6 +429,38 @@ def test_dispatch_after_wrapper_return_is_rejected() -> None:
     assert any("after admission closed" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    "keep_peer_return",
+    [
+        pytest.param(True, id="with-peer-return"),
+        pytest.param(
+            False,
+            id="missing-peer-return",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=pytest.fail.Exception,
+                reason="PR #193: a peer dispatch can pass validation when its wrapper return is missing",
+            ),
+        ),
+    ],
+)
+def test_late_peer_dispatch(phase: Literal["observations", "final"], keep_peer_return: bool) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    if not keep_peer_return:
+        value["events"].remove(
+            next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+        )
+    value["sdkRequests"].append(event(peer, "request", 100, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+
+    errors = validate_evidence(value, phase=phase)
+    if keep_peer_return:
+        assert any(peer["requestId"] in error and "after admission closed" in error for error in errors), errors
+    elif errors == []:
+        pytest.fail("validate_evidence returned [] for the 100 ms peer dispatch without a recorded wrapper return")
+
+
 def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
     value = evidence(2)
     value["sdkRequests"] = []
