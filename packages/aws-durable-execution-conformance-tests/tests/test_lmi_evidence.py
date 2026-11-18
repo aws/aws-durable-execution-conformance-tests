@@ -871,7 +871,7 @@ def test_warm_reuse_orders_late_activity_and_task_exit_at_the_same_timestamp(
     [
         ("late_activity", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
         ("task_exit", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
-        ("task_exit", {"sequence": 10}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("task_exit", {"sequence": 10.0}, "same-timestamp late_activity and task_exit need distinct sequences"),
         ("late_activity", {"sequence": True}, "event.sequence must be a non-negative integer"),
         ("task_exit", {"sequence": None}, "event.sequence must be a non-negative integer"),
     ],
@@ -888,9 +888,14 @@ def test_warm_reuse_requires_unambiguous_sequences_for_same_timestamp_events(
 
 
 @pytest.mark.parametrize("exit_at", [59, 61])
-def test_warm_reuse_uses_distinct_timestamps_without_sequences(exit_at: int) -> None:
+@pytest.mark.parametrize("with_sequences", [False, True], ids=["no-sequences", "conflicting-sequences"])
+def test_warm_reuse_prefers_distinct_timestamps(exit_at: int, with_sequences: bool) -> None:
     value = warm_evidence()
-    next(item for item in value["events"] if item["kind"] == "task_exit")["atMs"] = exit_at
+    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
+    late = next(item for item in value["events"] if item["kind"] == "late_activity")
+    exited["atMs"] = exit_at
+    if with_sequences:
+        exited["sequence"], late["sequence"] = (11, 10) if exit_at == 59 else (10, 11)
 
     errors = validate_evidence(value)
 
