@@ -678,12 +678,29 @@ class _Evidence:
         ):
             self.error("warm invocation was not sequential reuse", "PLACEMENT")
         late = self.event(victim, "late_activity")
-        if late.get("observedDuringRequestId") != warm.get("requestId") or not warm.get("startedAtMs", 0) <= late.get(
-            "atMs", -1
-        ) <= warm.get("endedAtMs", 0):
+        if late and (
+            late.get("observedDuringRequestId") != warm.get("requestId")
+            or not warm.get("startedAtMs", 0) <= late.get("atMs", -1) <= warm.get("endedAtMs", 0)
+        ):
             self.error("late activity was not observed during the selected warm invocation", "ASSERTION")
         exited = self.event(victim, "task_exit")
-        if exited.get("atMs", 0) < late.get("atMs", 0):
+        if not late or not exited:
+            return
+        late_at, exit_at = late["atMs"], exited["atMs"]
+        late_after_exit = late_at > exit_at
+        if late_at == exit_at:
+            late_sequence, exit_sequence = late.get("sequence"), exited.get("sequence")
+            if (
+                not is_json_integer(late_sequence)
+                or not is_json_integer(exit_sequence)
+                or late_sequence < 0
+                or exit_sequence < 0
+                or late_sequence == exit_sequence
+            ):
+                self.error("same-timestamp late_activity and task_exit need distinct non-negative integer sequences")
+                return
+            late_after_exit = late_sequence > exit_sequence
+        if late_after_exit:
             self.error("late activity continued after the recorded task exit", "ASSERTION")
 
     def last_activity(self, request_id: Any) -> float:
