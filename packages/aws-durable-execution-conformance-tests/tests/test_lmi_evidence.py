@@ -832,19 +832,73 @@ def test_invocation_cannot_settle_before_its_recorded_activity(settled: int, rej
     assert any("before its recorded activity" in error for error in errors) is rejected, errors
 
 
-@pytest.mark.parametrize(("released", "rejected"), [(50, False), (40, True)])
-def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(released: int, rejected: bool) -> None:
-    # Victim exit at 35 and recovery at 45 are the asserted boundaries. A
-    # healthy peer that stays occupied until 100 must not move them.
-    value = recovery_evidence()
-    peer = next(item for item in value["attempts"] if item["role"] == "peer")
-    value["events"].append(event(peer, "task_exit", 100))
+@pytest.fixture
+def held_fault_recovery() -> dict[str, Any]:
+    value = recovery_evidence("python")
+    victim, peer, recovery = value["attempts"]
+    inflight = next(item for item in value["events"] if item["kind"] == "work_in_flight")
+    inflight["gateId"] = value["faultsCreated"][0]["id"]
+    # The Python fixture stops waiting on its own deadline. It does not observe
+    # an SDK cancellation signal. Platform timeout and task exit are separate records.
+    value["events"].extend(
+        [
+            event(victim, "cooperative_io_cancelled", 34, source="runtime-deadline"),
+            event(recovery, "wrapper_return", recovery["endedAtMs"], outcome="SUCCEEDED"),
+            event(peer, "task_exit", peer["endedAtMs"]),
+        ]
+    )
+    return value
+
+
+@pytest.mark.parametrize("missing", [None, "platform_timeout", "task_exit"])
+def test_held_fault_recovery_with_a_fixture_deadline(held_fault_recovery: dict[str, Any], missing: str | None) -> None:
+    value = held_fault_recovery
+    victim = value["selectedRequests"]["victim"]
+    if missing is not None:
+        value["events"] = [e for e in value["events"] if (e["requestId"], e["kind"]) != (victim, missing)]
+    errors = validate_evidence(value)
+    if missing is None:
+        assert errors == []  # The victim stopped; its exit need not be attributed to SDK cancellation.
+    else:
+        assert any(missing in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    ("released", "rejected"),
+    [
+        pytest.param(40, True, id="before-worker-recovered"),
+        pytest.param(
+            50,
+            True,
+            id="before-recovery-succeeds",
+            marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="Only the worker marker is checked"),
+        ),
+        pytest.param(70, False, id="after-recovery-succeeds"),
+    ],
+)
+def test_held_fault_recovery_release_order(
+    held_fault_recovery: dict[str, Any], phase: Any, released: int, rejected: bool
+) -> None:
+    value = held_fault_recovery
+    # Victim exit: 35, worker recovered: 45, recovery returns successfully: 60, peer exits: 100.
     value["faultsCreated"][0]["releasedAtMs"] = released
     value["retirement"]["faults"][0]["releasedAtMs"] = released
-    errors = validate_evidence(value)
-    assert any("retroactively" in error or "fault release cannot satisfy" in error for error in errors) is rejected, (
-        errors
-    )
+    errors = validate_evidence(value, phase=phase)
+    if rejected:
+        assert any("release" in error.lower() for error in errors), errors
+    else:
+        assert errors == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="The victim's gate is not checked against the inventory")
+def test_held_fault_recovery_requires_the_victims_fault(held_fault_recovery: dict[str, Any], phase: Any) -> None:
+    value = held_fault_recovery
+    # The inventoried fault stays held, but the victim was waiting at a different gate.
+    next(e for e in value["events"] if e["kind"] == "work_in_flight")["gateId"] = "unrecorded-victim-gate"
+    errors = validate_evidence(value, phase=phase)
+    assert any("fault" in error.lower() or "gate" in error.lower() for error in errors), errors
 
 
 def test_expected_null_does_not_match_a_missing_history_field() -> None:
