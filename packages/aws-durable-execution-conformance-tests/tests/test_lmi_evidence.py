@@ -605,6 +605,18 @@ def test_disposal_orders_probes_sharing_the_wrapper_timestamp(
         assert any(diagnostic in error for error in errors), errors
 
 
+@pytest.mark.parametrize("closure_first", [True, False])
+@pytest.mark.parametrize("probe_kind", ["checkpoint", "operation"])
+def test_disposal_validates_tied_closure_even_after_return(closure_first: bool, probe_kind: str) -> None:
+    value = evidence(2)
+    probe = next(item for item in value["events"] if item.get("probe") == probe_kind)
+    probe["sequence"] = -1
+    closure = event(value["attempts"][0], "admission_closed", probe["atMs"], sequence=12)
+    value["events"].insert(0 if closure_first else len(value["events"]), closure)
+    errors = validate_evidence(value)
+    assert any("sequence" in error for error in errors), errors
+
+
 @pytest.mark.parametrize("factory", [deadline_evidence, recovery_evidence])
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("probe", ["operation", "checkpoint"])

@@ -441,9 +441,12 @@ class _Evidence:
                 ):
                     probe, outcome = event.get("probe"), event.get("outcome")
                     if wrapper is not None:
-                        if probe == "operation" and self.probe_at_or_after(event, wrapper):
+                        # Check every tied closure even if an earlier one already closed admission.
+                        # Short-circuiting here would hide malformed evidence based on its array order.
+                        following = [boundary for boundary in closures if self.probe_at_or_after(event, boundary)]
+                        if probe == "operation" and wrapper in following:
                             continue
-                        if not any(self.probe_at_or_after(event, boundary) for boundary in closures):
+                        if not following:
                             continue  # The probe was ordered before every closure in the same millisecond.
                     if outcome != "REJECTED":
                         self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
