@@ -382,9 +382,10 @@ class _Evidence:
             self.error("histories and expectedHistories must cover every launched execution exactly")
 
     def no_late_dispatch(self) -> None:
+        disposal = self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
         for request_id in self.attempts:
             closures = [
-                event["atMs"]
+                event
                 for event in self.events
                 if event.get("requestId") == request_id
                 and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
@@ -392,7 +393,12 @@ class _Evidence:
             ]
             if not closures:
                 continue
-            closed = min(closures)
+            closed = min(event["atMs"] for event in closures)
+            returned_at = None
+            if disposal and request_id == self.selected.get("victim", {}).get("requestId"):
+                exits = [event for event in closures if event["kind"] != "admission_closed"]
+                if len(exits) == 1 and exits[0]["kind"] == "wrapper_return":
+                    returned_at = exits[0]["atMs"]
             for request in self.value.get("sdkRequests", []):
                 if (
                     isinstance(request, Mapping)
@@ -408,9 +414,13 @@ class _Evidence:
                     and event.get("kind") == "admission_probe"
                     and isinstance(event.get("atMs"), (float, int))
                     and event["atMs"] >= closed
-                    and event.get("outcome") != "REJECTED"
                 ):
-                    self.error(f"closed invocation admitted a {event.get('probe')} probe", "ASSERTION")
+                    probe, outcome = event.get("probe"), event.get("outcome")
+                    if returned_at is not None and event["atMs"] >= returned_at and probe == "operation":
+                        if outcome not in ("ACCEPTED", "REJECTED"):
+                            self.error("diagnostic operation probe outcome must be ACCEPTED or REJECTED")
+                    elif outcome != "REJECTED":
+                        self.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
 
     def overlap(self) -> None:
         if not self.require_roles("victim", "peer"):
@@ -450,15 +460,14 @@ class _Evidence:
             self.error(f"disposal requires the selected victim outcome {expected_outcome}", "ASSERTION")
         if root.get("atMs", 0) > wrapper.get("atMs", 0):
             self.error("wrapper return precedes root completion", "ASSERTION")
-        self.rejected_probe(victim, wrapper.get("atMs", 0))
+        self.require_probes(victim, wrapper.get("atMs", 0), "checkpoint")
         exited = self.event(victim, "task_exit")
         if exited.get("atMs", -1) < root.get("atMs", 0):
             self.error("task exit preceded root completion in the disposal fixture", "ASSERTION")
 
-    def rejected_probe(self, victim: Mapping[str, Any], closed: float) -> None:
-        # Common behavior validation checks outcomes from the first closure.
-        # Coverage still needs both probes after this scenario's boundary.
-        for probe in ("operation", "checkpoint"):
+    def require_probes(self, victim: Mapping[str, Any], closed: float, *probes: str) -> None:
+        # Outcomes are checked separately; only probes at or after this scenario's boundary count as coverage.
+        for probe in probes:
             if not any(
                 event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
@@ -500,7 +509,7 @@ class _Evidence:
                 self.error(f"deadline {field} exceeds the declared fixture budget", "ASSERTION")
         if check_grace:
             self.observation_grace(time)
-        self.rejected_probe(victim, closed.get("atMs", 0))
+        self.require_probes(victim, closed.get("atMs", 0), "operation", "checkpoint")
         for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
             release = fault.get("releasedAtMs")
             if isinstance(release, (int, float)) and release <= exited.get("atMs", 0):

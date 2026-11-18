@@ -77,13 +77,20 @@ or `REJECTED`). No dispatch is allowed at or after that invocation's first
 `wrapper_return`, `wrapper_raise`, or `admission_closed`. A raised wrapper exit
 closes admission for peers, resumes, retries, and warm requests too. The disposal
 fixtures specifically require a `wrapper_return`, including their normal root
-failure case; a wrapper that itself throws is a different boundary. Admission probes are separate
-`admission_probe` events with `probe: operation | checkpoint` and `outcome:
-REJECTED`. Every probe at or after the earliest recorded closure must be rejected,
-for every invocation and scenario, even when a later closure is also recorded.
-Both probe kinds must still be
-observed after the scenario's required boundary: `wrapper_return` for disposal,
-or `admission_closed` for deadline/recovery.
+failure case; a wrapper that itself throws is a different boundary. Admission
+probes are separate `admission_probe` events with `probe: operation | checkpoint`
+and a recorded `outcome`. For the selected `victim` in `lmi-lifecycle-2` or
+`lmi-lifecycle-7`, a `checkpoint` probe with outcome `REJECTED` is required at
+or after actual wrapper return. An `operation` probe at that boundary is
+optional and diagnostic; its outcome may be `ACCEPTED` or `REJECTED`, and it
+must meet the same ownership and observation rules as other events. This
+exception does not permit late SDK dispatch or require forced cancellation
+of previously dispatched work.
+
+All other probes at or after their invocation's earliest recorded closure must
+be rejected. In particular, an earlier `admission_closed` or `wrapper_raise`
+does not gain an exception from a later boundary. Deadline and recovery
+fixtures still require both rejected probes at or after `admission_closed`.
 
 `histories` contains every launched execution's service history, with
 `executionArn`, `ownerCaseId`, `status`, `result` or `error`, and `operations`.
@@ -132,12 +139,12 @@ watermarks cover the full window. Independent retirement applies the same rule.
 | ID | Required observations |
 | --- | --- |
 | `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM process, or distinct Python processes. Histories and fixture expectations preserve attribution. |
-| `lmi-lifecycle-2` | Normal return: `victim` and `root_completed` both have outcome `SUCCEEDED`, followed by `wrapper_return`, both rejected admission probes, and separate `task_exit`. |
+| `lmi-lifecycle-2` | Normal return: `victim` and `root_completed` both have outcome `SUCCEEDED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
 | `lmi-lifecycle-3` | `victim` with `work_in_flight`, actual `platform_timeout` (`source: platform`) satisfying `startedAtMs + profile.timeoutMs <= platform_timeout.atMs <= endedAtMs`, `admission_closed`, both rejected probes, and cooperative `task_exit` after timeout. Closure, probes and cleanup may follow native completion. `budgets.admissionMs` and `budgets.cleanupMs` are agreed fixture limits, not product SLAs. |
 | `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. Recovery must use an execution distinct from the victim and every selected peer. Python recovery must also use a process distinct from every held peer; reuse of the victim's process requires recovery admission at or after the victim's native invocation `endedAtMs`, regardless of worker naming or policy. Background task exit remains a separate boundary. The recovery request must succeed. |
 | `lmi-lifecycle-5` | Original `victim` returns PENDING with `pending` and `wrapper_return`; selected `resume` starts later against the same execution. `replay.before` stores completed success and failure operations. `replay.after` preserves each completed operation unchanged by operation ID and matches collected final history; completed operations need not form a positional prefix. `replay.operationExecutions` records actual user-code entries by request/operation (and `attemptId` for retries), proving completed code did not run again. `replay.retry` identifies an incomplete operation and at least two distinct observed attempts, first failed and last successful. `replay.sideEffects` records `operationId`, actual `count`, and fixture-defined `expectedCount` for completed operations and retries. |
 | `lmi-lifecycle-6` | Original `victim` and sequential `warm` request reuse the same environment, worker, and process. The warm request starts after the victim's `wrapper_return` and at or after its native invocation `endedAtMs`. Victim-owned activity may outlive that native interval: `late_activity` retains victim ownership and identifies the warm request in `observedDuringRequestId`. Separate `task_exit` follows the late activity; no stale SDK dispatch is permitted. |
-| `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, both rejected admission probes, and separate `task_exit`. |
+| `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run and case identifiers isolate evidence and controls;
