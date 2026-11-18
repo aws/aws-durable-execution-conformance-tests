@@ -436,12 +436,6 @@ def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
     assert any("does not cover" in error for error in validate_evidence(value))
 
 
-def test_admission_rejection_requires_actual_probes() -> None:
-    value = evidence(2)
-    value["events"] = [item for item in value["events"] if item["kind"] != "admission_probe"]
-    assert any("admission probe" in error for error in validate_evidence(value))
-
-
 @pytest.mark.parametrize("requirement", [2, 7])
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("probe", ["operation", "checkpoint"])
@@ -488,18 +482,147 @@ def test_deadline_checks_probes_from_an_earlier_wrapper_return(
     )
 
 
-@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("outcome", [None, "ACCEPTED", "REJECTED", "UNKNOWN"])
+def test_disposal_operation_probe_is_optional_diagnostic(factory: Any, phase: Any, outcome: str | None) -> None:
+    value = factory()
+    value["events"] = [item for item in value["events"] if item.get("probe") != "operation"]
+    if outcome is not None:
+        value["events"].append(event(value["attempts"][0], "admission_probe", 40, probe="operation", outcome=outcome))
+    errors = validate_evidence(value, phase=phase)
+    if outcome == "UNKNOWN":
+        assert any("operation probe outcome" in error for error in errors), errors
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    ("change", "diagnostic"),
+    [
+        ("early-checkpoint", "missing post-closure checkpoint admission probe"),
+        ("accepted-checkpoint", "closed invocation admitted a checkpoint probe"),
+        ("dispatch", "dispatched SDK work after admission closed"),
+        ("ownership", "different invocation"),
+        ("missing-wrapper", "wrapper_return"),
+        ("peer-operation", "closed invocation admitted a operation probe"),
+        ("raised-wrapper", "closed invocation admitted a operation probe"),
+    ],
+)
+def test_disposal_diagnostic_does_not_replace_closure_evidence(
+    factory: Any, phase: Any, change: str, diagnostic: str
+) -> None:
+    value = factory()
+    victim, peer = value["attempts"]
+    operation = next(item for item in value["events"] if item.get("probe") == "operation")
+    checkpoint = next(item for item in value["events"] if item.get("probe") == "checkpoint")
+    operation["outcome"] = "ACCEPTED"
+    if change == "early-checkpoint":
+        value["events"].append(event(victim, "admission_closed", 36))
+        checkpoint["atMs"] = 37
+    elif change == "accepted-checkpoint":
+        checkpoint["outcome"] = "ACCEPTED"
+    elif change == "dispatch":
+        value["sdkRequests"][0]["atMs"] = 45
+    elif change == "ownership":
+        operation["ownerRequestId"] = peer["requestId"]
+    elif change == "peer-operation":
+        value["events"].append(event(peer, "admission_probe", 45, probe="operation", outcome="ACCEPTED"))
+    elif change == "raised-wrapper":
+        wrapper = next(
+            e for e in value["events"] if e["requestId"] == victim["requestId"] and e["kind"] == "wrapper_return"
+        )
+        wrapper["kind"] = "wrapper_raise"
+    else:
+        value["events"] = [
+            item
+            for item in value["events"]
+            if item["kind"] != "wrapper_return" or item["requestId"] != victim["requestId"]
+        ]
+    errors = validate_evidence(value, phase=phase)
+    assert any(diagnostic in error for error in errors), errors
+
+
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_disposal_rejects_mixed_wrapper_exits_without_operation_probe(factory: Any, phase: Any) -> None:
+    value = factory()
+    victim = value["attempts"][0]
+    value["events"] = [item for item in value["events"] if item.get("probe") != "operation"]
+    value["events"].append(event(victim, "wrapper_raise", 39))
+
+    errors = validate_evidence(value, phase=phase)
+    assert any("wrapper exit" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("factory", [lambda: evidence(2), failure_evidence])
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("probe", ["operation", "checkpoint"])
-def test_disposal_still_requires_probes_after_wrapper_return(
-    requirement: int, phase: Literal["observations", "final"], probe: str
+@pytest.mark.parametrize(
+    ("wrapper_sequence", "probe_sequence", "position"),
+    [
+        (10, 9, "before"),
+        (10, 11, "after"),
+        (None, None, "after"),
+        (10, None, "after"),
+        (None, 9, "after"),
+        (10, 10, "ambiguous"),
+        (10, "9", "ambiguous"),
+        (10, -1, "ambiguous"),
+    ],
+)
+def test_disposal_orders_probes_sharing_the_wrapper_timestamp(
+    factory: Any, phase: Any, probe: str, wrapper_sequence: Any, probe_sequence: Any, position: str
 ) -> None:
-    value = evidence(2) if requirement == 2 else failure_evidence()
+    value = factory()
     victim = value["attempts"][0]
-    value["events"] = [item for item in value["events"] if item.get("probe") != probe]
-    value["events"].extend(
-        [event(victim, "admission_closed", 36), event(victim, "admission_probe", 37, probe=probe, outcome="REJECTED")]
+    wrapper = next(
+        item
+        for item in value["events"]
+        if item["requestId"] == victim["requestId"] and item["kind"] == "wrapper_return"
     )
+    sample = next(item for item in value["events"] if item.get("probe") == probe)
+    sample.update(atMs=40, outcome="ACCEPTED" if probe == "operation" else "REJECTED")
+    value["events"].append(event(victim, "admission_closed", 36))
+    if wrapper_sequence is not None:
+        wrapper["sequence"] = wrapper_sequence
+    if probe_sequence is not None:
+        sample["sequence"] = probe_sequence
+
+    errors = validate_evidence(value, phase=phase)
+    if position == "ambiguous":
+        assert any("order" in error or "sequence" in error for error in errors), errors
+    elif position == "after":
+        assert errors == [], errors
+    else:
+        diagnostic = (
+            "closed invocation admitted a operation probe"
+            if probe == "operation"
+            else "missing post-closure checkpoint admission probe"
+        )
+        assert any(diagnostic in error for error in errors), errors
+
+
+@pytest.mark.parametrize("closure_first", [True, False])
+@pytest.mark.parametrize("probe_kind", ["checkpoint", "operation"])
+def test_disposal_validates_tied_closure_even_after_return(closure_first: bool, probe_kind: str) -> None:
+    value = evidence(2)
+    probe = next(item for item in value["events"] if item.get("probe") == probe_kind)
+    probe["sequence"] = -1
+    closure = event(value["attempts"][0], "admission_closed", probe["atMs"], sequence=12)
+    value["events"].insert(0 if closure_first else len(value["events"]), closure)
+    errors = validate_evidence(value)
+    assert any("sequence" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("factory", [deadline_evidence, recovery_evidence])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("probe", ["operation", "checkpoint"])
+def test_deadline_and_recovery_require_both_probes(factory: Any, phase: Any, probe: str) -> None:
+    value = factory()
+    value["events"] = [item for item in value["events"] if item.get("probe") != probe]
     errors = validate_evidence(value, phase=phase)
     assert any(f"missing post-closure {probe} admission probe" in error for error in errors), errors
 

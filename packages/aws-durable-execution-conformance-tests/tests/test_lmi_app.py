@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
+import asyncio
 import json
 import re
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
 from runpy import run_path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -17,6 +19,7 @@ import pytest
 from aws_durable_execution_conformance_tests.lmi.app import (
     build_report,
     evidence_results,
+    live_results,
     load_manifest,
     run,
 )
@@ -205,6 +208,11 @@ def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
         lambda plan: plan["scenarios"].append(plan["scenarios"][0]),
         lambda plan: plan["scenarios"][0].update(requirement_id="not-an-id"),
         lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
+        lambda plan: plan["scenarios"][0].update(slots=1),
+        lambda plan: plan["scenarios"][0].update(roles=["victim"]),
+        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-4").update(
+            exclusive=False
+        ),
     ],
 )
 def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
@@ -214,6 +222,12 @@ def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
@@ -370,6 +384,87 @@ def test_normal_failure_cannot_reuse_success_evidence():
     )
 
 
+@pytest.mark.parametrize(
+    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error"]
+)
+def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
+    import asyncio
+    import sys
+    from copy import deepcopy
+    from pathlib import Path
+    from runpy import run_path
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"]()
+    if failure == "missing-evidence":
+        value.pop("collection")
+        value.pop("retirement")
+    elif failure == "collectionErrors":
+        value["collectionErrors"] = ["SDK request source collection failed"]
+    elif failure is not None:
+        value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
+    finished = []
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    plan["scenarios"] = [plan["scenarios"][0]]
+    scenario = plan["scenarios"][0]
+    scenario["case_id"] = value["caseId"]
+    profile = plan["profiles"][1]
+    profile.update(
+        resource_id=value["profile"]["functionArn"],
+        artifact_id=value["artifact"]["sdk"],
+        configuration_id=value["profile"]["configurationDigest"],
+    )
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            finished.append(quiescent)
+
+        async def start(self, context):
+            assert context.scenario.slots == 2
+            assert context.scenario.roles == ["victim", "peer"]
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+                # This is where a real adapter sends the request. The audit is already durable.
+                assert attempt["requestId"] in (tmp_path / "attempts.jsonl").read_text()
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            if "retirement" in value:
+                context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda manifest: Adapter())}):
+        results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    expected_status = "PASSED" if failure is None else "FAILED"
+    assert results[0]["status"] == expected_status, results
+    assert finished == [failure is None]
+    if failure is not None:
+        assert any("retirement" in error for error in results[0]["errors"])
+    if failure in {"collectionErrors", "observation_error", "control_error"}:
+        assert any(failure in error for error in results[0]["errors"])
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    assert audit[-1]["status"] == expected_status
+    assert len(audit[-1]["attempts"]) == 2
+
+
 def test_output_reuse_preserves_previous_run(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest()))
@@ -446,6 +541,11 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
@@ -482,3 +582,58 @@ def test_offline_cli_final_validation_rejects_observed_fault_release_after_retir
     assert result["errors"] == (
         ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
     )
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("source", ["matching", "evidence", "factory", "scenario"])
+def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
+    plan, value = timed_plan(requirement)
+    if source != "matching":
+        # Keep every declared budget name so the admitted snapshot stays valid
+        # and only its values disagree with the evidence.
+        budgets = plan["scenarios"][0]["behavior_budgets"]
+        plan["scenarios"][0]["behavior_budgets"] = {name: 0.5 for name in budgets}
+    original = deepcopy(plan)
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            pass
+
+        async def start(self, context):
+            if source == "scenario":
+                context.scenario.behavior_budgets.update(value["budgets"])
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(received):
+        if source == "factory":
+            received["scenarios"][0]["behavior_budgets"].update(value["budgets"])
+        return Adapter()
+
+    with patch.dict("sys.modules", {"fixture": SimpleNamespace(create=factory)}):
+        result = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))[0]
+    assert plan == original
+    if source == "matching":
+        assert result["status"] == "PASSED", result
+    else:
+        assert result["status"] != "PASSED", result
+        assert any("behavior budgets" in error for error in result["errors"])
