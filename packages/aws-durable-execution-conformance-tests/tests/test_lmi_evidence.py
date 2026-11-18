@@ -4,7 +4,7 @@
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -373,6 +373,58 @@ def test_admission_rejection_requires_actual_probes() -> None:
     value = evidence(2)
     value["events"] = [item for item in value["events"] if item["kind"] != "admission_probe"]
     assert any("admission probe" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("operation", [None, "ACCEPTED", "REJECTED"], ids=["omitted", "accepted", "rejected"])
+def test_disposal_operation_probe_is_diagnostic(
+    requirement: int, phase: Literal["observations", "final"], operation: str | None
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    probe = next(item for item in value["events"] if item.get("probe") == "operation")
+    if operation is None:
+        value["events"].remove(probe)
+    else:
+        probe["outcome"] = operation
+
+    findings = validate_evidence(value, phase=phase)
+    # Only the two known contract differences are expected failures in this draft.
+    if operation is None and findings == ["INCOMPLETE: missing post-closure operation admission probe"]:
+        pytest.xfail(findings[0])
+    if operation == "ACCEPTED" and findings == ["ASSERTION: closed invocation admitted a operation probe"]:
+        pytest.xfail(findings[0])
+    assert findings == []
+
+
+@pytest.mark.parametrize("requirement", [2, 7])
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("omitted", "missing post-closure checkpoint admission probe"),
+        ("accepted", "closed invocation admitted a checkpoint probe"),
+        ("dispatched", "dispatched SDK work after admission closed"),
+    ],
+)
+def test_disposal_checkpoint_remains_mandatory(
+    requirement: int, phase: Literal["observations", "final"], change: str, expected: str
+) -> None:
+    value = evidence(2) if requirement == 2 else failure_evidence()
+    probe = next(item for item in value["events"] if item.get("probe") == "checkpoint")
+    if change == "omitted":
+        value["events"].remove(probe)
+    elif change == "accepted":
+        probe["outcome"] = "ACCEPTED"
+    else:
+        # A rejected checkpoint probe cannot excuse a separate send at wrapper return.
+        wrapper = next(
+            e for e in value["events"] if e["kind"] == "wrapper_return" and e["requestId"] == probe["requestId"]
+        )
+        value["sdkRequests"].append(
+            event(wrapper, "request", wrapper["atMs"], method="CheckpointDurableExecution", outcome="DISPATCHED")
+        )
+    assert any(expected in finding for finding in validate_evidence(value, phase=phase))
 
 
 @pytest.mark.parametrize("change", ["early", "simulated", "no-inflight", "accepted", "budget"])
