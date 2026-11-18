@@ -5,6 +5,8 @@
 
 import asyncio
 import json
+import re
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
 from runpy import run_path
@@ -73,6 +75,64 @@ def passed_results(plan):
         {"case_id": case["case_id"], "requirement_id": case["requirement_id"], "status": "PASSED", "errors": []}
         for case in plan["scenarios"]
     ]
+
+
+@pytest.mark.parametrize("encoding", [".0", "e0"])
+def test_manifest_normalizes_integral_json_numbers_before_typed_consumers(tmp_path, encoding):
+    plan = manifest()
+    plan["scenarioConcurrency"] = 8
+    for scenario in plan["scenarios"]:
+        scenario["slots"] = 2
+    raw = re.sub(
+        r'("(?:schemaVersion|capacity|native_concurrency|scenarioConcurrency|slots)"\s*:\s*)(\d+)',
+        lambda match: f"{match[1]}{match[2]}{encoding}",
+        json.dumps(plan),
+    )
+    assert type(json.loads(raw)["schemaVersion"]) is float
+    path = tmp_path / "manifest.json"
+    path.write_text(raw)
+
+    admitted = load_manifest(path)
+
+    assert type(admitted["schemaVersion"]) is int
+    assert type(admitted["scenarioConcurrency"]) is int
+    assert all(
+        type(profile[key]) is int for profile in admitted["profiles"] for key in ("capacity", "native_concurrency")
+    )
+    assert all(type(scenario["slots"]) is int for scenario in admitted["scenarios"])
+    assert build_report(admitted, passed_results(admitted)).exit_code() == 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("schemaVersion",),
+        ("profiles", 0, "capacity"),
+        ("profiles", 1, "native_concurrency"),
+        ("scenarioConcurrency",),
+        ("scenarios", 0, "slots"),
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, 0.5, float("inf"), float("nan")])
+def test_manifest_integer_fields_reject_booleans_fractions_and_nonfinite_values(tmp_path, path, invalid):
+    plan = manifest()
+    target = plan
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = invalid
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        load_manifest(manifest_path)
+
+
+def test_manifest_preserves_large_integer_capacity_without_float_conversion(tmp_path):
+    plan = manifest()
+    plan["profiles"][1]["capacity"] = 10**1000
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    admitted = load_manifest(path)
+    assert admitted["profiles"][1]["capacity"] == 10**1000
 
 
 def test_strict_acceptance_requires_every_mandatory_requirement():
@@ -148,6 +208,11 @@ def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
         lambda plan: plan["scenarios"].append(plan["scenarios"][0]),
         lambda plan: plan["scenarios"][0].update(requirement_id="not-an-id"),
         lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
+        lambda plan: plan["scenarios"][0].update(slots=1),
+        lambda plan: plan["scenarios"][0].update(roles=["victim"]),
+        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-4").update(
+            exclusive=False
+        ),
     ],
 )
 def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
@@ -157,6 +222,12 @@ def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
@@ -235,6 +306,42 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
     assert report["summary"]["uncovered"] == 7
     assert report["ci"]["exit_code"] == 1
     assert (tmp_path / "out/report.xml").is_file()
+
+
+@pytest.mark.parametrize("reason", ["", "handler unavailable"])
+def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reason):
+    plan = manifest()
+    for case in plan["scenarios"]:
+        case["not_implemented"] = reason
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    output = tmp_path / "out"
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(path), "--output", str(output)])
+    assert exc.value.code == 1
+    console = capsys.readouterr().out
+    assert "Not implemented (declared SDK gap):" in console
+    assert "non-blocking" not in console
+    assert "Exit code: 1 (fail-on: strict)" in console
+
+    results = json.loads((output / "evidence.json").read_text())
+    assert len(results) == len(plan["scenarios"])
+    assert all(result["status"] == "NOT_IMPLEMENTED" and result["errors"] == [reason] for result in results)
+    report = json.loads((output / "report.json").read_text())
+    assert report["summary"]["not_implemented"] == 7
+    assert report["summary"]["failed"] == report["summary"]["uncovered"] == 0
+    assert report["ci"]["fail_on"] == FAIL_ON_STRICT
+    assert report["ci"]["exit_code"] == 1
+    assert all(entry["status"] == "NOT_IMPLEMENTED" for entry in report["results"])
+
+    junit = ET.parse(output / "report.xml").getroot()
+    assert junit.attrib["tests"] == junit.attrib["skipped"] == "7"
+    assert junit.attrib["failures"] == "0"
+    for testcase in junit.findall("testcase"):
+        skipped = testcase.find("skipped")
+        assert skipped is not None
+        assert skipped.attrib["message"].startswith("NOT_IMPLEMENTED")
 
 
 def test_dispatch_is_opt_in():
@@ -405,6 +512,24 @@ def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("declared", "observed", "matches"), [(1, True, False), (1, 1.0, True), (1.0, 1, True)])
+def test_standard_extension_budget_binding_preserves_json_types(tmp_path, requirement, declared, observed, matches):
+    plan, value = timed_plan(requirement)
+    plan["scenarios"][0]["behavior_budgets"]["extensionAllowance"] = declared
+    value["budgets"]["extensionAllowance"] = observed
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    admitted = load_manifest(path)
+
+    result = evidence_results(admitted, tmp_path)[0]
+
+    assert result["status"] == ("PASSED" if matches else "FAILED")
+    if not matches:
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
 @pytest.mark.parametrize("missing", ["all", "admissionMs", "cleanupMs"])
 def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requirement, missing):
     plan, _ = timed_plan(requirement)
@@ -416,7 +541,8 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib.import_module") as load_adapter:
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
         with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
             asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
         load_adapter.assert_not_called()
@@ -435,6 +561,27 @@ def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requi
     assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
     if tightened is not None:
         assert any("behavior budgets" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize(("released", "expected_status"), [(230, "FAILED"), (215, "PASSED")])
+def test_offline_cli_final_validation_rejects_observed_fault_release_after_retirement(
+    tmp_path, requirement, released, expected_status
+):
+    plan, value = timed_plan(requirement)
+    value["faultsCreated"][0]["releasedAtMs"] = released
+    assert value["retirement"]["retiredAtMs"] == 220
+    assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+
+    assert result["status"] == expected_status
+    assert result["errors"] == (
+        ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
+    )
 
 
 @pytest.mark.parametrize("requirement", [3, 4])

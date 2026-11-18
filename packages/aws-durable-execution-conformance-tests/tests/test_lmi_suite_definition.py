@@ -124,6 +124,23 @@ def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog
     assert evidence_results(plan, tmp_path, suite=definition())[0]["status"] == "FAILED"
 
 
+@pytest.mark.parametrize("entry_point", ["manifest", "coverage", "report"])
+def test_suite_rejects_a_mandatory_case_missing_from_its_requirement_catalog(tmp_path: Path, entry_point: str) -> None:
+    plan, _ = plan_and_evidence()
+    original = definition()
+    missing_case = replace(original.cases[0], requirement_id="sdk-check-2", scenario="additional-check")
+    suite = replace(original, cases=(*original.cases, missing_case))
+    with pytest.raises(ValueError, match=r"case requirement.*catalog"):
+        if entry_point == "manifest":
+            path = tmp_path / "manifest.json"
+            path.write_text(json.dumps(plan))
+            load_manifest(path, suite=suite)
+        elif entry_point == "coverage":
+            coverage_inventory(plan, suite=suite)
+        else:
+            build_report(plan, [{**plan["scenarios"][0], "status": "PASSED", "errors": []}], suite=suite)
+
+
 @pytest.mark.parametrize("role_source", ["manifest", "suite"])
 def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
     plan, value = plan_and_evidence()
@@ -140,6 +157,7 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     evidence_path.write_text(json.dumps(value))
     result = evidence_results(plan, tmp_path, suite=suite)[0]
     assert result["status"] == "FAILED"
+
     assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
 
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
@@ -170,6 +188,53 @@ def test_local_budget_allowance_is_still_numeric_finite_and_nonnegative(tmp_path
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="behavior budgets"):
         load_manifest(path, suite=definition())
+
+
+@pytest.mark.parametrize(
+    ("declared", "observed", "matches"),
+    [(0, False, False), (1, True, False), (0, 0, True), (0, 0.0, True), (0.0, 0, True), (1, 1.0, True), (1.0, 1, True)],
+)
+def test_caller_owned_budget_binding_preserves_json_types(
+    tmp_path: Path, declared: int | float, observed: Any, matches: bool
+) -> None:
+    plan, value = plan_and_evidence()
+    plan["scenarios"][0]["behavior_budgets"]["allowance"] = declared
+    value["sdkPolicy"]["budgets"]["allowance"] = observed
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    suite = definition()
+    admitted = load_manifest(path, suite=suite)
+
+    results = evidence_results(admitted, tmp_path, suite=suite)
+
+    assert results[0]["status"] == ("PASSED" if matches else "FAILED")
+    if not matches:
+        assert any("behavior budgets" in error for error in results[0]["errors"])
+    assert build_report(admitted, results, suite=suite).exit_code() == (0 if matches else 1)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("exclusive", False, "exclusive resource ownership"),
+        ("slots", 1, "required cohort"),
+        ("roles", ["victim"], "required cohort roles"),
+    ],
+)
+def test_local_live_suite_enforces_admission_before_adapter_import(
+    tmp_path: Path, field: str, value: Any, reason: str
+) -> None:
+    plan, _ = plan_and_evidence()
+    suite = definition()
+    suite = replace(suite, cases=(replace(suite.cases[0], exclusive=True),))
+    plan["scenarios"][0][field] = value
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError, match=reason):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
+        load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("mutate", [False, True])

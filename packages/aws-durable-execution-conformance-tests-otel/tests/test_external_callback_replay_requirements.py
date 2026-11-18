@@ -15,6 +15,8 @@ from aws_durable_execution_conformance_tests_otel.extension import OtelExtension
 from aws_durable_execution_conformance_tests_otel.model import Span, SpanLink, TelemetryQuery, Trace
 from aws_durable_execution_conformance_tests_otel.validators import validate_trace
 
+from .requirement_assertions import assert_span_error
+
 TRACE = "1" * 32
 ARN = "arn:test:external-replay"
 START = datetime(2026, 10, 7, tzinfo=UTC)
@@ -52,6 +54,15 @@ def assertions(view: str) -> dict:
         context.bind(f"{symbol}_CALLBACK", f"cb{stage}")
         context.bind(f"{symbol}_SUBMITTER", f"step{stage}")
     return context.substitute(requirement(view)["TelemetryAssertions"])
+
+
+def _callback_selector(view: str, identifier: str = "cb0", *, started: bool = False) -> dict:
+    attributes = {"durable.operation.id": identifier}
+    if view == "invocation":
+        attributes["durable.operation.status"] = (
+            "STARTED" if started else "${/^(?:SUCCEEDED|FAILED|TIMED_OUT|CANCELLED|STOPPED)$/}"
+        )
+    return {"attributes": attributes}
 
 
 def span(
@@ -242,7 +253,13 @@ def test_execution_service_clock_skew_preserves_callback_phase(
         else item
         for item in spans
     )
-    assert validate(replace(original, spans=wrong_phase), "execution")
+    errors = validate(replace(original, spans=wrong_phase), "execution")
+    assert_span_error(
+        errors,
+        assertions("execution"),
+        _callback_selector("execution", callback_id),
+        "expect.links[0].$occurrence: linked span is occurrence",
+    )
 
 
 def test_initial_callback_cannot_be_exported_in_the_resumed_invocation() -> None:
@@ -260,7 +277,12 @@ def test_initial_callback_cannot_be_exported_in_the_resumed_invocation() -> None
         for item in original.spans
     )
     errors = validate(replace(original, spans=spans), "invocation")
-    assert any("parent.$occurrence" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        assertions("invocation"),
+        _callback_selector("invocation", started=True),
+        "expect.parent.$occurrence: parent span is occurrence 2, expected 1",
+    )
 
 
 @pytest.mark.parametrize(
@@ -285,7 +307,14 @@ def test_case26_barrier_leaf_must_use_matching_context_phase(leaf: int, parent: 
         else item
         for item in original.spans
     )
-    assert validate(replace(original, spans=spans), "invocation")
+    errors = validate(replace(original, spans=spans), "invocation")
+    target = next(item for item in original.spans if item.span_id == f"{leaf:016x}")
+    assert_span_error(
+        errors,
+        assertions("invocation"),
+        _callback_selector("invocation", str(target.attributes["durable.operation.id"]), started=leaf % 2 == 0),
+        "expect.parent.attributes.durable.operation.status: expected",
+    )
 
 
 def test_case26_barrier_context_cannot_move_its_leaf_into_another_invocation() -> None:
@@ -303,26 +332,31 @@ def test_case26_barrier_context_cannot_move_its_leaf_into_another_invocation() -
             item = replace(item, start_time=START + timedelta(seconds=6.1), end_time=START + timedelta(seconds=6.25))
         spans.append(item)
     errors = validate(replace(original, spans=tuple(spans)), "invocation")
-    assert any("descendant_of" in error for error in errors), errors
+    assert_span_error(
+        errors,
+        assertions("invocation"),
+        _callback_selector("invocation", "cb1", started=True),
+        "expect.descendant_of: unresolved parent",
+    )
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
 @pytest.mark.parametrize(
-    "corruption",
+    "corruption,diagnostic",
     [
-        "missing-first",
-        "identical-duplicate",
-        "duplicate-new-id",
-        "wrong-status",
-        "wrong-operation-status",
-        "wrong-trace",
-        "wrong-parent",
-        "late-completion",
-        "missing-replay",
-        "extra-invocation",
+        ("missing-first", "select matched no spans"),
+        ("identical-duplicate", "select matched 2 spans; it must select exactly one"),
+        ("duplicate-new-id", "select matched 2 spans; it must select exactly one"),
+        ("wrong-status", "expect.status: expected 'OK'"),
+        ("wrong-operation-status", "expect.attributes.durable.operation.status: expected 'SUCCEEDED'"),
+        ("wrong-trace", "expect.same_trace_as: span 'otel-external-target' uses a different trace"),
+        ("wrong-parent", "expect.parent: parent span is not present in the trace"),
+        ("late-completion", "expect.before: span 'otel-external-target'"),
+        ("missing-replay", "select matched 3 spans; expected 4"),
+        ("extra-invocation", "select matched 5 spans; expected 4"),
     ],
 )
-def test_external_completion_mutations_fail(view: str, corruption: str) -> None:
+def test_external_completion_mutations_fail(view: str, corruption: str, diagnostic: str) -> None:
     value = trace(view)
     target = next(
         s
@@ -357,7 +391,13 @@ def test_external_completion_mutations_fail(view: str, corruption: str) -> None:
             ),
         }
         spans = [mutations[corruption] if s is target else s for s in spans]
-    assert validate(replace(value, spans=tuple(spans)), view)
+    errors = validate(replace(value, spans=tuple(spans)), view)
+    selector = (
+        {"name": "Invocation"} if corruption in {"missing-replay", "extra-invocation"} else _callback_selector(view)
+    )
+    if corruption == "late-completion" and view == "execution":
+        diagnostic = "expect.links[0].$occurrence: linked span is occurrence 3, expected 2"
+    assert_span_error(errors, assertions(view), selector, diagnostic)
 
 
 @pytest.mark.parametrize("view", ["invocation", "execution"])
@@ -394,7 +434,12 @@ def test_target_terminal_must_belong_to_first_completion_invocation(parent: int,
         end_time=START + timedelta(seconds=end),
     )
     errors = validate(replace(value, spans=tuple(bad if s is target else s for s in value.spans)), "invocation")
-    assert any("parent.$occurrence" in error for error in errors)
+    assert_span_error(
+        errors,
+        assertions("invocation"),
+        _callback_selector("invocation"),
+        "expect.parent.$occurrence: parent span is occurrence",
+    )
 
 
 @pytest.mark.parametrize("occurrence", [None, True, 0, -1, "2"])
@@ -410,7 +455,9 @@ def test_parent_occurrence_is_strictly_positive_integer(occurrence: object) -> N
     errors = validate_trace(
         trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
     )
-    assert any("$occurrence must be a positive integer" in error for error in errors)
+    assert_span_error(
+        errors, config, _callback_selector("invocation"), "expect.parent.$occurrence must be a positive integer"
+    )
 
 
 def test_parent_occurrence_cannot_be_bypassed_by_unresolved_alternative() -> None:
@@ -426,7 +473,12 @@ def test_parent_occurrence_cannot_be_bypassed_by_unresolved_alternative() -> Non
     errors = validate_trace(
         trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
     )
-    assert any("$occurrence requires a resolved parent" in error for error in errors)
+    assert_span_error(
+        errors,
+        config,
+        _callback_selector("invocation"),
+        "expect.parent.$any_of[1].$occurrence requires a resolved parent",
+    )
 
 
 @pytest.mark.parametrize("occurrence", [0, True, "2"])
@@ -443,7 +495,12 @@ def test_invalid_parent_occurrence_in_unused_alternative_still_fails(occurrence:
     errors = validate_trace(
         trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
     )
-    assert any("$occurrence must be a positive integer" in error for error in errors)
+    assert_span_error(
+        errors,
+        config,
+        _callback_selector("invocation"),
+        "expect.parent.$any_of[1].$occurrence must be a positive integer",
+    )
 
 
 def test_parent_occurrence_out_of_range_is_validation_error() -> None:
@@ -458,7 +515,12 @@ def test_parent_occurrence_out_of_range_is_validation_error() -> None:
     errors = validate_trace(
         trace("invocation"), config, TelemetryQuery(ARN, "conformance", START, START + timedelta(seconds=12))
     )
-    assert any("parent span is occurrence 2, expected 99" in error for error in errors)
+    assert_span_error(
+        errors,
+        config,
+        _callback_selector("invocation"),
+        "expect.parent.$occurrence: parent span is occurrence 2, expected 99",
+    )
 
 
 def test_parent_occurrence_ignores_other_trace_id_collision_and_accepts_matchers() -> None:

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
-from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator
+from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, is_json_integer, same_json
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_STRICT,
@@ -61,6 +61,8 @@ def _check_suite(manifest: Mapping[str, Any], suite: SuiteDefinition) -> None:
         not isinstance(name, str) or name.startswith("lmi-lifecycle-") for name in suite.requirements
     ):
         raise ValueError("caller-owned rules must use their own report and requirement namespace")
+    if any(case.requirement_id not in suite.requirements for case in suite.cases):
+        raise ValueError("every case requirement must exist in the suite requirement catalog")
 
 
 def _catalog(manifest: Mapping[str, Any], suite: SuiteDefinition | None = None) -> dict[str, dict[str, Any]]:
@@ -137,15 +139,15 @@ def _validate_behavior_budgets(
             raise ValueError("behavior budgets must be finite positive numbers (resource growth may be zero)")
 
 
-def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
-    manifest = json.loads(path.read_text())
     if (
         not isinstance(manifest, dict)
-        or type(manifest.get("schemaVersion")) is not int
+        or not is_json_integer(manifest.get("schemaVersion"))
         or manifest["schemaVersion"] != 1
     ):
         raise ValueError("manifest.schemaVersion must be 1")
+    manifest["schemaVersion"] = int(manifest["schemaVersion"])
     if manifest.get("runtime") not in RUNTIMES:
         raise ValueError(f"runtime must be one of {RUNTIMES}")
     if manifest.get("capabilityProfile") not in CAPABILITIES:
@@ -170,8 +172,9 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         ids.add(profile["profile_id"])
         resources.add(profile["resource_id"])
         for key in ("capacity", "native_concurrency"):
-            if type(profile.get(key)) is not int or profile[key] < 1:
+            if not is_json_integer(profile.get(key)) or profile[key] < 1:
                 raise ValueError(f"profile.{key} must be a positive integer")
+            profile[key] = int(profile[key])
     if not {1, 2} <= {profile["native_concurrency"] for profile in profiles}:
         raise ValueError("profiles must include native concurrency 1 and 2")
     # Extra profiles must have an incompatibility, even if their concurrency is 1 or 2.
@@ -184,8 +187,10 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
             raise ValueError("additional profiles require an incompatibilityReason")
         default_profiles.add(concurrency)
     count = manifest.get("scenarioConcurrency", 8)
-    if type(count) is not int or count < 1:
+    if not is_json_integer(count) or count < 1:
         raise ValueError("scenarioConcurrency must be a positive integer")
+    if "scenarioConcurrency" in manifest:
+        manifest["scenarioConcurrency"] = int(count)
     budgets = manifest.get("budgets", {})
     if not isinstance(budgets, dict):
         raise ValueError("budgets must be an object")
@@ -221,6 +226,8 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         if definition.exclusive and scenario.get("exclusive") is False:
             raise ValueError("this measurement requires exclusive resource ownership")
         slots = scenario.get("slots", definition.minimum_native_concurrency)
+        if "slots" in scenario and is_json_integer(slots):
+            slots = scenario["slots"] = int(slots)
         if type(slots) is not int or not definition.minimum_native_concurrency <= slots <= profile["capacity"]:
             raise ValueError("scenario slots must reserve the required cohort within profile capacity")
         roles = scenario.get("roles", list(definition.roles))
@@ -236,11 +243,14 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
-        if "not_implemented" in scenario and (
-            not isinstance(scenario["not_implemented"], str) or not scenario["not_implemented"].strip()
-        ):
-            raise ValueError("not_implemented must explain the missing SDK capability")
+        if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
+            raise ValueError("not_implemented must be a string")
     return manifest
+
+
+def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+    """Load a manifest using the same admission rules as direct live runs."""
+    return _validate_manifest(json.loads(path.read_text()), suite=suite)
 
 
 def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
@@ -283,8 +293,8 @@ def _identity_errors(
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
         errors.append("INCOMPLETE: selectedRequests does not cover every declared cohort role")
     if suite is None:
-        if (definition.budget_names or "behavior_budgets" in scenario) and evidence.get("budgets") != scenario.get(
-            "behavior_budgets", {}
+        if (definition.budget_names or "behavior_budgets" in scenario) and not same_json(
+            evidence.get("budgets"), scenario.get("behavior_budgets", {})
         ):
             errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
     else:
@@ -293,7 +303,9 @@ def _identity_errors(
         policy_key = suite.evidence_policy_key
         if policy_key is not None:
             policy = evidence.get(policy_key)
-            if not isinstance(policy, Mapping) or policy.get("budgets") != scenario.get("behavior_budgets", {}):
+            if not isinstance(policy, Mapping) or not same_json(
+                policy.get("budgets"), scenario.get("behavior_budgets", {})
+            ):
                 errors.append("INCOMPLETE: observed behavior budgets do not match the declared case budgets")
     if suite is None and coverage_profile == "standard" and scenario["scenario"] in ("normal-return", "normal-failure"):
         outcome = "SUCCEEDED" if scenario["scenario"] == "normal-return" else "FAILED"
@@ -373,9 +385,8 @@ async def live_results(
 
     # Validation keeps its own snapshot. Adapter and Scenario objects must not
     # be able to change the expected budgets, profile, or coverage after admission.
-    manifest = deepcopy(dict(manifest))
     suite = deepcopy(suite)
-    _required(manifest, suite)
+    manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
     module_name, separator, factory_name = adapter_name.partition(":")
     if not separator or not factory_name:
         raise ValueError("--adapter must be a local Python module:factory")
@@ -388,7 +399,6 @@ async def live_results(
     scenarios = []
     for scenario in active:
         definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
-        _validate_behavior_budgets(scenario, definition, suite)
         configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
         configured.setdefault("exclusive", definition.exclusive)
         configured.setdefault("slots", definition.minimum_native_concurrency)

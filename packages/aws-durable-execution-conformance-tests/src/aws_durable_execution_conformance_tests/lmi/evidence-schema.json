@@ -145,6 +145,98 @@
       },
       "minItems": 1
     },
+    "budgets": {
+      "type": "object",
+      "properties": {
+        "admissionMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cleanupMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "recoveryMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "observationGraceMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "properties": {
+        "before": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/completedOperation"
+          }
+        },
+        "after": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/operation"
+          },
+          "$comment": "Semantic validation identifies retry.operationId in this array and the collected final history, requires SUCCEEDED and a stored result key (including JSON null), and permits unrelated pending operations without a result. JSON Schema cannot express this cross-record ID comparison."
+        },
+        "operationExecutions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "requestId",
+              "operationId"
+            ],
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "operationId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "required": [
+            "operationId",
+            "attempts"
+          ],
+          "properties": {
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "attempts": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/retryAttempt"
+              }
+            }
+          }
+        },
+        "sideEffects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sideEffect"
+          }
+        }
+      }
+    },
     "expectedHistories": {
       "type": "object",
       "additionalProperties": {
@@ -277,7 +369,8 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/fault"
-      }
+      },
+      "$comment": "Optional releasedAtMs records a fixture release receipt or retained release observation. Final semantic validation bounds it by retiredAtMs independently of the provider acknowledgment in retirement.faults; neither observer timestamp is guaranteed to precede the other."
     },
     "retirement": {
       "type": "object",
@@ -394,7 +487,8 @@
                 }
               }
             ]
-          }
+          },
+          "$comment": "releasedAtMs records provider release acknowledgment or retained release confirmation. Semantic validation bounds this timestamp and any faultsCreated release receipt by retiredAtMs without imposing an order between the independent observers."
         }
       }
     },
@@ -409,6 +503,86 @@
       "minLength": 1
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "enum": [
+              "lmi-lifecycle-3",
+              "lmi-lifecycle-4"
+            ]
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "required": [
+          "budgets"
+        ],
+        "properties": {
+          "budgets": {
+            "required": [
+              "admissionMs",
+              "cleanupMs",
+              "observationGraceMs"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "const": "lmi-lifecycle-4"
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "budgets": {
+            "required": [
+              "recoveryMs"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "requirementId": {
+            "const": "lmi-lifecycle-5"
+          }
+        },
+        "required": [
+          "requirementId"
+        ]
+      },
+      "then": {
+        "required": [
+          "replay"
+        ],
+        "properties": {
+          "replay": {
+            "required": [
+              "before",
+              "after",
+              "operationExecutions",
+              "retry",
+              "sideEffects"
+            ]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "attempt": {
       "type": "object",
@@ -501,7 +675,35 @@
           "type": "number",
           "minimum": 0
         }
-      }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "admission_probe"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "probe",
+          "outcome"
+        ],
+        "properties": {
+          "probe": {
+            "enum": [
+              "operation",
+              "checkpoint"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "ACCEPTED",
+              "REJECTED"
+            ]
+          }
+        }
+      },
+      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Behavior observations do not require the complete physical stream. See evidence-schema.md. Physical retirement locally restores observed_task_start/observed_task_exit only with matching sourceKind, rejects malformed or unknown observed_task aliases, and audits their complete work pairs without changing behavior evidence."
     },
     "request": {
       "type": "object",
@@ -662,6 +864,87 @@
         "ownerCaseId": {
           "type": "string",
           "minLength": 1
+        },
+        "releasedAtMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "completedOperation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/operation"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SUCCEEDED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "result"
+            ]
+          },
+          "else": {
+            "required": [
+              "error"
+            ]
+          }
+        }
+      ]
+    },
+    "retryAttempt": {
+      "type": "object",
+      "required": [
+        "attemptId",
+        "requestId",
+        "outcome"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "outcome": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "sideEffect": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "count",
+        "expectedCount"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedCount": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

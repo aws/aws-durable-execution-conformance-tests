@@ -329,6 +329,149 @@ def test_quarantine_requires_positive_recovery_and_no_live_owner():
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("action", ["retirement", "admission"])
+def test_recovery_verification_does_not_hold_admission_conditions(action):
+    async def exercise():
+        scheduler = ResourceScheduler()
+        scheduler.register("recovering", 1)
+        scheduler.register("healthy", 1)
+        scheduler.limit_concurrency("run", 1)
+        owner = await scheduler.acquire("healthy", "owner", budget="run")
+        await scheduler.quarantine("recovering", "unretired work")
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def verify():
+            entered.set()
+            await finish.wait()
+            return True
+
+        recovery = asyncio.create_task(scheduler.recover("recovering", verify, timeout=1))
+        await entered.wait()
+        pending = asyncio.create_task(
+            owner.release(quiescent=True)
+            if action == "retirement"
+            else scheduler.acquire("recovering", "blocked", timeout=0.01)
+        )
+        try:
+            done, _ = await asyncio.wait((pending,), timeout=0.2)
+            assert pending in done, "external verification blocked an admission condition"
+            if action == "retirement":
+                assert pending.result() is None
+                assert owner.released
+            else:
+                with pytest.raises(QuarantinedError):
+                    pending.result()
+            assert not recovery.done()
+        finally:
+            if action == "admission":
+                pending.cancel()
+            finish.set()
+            await recovery
+            await asyncio.gather(pending, return_exceptions=True)
+            if not owner.released:
+                await owner.release(quiescent=True)
+
+    asyncio.run(exercise())
+
+
+def test_recovery_timeout_includes_waiting_for_another_verifier():
+    async def exercise():
+        scheduler = ResourceScheduler()
+        scheduler.register("target", 1)
+        await scheduler.quarantine("target", "unretired work")
+        entered, finish = asyncio.Event(), asyncio.Event()
+        later_calls = []
+
+        async def verify():
+            entered.set()
+            await finish.wait()
+            return True
+
+        async def later_verify():
+            later_calls.append(True)
+            return True
+
+        first = asyncio.create_task(scheduler.recover("target", verify, timeout=1))
+        await entered.wait()
+        second = asyncio.create_task(scheduler.recover("target", later_verify, timeout=0.01))
+        try:
+            done, _ = await asyncio.wait((second,), timeout=0.2)
+            assert second in done, "waiting for recovery bypassed its timeout"
+            with pytest.raises(TimeoutError):
+                second.result()
+            assert later_calls == []
+        finally:
+            second.cancel()
+            finish.set()
+            await first
+            await asyncio.gather(second, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+def test_recovery_serializes_verifiers_until_a_positive_result():
+    async def exercise():
+        scheduler = ResourceScheduler()
+        scheduler.register("target", 1)
+        await scheduler.quarantine("target", "unretired work")
+        entered, finish = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def first_verify():
+            calls.append("first")
+            entered.set()
+            await finish.wait()
+            return False
+
+        async def second_verify():
+            calls.append("second")
+            return True
+
+        first = asyncio.create_task(scheduler.recover("target", first_verify, timeout=1))
+        await entered.wait()
+        second = asyncio.create_task(scheduler.recover("target", second_verify, timeout=1))
+        await asyncio.sleep(0)
+        assert calls == ["first"]
+        finish.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+        assert isinstance(results[0], QuarantinedError)
+        assert results[1] is None
+        assert calls == ["first", "second"]
+        assert scheduler.quarantine_reason("target") is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("new_reason", ["unretired work", "newly discovered work"])
+def test_recovery_does_not_clear_a_new_quarantine(new_reason):
+    async def exercise():
+        scheduler = ResourceScheduler()
+        scheduler.register("target", 1)
+        await scheduler.quarantine("target", "unretired work")
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def verify():
+            entered.set()
+            await finish.wait()
+            return True
+
+        recovery = asyncio.create_task(scheduler.recover("target", verify, timeout=1))
+        await entered.wait()
+        refresh = asyncio.create_task(scheduler.quarantine("target", new_reason))
+        try:
+            done, _ = await asyncio.wait((refresh,), timeout=0.2)
+            assert refresh in done, "new quarantine was blocked by verification"
+            finish.set()
+            with pytest.raises(QuarantinedError, match="changed during recovery"):
+                await recovery
+            assert scheduler.quarantine_reason("target") == new_reason
+        finally:
+            finish.set()
+            await asyncio.gather(recovery, refresh, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
 def test_timeout_still_releases_and_retires_but_cannot_pass():
     class StalledAdapter(Adapter):
         async def execute(self, context):
@@ -601,6 +744,37 @@ def test_failed_profile_preparation_does_not_block_other_profile():
     assert results[1].status == "PASSED"
     assert adapter.started == ["healthy"]
     assert sorted(adapter.finished) == [(PROFILE.profile_id, False), ("other", True)]
+
+
+@pytest.mark.parametrize("finish_failure", ["raise", "timeout"])
+def test_preparation_failure_diagnostics_are_owned_by_each_case(finish_failure):
+    class PreparationAndFinishFailure(Adapter):
+        async def prepare(self, profile):
+            await super().prepare(profile)
+            raise RuntimeError("deployment failed")
+
+        async def finish(self, profile, *, quiescent):
+            await super().finish(profile, quiescent=quiescent)
+            if finish_failure == "raise":
+                raise RuntimeError("lock reconciliation failed")
+            await asyncio.Event().wait()
+
+    adapter = PreparationAndFinishFailure()
+    reported = []
+    results = run(
+        [case("first"), case("second"), case("third")],
+        adapter,
+        budgets=Budgets(retirement=0.02),
+        on_result=lambda result: reported.append(copy.deepcopy(result)),
+    )
+    final_reports = {result.case_id: result for result in reported}
+    assert len(results) == len(final_reports) == 3
+    assert adapter.preparations == [PROFILE.profile_id]
+    assert adapter.finished == [(PROFILE.profile_id, False)]
+    for result in (*results, *final_reports.values()):
+        assert result.status == "INFRASTRUCTURE_ERROR"
+        assert sum("deployment failed" in error for error in result.errors) == 1
+        assert sum("Run ownership release failed" in error for error in result.errors) == 1
 
 
 def test_external_run_lock_release_failure_cannot_report_pass():
