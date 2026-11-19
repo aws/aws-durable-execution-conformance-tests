@@ -55,6 +55,12 @@ def _warm_evidence() -> dict[str, Any]:
             value["events"].append(fixture["event"](attempt, "task_exit", attempt["endedAtMs"], taskId="root"))
         if not any(event["kind"] == "wrapper_return" for event in local):
             value["events"].append(fixture["event"](attempt, "wrapper_return", attempt["endedAtMs"]))
+    for index, request in enumerate(value["sdkRequests"]):
+        if request["outcome"] != "DISPATCHED":
+            continue
+        request["callId"] = f"dispatch-{index}"
+        kind = "poll" if request["method"] == "GetDurableExecutionState" else "checkpoint"
+        value["events"].extend([{**request, "kind": f"{kind}_call"}, {**request, "kind": f"{kind}_exit"}])
     _resequence(value)
     assert validate_evidence(value) == []
     assert validate_retirement_evidence(value) == []

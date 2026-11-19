@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Validate retained LMI lifecycle evidence with strict coverage."""
+"""Run live LMI lifecycle cases or validate retained evidence with strict coverage."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ import json
 import math
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, is_json_integer, same_json
@@ -178,7 +178,7 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(), parse_float=_finite_json_float, parse_constant=_finite_json_float)
 
 
-def _dump_json(value: Any, depth: int = 0) -> str:
+def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
     """Write retained JSON without rounding exact decimal payloads."""
     if isinstance(value, Decimal):
         if not value.is_finite():
@@ -186,12 +186,24 @@ def _dump_json(value: Any, depth: int = 0) -> str:
         return str(value)
     if not isinstance(value, (dict, list, tuple)) or not value:
         return json.dumps(value, allow_nan=False)
-    inner = "\n" + "  " * (depth + 1)
-    outer = "\n" + "  " * depth
+    inner = "" if compact else "\n" + "  " * (depth + 1)
+    outer = "" if compact else "\n" + "  " * depth
     if isinstance(value, dict):
-        items = [f"{json.dumps(key)}: {_dump_json(item, depth + 1)}" for key, item in value.items()]
+        keys: set[str] = set()
+        items = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                if key is not None and not isinstance(key, (bool, int, float)):
+                    raise ValueError("JSON object keys must be strings or scalar JSON values")
+                key = json.dumps(key, allow_nan=False)
+            if key in keys:
+                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
+            keys.add(key)
+            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
         return "{" + inner + ("," + inner).join(items) + outer + "}"
-    return "[" + inner + ("," + inner).join(_dump_json(item, depth + 1) for item in value) + outer + "]"
+    return (
+        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
+    )
 
 
 def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
@@ -427,27 +439,42 @@ def evidence_results(
             except (OSError, ValueError, TypeError) as exc:
                 result.update(status="INCOMPLETE_EVIDENCE", errors=[f"INCOMPLETE: {exc}"])
         results.append(result)
+    _check_unique_ownership(results)
+    return results
+
+
+def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
     claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for result in results:
-        case_evidence = result.get("evidence", {})
-        attempts = case_evidence.get("attempts", [])
-        identities = {
-            (field, attempt[field])
-            for attempt in (attempts if isinstance(attempts, list) else [])
-            if isinstance(attempt, Mapping)
-            for field in ("requestId", "executionArn")
-            if isinstance(attempt.get(field), str) and attempt[field].strip()
-        }
-        for collection in ("resourcesCreated", "faultsCreated"):
-            resources = case_evidence.get(collection, [])
-            if not isinstance(resources, list):
+        sources = [result, result.get("evidence"), result.get("retirement_evidence")]
+        cleanup = result.get("cleanup_evidence")
+        if isinstance(cleanup, Mapping):
+            sources.extend(snapshot for phase in cleanup.values() if isinstance(phase, list) for snapshot in phase)
+        identities: set[tuple[str, str]] = set()
+        for source in sources:
+            if not isinstance(source, Mapping):
                 continue
-            for resource in resources:
-                if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
-                    continue
-                kind = "fault" if collection == "faultsCreated" else resource.get("kind")
-                if kind in ("callback", "control", "fault") and resource["id"].strip():
-                    identities.add((kind, resource["id"]))
+            attempts = source.get("attempts")
+            for attempt in attempts if isinstance(attempts, list) else []:
+                if isinstance(attempt, Mapping):
+                    for field in ("requestId", "executionArn"):
+                        if isinstance(identifier := attempt.get(field), str) and identifier.strip():
+                            identities.add((field, identifier))
+            retirement = source.get("retirement")
+            inventories = [
+                (source.get("resourcesCreated"), False),
+                (source.get("faultsCreated"), True),
+            ]
+            if isinstance(retirement, Mapping):
+                inventories.extend([(retirement.get("resources"), False), (retirement.get("faults"), True)])
+            for resources, faults in inventories:
+                for resource in resources if isinstance(resources, list) else []:
+                    if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
+                        continue
+                    kind = "fault" if faults else resource.get("kind")
+                    if kind in ("invocation", "execution", "callback", "control", "fault") and resource["id"].strip():
+                        field = {"invocation": "requestId", "execution": "executionArn"}.get(kind, kind)
+                        identities.add((field, resource["id"]))
         for claim in sorted(identities):
             claims.setdefault(claim, []).append(result)
     for (field, resource_id), owners in claims.items():
@@ -455,31 +482,91 @@ def evidence_results(
             for owner in owners:
                 owner["errors"].append(f"INCOMPLETE: {field} {resource_id} is claimed by multiple cases")
                 owner["status"] = "FAILED"
-    return results
+
+
+def _audit_append_boundary(stream: BinaryIO) -> int:
+    end = stream.seek(0, os.SEEK_END)
+    if not end:
+        return 0
+    stream.seek(end - 1)
+    if stream.read(1) == b"\n":
+        return end
+
+    # Repair a partial tail left by an earlier write whose rollback failed.
+    offset = end
+    while offset:
+        start = max(0, offset - 8192)
+        stream.seek(start)
+        last_newline = stream.read(offset - start).rfind(b"\n")
+        if last_newline >= 0:
+            offset = start + last_newline + 1
+            break
+        offset = start
+    stream.truncate(offset)
+    return offset
 
 
 def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
     """Persist before dispatch; sink failure must abort the launch."""
-    with path.open("a") as stream:
-        stream.write(_dump_json(record).replace(chr(10), "") + "\n")
-        stream.flush()
+    _append_audit_row(path, _dump_json(record, compact=True))
+
+
+def _append_audit_row(path: Path, document: str) -> None:
+    row = (document + "\n").encode("utf-8")
+    with path.open("a+b", buffering=0) as stream:
+        try:
+            boundary = _audit_append_boundary(stream)
+        except OSError as exc:
+            raise OSError(f"Could not repair audit record boundary in {path}") from exc
+        try:
+            if stream.write(row) != len(row):
+                raise OSError(f"Short audit write to {path}")
+        except OSError as exc:
+            try:
+                stream.truncate(boundary)
+            except OSError as repair_error:
+                repair_error.add_note(f"Failed to restore audit record boundary in {path}")
+                raise repair_error from exc
+            raise
+        # A complete row remains a possible durable claim if sync raises.
         os.fsync(stream.fileno())
+
+
+def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    try:
+        return result, _dump_json(result, compact=True)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        fallback = {
+            "case_id": result["case_id"],
+            "requirement_id": result["requirement_id"],
+            "profile_id": result["profile_id"],
+            "status": "INFRASTRUCTURE_ERROR" if result["status"] == "PASSED" else result["status"],
+            "errors": [*result["errors"], f"Could not serialize case evidence: {exc}"],
+        }
+    return fallback, _dump_json(fallback, compact=True)
 
 
 async def live_results(
     manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
 ) -> list[dict[str, Any]]:
-    from aws_durable_execution_conformance_tests.lmi.coordinator import Budgets, Profile, Scenario, run_scenarios
+    from aws_durable_execution_conformance_tests.lmi.coordinator import (
+        Budgets,
+        Profile,
+        Scenario,
+        ScenarioResult,
+        run_scenarios,
+    )
 
     # Validation keeps its own snapshot. Adapter and Scenario objects must not
     # be able to change the expected budgets, profile, or coverage after admission.
-    suite = deepcopy(suite)
+    if suite is not None:
+        suite = replace(suite, requirements={key: deepcopy(dict(row)) for key, row in suite.requirements.items()})
     manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
     module_name, separator, factory_name = adapter_name.partition(":")
     if not separator or not factory_name:
         raise ValueError("--adapter must be a local Python module:factory")
     profiles = [
-        Profile(**{key: value for key, value in profile.items() if key != "incompatibilityReason"})
+        Profile(**{item.name: profile[item.name] for item in fields(Profile) if item.name in profile})
         for profile in manifest["profiles"]
     ]
     active = [scenario for scenario in manifest["scenarios"] if "not_implemented" not in scenario]
@@ -487,7 +574,7 @@ async def live_results(
     scenarios = []
     for scenario in active:
         definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
-        configured = deepcopy({key: value for key, value in scenario.items() if key != "evidence_file"})
+        configured = deepcopy({item.name: scenario[item.name] for item in fields(Scenario) if item.name in scenario})
         configured.setdefault("exclusive", definition.exclusive)
         configured.setdefault("slots", definition.minimum_native_concurrency)
         configured.setdefault("roles", list(definition.roles))
@@ -505,37 +592,83 @@ async def live_results(
             (suite.validator if suite else validate)(evidence, phase=phase)
         )
 
-    outcomes = await run_scenarios(
-        scenarios,
-        profiles,
-        adapter,
-        run_id=manifest["runId"],
-        validator=bound_validator,
-        scenario_concurrency=manifest.get("scenarioConcurrency", 8),
-        budgets=Budgets(**manifest.get("budgets", {})),
-        on_attempt=lambda context: _append_audit(
-            audit_dir / "attempts.jsonl",
-            {
-                "runId": context.run_id,
-                "caseId": context.scenario.case_id,
-                "profileId": context.profile.profile_id,
-                "attempts": context.attempts,
-            },
-        ),
-        on_result=lambda result: _append_audit(audit_dir / "results.jsonl", asdict(result)),
-    )
-    results = [asdict(outcome) for outcome in outcomes]
-    results.extend(
-        {
-            "case_id": scenario["case_id"],
-            "requirement_id": scenario["requirement_id"],
-            "status": "NOT_IMPLEMENTED",
-            "errors": [scenario["not_implemented"]],
-        }
-        for scenario in manifest["scenarios"]
-        if "not_implemented" in scenario
-    )
-    return results
+    result_journal = audit_dir / "results.jsonl"
+    publications: dict[str, str] = {}
+    emitted: dict[str, ScenarioResult] = {}
+
+    def publish(case_id: str, document: str) -> None:
+        _append_audit_row(result_journal, document)
+        publications[case_id] = document
+
+    def result_fields(result: ScenarioResult) -> dict[str, Any]:
+        return {item.name: getattr(result, item.name) for item in fields(result)}
+
+    def write_result(result: ScenarioResult) -> None:
+        emitted[result.case_id] = result
+        _, document = _result_for_audit(result_fields(result))
+        publish(result.case_id, document)
+
+    def publish_final(result: dict[str, Any], document: str) -> None:
+        if publications.get(result["case_id"]) == document:
+            return
+        try:
+            publish(result["case_id"], document)
+        except OSError as exc:
+            if result["status"] in ("PASSED", "NOT_IMPLEMENTED"):
+                result["status"] = "INFRASTRUCTURE_ERROR"
+            result["errors"].append(f"Could not publish final case result: {exc}")
+
+    def validate_attempt(attempt: Mapping[str, Any]) -> None:
+        _dump_json(attempt, compact=True)
+
+    skipped_results: list[dict[str, Any]] = []
+    for scenario in manifest["scenarios"]:
+        if "not_implemented" in scenario:
+            skipped = {
+                "case_id": scenario["case_id"],
+                "requirement_id": scenario["requirement_id"],
+                "profile_id": scenario["profile_id"],
+                "status": "NOT_IMPLEMENTED",
+                "errors": [scenario["not_implemented"]],
+            }
+            publish_final(skipped, _dump_json(skipped, compact=True))
+            skipped_results.append(skipped)
+
+    def reconcile_results(outcomes: Iterable[ScenarioResult]) -> list[dict[str, Any]]:
+        results = [result_fields(outcome) for outcome in outcomes]
+        _check_unique_ownership(results)
+        for index, result in enumerate(results):
+            results[index], document = _result_for_audit(result)
+            publish_final(results[index], document)
+        return results
+
+    try:
+        outcomes = await run_scenarios(
+            scenarios,
+            profiles,
+            adapter,
+            run_id=manifest["runId"],
+            validator=bound_validator,
+            scenario_concurrency=manifest.get("scenarioConcurrency", 8),
+            budgets=Budgets(**manifest.get("budgets", {})),
+            on_attempt=lambda context: _append_audit(
+                audit_dir / "attempts.jsonl",
+                {
+                    "runId": context.run_id,
+                    "caseId": context.scenario.case_id,
+                    "profileId": context.profile.profile_id,
+                    "attempts": context.attempts,
+                },
+            ),
+            on_result=write_result,
+            validate_attempt=validate_attempt,
+        )
+    except asyncio.CancelledError:
+        # The coordinator drains admitted cases and publishes their outcomes
+        # before propagating cancellation.
+        reconcile_results(emitted.values())
+        raise
+    return reconcile_results(outcomes) + skipped_results
 
 
 def build_report(
@@ -645,7 +778,7 @@ def run(argv: list[str] | None = None) -> None:
             output.write(serialized_manifest)
         results = (
             asyncio.run(live_results(manifest, args.adapter, audit_dir=args.output))
-            if args.adapter
+            if args.adapter is not None
             else evidence_results(manifest, args.manifest.parent)
         )
         report = build_report(manifest, results)

@@ -276,10 +276,23 @@ def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> No
     )
 
 
-def _standard_retirement_snapshot(factory: str, runtime: str = "javascript") -> dict[str, Any]:
+def _complete_fixture_sdk_calls(value: dict[str, Any]) -> None:
+    value["events"] = [
+        event for event in value["events"] if not str(event.get("callId", "")).startswith("fixture-dispatch-")
+    ]
+    for index, request in enumerate(value["sdkRequests"]):
+        if request["outcome"] != "DISPATCHED":
+            continue
+        request["callId"] = f"fixture-dispatch-{index}"
+        kind = "poll" if request["method"] == "GetDurableExecutionState" else "checkpoint"
+        value["events"].extend([{**request, "kind": f"{kind}_call"}, {**request, "kind": f"{kind}_exit"}])
+    _resequence(value)
+
+
+def _standard_retirement_snapshot(factory: str, runtime: str = "javascript", *, requirement: int = 2) -> dict[str, Any]:
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = (
-        fixtures[factory](2, runtime)
+        fixtures[factory](requirement, runtime)
         if factory == "evidence"
         else fixtures[factory]()
         if factory == "replay_evidence"
@@ -303,7 +316,7 @@ def _standard_retirement_snapshot(factory: str, runtime: str = "javascript") -> 
             value["events"].append({**owner, "kind": "task_exit", "taskId": "root", "atMs": attempt["endedAtMs"] - 0.1})
         if not any(event["kind"] == "wrapper_return" for event in local):
             value["events"].append({**owner, "kind": "wrapper_return", "atMs": attempt["endedAtMs"]})
-    _resequence(value)
+    _complete_fixture_sdk_calls(value)
     assert validate_evidence(value) == []
     assert validate_retirement_evidence(value) == []
     return value
@@ -733,14 +746,15 @@ def test_cleanup_retry_correlation_can_be_supplied_after_the_attempt_fragment() 
 def test_cleanup_retry_partial_orders_are_combined_without_inventing_edges(cycle: bool) -> None:
     value = _standard_retirement_snapshot("replay_evidence")
     extra = {"attemptId": "additional", "requestId": "request-victim", "outcome": "FAILED"}
-    value["replay"]["operationExecutions"].append({**extra, "operationId": "retry"})
     a, b = deepcopy(value["replay"]["retry"]["attempts"])
     calls = 0
 
     def mutate(snapshot: dict[str, Any]) -> None:
         nonlocal calls
         calls += 1
-        fragment = ([extra, a] if calls == 1 else [b, extra]) if cycle else ([extra] if calls == 1 else [b])
+        if calls == 1:
+            snapshot["replay"]["operationExecutions"].append({**extra, "operationId": "retry"})
+        fragment = ([extra, a] if calls == 1 else [b, extra]) if cycle else ([a, extra] if calls == 1 else [extra, b])
         snapshot["replay"]["retry"] = {"attempts": deepcopy(fragment)}
 
     result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
@@ -1015,7 +1029,7 @@ def test_cleanup_pending_partial_metadata_can_be_completed(path: str) -> None:
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])
-@pytest.mark.parametrize("start", [39, 40, 41])
+@pytest.mark.parametrize("start", [39, 40, 41, 45])
 def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, start: int) -> None:
     value = _standard_retirement_snapshot("replay_evidence")
     frozen_attempts = deepcopy(value["attempts"])
@@ -1025,9 +1039,9 @@ def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, star
 
     probe = deepcopy(value)
     mutate(probe)
-    assert bool(validate_evidence(probe)) is (start <= 40)
+    assert bool(validate_evidence(probe)) is (start < 45)
     result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path=path)
-    assert result.status == ("FAILED" if start <= 40 else "PASSED"), result.errors
+    assert result.status == ("FAILED" if start < 45 else "PASSED"), result.errors
     assert result.evidence["attempts"] == frozen_attempts
 
 
@@ -1046,7 +1060,7 @@ def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, star
         ("recovery_evidence", "worker_recovered", "atMs", 46, True),
         ("recovery_evidence", "worker_recovered", "atMs", 44, False),
         ("evidence", "barrier_arrived", "atMs", 41, True),
-        ("evidence", "barrier_arrived", "atMs", 39, False),
+        ("evidence", "barrier_arrived", "atMs", 19, False),
         ("recovery_evidence", "replacement", "replacesWorkerId", "unrelated-worker", True),
         ("recovery_evidence", "replacement", "replacesWorkerId", "process-1", False),
     ],
@@ -1054,9 +1068,9 @@ def test_cleanup_resume_admission_uses_the_frozen_pending_return(path: str, star
 def test_cleanup_singleton_facts_refute_frozen_measurements(
     path: str, phase: str, factory: str, kind: str, field: str, changed: Any, rejected: bool
 ) -> None:
-    value = _standard_retirement_snapshot(factory, "python" if kind == "replacement" else "javascript")
-    if kind == "barrier_arrived":
-        value["requirementId"] = "lmi-lifecycle-1"
+    value = _standard_retirement_snapshot(
+        factory, "python" if kind == "replacement" else "javascript", requirement=1 if kind == "barrier_arrived" else 2
+    )
     if kind == "replacement":
         value["profile"]["recoveryPolicy"] = "replace-worker"
         recovery = next(item for item in value["attempts"] if item["role"] == "recovery")
@@ -1086,9 +1100,11 @@ def test_cleanup_singleton_facts_refute_frozen_measurements(
 
 @pytest.mark.parametrize("kind", ["barrier_arrived", "platform_timeout"])
 def test_cleanup_singleton_timing_allows_completed_native_intervals(kind: str) -> None:
-    value = _standard_retirement_snapshot("evidence" if kind == "barrier_arrived" else "deadline_evidence")
-    if kind == "barrier_arrived":
-        value["requirementId"] = "lmi-lifecycle-1"
+    value = (
+        _standard_retirement_snapshot("evidence", requirement=1)
+        if kind == "barrier_arrived"
+        else _standard_retirement_snapshot("deadline_evidence")
+    )
     calls = 0
 
     def mutate(snapshot: dict[str, Any]) -> None:
@@ -1099,6 +1115,15 @@ def test_cleanup_singleton_timing_allows_completed_native_intervals(kind: str) -
         if calls == 2:
             victim = next(item for item in snapshot["attempts"] if item["role"] == "victim")
             victim["endedAtMs" if kind == "barrier_arrived" else "startedAtMs"] = 45 if kind == "barrier_arrived" else 9
+
+    if kind == "barrier_arrived":
+        provisional = deepcopy(value)
+        mutate(provisional)
+        assert any(
+            "barrier lies outside the established native overlap" in error
+            for error in _cleanup_behavior_errors(value, provisional, standard=True, final=True)
+        )
+        calls = 0
 
     result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
     assert result.status == "PASSED", result.errors
@@ -1204,6 +1229,7 @@ def test_discovered_earlier_closure_rechecks_previously_observed_admission(
     victim = attempts["victim"]
     if kind == "sdk":
         value["sdkRequests"][0].update(atMs=when, outcome=outcome)
+        _complete_fixture_sdk_calls(value)
     else:
         value["events"].append(
             {
@@ -1261,6 +1287,7 @@ def test_cleanup_admission_combines_closure_and_activity_from_separate_snapshots
                 snapshot["sdkRequests"].append(
                     {**owner, "method": "CheckpointDurableExecution", "outcome": "DISPATCHED", "atMs": 39}
                 )
+                _complete_fixture_sdk_calls(snapshot)
             else:
                 snapshot["events"].append(
                     {**owner, "kind": "admission_probe", "probe": "operation", "outcome": "ACCEPTED", "atMs": 39}
@@ -1289,7 +1316,7 @@ def test_cleanup_admission_combines_closure_and_activity_from_separate_snapshots
         ("sdk", "REJECTED", 50, "victim", False, False),
         ("sdk", "DISPATCHED", 41, "peer", False, False),
         ("sdk", "DISPATCHED", 39, "victim", True, True),
-        ("operation", "ACCEPTED", 50, "victim", False, True),
+        ("operation", "ACCEPTED", 50, "victim", False, False),
         ("checkpoint", "ACCEPTED", 50, "victim", False, True),
         ("operation", "REJECTED", 50, "victim", False, False),
         ("operation", "ACCEPTED", 39, "victim", False, False),
@@ -1324,6 +1351,7 @@ def test_cleanup_discovered_admission_violations_fail_behavior_but_allow_audited
         }
         if kind == "sdk":
             snapshot["sdkRequests"].append({**record, "method": "CheckpointDurableExecution"})
+            _complete_fixture_sdk_calls(snapshot)
         else:
             snapshot["events"].append({**record, "kind": "admission_probe", "probe": kind})
         if early_closure:
@@ -1660,6 +1688,7 @@ def test_cleanup_invalid_fault_release_is_rejected_outside_deadline_scenarios() 
 def test_retirement_release_discovery_preserves_an_existing_sdk_failure() -> None:
     value = _standard_retirement_snapshot("deadline_evidence")
     value["sdkRequests"][0]["atMs"] = 32
+    _complete_fixture_sdk_calls(value)
     original_requests = deepcopy(value["sdkRequests"])
 
     def mutate(snapshot: dict[str, Any]) -> None:
@@ -1724,8 +1753,16 @@ def test_cleanup_native_completion_and_fault_facts_can_refute_frozen_standard_me
             following = attempts["warm"] if "warm" in attempts else attempts["recovery"]
             attempts["victim"]["endedAtMs"] = following["startedAtMs"] + (10 if change.endswith("overlap") else 0)
 
-    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path=path)
-    assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
+    changed = deepcopy(value)
+    mutate(changed)
+    rewrites_platform = any(
+        previous.get(f"{field}Source") == "platform" and previous[field] != current[field]
+        for previous, current in zip(original_attempts, changed["attempts"], strict=True)
+        for field in ("startedAtMs", "endedAtMs")
+    )
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path=path, quiescent=not rewrites_platform)
+    expected = "INFRASTRUCTURE_ERROR" if rewrites_platform else "FAILED" if rejected else "PASSED"
+    assert result.status == expected, result.errors
     assert result.evidence["attempts"] == original_attempts
 
 
@@ -1754,9 +1791,10 @@ def test_retirement_only_discoveries_are_checked_against_frozen_measurements(cha
                 snapshot["sdkRequests"].append(
                     {**record, "method": "CheckpointDurableExecution", "outcome": "DISPATCHED"}
                 )
+                _complete_fixture_sdk_calls(snapshot)
             else:
                 snapshot["events"].append(
-                    {**record, "kind": "admission_probe", "probe": "operation", "outcome": "ACCEPTED"}
+                    {**record, "kind": "admission_probe", "probe": "checkpoint", "outcome": "ACCEPTED"}
                 )
         elif change == "early-fault":
             snapshot["faultsCreated"][0]["releasedAtMs"] = 44
@@ -1765,8 +1803,11 @@ def test_retirement_only_discoveries_are_checked_against_frozen_measurements(cha
         else:
             attempts["recovery"]["startedAtMs"] = 29
 
-    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
-    assert result.status == "FAILED", result.errors
+    rewrites_platform = change in ("warm-overlap", "recovery-before-timeout")
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="snapshot", path="independent", quiescent=not rewrites_platform
+    )
+    assert result.status == ("INFRASTRUCTURE_ERROR" if rewrites_platform else "FAILED"), result.errors
 
 
 def test_cleanup_admission_discovery_keeps_an_original_failed_observation() -> None:
@@ -1781,10 +1822,12 @@ def test_cleanup_admission_discovery_keeps_an_original_failed_observation() -> N
         "outcome": "DISPATCHED",
     }
     value["sdkRequests"].append(bad)
+    _complete_fixture_sdk_calls(value)
     original_requests = deepcopy(value["sdkRequests"])
 
     def mutate(snapshot: dict[str, Any]) -> None:
         snapshot["sdkRequests"].append({**bad, "atMs": 51})
+        _complete_fixture_sdk_calls(snapshot)
 
     result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path="independent", originally_failed=True)
     assert result.status == "FAILED"
@@ -5296,3 +5339,368 @@ def test_cleanup_common_record_late_native_binding_can_establish_physical_retire
     assert result.evidence["events"] == value["events"]
     assert validate_retirement_evidence(result.retirement_evidence) == []
     assert any(attempt.get("requestId") == event["requestId"] for attempt in result.attempts)
+
+
+def test_cleanup_replay_rejects_undeclared_retry_body() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        resume = next(row for row in snapshot["attempts"] if row["role"] == "resume")
+        snapshot["events"].append(
+            {
+                "kind": "body",
+                "requestId": resume["requestId"],
+                "ownerRequestId": resume["requestId"],
+                "executionArn": resume["executionArn"],
+                "operationId": "retry",
+                "attemptId": "extra",
+                "atMs": 60,
+            }
+        )
+        _resequence(snapshot)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="independent")
+    assert result.status == "FAILED", result.errors
+    assert any("retry body does not match a declared attempt" in error for error in result.errors)
+
+
+def test_cleanup_replay_tied_body_and_pending_allow_renumbering() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    pending = next(event for event in value["events"] if event["kind"] == "pending")
+    body = next(event for event in value["events"] if event.get("operationId") == "done")
+    body["atMs"] = pending["atMs"]
+    _resequence(value)
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        owner = {key: body[key] for key in ("requestId", "ownerRequestId", "executionArn")}
+        snapshot["events"].extend({**owner, "kind": "fixture_observation", "atMs": at} for at in (15, 16))
+        _resequence(snapshot)
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="independent")
+    assert result.status == "PASSED", result.errors
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "end", "diagnostic"),
+    [
+        ("done", 20, "completed replay body occurred after recorded completion"),
+        ("done", 40, "replay.before contains an operation that completed after suspension"),
+        ("retry", 48, "retry owner was admitted after recorded operation completion"),
+    ],
+)
+def test_cleanup_reconciles_service_checkpoint_completion_times(operation_id: str, end: int, diagnostic: str) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    inventories = [snapshot["replay"]["before"], snapshot["replay"]["after"]]
+    inventories.extend(history["operations"] for history in snapshot["histories"])
+    for operations in inventories:
+        for operation in operations:
+            if operation["id"] == operation_id:
+                operation["endedAtMs"] = end
+    assert any(diagnostic in error for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True))
+
+
+def test_cleanup_overlap_rejects_additional_record_marker() -> None:
+    value = _standard_retirement_snapshot("evidence", requirement=1)
+    snapshot = deepcopy(value)
+    history = next(row for row in snapshot["histories"] if row["executionArn"] == "arn:execution:victim")
+    marker = next(row for row in history["operations"] if row["name"] == "record-marker")
+    history["operations"].append({**marker, "id": "second-marker"})
+    assert any(
+        "more than one record-marker" in error
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    )
+
+
+def test_cleanup_retry_endpoints_are_checked_across_partial_orders() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    retry = snapshot["replay"]["retry"]
+    last = {"attemptId": "additional", "requestId": "request-resume", "outcome": "FAILED"}
+    retry["attempts"] = [retry["attempts"][-1], last]
+    snapshot["replay"]["operationExecutions"].append({**last, "operationId": "retry"})
+    assert any(
+        "do not start with failure and end with success" in error
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    )
+
+
+@pytest.mark.parametrize("changed_time", [False, True])
+def test_cleanup_retry_uses_canonical_numeric_body_identity(changed_time: bool) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    resume = next(row for row in value["attempts"] if row["role"] == "resume")
+    bodies = []
+    for number, declared in enumerate(value["replay"]["retry"]["attempts"], 1):
+        prior_id = declared["attemptId"]
+        declared.update(attemptId=f"{resume['requestId']}:{number}", requestId=resume["requestId"])
+        next(row for row in value["replay"]["operationExecutions"] if row.get("attemptId") == prior_id).update(declared)
+        bodies.append(
+            {
+                "kind": "body",
+                "requestId": resume["requestId"],
+                "ownerRequestId": resume["requestId"],
+                "executionArn": resume["executionArn"],
+                "atMs": 55,
+                "operationId": "retry",
+                "attempt": number,
+            }
+        )
+    value["events"].extend(bodies)
+    _resequence(value)
+    snapshot = deepcopy(value)
+    if changed_time:
+        next(row for row in snapshot["events"] if row.get("attempt") == 2)["atMs"] = 60
+    _resequence(snapshot)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("retry body changed its observed timestamp" in error for error in findings) is changed_time
+    if not changed_time:
+        assert findings == []
+
+
+def test_cleanup_deadline_rejects_earlier_admission_closure() -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    snapshot = deepcopy(value)
+    next(row for row in snapshot["events"] if row["kind"] == "admission_closed")["atMs"] = 29
+    assert any(
+        "admission closed before the observed platform timeout" in error
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    )
+
+
+def test_cleanup_reconciles_original_invocation_and_ordinal_order() -> None:
+    value = _standard_retirement_snapshot("evidence")
+    victim = next(row for row in value["attempts"] if row["role"] == "victim")
+    value["attempts"].append(
+        {**victim, "requestId": "request-victim-retry", "attempt": 2, "startedAtMs": 60, "endedAtMs": 80}
+    )
+    snapshot = deepcopy(value)
+    snapshot["attempts"][-1]["startedAtMs"] = 9
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("ordinals contradict admission order" in error for error in findings)
+    assert any("selected victim is not the original invocation" in error for error in findings)
+
+
+@pytest.mark.parametrize("role_name", ["recovery", "victim"])
+def test_cleanup_rechecks_tied_original_admissions(role_name: str) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence" if role_name == "recovery" else "replay_evidence")
+    selected = next(row for row in value["attempts"] if row["role"] == role_name)
+    value["attempts"].append(
+        {
+            **selected,
+            "requestId": "later-native",
+            "attempt": 2,
+            "startedAtMs": 60,
+            "startedAtMsSource": "fixture",
+            "endedAtMs": 90,
+        }
+    )
+    snapshot = deepcopy(value)
+    snapshot["attempts"][-1].update(startedAtMs=selected["startedAtMs"], startedAtMsSource="platform")
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any(f"tied native admissions cannot establish the original {role_name}" in error for error in findings)
+
+
+def test_cleanup_rechecks_peer_progress_against_corrected_recovery() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence")
+    snapshot = deepcopy(value)
+    next(row for row in snapshot["events"] if row["kind"] == "worker_recovered")["atMs"] = 43
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("healthy peer lacks progress across the timeout and recovery" in error for error in findings)
+
+
+def test_cleanup_retry_checks_transitive_body_order_across_fragments() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    resume = next(row for row in value["attempts"] if row["role"] == "resume")
+    retry = value["replay"]["retry"]
+    first, middle = retry["attempts"]
+    first["requestId"] = resume["requestId"]
+    next(row for row in value["replay"]["operationExecutions"] if row.get("attemptId") == first["attemptId"]).update(
+        first
+    )
+    # The middle attempt deliberately has no timed body observation.
+    owner = {
+        "requestId": resume["requestId"],
+        "ownerRequestId": resume["requestId"],
+        "executionArn": resume["executionArn"],
+    }
+    value["events"].append(
+        {**owner, "kind": "body", "operationId": "retry", "attemptId": first["attemptId"], "atMs": 60}
+    )
+    _resequence(value)
+    snapshot = deepcopy(value)
+    last = {"attemptId": "last", "requestId": resume["requestId"], "outcome": "SUCCEEDED"}
+    snapshot["replay"]["retry"]["attempts"] = [middle, last]
+    snapshot["replay"]["operationExecutions"].append({**last, "operationId": "retry"})
+    snapshot["events"].append({**owner, "kind": "body", "operationId": "retry", "attemptId": "last", "atMs": 55})
+    _resequence(snapshot)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("retry attempt order contradicts timed user-code entries" in error for error in findings)
+
+
+def test_cleanup_retry_cannot_certify_ambiguous_endpoints() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    first = snapshot["replay"]["retry"]["attempts"][0]
+    unplaced = {"attemptId": "unplaced", "requestId": "request-resume", "outcome": "FAILED"}
+    snapshot["replay"]["retry"]["attempts"] = [first, unplaced]
+    snapshot["replay"]["operationExecutions"].append({**unplaced, "operationId": "retry"})
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("retry order does not establish unique first and last attempts" in error for error in findings)
+
+
+def test_cleanup_rejects_completed_replay_bodies_after_observed_pending() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    next(event for event in snapshot["events"] if event["kind"] == "pending")["atMs"] = 20
+    _resequence(snapshot)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("reports repeated completed user code for done" in error for error in findings)
+    assert any("reports repeated completed user code for failed" in error for error in findings)
+
+
+def test_cleanup_ambiguous_retry_endpoints_do_not_block_verified_retirement() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        first = snapshot["replay"]["retry"]["attempts"][0]
+        unplaced = {"attemptId": "unplaced", "requestId": "request-resume", "outcome": "FAILED"}
+        snapshot["replay"]["retry"]["attempts"] = [first, unplaced]
+        snapshot["replay"]["operationExecutions"].append({**unplaced, "operationId": "retry"})
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+    assert any("retry order does not establish unique first and last attempts" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("witnessed", "count", "untimed_pending", "status"),
+    [
+        (False, 1, False, "INCOMPLETE_EVIDENCE"),
+        (True, 1, False, "PASSED"),
+        (True, 2, False, "FAILED"),
+        (True, None, False, "INCOMPLETE_EVIDENCE"),
+        (True, 1, True, "PASSED"),
+    ],
+)
+def test_cleanup_new_before_step_requires_an_observed_original_body(
+    witnessed: bool, count: int | None, untimed_pending: bool, status: str
+) -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    operation = {
+        "id": "extra",
+        "name": "extra",
+        "type": "STEP",
+        "parentId": None,
+        "status": "SUCCEEDED",
+        "result": "ok",
+    }
+    value["replay"]["after"].append(deepcopy(operation))
+    history = next(row for row in value["histories"] if row["executionArn"] == "arn:execution:victim")
+    history["operations"].append(deepcopy(operation))
+
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if untimed_pending:
+            pending = next(event for event in snapshot["events"] if event["kind"] == "pending")
+            if calls == 1:
+                pending.pop("atMs")
+                return
+            pending["atMs"] = next(event["atMs"] for event in value["events"] if event["kind"] == "pending")
+        snapshot["replay"]["before"].append(deepcopy(operation))
+        if count is not None:
+            snapshot["replay"]["sideEffects"].append({"operationId": "extra", "count": count, "expectedCount": 1})
+        if witnessed:
+            victim = next(row for row in snapshot["attempts"] if row["role"] == "victim")
+            owner = {key: victim[key] for key in ("requestId", "executionArn")}
+            snapshot["replay"]["operationExecutions"].append({**owner, "operationId": "extra"})
+            snapshot["events"].append(
+                {**owner, "ownerRequestId": victim["requestId"], "kind": "body", "operationId": "extra", "atMs": 25}
+            )
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="both" if untimed_pending else "snapshot", path="independent"
+    )
+    assert result.status == status, result.errors
+    if count is None:
+        assert any("lacks side-effect count coverage for extra" in error for error in result.errors)
+    elif count == 2:
+        assert any("side-effect count for extra differs" in error for error in result.errors)
+    assert (
+        any("completed replay step lacks observed user-code execution" in error for error in result.errors)
+        is not witnessed
+    )
+
+
+def test_cleanup_recovery_rechecks_declared_observation_grace() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence")
+    value["observationEndedAtMs"] = 100
+    value["budgets"]["observationGraceMs"] = 55
+    snapshot = deepcopy(value)
+    next(row for row in snapshot["events"] if row["kind"] == "worker_recovered")["atMs"] = 46
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("observation window lacks the declared grace after recovery" in error for error in findings)
+
+
+def test_cleanup_rejects_malformed_interior_retry_outcome() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    malformed = {"attemptId": "malformed", "requestId": "request-resume", "outcome": False}
+    snapshot["replay"]["retry"]["attempts"].insert(1, malformed)
+    snapshot["replay"]["operationExecutions"].append({**malformed, "operationId": "retry"})
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("attempt malformed outcome must be a non-empty string" in error for error in findings)
+
+
+def test_cleanup_rechecks_marker_dispatch_at_corrected_overlap_boundary() -> None:
+    value = _standard_retirement_snapshot("evidence", requirement=1)
+    snapshot = deepcopy(value)
+    victim = next(row for row in snapshot["attempts"] if row["role"] == "victim")
+    victim.update(endedAtMs=26, endedAtMsSource="platform")
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("overlap peer lacks a marker checkpoint dispatch inside native overlap" in error for error in findings)
+    assert not any("barrier lies outside" in error for error in findings)
+
+
+def test_cleanup_deadline_rechecks_grace_after_corrected_timeout() -> None:
+    value = _standard_retirement_snapshot("deadline_evidence")
+    value["budgets"]["observationGraceMs"] = 170
+    snapshot = deepcopy(value)
+    next(row for row in snapshot["events"] if row["kind"] == "platform_timeout")["atMs"] = 30.5
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("observation window lacks the declared grace after timeout" in error for error in findings)
+
+
+def test_cleanup_recovery_admission_is_checked_against_corrected_timeout() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence")
+    next(row for row in value["attempts"] if row["role"] == "recovery")["startedAtMs"] = 30.25
+    snapshot = deepcopy(value)
+    next(row for row in snapshot["events"] if row["kind"] == "platform_timeout")["atMs"] = 30.5
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("places recovery before the victim timeout" in error for error in findings)
+
+
+def test_incomplete_replay_inventory_does_not_block_verified_retirement() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    operation = {
+        "id": "extra",
+        "name": "extra",
+        "type": "STEP",
+        "parentId": None,
+        "status": "SUCCEEDED",
+        "result": "ok",
+    }
+    value["replay"]["after"].append(deepcopy(operation))
+    history = next(row for row in value["histories"] if row["executionArn"] == "arn:execution:victim")
+    history["operations"].append(deepcopy(operation))
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        history = next(row for row in snapshot["histories"] if row["executionArn"] == "arn:execution:victim")
+        for rows in (snapshot["replay"]["after"], history["operations"]):
+            next(row for row in rows if row["id"] == "extra")["endedAtMs"] = 25
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+    assert any("omits an operation known to have completed before suspension" in error for error in result.errors)

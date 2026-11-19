@@ -6,6 +6,7 @@
 import asyncio
 import json
 import re
+import sys
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from decimal import Decimal
@@ -13,7 +14,7 @@ from pathlib import Path
 from runpy import run_path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -433,11 +434,10 @@ def test_normal_failure_cannot_reuse_success_evidence():
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error"]
+    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error", "non-json"]
 )
 def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
     import asyncio
-    import sys
     from copy import deepcopy
     from pathlib import Path
     from runpy import run_path
@@ -452,16 +452,19 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
         value.pop("retirement")
     elif failure == "collectionErrors":
         value["collectionErrors"] = ["SDK request source collection failed"]
+    elif failure == "non-json":
+        value["diagnostic"] = b"not JSON"
     elif failure is not None:
         value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
     finished = []
     plan = manifest()
     plan["runtime"] = value["runtime"]
-    plan["scenarios"] = [plan["scenarios"][0]]
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][1], not_implemented="fixture skip")]
     scenario = plan["scenarios"][0]
-    scenario["case_id"] = value["caseId"]
+    scenario.update(case_id=value["caseId"], fixtureOptions={"enabled": True})
     profile = plan["profiles"][1]
     profile.update(
+        region="fixture-region",
         resource_id=value["profile"]["functionArn"],
         artifact_id=value["artifact"]["sdk"],
         configuration_id=value["profile"]["configurationDigest"],
@@ -478,7 +481,12 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
             assert context.scenario.slots == 2
             assert context.scenario.roles == ["victim", "peer"]
             for attempt in value["attempts"]:
-                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+                context.record_attempt(
+                    attempt["requestId"],
+                    role=attempt["role"],
+                    requestId=attempt["requestId"],
+                    statusCounts={200: 1},
+                )
                 # This is where a real adapter sends the request. The audit is already durable.
                 assert attempt["requestId"] in (tmp_path / "attempts.jsonl").read_text()
 
@@ -499,18 +507,181 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
                 context.evidence["retirement"] = deepcopy(value["retirement"])
             return True
 
-    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda manifest: Adapter())}):
+    def factory(received):
+        assert received == plan
+        return Adapter()
+
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=factory)}):
         results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
     expected_status = "PASSED" if failure is None else "FAILED"
+    if failure == "non-json":
+        expected_status = "INFRASTRUCTURE_ERROR"
     assert results[0]["status"] == expected_status, results
-    assert finished == [failure is None]
-    if failure is not None:
+    assert finished == [failure in (None, "non-json")]
+    if failure not in (None, "non-json"):
         assert any("retirement" in error for error in results[0]["errors"])
     if failure in {"collectionErrors", "observation_error", "control_error"}:
         assert any(failure in error for error in results[0]["errors"])
     audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
-    assert audit[-1]["status"] == expected_status
-    assert len(audit[-1]["attempts"]) == 2
+    active = [row for row in audit if row["case_id"] == scenario["case_id"]][-1]
+    assert active["status"] == expected_status
+    if failure == "non-json":
+        assert "Could not serialize case evidence" in active["errors"][-1]
+        assert active == results[0]
+        assert "evidence" not in active
+        assert json.dumps(results)
+    else:
+        assert len(active["attempts"]) == 2
+        assert active["attempts"][0]["statusCounts"] == {"200": 1}
+    attempts = [json.loads(line) for line in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    assert attempts[0]["attempts"][0]["statusCounts"] == {"200": 1}
+    assert audit[0] == results[1]
+    assert audit[0]["status"] == "NOT_IMPLEMENTED"
+    assert audit[0]["profile_id"] == plan["scenarios"][1]["profile_id"]
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_audit_append_repairs_partial_tail_before_the_next_record(tmp_path, rollback_fails):
+    from aws_durable_execution_conformance_tests.lmi.app import _append_audit
+
+    journal = tmp_path / "results.jsonl"
+    _append_audit(journal, {"first": True})
+    with journal.open("a+b", buffering=0) as stream:
+        short_writer = MagicMock(wraps=stream)
+        short_writer.__enter__.return_value = short_writer
+        short_writer.write.side_effect = lambda row: stream.write(row[:5])
+        if rollback_fails:
+            short_writer.truncate.side_effect = OSError("rollback failed")
+        with patch.object(Path, "open", return_value=short_writer), pytest.raises(OSError):
+            _append_audit(journal, {"partial": True})
+    _append_audit(journal, {"last": True})
+    assert [json.loads(line) for line in journal.read_text().splitlines()] == [{"first": True}, {"last": True}]
+
+
+def test_live_circular_case_evidence_does_not_abort_other_reports(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
+
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        outcomes = [
+            ScenarioResult(
+                case.case_id,
+                case.requirement_id,
+                case.profile_id,
+                "PASSED",
+                [],
+                {"diagnostic": cyclic} if index == 0 else {},
+                [],
+                {},
+            )
+            for index, case in enumerate(cases)
+        ]
+        for outcome in outcomes:
+            on_result(outcome)
+        return outcomes
+
+    plan = manifest()
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    assert [result["status"] for result in results] == ["INFRASTRUCTURE_ERROR", "PASSED"]
+    assert "Could not serialize case evidence" in results[0]["errors"][0]
+    assert [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()] == results
+
+
+def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    plan = manifest()
+    skipped = dict(plan["scenarios"][1], not_implemented="skip reason")
+    plan["scenarios"] = [plan["scenarios"][0], skipped]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=cancelled),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    assert [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()] == [
+        {
+            "case_id": skipped["case_id"],
+            "requirement_id": skipped["requirement_id"],
+            "profile_id": skipped["profile_id"],
+            "status": "NOT_IMPLEMENTED",
+            "errors": ["skip reason"],
+        }
+    ]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_live_retirement_callback_claims_are_checked_across_cases(tmp_path, cancelled):
+    import asyncio
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    @dataclass
+    class Outcome:
+        case_id: str
+        status: str
+        errors: list
+        retirement_evidence: dict
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        outcomes = [
+            Outcome(
+                case.case_id,
+                "PASSED",
+                [],
+                {"retirement": {"resources": [{"kind": "callback", "id": "shared", "ownerCaseId": case.case_id}]}},
+            )
+            for case in cases
+        ]
+        for outcome in outcomes:
+            on_result(outcome)
+        if cancelled:
+            raise asyncio.CancelledError
+        return outcomes
+
+    plan = manifest()
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        else:
+            results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    if cancelled:
+        results = audit[-2:]
+    assert [result["status"] for result in results] == ["FAILED", "FAILED"]
+    assert all("callback shared is claimed by multiple cases" in result["errors"][0] for result in results)
+    assert audit[-2:] == results
+
+
+def test_empty_adapter_option_cannot_select_offline_validation(tmp_path, capsys):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.evidence_results") as offline,
+        pytest.raises(SystemExit) as error,
+    ):
+        run(["--manifest", str(source), "--output", str(tmp_path / "out"), "--adapter", ""])
+    assert error.value.code == 2
+    assert "--adapter must be a local Python module:factory" in capsys.readouterr().err
+    offline.assert_not_called()
 
 
 def test_output_reuse_preserves_previous_run(tmp_path):

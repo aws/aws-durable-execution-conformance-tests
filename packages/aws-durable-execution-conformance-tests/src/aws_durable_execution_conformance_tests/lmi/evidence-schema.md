@@ -351,6 +351,22 @@ and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
 
+## Live lifecycle runner
+
+Use the same manifest with an SDK-owned adapter to run cases and collect evidence.
+The adapter module must be importable in the runner's Python environment. Its
+factory receives the admitted manifest and returns an adapter implementing
+preparation, scenario execution, evidence collection, and retirement.
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-live
+```
+
+Choose an empty output directory. The runner journals attempts before dispatch
+and publishes case outcomes to `results.jsonl`, including predeclared skips.
+Both JSONL journals may have multiple records for a case. The last record for
+the case contains its latest published attempts or outcome.
+
 ## Offline lifecycle runner
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json

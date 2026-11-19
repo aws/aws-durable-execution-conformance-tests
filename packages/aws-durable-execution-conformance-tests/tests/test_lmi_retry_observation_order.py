@@ -284,7 +284,9 @@ def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, 
     initial = [known, duplicate] if source == "context" else [known]
     if source == "collector":
         value["replay"]["sideEffects"].append(duplicate)
-    assert validate_evidence(value) == []
+        assert "INCOMPLETE: side-effect counts must be unique per operation" in validate_evidence(value)
+    else:
+        assert validate_evidence(value) == []
     result, _ = _run(SideEffectObservationAdapter(value, initial))
     assert result.status != "PASSED", result.errors
     assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
@@ -292,7 +294,7 @@ def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, 
 
 
 @pytest.mark.parametrize("field", ["count", "expectedCount"])
-@pytest.mark.parametrize("invalid", [1.0, True, -1, float("inf"), "1"])
+@pytest.mark.parametrize("invalid", [1.5, True, -1, float("inf"), "1"])
 def test_invalid_counter_observations_cannot_be_erased_by_valid_collection(field: str, invalid: Any) -> None:
     value = _replay_evidence()
     known = deepcopy(_effect(value))
@@ -445,7 +447,8 @@ def test_checkpoint_snapshots_can_fill_missing_operation_metadata(
 ) -> None:
     value = _replay_evidence()
     for operation in _checkpoint_views(value):
-        operation[timestamp] = 10 if operation["id"] == operation_id else 20
+        if operation["id"] == operation_id:
+            operation[timestamp] = 10 if timestamp == "startedAtMs" else 24
     assert validate_evidence(value) == []
     initial = list(reversed(deepcopy(value["replay"][snapshot])))
     next(operation for operation in initial if operation["id"] == operation_id).pop(timestamp)
@@ -684,3 +687,12 @@ def test_operation_entry_metadata_does_not_hide_completed_code_on_resume() -> No
     result, _ = _run(OperationEntryAdapter(value, [original]))
     assert result.status != "PASSED"
     assert any("repeated completed user code" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("field", ["count", "expectedCount"])
+def test_integral_json_side_effect_observations_are_valid(field: str) -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    known[field] = float(known[field])
+    result, _ = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status == "PASSED", result.errors

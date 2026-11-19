@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from runpy import run_path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -277,7 +277,12 @@ def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(
         return Adapter()
 
     with patch.dict("sys.modules", {"local_suite_adapter": SimpleNamespace(create=factory)}):
-        results = asyncio.run(live_results(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=definition()))
+        suite = definition()
+        suite = replace(
+            suite,
+            requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
+        )
+        results = asyncio.run(live_results(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite))
     assert plan == original
     if mutate:
         assert results[0]["status"] != "PASSED"

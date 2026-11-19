@@ -23,10 +23,23 @@ from itertools import pairwise
 from typing import Any, Protocol, TypeGuard
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    _CALL_METHODS,
+    _WORK_INTERVALS,
     HISTORY_STATUSES,
     SCHEMA_VERSION,
     TERMINAL_STATUSES,
     EvidenceValidator,
+    _has_matching_sdk_request,
+    completed_replay_step_witness,
+    completed_suspension_checkpoint,
+    has_overlap_marker_dispatch,
+    is_json_integer,
+    normalize_retirement_events,
+    original_admission_conflicts,
+    peer_progress_spans_timeout,
+    permits_disposal_operation_probe,
+    replay_checkpoint_timing,
+    retry_body_identity,
     same_json,
     validate_retirement_evidence,
 )
@@ -122,6 +135,8 @@ class _Resource:
     recovery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     queue: deque[_Waiter] = field(default_factory=deque)
     owners: dict[str, _Waiter] = field(default_factory=dict)
+    residual: set[asyncio.Task[Any]] = field(default_factory=set)
+    profile_active: bool = False
     quarantine_reason: str | None = None
     quarantine_version: int = 0
 
@@ -166,6 +181,7 @@ class ResourceScheduler:
 
     def __init__(self) -> None:
         self._resources: dict[str, _Resource] = {}
+        self._run_locks: dict[str, asyncio.Lock] = {}
         # Runs can share a scheduler, so each keeps its own work budget.
         self._limits: dict[str, int] = {}
         self._active: Counter[str] = Counter()
@@ -281,9 +297,32 @@ class ResourceScheduler:
         if released.budget is not None:
             await self._wake_other_resources(resource_id)
 
+    def track_residual(self, resource_id: str, tasks: Sequence[asyncio.Task[Any]]) -> None:
+        pending = self._resources[resource_id].residual
+        for task in tasks:
+            if not task.done():
+                pending.add(task)
+                task.add_done_callback(pending.discard)
+
+    async def _acquire_run(self, resource_id: str, *, timeout: float) -> asyncio.Lock:
+        lock = self._run_locks.setdefault(resource_id, asyncio.Lock())
+        async with asyncio.timeout(timeout):
+            await lock.acquire()
+        return lock
+
     @asynccontextmanager
     async def deployment(self, resource_id: str, owner: str, *, timeout: float = 300):
-        """Exclude all shared/exclusive owners while publishing an artifact."""
+        """Exclude runs and individual target owners while publishing an artifact."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        lock = await self._acquire_run(resource_id, timeout=timeout)
+        try:
+            async with self._deployment_lease(resource_id, owner, timeout=deadline - asyncio.get_running_loop().time()):
+                yield
+        finally:
+            lock.release()
+
+    @asynccontextmanager
+    async def _deployment_lease(self, resource_id: str, owner: str, *, timeout: float):
         lease = await self.acquire(resource_id, owner, exclusive=True, timeout=timeout)
         completed = False
         try:
@@ -304,8 +343,10 @@ class ResourceScheduler:
         async with asyncio.timeout(timeout):
             async with resource.recovery_lock:
                 async with resource.condition:
-                    if resource.owners:
+                    if resource.owners or resource.profile_active:
                         raise QuarantinedError("Cannot recover a resource while an owner is active")
+                    if any(not task.done() for task in resource.residual):
+                        raise QuarantinedError("Cannot recover while an interrupted adapter task is active")
                     if resource.quarantine_reason is None:
                         return
                     version = resource.quarantine_version
@@ -325,10 +366,16 @@ class ScenarioContext:
     profile: Profile
     evidence: dict[str, Any] = field(default_factory=dict)
     retirement_evidence: dict[str, Any] = field(default_factory=dict, kw_only=True)
-    attempts: list[dict[str, Any]] = field(default_factory=list)
+    _attempts: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
+    _validate_attempt: Callable[[Mapping[str, Any]], None] | None = field(default=None, repr=False)
+
+    @property
+    def attempts(self) -> list[dict[str, Any]]:
+        """Return the adapter's copy of the coordinator-owned launch journal."""
+        return copy.deepcopy(self._attempts)
 
     async def release_capacity(self) -> None:
         """Keep ownership while positively observed suspended work is idle.
@@ -370,42 +417,61 @@ class ScenarioContext:
         adapter must supply it. Ordinals are assigned in launch order per role;
         an explicit ``attempt`` must equal that next ordinal.
         """
-        if not attempt_id or any(item["attemptId"] == attempt_id for item in self.attempts):
+        if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
             raise ValueError("Attempt identities must be nonempty and unique")
         role = diagnostics.get("role")
         if role is None and len(self.scenario.roles) == 1:
             role = self.scenario.roles[0]
         if role not in self.scenario.roles:
             raise ValueError("Every launch needs a role from the admitted cohort")
-        ordinal = 1 + sum(item["role"] == role for item in self.attempts)
-        if "attempt" in diagnostics and (type(diagnostics["attempt"]) is not int or diagnostics["attempt"] != ordinal):
+        ordinal = 1 + sum(item["role"] == role for item in self._attempts)
+        if "attempt" in diagnostics and (
+            not is_json_integer(diagnostics["attempt"]) or diagnostics["attempt"] != ordinal
+        ):
             raise ValueError("Attempt ordinal must follow the journaled launch order for its role")
-        self.attempts.append(
-            {
-                **diagnostics,
-                "attemptId": attempt_id,
-                "role": role,
-                "attempt": ordinal,
-                "launchedAtMs": time.time() * 1000,
-            }
-        )
+        attempt = {
+            **diagnostics,
+            "attemptId": attempt_id,
+            "role": role,
+            "attempt": ordinal,
+            "launchedAtMs": time.time() * 1000,
+        }
+        if self._validate_attempt is not None:
+            self._validate_attempt(attempt)
+        self._attempts.append(attempt)
         if self._on_attempt is not None:
-            self._on_attempt(self)
+            try:
+                self._on_attempt(self)
+            except BaseException:
+                # A launch whose audit write fails must not be dispatched.
+                self._attempts.pop()
+                raise
 
     def update_attempt(self, attempt_id: str, **diagnostics: Any) -> None:
-        for attempt in self.attempts:
+        for attempt in self._attempts:
             if attempt["attemptId"] == attempt_id:
                 if "attemptId" in diagnostics or "launchedAtMs" in diagnostics:
                     raise ValueError("Cannot replace launch identity or time")
                 if any(name in diagnostics and diagnostics[name] != attempt[name] for name in ("role", "attempt")):
                     raise ValueError("Cannot replace a launch's original role or attempt ordinal")
-                if "attempt" in diagnostics and type(diagnostics["attempt"]) is not int:
+                if "attempt" in diagnostics and not is_json_integer(diagnostics["attempt"]):
                     raise ValueError("Attempt ordinal must remain an integer")
                 # Once bound, a launch keeps its request and execution: a later
                 # update must not rebind it to another invocation's work.
                 for name, label in (("requestId", "invocation request ID"), ("executionArn", "durable execution")):
                     if name in attempt and diagnostics.get(name, attempt[name]) != attempt[name]:
                         raise ValueError(f"Cannot replace the original {label}")
+                if "attempt" in diagnostics:
+                    diagnostics["attempt"] = int(diagnostics["attempt"])
+                try:
+                    if self._validate_attempt is not None:
+                        self._validate_attempt({**attempt, **diagnostics})
+                except Exception:
+                    for field_name in ("requestId", "executionArn"):
+                        value = diagnostics.get(field_name)
+                        if isinstance(value, str) and value.strip():
+                            attempt[field_name] = value
+                    raise
                 attempt.update(diagnostics)
                 if self._on_attempt is not None:
                     self._on_attempt(self)
@@ -527,7 +593,7 @@ def _ownership_errors(
     else:
         collected = [item.get("requestId") for item in attempts]
         recorded = [item.get("requestId") for item in context.attempts]
-        if not recorded or any(not isinstance(item, str) or not item for item in recorded):
+        if (complete_cohort and not recorded) or any(not isinstance(item, str) or not item for item in recorded):
             errors.append("Every launched attempt must retain an identified invocation request")
         elif (
             any(not isinstance(item, str) or not item for item in collected)
@@ -542,7 +608,7 @@ def _ownership_errors(
                 original = journal[item["requestId"]]
                 if (
                     item.get("role") != original["role"]
-                    or type(item.get("attempt")) is not int
+                    or not is_json_integer(item.get("attempt"))
                     or item["attempt"] != original["attempt"]
                 ):
                     errors.append(f"Collected role or ordinal substitutes journaled launch {item['requestId']}")
@@ -552,10 +618,10 @@ def _ownership_errors(
                     errors.append(f"Collected execution substitutes the journaled execution of {item['requestId']}")
         selected = evidence.get("selectedRequests")
         originals = {item["role"]: item.get("requestId") for item in context.attempts if item["attempt"] == 1}
-        if (
+        if complete_cohort and (
             not isinstance(selected, Mapping)
             or set(selected) != set(originals)
-            or (complete_cohort and set(originals) != set(context.scenario.roles))
+            or set(originals) != set(context.scenario.roles)
             or any(selected.get(role) != request_id for role, request_id in originals.items())
         ):
             errors.append("Selected requests must be the first journaled invocation for every admitted role")
@@ -616,12 +682,14 @@ def _side_effect_observation_errors(evidence: Mapping[str, Any]) -> list[str]:
                 errors.append(f"INCOMPLETE: duplicate side-effect operationId {operation_id}")
             seen.add(operation_id)
         for counter_field in ("count", "expectedCount"):
-            if counter_field in count and (type(count[counter_field]) is not int or count[counter_field] < 0):
+            if counter_field in count and (not is_json_integer(count[counter_field]) or count[counter_field] < 0):
                 errors.append(f"INCOMPLETE: side-effect {counter_field} must be a non-negative integer")
     return errors
 
 
 def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
+    if path in (("attempts", "startedAtMsSource"), ("attempts", "endedAtMsSource")):
+        return previous == "fixture" and current == "platform"
     if path == ("histories", "status"):
         return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
     if path[:-1] in _OPERATION_RECORD_PATHS and path[-1:] == ("status",):
@@ -630,7 +698,7 @@ def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) ->
             *_OPERATION_TERMINAL_STATUSES,
         )
     if path == ("replay", "sideEffects", "count"):
-        return type(previous) is int and type(current) is int and 0 <= previous <= current
+        return is_json_integer(previous) and is_json_integer(current) and 0 <= previous <= current
     increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
     increasing |= path == ("attempts", "endedAtMs")
     decreasing = path == ("attempts", "startedAtMs")
@@ -648,7 +716,7 @@ def _owned_record_enriches(previous: Any, current: Any, *, event: bool = False) 
     if event:
         metadata.add("sequence")
         for record in (previous, current):
-            if "sequence" in record and (type(record["sequence"]) is not int or record["sequence"] < 0):
+            if "sequence" in record and (not is_json_integer(record["sequence"]) or record["sequence"] < 0):
                 return False
         if "sequence" in previous and "sequence" not in current:
             return False
@@ -798,6 +866,13 @@ def _observation_updates(
                 nested = _observation_updates(prior, record, (*path, key))
                 if nested:
                     nested[identity] = record[identity]
+                    if (*path, key) == ("attempts",):
+                        for time_field in ("startedAtMs", "endedAtMs"):
+                            source_field = f"{time_field}Source"
+                            if time_field in nested or source_field in nested:
+                                for field_name in (time_field, source_field):
+                                    if field_name in record:
+                                        nested[field_name] = record[field_name]
                     if (
                         (*path, key) in _OUTCOME_RECORD_PATHS
                         and {"status", "result", "error"} & nested.keys()
@@ -820,7 +895,11 @@ def _observation_updates(
 
 
 def _retain_observations(
-    original: Mapping[str, Any], captured: Mapping[str, Any], path: tuple[str, ...] = ()
+    original: Mapping[str, Any],
+    captured: Mapping[str, Any],
+    path: tuple[str, ...] = (),
+    *,
+    compare_sdk_order: bool = True,
 ) -> tuple[dict[str, Any], _RetentionChanges]:
     """Keep every prior fact while adding a failed collector's new observations.
 
@@ -840,6 +919,45 @@ def _retain_observations(
         original.get("status"), captured.get("status"), (*path, "status")
     )
     for key, previous in original.items():
+        if path == ("attempts",) and key in ("startedAtMs", "endedAtMs"):
+            source_key = f"{key}Source"
+            if original.get(source_key) == captured.get(source_key) == "platform" and key in captured:
+                if type(captured[key]) not in (int, float) or previous != captured[key]:
+                    retained[key] = previous
+                    changed.conflicts.add((*path, key))
+                continue
+        if path == ("attempts",) and key in ("startedAtMsSource", "endedAtMsSource"):
+            timestamp_key = key.removesuffix("Source")
+            if (
+                previous == "platform"
+                and key not in captured
+                and type(captured.get(timestamp_key)) in (int, float)
+                and captured[timestamp_key] == original.get(timestamp_key)
+            ):
+                retained[key] = previous
+                continue
+            if retained.get(key) == "platform" and timestamp_key not in captured and previous != "platform":
+                retained[key] = previous
+                changed.conflicts.add((*path, key))
+                continue
+
+        if (
+            path == ("attempts",)
+            and key in ("startedAtMs", "endedAtMs")
+            and original.get(f"{key}Source") == "fixture"
+            and captured.get(f"{key}Source") == "platform"
+            and key in captured
+        ):
+            continue  # The platform measurement supersedes the fixture estimate.
+
+        if (
+            path == ("attempts",)
+            and key in ("startedAtMs", "endedAtMs")
+            and original.get(f"{key}Source") == "platform"
+            and captured.get(f"{key}Source") in (None, "fixture")
+        ):
+            retained[key] = previous
+            continue
         if key in ("result", "error") and (progressing_operation or (completing_execution and previous is None)):
             # Active operations can replace intermediate poll results or retry
             # errors. Terminal checkpoints and non-null execution outcomes stay
@@ -877,7 +995,7 @@ def _retain_observations(
             event_order: dict[str, list[tuple[int, int]]] = {}
             prior_records = previous
             if events and all(
-                isinstance(record, Mapping) and type(record.get("sequence")) is int
+                isinstance(record, Mapping) and is_json_integer(record.get("sequence"))
                 for record in [*previous, *retained[key]]
             ):
                 prior_records = sorted(previous, key=lambda record: record["sequence"])
@@ -898,8 +1016,8 @@ def _retain_observations(
                         or (
                             owned_records
                             and (
-                                _owned_record_enriches(record, retained[key][index], event=events)
-                                or _owned_record_enriches(retained[key][index], record, event=events)
+                                _owned_record_enriches(record, retained[key][index], event=owned_records)
+                                or _owned_record_enriches(retained[key][index], record, event=owned_records)
                             )
                         )
                         or (
@@ -918,9 +1036,7 @@ def _retain_observations(
                 else:
                     remaining.remove(match)
                     if owned_records and isinstance(record, Mapping):
-                        for metadata in (
-                            ("observedDuringRequestId", "sequence") if events else ("observedDuringRequestId",)
-                        ):
+                        for metadata in ("observedDuringRequestId", "sequence"):
                             if metadata == "observedDuringRequestId" and record.get(metadata) is None:
                                 continue
                             if metadata in record and (
@@ -932,8 +1048,12 @@ def _retain_observations(
                     if events and isinstance(record, Mapping):
                         old_sequence, new_sequence = record.get("sequence"), retained[key][match].get("sequence")
                         request_id = record.get("requestId")
-                        if isinstance(request_id, str) and type(old_sequence) is int and type(new_sequence) is int:
-                            event_order.setdefault(request_id, []).append((old_sequence, new_sequence))
+                        if (
+                            isinstance(request_id, str)
+                            and is_json_integer(old_sequence)
+                            and is_json_integer(new_sequence)
+                        ):
+                            event_order.setdefault(request_id, []).append((int(old_sequence), int(new_sequence)))
                     if identity is not None and isinstance(record, Mapping):
                         retained[key][match], nested_changed = _retain_observations(
                             record, retained[key][match], (*path, key)
@@ -944,12 +1064,147 @@ def _retain_observations(
                 # event order would erase a lifecycle failure before its audit.
                 if any(first[0] < second[0] and first[1] >= second[1] for first, second in pairwise(sorted(order))):
                     changed.conflicts.add((*path, key, "sequence"))
+        elif (
+            path == ("attempts",)
+            and key in ("startedAtMsSource", "endedAtMsSource")
+            and previous == "platform"
+            and retained[key] == "fixture"
+        ):
+            retained[key] = previous
         elif not same_json(previous, retained[key]) and not _observation_advanced(
             previous, retained[key], (*path, key)
         ):
             retained[key] = copy.deepcopy(previous)
             changed.conflicts.add((*path, key))
+    if path == ("attempts",):
+        for key in ("startedAtMs", "endedAtMs"):
+            source_key = f"{key}Source"
+            if (
+                captured.get(source_key) == "platform"
+                and key not in captured
+                and original.get(source_key) != "platform"
+            ):
+                retained.pop(source_key, None)
+                changed.conflicts.add((*path, source_key))
+    if not path:
+        for attempt in retained.get("attempts", ()) if isinstance(retained.get("attempts"), list) else ():
+            if isinstance(attempt, dict):
+                for endpoint in ("startedAtMs", "endedAtMs"):
+                    source = f"{endpoint}Source"
+                    if endpoint not in attempt and attempt.get(source) == "platform":
+                        attempt.pop(source)
+        if compare_sdk_order and _sdk_frames_order_changed(original, captured):
+            changed.conflicts.add(("sdkRequests", "sequence"))
     return retained, changed
+
+
+def _project_retirement_completions(
+    events: Sequence[Mapping[str, Any]],
+    completions: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    work_intervals = {start: (end, identity) for start, end, identity in _WORK_INTERVALS}
+    starts = set()
+    for event in normalize_retirement_events(events, []):
+        kind = event.get("kind")
+        interval = work_intervals.get(kind) if isinstance(kind, str) else None
+        if interval:
+            end_kind, identity = interval
+            starts.add((end_kind, event.get("requestId"), event.get(identity)))
+
+    identity_by_end = {end: identity for _, end, identity in _WORK_INTERVALS}
+    projected = []
+    for original, normalized in zip(completions, normalize_retirement_events(completions, []), strict=True):
+        kind = normalized.get("kind")
+        if (
+            isinstance(kind, str)
+            and kind in identity_by_end
+            and (kind, normalized.get("requestId"), normalized.get(identity_by_end[kind])) in starts
+        ):
+            projected.append(original)
+    return projected
+
+
+def _sdk_closure_order_changed(
+    request: Mapping[str, Any],
+    settled_request: Mapping[str, Any],
+    before_events: Sequence[Any],
+    after_events: Sequence[Any],
+) -> bool:
+    if request.get("outcome") == "DISPATCHED":
+        local_closures = []
+        for events in (before_events, after_events):
+            local_closures.append(
+                [
+                    event
+                    for event in events
+                    if event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
+                    and event.get("requestId") == request.get("requestId")
+                    and event.get("atMs") == request.get("atMs")
+                ]
+            )
+        for before_boundary in local_closures[0]:
+            for after_boundary in local_closures[1]:
+                if before_boundary.get("kind") != after_boundary.get("kind"):
+                    continue
+                sequences = [
+                    request.get("sequence"),
+                    before_boundary.get("sequence"),
+                    settled_request.get("sequence"),
+                    after_boundary.get("sequence"),
+                ]
+                if all(is_json_integer(sequence) for sequence in sequences) and (
+                    (sequences[0] < sequences[1]) != (sequences[2] < sequences[3])
+                ):
+                    return True
+
+    return False
+
+
+def _sdk_frames_order_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    prior_requests = before.get("sdkRequests", [])
+    current_requests = after.get("sdkRequests", [])
+    if not isinstance(prior_requests, list) or not isinstance(current_requests, list):
+        return False
+    return any(
+        _sdk_closure_order_changed(request, candidate, before.get("events", []), after.get("events", []))
+        for request in prior_requests
+        if isinstance(request, Mapping)
+        for candidate in current_requests
+        if isinstance(candidate, Mapping)
+        if _owned_record_enriches(request, candidate, event=True)
+    )
+
+
+def _native_intervals(
+    sources: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, tuple[int | float, bool]]]:
+    """Resolve each endpoint with its source before using native intervals."""
+    native: dict[str, dict[str, tuple[int | float, bool]]] = {}
+    for source in sources:
+        attempts = source.get("attempts", [])
+        for attempt in attempts if isinstance(attempts, list) else ():
+            if not isinstance(attempt, Mapping) or not isinstance(request := attempt.get("requestId"), str):
+                continue
+            endpoints = native.setdefault(request, {})
+            for endpoint in ("startedAtMs", "endedAtMs"):
+                at = attempt.get(endpoint)
+                if (
+                    not isinstance(at, (int, float))
+                    or isinstance(at, bool)
+                    or at < 0
+                    or (isinstance(at, float) and not math.isfinite(at))
+                ):
+                    continue
+                platform = attempt.get(f"{endpoint}Source") == "platform"
+                previous = endpoints.get(endpoint)
+                if previous is None or (platform and not previous[1]):
+                    endpoints[endpoint] = (at, platform)
+                elif platform == previous[1]:
+                    # Conflicting platform measurements are audit errors. Use
+                    # the stricter bound for checks that also consume them.
+                    select = max if (endpoint == "startedAtMs") == platform else min
+                    endpoints[endpoint] = (select(previous[0], at), platform)
+    return native
 
 
 def _retirement_ownership_errors(
@@ -1003,7 +1258,11 @@ def _retirement_ownership_errors(
                 for value in (before, after)
             ):
                 errors.append(f"Retirement cannot reconcile a malformed invocation {key}")
-            elif (key == "startedAtMs" and after > before) or (key == "endedAtMs" and after < before):
+            elif attempt.get(f"{key}Source") == "platform" and after != before:
+                errors.append(f"Retirement changed an authoritative invocation's {key}")
+            elif not (attempt.get(f"{key}Source") == "fixture" and settled.get(f"{key}Source") == "platform") and (
+                (key == "startedAtMs" and after > before) or (key == "endedAtMs" and after < before)
+            ):
                 errors.append(f"Retirement narrowed an original invocation's {key}")
     for name, identifier, identity_fields in (
         ("resourcesCreated", "id", ("kind", "ownerCaseId")),
@@ -1054,6 +1313,7 @@ def _retirement_ownership_errors(
     final_histories = {
         item.get("executionArn"): item for item in final.get("histories", []) if isinstance(item, Mapping)
     }
+    execution_activity: dict[str, list[Any]] = {}
     for history in original.get("histories", []):
         if not isinstance(history, Mapping):
             continue  # Already reported as an unidentified original inventory row.
@@ -1061,6 +1321,8 @@ def _retirement_ownership_errors(
         if not isinstance(arn, str) or not arn.strip():
             continue
         completed_history = final_histories.get(arn)
+        activity = execution_activity.setdefault(arn, [])
+        activity.extend(history.get(field) for field in ("startedAtMs", "endedAtMs"))
         if history.get("status") in TERMINAL_STATUSES:
             preserve_history_fields(
                 history, completed_history, f"terminal execution {arn}", ("status", "result", "error")
@@ -1073,6 +1335,7 @@ def _retirement_ownership_errors(
         for operation in before_operations:
             if not isinstance(operation, Mapping):
                 raise ValueError("Original operation inventory is malformed")
+            activity.extend(operation.get(field) for field in ("startedAtMs", "endedAtMs"))
             operation_id = operation.get("id")
             operation_fields: tuple[str, ...] = ("name", "type", "parentId")
             owner = f"operation {operation_id} in {arn}"
@@ -1083,6 +1346,16 @@ def _retirement_ownership_errors(
     before_events, after_events = original.get("events", []), final.get("events", [])
     if not isinstance(before_events, list) or not isinstance(after_events, list):
         raise ValueError("Retirement observation inventories must be lists")
+    retirement = final.get("retirement")
+    completions = retirement.get("completions", []) if isinstance(retirement, Mapping) else []
+    if not isinstance(completions, list):
+        raise ValueError("Retirement completions must be a list")
+    earlier_retirement = original.get("retirement")
+    earlier_completions = earlier_retirement.get("completions", []) if isinstance(earlier_retirement, Mapping) else []
+    if not isinstance(earlier_completions, list):
+        raise ValueError("Previously observed retirement completions must be a list")
+    before_events = normalize_retirement_events([*before_events, *earlier_completions], errors)
+    after_events = normalize_retirement_events([*after_events, *completions], errors)
     start_kinds = {
         "task_start",
         "io_start",
@@ -1115,6 +1388,8 @@ def _retirement_ownership_errors(
 
     def event_identity(event: Mapping[str, Any]) -> dict[str, Any]:
         identity = {key: event.get(key) for key in fields}
+        if event.get("kind") in _CALL_METHODS:
+            identity["outcome"] = event.get("outcome", "DISPATCHED")
         if "observedDuringRequestId" in event:
             identity["observedDuringRequestId"] = event["observedDuringRequestId"]
         return identity
@@ -1140,10 +1415,10 @@ def _retirement_ownership_errors(
             if event.get("kind") not in preserved_kinds or "sequence" not in event:
                 continue
             sequence = event["sequence"]
-            if type(sequence) is not int or sequence < 0:
+            if not is_json_integer(sequence) or sequence < 0:
                 errors.append("Retirement cannot reconcile a malformed semantic sequence")
                 continue
-            by_request.setdefault(event.get("requestId"), []).append((sequence, event_identity(event)))
+            by_request.setdefault(event.get("requestId"), []).append((int(sequence), event_identity(event)))
         return by_request
 
     # Sequence values can change when additional observations are collected.
@@ -1168,21 +1443,25 @@ def _retirement_ownership_errors(
     ):
         if not isinstance(request, Mapping):
             raise ValueError("Original SDK request inventory is malformed")
-        match = next((index for index, item in enumerate(remaining) if _owned_record_enriches(request, item)), None)
+        match = next(
+            (index for index, item in enumerate(remaining) if _owned_record_enriches(request, item, event=True)), None
+        )
         if match is None:
             errors.append("Retirement omitted or changed a previously observed SDK request")
         else:
-            remaining.pop(match)
+            settled_request = remaining.pop(match)
+            if _sdk_closure_order_changed(request, settled_request, before_events, after_events):
+                errors.append("Retirement changed the semantic order of an SDK request and its closure")
 
-    def latest_time(values: Sequence[Any]) -> float:
-        return max(
-            (
-                value
-                for value in values
-                if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-            ),
-            default=0,
-        )
+    def observed_time(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    def latest_time(values: Sequence[Any]) -> int | float:
+        return max((time for value in values if (time := observed_time(value)) is not None), default=0)
 
     # Audit settlement against the frozen observations as well as the final
     # snapshot: even an otherwise valid snapshot cannot erase prior activity.
@@ -1190,29 +1469,34 @@ def _retirement_ownership_errors(
     settlements = retirement.get("resources", []) if isinstance(retirement, Mapping) else []
     if not isinstance(settlements, list):
         raise ValueError("Retirement settlements must be a list")
-    invocation_settlements = {
-        item.get("id"): item.get("settledAtMs")
+    indexed_settlements = {
+        (item.get("kind"), item.get("id")): item.get("settledAtMs")
         for item in settlements
-        if isinstance(item, Mapping) and item.get("kind") == "invocation"
+        if isinstance(item, Mapping) and isinstance(item.get("kind"), str) and isinstance(item.get("id"), str)
     }
+    for arn, times in execution_activity.items():
+        settled_at = observed_time(indexed_settlements.get(("execution", arn)))
+        if settled_at is None or settled_at < latest_time(times):
+            errors.append(f"Retirement execution {arn} settled before its originally observed service activity")
+    observed_invocation_ends = []
     for attempt in original_attempts:
         request_id = attempt.get("requestId")
-        activity = [attempt.get("endedAtMs")]
+        final_attempt = indexed.get(request_id, {})
+        authoritative_end = (
+            attempt.get("endedAtMsSource") == "fixture" and final_attempt.get("endedAtMsSource") == "platform"
+        )
+        activity = [] if authoritative_end else [attempt.get("endedAtMs")]
+        observed_invocation_ends.extend(activity)
         activity.extend(
             record.get("atMs")
             for record in (*before_events, *before_requests)
             if isinstance(record, Mapping) and record.get("requestId") == request_id
         )
-        settled_at = invocation_settlements.get(request_id)
-        if (
-            not isinstance(settled_at, (int, float))
-            or isinstance(settled_at, bool)
-            or not math.isfinite(settled_at)
-            or settled_at < latest_time(activity)
-        ):
+        settled_at = observed_time(indexed_settlements.get(("invocation", request_id)))
+        if settled_at is None or settled_at < latest_time(activity):
             errors.append("Retirement invocation settled before its originally observed activity")
     observed = [record.get("atMs") for record in (*before_events, *before_requests)]
-    observed += [attempt.get("endedAtMs") for attempt in original_attempts]
+    observed += observed_invocation_ends
     observed.append(original.get("observationEndedAtMs"))
     latest = latest_time(observed)
     retired_at = retirement.get("retiredAtMs") if isinstance(retirement, Mapping) else None
@@ -1238,7 +1522,7 @@ def _cleanup_envelope_errors(sources: Sequence[Mapping[str, Any]], final: Mappin
 
     for source in sources:
         if "schemaVersion" in source and (
-            type(source["schemaVersion"]) is not int or source["schemaVersion"] != SCHEMA_VERSION
+            not is_json_integer(source["schemaVersion"]) or source["schemaVersion"] != SCHEMA_VERSION
         ):
             findings.append(f"INCOMPLETE: cleanup unsupported schemaVersion; expected {SCHEMA_VERSION}")
         if "observationEndedAtMs" in source:
@@ -1280,11 +1564,37 @@ def _cleanup_envelope_errors(sources: Sequence[Mapping[str, Any]], final: Mappin
     return findings
 
 
+def _observed_checkpoint_ends(sources: Sequence[Mapping[str, Any]], execution_arn: Any) -> dict[str, set[int | float]]:
+    ends: dict[str, set[int | float]] = {}
+    for source in sources:
+        replay = source.get("replay")
+        inventories = [replay.get("before"), replay.get("after")] if isinstance(replay, Mapping) else []
+        histories = source.get("histories")
+        for history in histories if isinstance(histories, list) else ():
+            if isinstance(history, Mapping) and history.get("executionArn") == execution_arn:
+                inventories.append(history.get("operations"))
+        for operations in inventories:
+            for operation in operations if isinstance(operations, list) else ():
+                if not isinstance(operation, Mapping) or operation.get("executionArn", execution_arn) != execution_arn:
+                    continue
+                operation_id, end = operation.get("id"), operation.get("endedAtMs")
+                if (
+                    isinstance(operation_id, str)
+                    and isinstance(end, (int, float))
+                    and not isinstance(end, bool)
+                    and (isinstance(end, int) or math.isfinite(end))
+                    and end >= 0
+                ):
+                    ends.setdefault(operation_id, set()).add(end)
+    return ends
+
+
 def _cleanup_retry_errors(
     frozen_replay: Mapping[str, Any],
     sources: Sequence[Mapping[str, Any]],
     execution_arn: Any,
     bound_execution: Callable[[Any], str | None],
+    after_or_at: Callable[[Mapping[str, Any], Mapping[str, Any]], bool | None],
     *,
     final: bool,
 ) -> list[str]:
@@ -1373,12 +1683,16 @@ def _cleanup_retry_errors(
             if after not in successors[before]:
                 successors[before].add(after)
                 indegree[after] += 1
-    ready = deque(attempt_id for attempt_id, degree in indegree.items() if degree == 0)
+    roots = [attempt_id for attempt_id, degree in indegree.items() if degree == 0]
+    ready = deque(roots)
     visited = 0
+    predecessors: dict[str, set[str]] = {attempt_id: set() for attempt_id in facts}
     while ready:
         attempt_id = ready.popleft()
         visited += 1
         for following in successors[attempt_id]:
+            predecessors[following].update(predecessors[attempt_id])
+            predecessors[following].add(attempt_id)
             indegree[following] -= 1
             if indegree[following] == 0:
                 ready.append(following)
@@ -1387,6 +1701,7 @@ def _cleanup_retry_errors(
 
     if not final:
         return findings
+    declared: dict[str, str] = {}
     for attempt_id, known in facts.items():
         candidates = entries.get(attempt_id, [])
         request_id = known.get("requestId")
@@ -1408,6 +1723,8 @@ def _cleanup_retry_errors(
             continue
         if owner != execution_arn:
             findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} did not run on the suspended execution")
+        if isinstance(request_id, str) and owner == execution_arn:
+            declared[attempt_id] = request_id
         matching = [item for item in candidates if item.get("requestId") == request_id]
         if not matching:
             findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} lacks a correlated user-code entry")
@@ -1415,14 +1732,79 @@ def _cleanup_retry_errors(
         outcomes = [item["outcome"] for item in matching if "outcome" in item]
         if "outcome" not in known and outcomes and all(same_json(item, outcomes[0]) for item in outcomes):
             known["outcome"] = outcomes[0]
+        known_outcome = known.get("outcome")
+        if not isinstance(known_outcome, str) or not known_outcome.strip():
+            findings.append(f"INCOMPLETE: cleanup retry attempt {attempt_id} outcome must be a non-empty string")
         if "outcome" in known and any(not same_json(known["outcome"], item) for item in outcomes):
             findings.append(f"ASSERTION: cleanup retry attempt {attempt_id} contradicts its user-code outcome")
-    for order in orders:
-        # A subset is not a new declaration of the full retry's endpoints.
-        if (
-            frozen_ids
-            and frozen_ids <= set(order)
-            and (facts[order[0]].get("outcome") != "FAILED" or facts[order[-1]].get("outcome") != "SUCCEEDED")
+    timed: dict[str, list[Mapping[str, Any]]] = {}
+    native_starts = {
+        request: endpoints["startedAtMs"][0]
+        for request, endpoints in _native_intervals(sources).items()
+        if "startedAtMs" in endpoints
+    }
+    retry_ends = _observed_checkpoint_ends(sources, execution_arn).get(operation_id, set())
+    body_times: dict[tuple[str, str], int | float] = {}
+    for source in sources:
+        replay = source.get("replay")
+        for key, rows in (
+            ("entries", replay.get("operationExecutions", []) if isinstance(replay, Mapping) else []),
+            ("events", source.get("events", [])),
+        ):
+            if not isinstance(rows, list):
+                continue
+            seen: set[tuple[str, str]] = set()
+            for row in rows:
+                if (
+                    not isinstance(row, Mapping)
+                    or row.get("operationId") != operation_id
+                    or (key == "events" and row.get("kind") != "body")
+                    or bound_execution(row.get("requestId")) != execution_arn
+                ):
+                    continue
+                identity = retry_body_identity(row)
+                if identity is None or declared.get(identity[1]) != identity[0]:
+                    findings.append("ASSERTION: cleanup observed retry body does not match a declared attempt")
+                    continue
+                if identity in seen:
+                    findings.append("ASSERTION: cleanup retry attempt has duplicate user-code entries")
+                seen.add(identity)
+                at = row.get("atMs")
+                if key == "events" and isinstance(at, (int, float)) and not isinstance(at, bool):
+                    if identity in body_times and not same_json(body_times[identity], at):
+                        findings.append("ASSERTION: cleanup retry body changed its observed timestamp")
+                    body_times.setdefault(identity, at)
+                    timed.setdefault(identity[1], []).append(row)
+                    if retry_ends and at > min(retry_ends):
+                        findings.append(
+                            "ASSERTION: cleanup timed retry body occurred after recorded operation completion"
+                        )
+    for attempt_id, bodies in timed.items():
+        ancestry = predecessors[attempt_id]
+        latest_admission = max(
+            (native_starts.get(declared.get(prior, ""), 0) for prior in ancestry | {attempt_id}),
+            default=0,
+        )
+        for body in bodies:
+            if body["atMs"] < latest_admission:
+                findings.append("ASSERTION: cleanup retry body precedes a prior attempt's admission")
+            if any(
+                previous["atMs"] > body["atMs"]
+                or (previous["requestId"] == body["requestId"] and after_or_at(body, previous) is False)
+                for prior in ancestry
+                for previous in timed.get(prior, [])
+            ):
+                findings.append("ASSERTION: cleanup retry attempt order contradicts timed user-code entries")
+    if retry_ends and any(native_starts.get(request, 0) > min(retry_ends) for request in declared.values()):
+        findings.append("ASSERTION: cleanup retry owner was admitted after recorded operation completion")
+    leaves = [attempt_id for attempt_id, following in successors.items() if not following]
+    if frozen_ids:
+        if visited == len(facts) and (len(roots) != 1 or len(leaves) != 1):
+            findings.append("INCOMPLETE: cleanup retry order does not establish unique first and last attempts")
+        elif len(roots) == len(leaves) == 1 and (
+            roots[0] == leaves[0]
+            or facts[roots[0]].get("outcome") != "FAILED"
+            or facts[leaves[0]].get("outcome") != "SUCCEEDED"
         ):
             findings.append("ASSERTION: cleanup retry observations do not start with failure and end with success")
     return findings
@@ -1559,8 +1941,9 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
         return None
 
     bindings: dict[str, set[str]] = {}
-    starts: dict[str, int | float] = {}
-    ends: dict[str, int | float] = {}
+    native = _native_intervals(sources)
+    starts = {request: bounds["startedAtMs"][0] for request, bounds in native.items() if "startedAtMs" in bounds}
+    ends = {request: bounds["endedAtMs"][0] for request, bounds in native.items() if "endedAtMs" in bounds}
     windows: list[int | float] = []
     for source in sources:
         end = timestamp(source.get("observationEndedAtMs"))
@@ -1574,11 +1957,6 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
             execution_arn = attempt.get("executionArn")
             if identifier(execution_arn):
                 known.add(execution_arn)
-            start, end = timestamp(attempt.get("startedAtMs")), timestamp(attempt.get("endedAtMs"))
-            if start is not None:
-                starts[request_id] = min(starts.get(request_id, start), start)
-            if end is not None:
-                ends[request_id] = max(ends.get(request_id, end), end)
     known_executions = {execution for observed in bindings.values() for execution in observed}
     retirement = final_snapshot.get("retirement") if final_snapshot is not None else None
     settlements = {
@@ -1688,6 +2066,24 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
     return findings
 
 
+def _behavioral_incomplete(finding: str) -> bool:
+    return (
+        finding == "INCOMPLETE: cleanup retry order does not establish unique first and last attempts"
+        or finding.startswith("INCOMPLETE: cleanup completed replay step lacks observed user-code execution")
+        or (
+            finding.startswith("INCOMPLETE: cleanup retry attempt ")
+            and finding.endswith(" outcome must be a non-empty string")
+        )
+        or finding.startswith("INCOMPLETE: cleanup observation window lacks the declared grace after ")
+        or finding == "INCOMPLETE: cleanup replay.before omits an operation known to have completed before suspension"
+        or finding.startswith("INCOMPLETE: cleanup replay completed operation lacks side-effect count coverage")
+        or (
+            finding.startswith("INCOMPLETE: cleanup overlap ")
+            and finding.endswith(" lacks a marker checkpoint dispatch inside native overlap")
+        )
+    )
+
+
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -1702,13 +2098,78 @@ def _cleanup_behavior_errors(
     def records(value: Any) -> list[Mapping[str, Any]]:
         return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
 
-    def timestamp(value: Any) -> float | None:
-        if type(value) not in (int, float) or value < 0:
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    def at_or_after(
+        observation: Mapping[str, Any], boundary_event: Mapping[str, Any], *, require_sequence: bool = False
+    ) -> bool | None:
+        at = timestamp(observation.get("atMs"))
+        closed = timestamp(boundary_event.get("atMs"))
+        if at is None or closed is None:
             return None
-        try:
-            return float(value) if math.isfinite(value) else None
-        except OverflowError:
-            return None
+        if at != closed:
+            return at > closed
+        identity_fields = (
+            "kind",
+            "requestId",
+            "atMs",
+            "method",
+            "probe",
+            "taskId",
+            "callId",
+            "gateId",
+            "operationId",
+            "attemptId",
+            "attempt",
+        )
+
+        def local_match(rows: Sequence[Mapping[str, Any]], target: Mapping[str, Any]) -> Mapping[str, Any] | None:
+            if any(row is target for row in rows):
+                return target
+            body_identity = retry_body_identity(target) if target.get("kind") == "body" else None
+            fields = (
+                tuple(key for key in identity_fields if key not in ("attemptId", "attempt"))
+                if body_identity is not None
+                else identity_fields
+            )
+            matches = [
+                row
+                for row in rows
+                if all(same_json(row.get(key), target.get(key)) for key in fields)
+                and (body_identity is None or retry_body_identity(row) == body_identity)
+            ]
+            return matches[0] if len(matches) == 1 else None
+
+        orders: set[bool] = set()
+        for source in admission_sources:
+            raw = [*records(source.get("events")), *records(source.get("sdkRequests"))]
+            left, right = local_match(raw, observation), local_match(raw, boundary_event)
+            if left is None or right is None or left is right:
+                continue
+            sequences = [row["sequence"] for row in (left, right) if "sequence" in row]
+            if any(not is_json_integer(sequence) or sequence < 0 for sequence in sequences):
+                findings.append("INCOMPLETE: same-time observations need valid semantic sequences")
+                continue
+            if len(sequences) < 2:
+                if not require_sequence:
+                    orders.add(True)
+                continue
+            if sequences[0] == sequences[1]:
+                findings.append("INCOMPLETE: same-time observations need distinct semantic sequences")
+                continue
+            orders.add(sequences[0] > sequences[1])
+        if len(orders) == 1:
+            return next(iter(orders))
+        if final:
+            findings.append(
+                "INCOMPLETE: same-time observations need sequences in one snapshot to establish their order"
+            )
+        return None
 
     attempts = {
         item["requestId"]: item for item in records(original.get("attempts")) if isinstance(item.get("requestId"), str)
@@ -1716,6 +2177,32 @@ def _cleanup_behavior_errors(
     events = records(original.get("events"))
     admission_sources = (original, *known_snapshots, snapshot)
     findings.extend(_cleanup_record_errors(admission_sources, snapshot if final else None))
+    if final:
+        request_frames = [records(source.get("sdkRequests")) for source in admission_sources]
+        for source in admission_sources:
+            for event in records(source.get("events")):
+                kind = event.get("kind")
+                method = _CALL_METHODS.get(kind) if isinstance(kind, str) else None
+                if method is None:
+                    continue
+                outcome = event.get("outcome", "DISPATCHED")
+                if outcome not in ("DISPATCHED", "REJECTED"):
+                    findings.append("INCOMPLETE: cleanup SDK call outcome must be DISPATCHED or REJECTED")
+                elif any(
+                    sum(
+                        request.get("method") == method
+                        and request.get("outcome") == outcome
+                        and all(request.get(key) == event.get(key) for key in ("requestId", "callId", "atMs"))
+                        for request in requests
+                    )
+                    > 1
+                    for requests in request_frames
+                ) or not any(
+                    _has_matching_sdk_request(event, method, outcome, requests) for requests in request_frames
+                ):
+                    finding = "ASSERTION: cleanup observed SDK call lacks a unique matching SDK request"
+                    if finding not in findings:
+                        findings.append(finding)
     releases: list[float] = []
     # Absence can be completed later; an explicitly malformed release time is
     # invalid evidence even if a later snapshot replaces or omits that field.
@@ -1733,13 +2220,17 @@ def _cleanup_behavior_errors(
                     findings.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
                 else:
                     releases.append(released)
+    final_retirement = snapshot.get("retirement")
+    final_end = timestamp(final_retirement.get("retiredAtMs")) if isinstance(final_retirement, Mapping) else None
+    if final and final_end is not None and any(released > final_end for released in releases):
+        findings.append("INCOMPLETE: observed fault release occurred after retirement ended")
     known_requests = {
         attempt["requestId"]
         for source in admission_sources
         for attempt in records(source.get("attempts"))
         if isinstance(attempt.get("requestId"), str)
     }
-    closures: dict[str, float] = {}
+    closures: dict[str, list[Mapping[str, Any]]] = {}
     # A later observation can reveal an earlier closure. Preserve every known
     # boundary and recheck old activity as well as newly discovered requests.
     for event in (event for source in admission_sources for event in records(source.get("events"))):
@@ -1748,17 +2239,54 @@ def _cleanup_behavior_errors(
             isinstance(request_id, str)
             and request_id in known_requests
             and time is not None
-            and event.get("kind") in ("wrapper_return", "admission_closed")
+            and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
         ):
-            closures[request_id] = min(closures.get(request_id, time), time)
+            closures.setdefault(request_id, []).append(event)
+    selected_victim = original.get("selectedRequests", {})
+    disposal_victim = (
+        selected_victim.get("victim")
+        if standard
+        and isinstance(selected_victim, Mapping)
+        and original.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
+        else None
+    )
     for collection in ("sdkRequests", "events"):
         for record in (record for source in admission_sources for record in records(source.get(collection))):
             if collection == "events" and record.get("kind") != "admission_probe":
                 continue
-            request_id, time = record.get("requestId"), timestamp(record.get("atMs"))
-            closed = closures.get(request_id) if isinstance(request_id, str) else None
-            if closed is None or time is None or time < closed:
+            if collection == "sdkRequests" and record.get("outcome") != "DISPATCHED":
                 continue
+            request_id, time = record.get("requestId"), timestamp(record.get("atMs"))
+            boundaries = closures.get(request_id, ()) if isinstance(request_id, str) else ()
+            if time is None:
+                continue
+            following = [boundary for boundary in boundaries if at_or_after(record, boundary)]
+            if not following:
+                continue
+            if collection == "events" and request_id == disposal_victim:
+                exits = {
+                    (boundary.get("kind"), boundary.get("atMs")): boundary
+                    for boundary in boundaries
+                    if boundary.get("kind") != "admission_closed"
+                }
+                wrapper = next(iter(exits.values())) if len(exits) == 1 else None
+                if wrapper is not None and wrapper.get("kind") == "wrapper_return":
+                    # Repeated snapshots can hold the very same wrapper exit.
+                    canonical = [
+                        wrapper
+                        if boundary.get("kind") == "wrapper_return" and boundary["atMs"] == wrapper["atMs"]
+                        else boundary
+                        for boundary in following
+                    ]
+                    if permits_disposal_operation_probe(
+                        record,
+                        wrapper,
+                        canonical,
+                        lambda first, second: (
+                            None if (order := at_or_after(first, second, require_sequence=True)) is None else not order
+                        ),
+                    ):
+                        continue
             if collection == "sdkRequests" and record.get("outcome") == "DISPATCHED":
                 finding = f"ASSERTION: request {request_id} dispatched SDK work after admission closed"
             elif (
@@ -1785,24 +2313,48 @@ def _cleanup_behavior_errors(
         request_id = selected.get(role_name)
         return attempts.get(request_id, {}) if isinstance(request_id, str) else {}
 
-    def boundary(role_name: str, kind: str) -> float | None:
+    def boundary_record(role_name: str, kind: str) -> Mapping[str, Any]:
         request_id = role(role_name).get("requestId")
         matches = [
             event
             for event in events
             if request_id is not None and event.get("requestId") == request_id and event.get("kind") == kind
         ]
-        return timestamp(matches[0].get("atMs")) if len(matches) == 1 else None
+        return matches[0] if len(matches) == 1 else {}
 
-    def native_time(role_name: str, key: str) -> float | None:
+    def boundary(role_name: str, kind: str) -> int | float | None:
+        return timestamp(boundary_record(role_name, kind).get("atMs"))
+
+    def role_attempts(role_name: str) -> list[Mapping[str, Any]]:
+        request_id = role(role_name).get("requestId")
+        if request_id is None:
+            return []
+        return [
+            attempt
+            for source in admission_sources
+            for attempt in records(source.get("attempts"))
+            if attempt.get("requestId") == request_id
+        ]
+
+    def platform_times(role_name: str, key: str) -> list[int | float]:
+        return [
+            time
+            for attempt in role_attempts(role_name)
+            if attempt.get(f"{key}Source") == "platform" and (time := timestamp(attempt.get(key))) is not None
+        ]
+
+    def native_time(role_name: str, key: str) -> int | float | None:
+        authoritative = platform_times(role_name, key)
+        if authoritative:
+            return max(authoritative) if key == "startedAtMs" else min(authoritative)
         previous = role(role_name)
         current = current_attempts.get(previous.get("requestId"), {})
         return timestamp(current[key] if key in current else previous.get(key))
 
     def changed_time(role_name: str, key: str) -> bool:
-        previous = role(role_name)
-        current = current_attempts.get(previous.get("requestId"), {})
-        return key in current and timestamp(current[key]) is not None and not same_json(current[key], previous.get(key))
+        previous = timestamp(role(role_name).get(key))
+        current = native_time(role_name, key)
+        return current is not None and current != previous
 
     def observed_events(role_name: str, kind: str) -> list[Mapping[str, Any]]:
         owner = role(role_name)
@@ -1827,17 +2379,16 @@ def _cleanup_behavior_errors(
                 observed.append(event)
         return observed
 
-    def known_interval(role_name: str) -> tuple[float | None, float | None]:
-        request_id = role(role_name).get("requestId")
-        native = [
-            attempt
-            for source in admission_sources
-            for attempt in records(source.get("attempts"))
-            if request_id is not None and attempt.get("requestId") == request_id
-        ]
+    def known_interval(role_name: str) -> tuple[int | float | None, int | float | None]:
+        native = role_attempts(role_name)
         starts = [time for attempt in native if (time := timestamp(attempt.get("startedAtMs"))) is not None]
         ends = [time for attempt in native if (time := timestamp(attempt.get("endedAtMs"))) is not None]
-        return min(starts) if starts else None, max(ends) if ends else None
+        platform_starts = platform_times(role_name, "startedAtMs")
+        platform_ends = platform_times(role_name, "endedAtMs")
+        return (
+            max(platform_starts) if platform_starts else min(starts, default=None),
+            min(platform_ends) if platform_ends else max(ends, default=None),
+        )
 
     requirement = original.get("requirementId")
     if requirement in ("lmi-lifecycle-2", "lmi-lifecycle-7"):
@@ -1848,6 +2399,74 @@ def _cleanup_behavior_errors(
             completed_at = timestamp(event.get("atMs"))
             if completed_at is not None and any(end is not None and completed_at > end for end in (returned, exited)):
                 findings.append("ASSERTION: cleanup root completion follows the frozen wrapper or task exit")
+    marker_ids: dict[str, set[str]] = {}
+    if final:
+        corrected: dict[str, Mapping[str, Any]] = dict(attempts)
+        for source in admission_sources:
+            for attempt in records(source.get("attempts")):
+                request, start = attempt.get("requestId"), timestamp(attempt.get("startedAtMs"))
+                if not isinstance(request, str) or start is None:
+                    continue
+                previous = corrected.get(request, {})
+                prior = timestamp(previous.get("startedAtMs"))
+                corrected[request] = {
+                    **previous,
+                    **attempt,
+                    "startedAtMs": min(prior, start) if prior is not None else start,
+                }
+        for request, bounds in _native_intervals(admission_sources).items():
+            if request in corrected and "startedAtMs" in bounds:
+                corrected[request] = {**corrected[request], "startedAtMs": bounds["startedAtMs"][0]}
+        admissions: dict[str, list[tuple[int | float, int]]] = {}
+        for attempt in corrected.values():
+            role_name, start, ordinal = (
+                attempt.get("role"),
+                timestamp(attempt.get("startedAtMs")),
+                attempt.get("attempt"),
+            )
+            if isinstance(role_name, str) and start is not None and is_json_integer(ordinal):
+                admissions.setdefault(role_name, []).append((start, int(ordinal)))
+        for role_name, order in admissions.items():
+            if any(left[0] < right[0] and left[1] > right[1] for left, right in pairwise(sorted(order))):
+                findings.append(f"PLACEMENT: cleanup attempt ordinals contradict admission order for {role_name}")
+        for role_name, request in selected.items():
+            check_original = (
+                role_name == "victim"
+                if requirement == "lmi-lifecycle-5"
+                else role_name != "resume" and (role_name != "recovery" or requirement == "lmi-lifecycle-4")
+            )
+            reject_tie = (requirement == "lmi-lifecycle-5" and role_name == "victim") or (
+                requirement == "lmi-lifecycle-4"
+                and (
+                    role_name in ("victim", "recovery") or (isinstance(role_name, str) and role_name.startswith("peer"))
+                )
+            )
+            if not check_original or not isinstance(request, str):
+                continue
+            original_attempt = corrected.get(request, {})
+            earlier, tied = original_admission_conflicts(original_attempt, list(corrected.values()))
+            if earlier:
+                findings.append(f"PLACEMENT: cleanup selected {role_name} is not the original invocation")
+            if reject_tie and tied:
+                findings.append(
+                    f"PLACEMENT: cleanup tied native admissions cannot establish the original {role_name} invocation"
+                )
+        if requirement == "lmi-lifecycle-1":
+            for role_name in ("victim", "peer"):
+                execution = role(role_name).get("executionArn")
+                markers = {
+                    operation["id"]
+                    for source in admission_sources
+                    for history in records(source.get("histories"))
+                    if history.get("executionArn") == execution
+                    for operation in records(history.get("operations"))
+                    if operation.get("type") == "STEP"
+                    and operation.get("name") == "record-marker"
+                    and isinstance(operation.get("id"), str)
+                }
+                marker_ids[role_name] = markers
+                if len(markers) > 1:
+                    findings.append(f"ASSERTION: cleanup overlap {role_name} observed more than one record-marker step")
     if requirement in ("lmi-lifecycle-1", "lmi-lifecycle-4") and final:
         # Native metadata can widen a provisional interval. A barrier claim is
         # disproved only after every supplied native interval is available.
@@ -1860,14 +2479,29 @@ def _cleanup_behavior_errors(
                     arrived = timestamp(event.get("atMs"))
                     if arrived is not None and not max(starts) <= arrived < min(ends):
                         findings.append("PLACEMENT: cleanup barrier lies outside the established native overlap")
+            if requirement == "lmi-lifecycle-1":
+                requests = [row for source in admission_sources for row in records(source.get("sdkRequests"))]
+                for name, markers in marker_ids.items():
+                    if len(markers) == 1 and not has_overlap_marker_dispatch(
+                        requests, role(name).get("requestId"), next(iter(markers)), max(starts), min(ends)
+                    ):
+                        findings.append(
+                            f"INCOMPLETE: cleanup overlap {name} lacks a marker checkpoint dispatch inside native overlap"
+                        )
     if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
         profile = original.get("profile")
         profile = profile if isinstance(profile, Mapping) else {}
         fixture_budgets = original.get("budgets")
         fixture_budgets = fixture_budgets if isinstance(fixture_budgets, Mapping) else {}
+        grace = timestamp(fixture_budgets.get("observationGraceMs"))
+        window_end = max(
+            (at for source in admission_sources if (at := timestamp(source.get("observationEndedAtMs"))) is not None),
+            default=None,
+        )
         start, end = known_interval("victim")
         configured_timeout = timestamp(profile.get("timeoutMs"))
-        inflight, exited = boundary("victim", "work_in_flight"), boundary("victim", "task_exit")
+        inflight = boundary_record("victim", "work_in_flight")
+        exit_record = boundary_record("victim", "task_exit")
         timeout_events = observed_events("victim", "platform_timeout")
         for event in timeout_events:
             if "source" in event and event["source"] != "platform":
@@ -1875,13 +2509,27 @@ def _cleanup_behavior_errors(
             timed_out = timestamp(event.get("atMs"))
             if timed_out is None:
                 continue
+            if (
+                final
+                and requirement == "lmi-lifecycle-3"
+                and grace is not None
+                and window_end is not None
+                and window_end - timed_out < grace
+            ):
+                findings.append("INCOMPLETE: cleanup observation window lacks the declared grace after timeout")
             if final and (
                 (start is not None and configured_timeout is not None and timed_out < start + configured_timeout)
                 or (end is not None and timed_out > end)
             ):
                 findings.append("ASSERTION: cleanup timeout falls outside the configured native deadline")
-            if (inflight is not None and timed_out <= inflight) or (exited is not None and timed_out > exited):
+            if (
+                at_or_after(inflight, event, require_sequence=True) is True
+                or at_or_after(exit_record, event, require_sequence=True) is False
+            ):
                 findings.append("ASSERTION: cleanup timeout contradicts the frozen in-flight work or task exit")
+            for closed in observed_events("victim", "admission_closed"):
+                if at_or_after(closed, event, require_sequence=True) is False:
+                    findings.append("ASSERTION: cleanup admission closed before the observed platform timeout")
             for kind, budget_key in (("admission_closed", "admissionMs"), ("task_exit", "cleanupMs")):
                 measured, budget = boundary("victim", kind), timestamp(fixture_budgets.get(budget_key))
                 if measured is not None and budget is not None and not timed_out <= measured <= timed_out + budget:
@@ -1900,10 +2548,20 @@ def _cleanup_behavior_errors(
                             findings.append("PLACEMENT: cleanup recovery replacement changed the frozen failed worker")
             recovery_start, _ = known_interval("recovery")
             recovery_budget = timestamp(fixture_budgets.get("recoveryMs"))
+            if (
+                final
+                and recovery_start is not None
+                and any(
+                    (at := timestamp(event.get("atMs"))) is not None and recovery_start < at for event in timeout_events
+                )
+            ):
+                findings.append("ASSERTION: cleanup evidence places recovery before the victim timeout")
             for event in observed_events("recovery", "worker_recovered"):
                 recovered = timestamp(event.get("atMs"))
                 if recovered is None:
                     continue
+                if final and grace is not None and window_end is not None and window_end - recovered < grace:
+                    findings.append("INCOMPLETE: cleanup observation window lacks the declared grace after recovery")
                 if final and recovery_start is not None and recovered < recovery_start:
                     findings.append("ASSERTION: cleanup worker recovery precedes its native invocation")
                 for timeout_event in timeout_events:
@@ -1920,6 +2578,19 @@ def _cleanup_behavior_errors(
                             _, peer_end = known_interval(peer)
                             if peer_end is not None and recovered > peer_end:
                                 findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
+                            progress = [
+                                at
+                                for row in observed_events(peer, "peer_progress")
+                                if (at := timestamp(row.get("atMs"))) is not None
+                            ]
+                            for timeout_event in timeout_events:
+                                timed_out = timestamp(timeout_event.get("atMs"))
+                                if timed_out is not None and not peer_progress_spans_timeout(
+                                    progress, timed_out, recovered
+                                ):
+                                    findings.append(
+                                        "ASSERTION: cleanup healthy peer lacks progress across the timeout and recovery"
+                                    )
     if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
         limits = [boundary("victim", "task_exit")]
         if requirement == "lmi-lifecycle-4":
@@ -1942,13 +2613,7 @@ def _cleanup_behavior_errors(
     if requirement == "lmi-lifecycle-4" and (
         changed_time("victim", "endedAtMs") or changed_time("recovery", "startedAtMs")
     ):
-        start, end, timeout = (
-            native_time("recovery", "startedAtMs"),
-            native_time("victim", "endedAtMs"),
-            boundary("victim", "platform_timeout"),
-        )
-        if start is not None and timeout is not None and start < timeout:
-            findings.append("ASSERTION: cleanup evidence places recovery before the victim timeout")
+        start, end = native_time("recovery", "startedAtMs"), native_time("victim", "endedAtMs")
         victim, recovery = role("victim"), role("recovery")
         if (
             original.get("runtime") == "python"
@@ -2002,7 +2667,7 @@ def _cleanup_behavior_errors(
             expected_counts = {
                 item["operationId"]: item["expectedCount"]
                 for item in records(replay.get("sideEffects"))
-                if isinstance(item.get("operationId"), str) and type(item.get("expectedCount")) is int
+                if isinstance(item.get("operationId"), str) and is_json_integer(item.get("expectedCount"))
             }
             victim = role("victim")
             checkpoint_errors, observed_before = _cleanup_checkpoint_errors(
@@ -2010,10 +2675,180 @@ def _cleanup_behavior_errors(
             )
             findings.extend(checkpoint_errors)
             completed.update(observed_before)
+            required_counts = set(completed)
+            retry = replay.get("retry")
+            if isinstance(retry, Mapping) and isinstance(retry.get("operationId"), str):
+                required_counts.add(retry["operationId"])
+            covered_counts: set[str] = set()
+            for source in sources:
+                fragment = source.get("replay")
+                if not isinstance(fragment, Mapping):
+                    continue
+                for count in records(fragment.get("sideEffects")):
+                    operation_id, expected = count.get("operationId"), count.get("expectedCount")
+                    if (
+                        isinstance(operation_id, str)
+                        and operation_id in required_counts
+                        and is_json_integer(expected)
+                        and expected >= 0
+                    ):
+                        expected_counts.setdefault(operation_id, expected)
+                    if isinstance(operation_id, str) and is_json_integer(actual := count.get("count")) and actual >= 0:
+                        covered_counts.add(operation_id)
+            if final:
+                for missing in sorted(required_counts - (expected_counts.keys() & covered_counts)):
+                    findings.append(
+                        f"INCOMPLETE: cleanup replay completed operation lacks side-effect count coverage for {missing}"
+                    )
             returned = boundary("victim", "wrapper_return")
             resume_id = role("resume").get("requestId")
+            checkpoint_ends = _observed_checkpoint_ends(sources, victim.get("executionArn"))
+            if final:
+                reconciled: dict[str, dict[str, Any]] = {}
+                for source in sources:
+                    for attempt in records(source.get("attempts")):
+                        request = attempt.get("requestId")
+                        started = timestamp(attempt.get("startedAtMs"))
+                        if not isinstance(request, str) or started is None:
+                            continue
+                        owner = executions_by_request.get(request, set())
+                        if owner != {victim.get("executionArn")}:
+                            continue
+                        previous = reconciled.get(request, {})
+                        earliest = min(started, previous.get("startedAtMs", started))
+                        reconciled[request] = {**previous, **attempt, "startedAtMs": earliest}
+                previously_witnessed = completed_suspension_checkpoint(
+                    [
+                        attempt
+                        for attempt in attempts.values()
+                        if attempt.get("executionArn") == victim.get("executionArn")
+                        and timestamp(attempt.get("startedAtMs")) is not None
+                    ],
+                    events,
+                    records(original.get("sdkRequests")),
+                    records(replay.get("after")),
+                )
+                reconciled_after = [
+                    {**operation, "endedAtMs": max(times)}
+                    if isinstance(operation_id := operation.get("id"), str)
+                    and (times := checkpoint_ends.get(operation_id, set()))
+                    else operation
+                    for operation in records(replay.get("after"))
+                ]
+                if previously_witnessed and not completed_suspension_checkpoint(
+                    list(reconciled.values()),
+                    [event for source in sources for event in records(source.get("events"))],
+                    [request for source in sources for request in records(source.get("sdkRequests"))],
+                    reconciled_after,
+                ):
+                    findings.append(
+                        "ASSERTION: cleanup resume does not follow the observed wait or callback completion"
+                    )
+            observed_pending = [
+                event for event in observed_events("victim", "pending") if timestamp(event.get("atMs")) is not None
+            ]
+            pending_times = {at for event in observed_pending if (at := timestamp(event.get("atMs"))) is not None}
+            if final and pending_times:
+                before_operations = []
+                after_operations = []
+                for source in sources:
+                    replay_fragment = source.get("replay")
+                    if isinstance(replay_fragment, Mapping):
+                        before_operations.extend(records(replay_fragment.get("before")))
+                        after_operations.extend(records(replay_fragment.get("after")))
+                    for history in records(source.get("histories")):
+                        if history.get("executionArn") == victim.get("executionArn"):
+                            after_operations.extend(records(history.get("operations")))
+                omitted, _ = replay_checkpoint_timing(
+                    before_operations, after_operations, max(pending_times), checkpoint_ends
+                )
+                _, late = replay_checkpoint_timing(
+                    before_operations, after_operations, min(pending_times), checkpoint_ends
+                )
+                if omitted:
+                    findings.append(
+                        "INCOMPLETE: cleanup replay.before omits an operation known to have completed before suspension"
+                    )
+                if late:
+                    findings.append(
+                        "ASSERTION: cleanup replay.before contains an operation that completed after suspension"
+                    )
+                frozen_ids = {
+                    operation["id"]
+                    for operation in records(replay.get("before"))
+                    if isinstance(operation.get("id"), str)
+                }
+                newly_completed_steps = {
+                    operation["id"]
+                    for operation in (*before_operations, *after_operations)
+                    if isinstance(operation.get("id"), str)
+                    and operation["id"] in completed - frozen_ids
+                    and operation.get("type") == "STEP"
+                    and operation.get("status") in _OPERATION_TERMINAL_STATUSES
+                }
+                body_observations = [
+                    event
+                    for source in sources
+                    for event in records(source.get("events"))
+                    if timestamp(event.get("atMs")) is not None
+                ]
+                execution_entries = [
+                    entry
+                    for source in sources
+                    if isinstance(fragment := source.get("replay"), Mapping)
+                    for entry in records(fragment.get("operationExecutions"))
+                ]
+                for operation_id in newly_completed_steps:
+                    step_ends = checkpoint_ends.get(operation_id, set())
+                    if not completed_replay_step_witness(
+                        operation_id,
+                        victim.get("requestId"),
+                        execution_entries,
+                        body_observations,
+                        lambda event: all(
+                            at_or_after(event, pending, require_sequence=True) is False for pending in observed_pending
+                        ),
+                        min(step_ends) if step_ends else None,
+                    ):
+                        findings.append(
+                            "INCOMPLETE: cleanup completed replay step lacks observed user-code execution "
+                            "on the original request before suspension"
+                        )
             for source in sources:
                 for event in records(source.get("events")):
+                    if (
+                        event.get("kind") == "body"
+                        and isinstance(operation_id := event.get("operationId"), str)
+                        and operation_id in completed
+                    ):
+                        request_id = event.get("requestId")
+                        execution_arn = bound_execution(request_id)
+                        if (
+                            execution_arn is not None
+                            and execution_arn == victim.get("executionArn")
+                            and (
+                                request_id != victim.get("requestId")
+                                or any(
+                                    at_or_after(event, pending, require_sequence=True) is True
+                                    for pending in observed_pending
+                                )
+                            )
+                        ):
+                            findings.append(
+                                f"ASSERTION: cleanup evidence reports repeated completed user code for {operation_id}"
+                            )
+                        end_times = checkpoint_ends.get(operation_id, set())
+                        body_at = timestamp(event.get("atMs"))
+                        if (
+                            execution_arn is not None
+                            and execution_arn == victim.get("executionArn")
+                            and body_at is not None
+                            and end_times
+                            and body_at > min(end_times)
+                        ):
+                            findings.append(
+                                "ASSERTION: cleanup completed replay body occurred after recorded completion"
+                            )
                     if event.get("kind") != "pending" or event.get("requestId") != victim.get("requestId"):
                         continue
                     request_id = event.get("requestId")
@@ -2103,12 +2938,19 @@ def _cleanup_behavior_errors(
                         findings.append(
                             f"ASSERTION: cleanup side-effect expectation for {operation_id} changed the frozen fixture oracle"
                         )
-                    if type(count.get("count")) is int and count["count"] != expected:
+                    if is_json_integer(count.get("count")) and count["count"] != expected:
                         findings.append(
                             f"ASSERTION: cleanup side-effect count for {operation_id} differs from the frozen fixture oracle"
                         )
             findings.extend(
-                _cleanup_retry_errors(replay, sources, victim.get("executionArn"), bound_execution, final=final)
+                _cleanup_retry_errors(
+                    replay,
+                    sources,
+                    victim.get("executionArn"),
+                    bound_execution,
+                    lambda observation, boundary_event: at_or_after(observation, boundary_event, require_sequence=True),
+                    final=final,
+                )
             )
         else:
             victim_id = role("victim").get("requestId")
@@ -2139,6 +2981,76 @@ def _cleanup_behavior_errors(
     return findings
 
 
+def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Mapping[str, Any]) -> list[str]:
+    retirement = final.get("retirement")
+    retirement = retirement if isinstance(retirement, Mapping) else {}
+    retired_at = retirement.get("retiredAtMs")
+    resources = {
+        item["id"]: item
+        for item in retirement.get("resources", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    terminal_outcomes = {
+        "invocation": ("QUIESCENT",),
+        "execution": TERMINAL_STATUSES,
+        "callback": ("SUCCEEDED", "FAILED", "TIMED_OUT"),
+        "control": ("DELETED",),
+    }
+    faults = {
+        item["id"]: item
+        for item in retirement.get("faults", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    events = normalize_retirement_events([*final.get("events", []), *retirement.get("completions", [])], [])
+    errors: list[str] = []
+    for source in sources:
+        earlier = source.get("retirement")
+        if not isinstance(earlier, Mapping):
+            continue
+        for row in earlier.get("resources", []):
+            if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
+                errors.append("Previously observed retirement resource lacks an identity")
+                continue
+            settled = resources.get(row["id"])
+            if settled is None or any(key in row and row[key] != settled.get(key) for key in ("kind", "ownerCaseId")):
+                errors.append(f"Final retirement omitted or changed observed resource {row['id']}")
+            elif (
+                settled.get("kind") in terminal_outcomes
+                and settled.get("outcome") not in terminal_outcomes[settled["kind"]]
+            ):
+                errors.append(f"Final retirement did not settle observed resource {row['id']}")
+            at = row.get("settledAtMs")
+            if isinstance(at, (int, float)) and (not isinstance(retired_at, (int, float)) or at > retired_at):
+                errors.append(f"Observed settlement for {row['id']} follows final retirement")
+        for row in earlier.get("faults", []):
+            if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
+                errors.append("Previously observed retirement fault lacks an identity")
+                continue
+            released = faults.get(row["id"])
+            if (
+                released is None
+                or ("ownerCaseId" in row and row["ownerCaseId"] != released.get("ownerCaseId"))
+                or not isinstance(released.get("releasedAtMs"), (int, float))
+                or isinstance(released["releasedAtMs"], bool)
+            ):
+                errors.append(f"Final retirement omitted or changed observed fault {row['id']}")
+        remaining = list(events)
+        for completion in normalize_retirement_events(earlier.get("completions", []), errors):
+            match = next(
+                (
+                    index
+                    for index, event in enumerate(remaining)
+                    if _owned_record_enriches(completion, event, event=True)
+                ),
+                None,
+            )
+            if match is None:
+                errors.append("Retirement omitted or changed previously observed work completion")
+            else:
+                remaining.pop(match)
+    return list(dict.fromkeys(errors))
+
+
 async def run_scenarios(
     scenarios: Sequence[Scenario],
     profiles: Sequence[Profile],
@@ -2151,6 +3063,7 @@ async def run_scenarios(
     scheduler: ResourceScheduler | None = None,
     on_result: Callable[[ScenarioResult], None] | None = None,
     on_attempt: Callable[[ScenarioContext], None] | None = None,
+    validate_attempt: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> list[ScenarioResult]:
     """Prepare each profile once, then run compatible cases concurrently.
 
@@ -2199,7 +3112,9 @@ async def run_scenarios(
         raise ValueError("Adapter must implement finish(profile, *, quiescent) for cross-run ownership")
     leases.limit_concurrency(run_id, scenario_concurrency)
     contexts = {
-        case.case_id: ScenarioContext(run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt)
+        case.case_id: ScenarioContext(
+            run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt, _validate_attempt=validate_attempt
+        )
         for case in scenarios
     }
     completed: dict[str, ScenarioResult] = {}
@@ -2207,10 +3122,18 @@ async def run_scenarios(
     def emit(result: ScenarioResult) -> ScenarioResult:
         completed[result.case_id] = result
         if on_result is not None:
-            on_result(result)
+            try:
+                on_result(result)
+            except Exception as exc:
+                error = f"Result audit write failed: {type(exc).__name__}: {exc}"
+                if error not in result.errors:
+                    result.errors.append(error)
+                if result.status == "PASSED":
+                    result.status = "INFRASTRUCTURE_ERROR"
         return result
 
-    run_leases: dict[str, Lease] = {}
+    run_locks: dict[str, asyncio.Lock] = {}
+    adapter_preparation_started: set[str] = set()
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 
     async def prepare(profile: Profile) -> tuple[list[str], dict[str, dict[str, float]]]:
@@ -2218,14 +3141,19 @@ async def run_scenarios(
             run_id, Scenario("deployment", "deployment", profile.profile_id, "deployment"), profile
         )
         residual: list[asyncio.Task[Any]] = []
+
+        async def provision() -> None:
+            adapter_preparation_started.add(profile.profile_id)
+            leases._resources[profile.resource_id].profile_active = True
+            await adapter.prepare(profile)
+
         try:
-            run_resource = f"run:{profile.resource_id}"
-            leases.register(run_resource, 1)
-            run_leases[profile.profile_id] = await leases.acquire(
-                run_resource, run_id, exclusive=True, timeout=limits.lease
-            )
-            async with leases.deployment(profile.resource_id, f"{run_id}:deployment", timeout=limits.lease):
-                await _bounded(adapter.prepare(profile), "provisioning", limits.provisioning, context, residual)
+            run_locks[profile.profile_id] = await leases._acquire_run(profile.resource_id, timeout=limits.lease)
+            async with leases._deployment_lease(profile.resource_id, f"{run_id}:deployment", timeout=limits.lease):
+                try:
+                    await _bounded(provision(), "provisioning", limits.provisioning, context, residual)
+                finally:
+                    leases.track_residual(profile.resource_id, residual)
             return [], context.timings
         except Exception as exc:
             return [f"provisioning: {type(exc).__name__}: {exc}"], context.timings
@@ -2233,6 +3161,8 @@ async def run_scenarios(
     # A failed target does not prevent another profile from preparing or running.
     for profile_id in {case.profile_id for case in scenarios}:
         prepared[profile_id] = asyncio.create_task(prepare(profile_map[profile_id]))
+
+    cleanup_tasks: set[asyncio.Task[Any] | None] = set()
 
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
@@ -2292,6 +3222,14 @@ async def run_scenarios(
                     if snapshot:
                         record_observations(snapshot, phase)
                     previous_observation = context_observations.get(id(source))
+                    if previous_observation is not None and _sdk_frames_order_changed(
+                        previous_observation[1], snapshot
+                    ):
+                        diagnostic = (
+                            f"Context observations conflict with retained facts ({phase}): sdkRequests.sequence"
+                        )
+                        if diagnostic not in errors:
+                            errors.append(diagnostic)
                     # Keep the object alive with its last snapshot: an unchanged
                     # supplied object can legitimately predate newer context data.
                     context_observations[id(source)] = (source, snapshot)
@@ -2300,7 +3238,7 @@ async def run_scenarios(
                         if previous_observation is None
                         else _observation_updates(previous_observation[1], snapshot)
                     )
-                    retained, changes = _retain_observations(retained, updates)
+                    retained, changes = _retain_observations(retained, updates, compare_sdk_order=False)
                     if changes.conflicts:
                         paths = ", ".join(".".join(path) for path in sorted(changes.conflicts))
                         diagnostic = f"Context observations conflict with retained facts ({phase}): {paths}"
@@ -2411,8 +3349,10 @@ async def run_scenarios(
             record_observations(copy.deepcopy(dict(collected)), "collection")
             # Returned observations are newest, so valid sequence enrichment and
             # monotonic completion win after all input-object discoveries survive.
-            evidence, changed = _retain_observations(evidence, collected)
+            evidence, changed = _retain_observations(evidence, collected, compare_sdk_order=False)
             context.evidence = copy.deepcopy(evidence)
+            if any(_sdk_frames_order_changed(snapshot, collected) for snapshot in observation_baselines):
+                errors.append("Collection changed the semantic order of a previously observed SDK request")
             collected_normally = True
             ownership_errors = _ownership_errors(context, evidence)
             if changed:
@@ -2435,6 +3375,7 @@ async def run_scenarios(
             errors.append(f"{type(exc).__name__}: {exc}")
         finally:
             if lease is not None:
+                cleanup_tasks.add(asyncio.current_task())
                 retired = False
                 physical_retirement_verified = False
                 cleanup_errors: list[str] = []
@@ -2516,7 +3457,9 @@ async def run_scenarios(
                                     ],
                                 ):
                                     destination = (
-                                        cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                                        cleanup_errors
+                                        if finding.startswith("INCOMPLETE:") and not _behavioral_incomplete(finding)
+                                        else cleanup_behavior_errors
                                     )
                                     if finding not in destination:
                                         destination.append(finding)
@@ -2581,7 +3524,9 @@ async def run_scenarios(
                         try:
                             evidence = retain_context(partial_baseline, partial_input, "partial collection")
                             if partial_captured is not None:
-                                evidence, changed = _retain_observations(evidence, partial_captured)
+                                evidence, changed = _retain_observations(
+                                    evidence, partial_captured, compare_sdk_order=False
+                                )
                                 if changed:
                                     errors.append("Partial collection omitted or changed retained observations")
                         except (Exception, asyncio.CancelledError) as exc:
@@ -2646,6 +3591,7 @@ async def run_scenarios(
                 # A timed-out adapter can continue sending requests despite
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
+                    leases.track_residual(lease.resource_id, residual)
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 try:
                     if not isinstance(context.evidence, Mapping):
@@ -2655,8 +3601,14 @@ async def run_scenarios(
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"Cleanup evidence retention: {type(exc).__name__}: {exc}")
                 cleanup_snapshots = [item for snapshots in cleanup_evidence.values() for item in snapshots]
+                retirement_claims = any(
+                    isinstance(retirement := frame.get("retirement"), Mapping)
+                    and any(retirement.get(field) for field in ("resources", "faults", "completions"))
+                    for frame in [*observation_baselines, evidence, *cleanup_snapshots]
+                )
                 owned_work = (
-                    context.attempts
+                    retirement_claims
+                    or context.attempts
                     or context.retirement_evidence
                     or cleanup_changed
                     or any(
@@ -2684,16 +3636,39 @@ async def run_scenarios(
                                 known_snapshots=cleanup_snapshots,
                             ):
                                 destination = (
-                                    cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                                    cleanup_errors
+                                    if finding.startswith("INCOMPLETE:") and not _behavioral_incomplete(finding)
+                                    else cleanup_behavior_errors
                                 )
                                 if finding not in destination:
                                     destination.append(finding)
+                            observed_frames = [
+                                *observation_baselines,
+                                evidence,
+                                *cleanup_snapshots,
+                                retirement_evidence,
+                            ]
+                            native = _native_intervals(observed_frames)
+                            for attempt in retirement_evidence.get("attempts", []):
+                                if not isinstance(attempt, dict) or not isinstance(attempt.get("requestId"), str):
+                                    continue
+                                for field, (measured_at, platform) in native.get(attempt["requestId"], {}).items():
+                                    if (
+                                        platform
+                                        and attempt.get(field) == measured_at
+                                        and attempt.get(f"{field}Source") in (None, "fixture")
+                                    ):
+                                        attempt[f"{field}Source"] = "platform"
                             audit = [
                                 error
                                 for baseline in [*observation_baselines, evidence, *cleanup_snapshots]
                                 for error in _retirement_ownership_errors(context, baseline, retirement_evidence)
                             ]
-                            audit.extend(validate_retirement_evidence(retirement_evidence))
+                            audit.extend(
+                                validate_retirement_evidence(
+                                    retirement_evidence, allow_no_launches=not context.attempts
+                                )
+                            )
                             if audit:
                                 errors.extend(error for error in audit if error not in errors)
                                 cleanup_errors.append("Independent retirement evidence did not establish quiescence")
@@ -2720,14 +3695,26 @@ async def run_scenarios(
                         known_snapshots=cleanup_snapshots,
                         final=True,
                     ):
-                        destination = cleanup_errors if finding.startswith("INCOMPLETE:") else cleanup_behavior_errors
+                        destination = (
+                            cleanup_errors
+                            if finding.startswith("INCOMPLETE:") and not _behavioral_incomplete(finding)
+                            else cleanup_behavior_errors
+                        )
                         if finding not in destination:
                             destination.append(finding)
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"Final cleanup behavior validation: {type(exc).__name__}: {exc}")
+                try:
+                    cleanup_errors.extend(
+                        _retained_retirement_errors(
+                            [*observation_baselines, evidence, *cleanup_snapshots], retirement_evidence or evidence
+                        )
+                    )
+                except Exception as exc:
+                    cleanup_errors.append(f"Retirement observation reconciliation: {type(exc).__name__}: {exc}")
                 if evidence and status == "PASSED":
                     try:
-                        if cleanup_changed and physical_retirement_verified:
+                        if physical_retirement_verified:
                             # The full expanded inventory was audited above.
                             # Final behavior validation still receives only its
                             # frozen observations and their retirement records.
@@ -2735,21 +3722,45 @@ async def run_scenarios(
                             for field, inventory in (("resources", "resourcesCreated"), ("faults", "faultsCreated")):
                                 original_ids = {item["id"] for item in evidence.get(inventory, [])}
                                 retirement[field] = [item for item in retirement[field] if item["id"] in original_ids]
+                            window = evidence.get("observationEndedAtMs")
+                            candidates = list(retirement.get("completions", []))
+                            if isinstance(window, (int, float)) and not isinstance(window, bool):
+                                candidates.extend(
+                                    event
+                                    for event in retirement_evidence.get("events", [])
+                                    if isinstance(event, Mapping)
+                                    and isinstance(at := event.get("atMs"), (int, float))
+                                    and at > window
+                                )
+                            if candidates:
+                                completions = _project_retirement_completions(evidence.get("events", []), candidates)
+                                if completions or "completions" in retirement:
+                                    retirement["completions"] = completions
                             evidence["retirement"] = retirement
-                        final_errors = _ownership_errors(context, evidence) + list(validator(evidence, phase="final"))
+                        final_ownership_errors = _ownership_errors(context, evidence)
+                        final_errors = final_ownership_errors + list(validator(evidence, phase="final"))
                         new_errors = [error for error in final_errors if error not in errors]
                         errors.extend(new_errors)
                         # New final-phase failures concern retirement. Keep
                         # ownership until these checks finish; a boolean from
                         # the adapter cannot grant an unsafe exclusive window.
                         if new_errors:
-                            cleanup_errors.append("Final retirement evidence did not establish quiescence")
+                            if physical_retirement_verified and not final_ownership_errors:
+                                if all(error.startswith("ASSERTION:") for error in new_errors):
+                                    cleanup_behavior_errors.extend(new_errors)
+                                else:
+                                    status = "INCOMPLETE_EVIDENCE"
+                            else:
+                                cleanup_errors.append("Final retirement evidence did not establish quiescence")
                     except Exception as exc:
                         cleanup_errors.append(f"Final evidence validation: {type(exc).__name__}: {exc}")
                 if cleanup_behavior_errors:
                     errors.extend(finding for finding in cleanup_behavior_errors if finding not in errors)
                     if status == "PASSED":
-                        status = "FAILED"
+                        if any(not finding.startswith("INCOMPLETE:") for finding in cleanup_behavior_errors):
+                            status = "FAILED"
+                        elif not cleanup_errors:
+                            status = "INCOMPLETE_EVIDENCE"
                 if cleanup_errors:
                     if status == "PASSED":
                         status = "INFRASTRUCTURE_ERROR"
@@ -2774,20 +3785,19 @@ async def run_scenarios(
         return result
 
     tasks = [asyncio.create_task(run_case(case)) for case in scenarios]
-    results: list[ScenarioResult] = []
-    try:
-        results = list(await asyncio.gather(*tasks))
-        return results
-    finally:
+    case_results = asyncio.gather(*tasks)
+
+    async def drain_and_finish() -> None:
         for task in (*tasks, *prepared.values()):
-            # The first gather already forwards cancellation. A case may be
-            # finishing bounded cleanup while a faster cancelled case returns;
-            # do not interrupt that retirement with a second cancellation.
-            if not task.done() and not task.cancelling():
+            # A case already in bounded cleanup must be allowed to retire.
+            if task not in cleanup_tasks and not task.done() and not task.cancelling():
                 task.cancel()
         await asyncio.gather(*tasks, *prepared.values(), return_exceptions=True)
 
-        async def finish_profile(profile_id: str, run_lease: Lease) -> None:
+        async def finish_profile(profile_id: str, run_lock: asyncio.Lock) -> None:
+            if profile_id not in adapter_preparation_started:
+                run_lock.release()
+                return
             profile = profile_map[profile_id]
             context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
             quiet = leases.quarantine_reason(profile.resource_id) is None
@@ -2806,10 +3816,27 @@ async def run_scenarios(
             finally:
                 # The target's case resource remains quarantined independently;
                 # a later run can acquire this mutex but cannot deploy or admit.
-                await run_lease.release(quiescent=True)
+                leases.track_residual(profile.resource_id, residual)
+                leases._resources[profile.resource_id].profile_active = False
+                run_lock.release()
                 for result in completed.values():
                     if result.profile_id == profile_id:
                         result.timings.update(copy.deepcopy(context.timings))
                         emit(result)
 
-        await asyncio.gather(*(finish_profile(profile_id, lease) for profile_id, lease in run_leases.items()))
+        await asyncio.gather(*(finish_profile(profile_id, lease) for profile_id, lease in run_locks.items()))
+
+    try:
+        return list(await asyncio.shield(case_results))
+    finally:
+        draining = asyncio.create_task(drain_and_finish())
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(draining)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        case_results.exception()
+        if cancellation is not None:
+            raise cancellation
