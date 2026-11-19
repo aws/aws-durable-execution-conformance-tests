@@ -46,12 +46,10 @@
       ]
     },
     "runId": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/nonBlankString"
     },
     "caseId": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/nonBlankString"
     },
     "artifact": {
       "type": "object",
@@ -61,12 +59,10 @@
       ],
       "properties": {
         "sdk": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "conformance": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         }
       }
     },
@@ -80,12 +76,10 @@
       ],
       "properties": {
         "functionArn": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "configurationDigest": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "nativeConcurrency": {
           "type": "integer",
@@ -107,8 +101,7 @@
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
-        "type": "string",
-        "minLength": 1
+        "$ref": "#/$defs/nonBlankString"
       }
     },
     "attempts": {
@@ -134,8 +127,7 @@
     "collectionErrors": {
       "type": "array",
       "items": {
-        "type": "string",
-        "minLength": 1
+        "$ref": "#/$defs/nonBlankString"
       }
     },
     "histories": {
@@ -195,14 +187,10 @@
             ],
             "properties": {
               "requestId": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
+                "$ref": "#/$defs/nonBlankString"
               },
               "operationId": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
+                "$ref": "#/$defs/nonBlankString"
               }
             }
           }
@@ -215,9 +203,7 @@
           ],
           "properties": {
             "operationId": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "\\S"
+              "$ref": "#/$defs/nonBlankString"
             },
             "attempts": {
               "type": "array",
@@ -353,8 +339,7 @@
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "string",
-            "minLength": 1
+            "$ref": "#/$defs/nonBlankString"
           }
         }
       }
@@ -384,6 +369,10 @@
           "type": "number",
           "minimum": 0
         },
+        "completions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        },
         "resources": {
           "type": "array",
           "items": {
@@ -404,12 +393,30 @@
                     "minimum": 0
                   },
                   "evidenceUri": {
-                    "type": "string",
-                    "minLength": 1
+                    "$ref": "#/$defs/nonBlankString"
                   },
                   "outcome": {
-                    "type": "string",
-                    "minLength": 1
+                    "$ref": "#/$defs/nonBlankString"
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "kind": { "const": "invocation" } },
+                  "required": ["kind"]
+                },
+                "then": {
+                  "properties": { "outcome": { "const": "QUIESCENT" } }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "kind": { "const": "execution" } },
+                  "required": ["kind"]
+                },
+                "then": {
+                  "properties": {
+                    "outcome": { "enum": ["SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"] }
                   }
                 }
               },
@@ -499,8 +506,7 @@
       "default": "standard"
     },
     "scenario": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/nonBlankString"
     }
   },
   "allOf": [
@@ -584,6 +590,10 @@
     }
   ],
   "$defs": {
+    "nonBlankString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
     "attempt": {
       "type": "object",
       "required": [
@@ -600,28 +610,22 @@
       ],
       "properties": {
         "requestId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "executionArn": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "environmentId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "workerId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "processId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "role": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "attempt": {
           "type": "integer",
@@ -634,6 +638,12 @@
         "endedAtMs": {
           "type": "number",
           "minimum": 0
+        },
+        "startedAtMsSource": {
+          "enum": ["platform", "fixture"]
+        },
+        "endedAtMsSource": {
+          "enum": ["platform", "fixture"]
         },
         "outcome": {
           "enum": [
@@ -656,54 +666,69 @@
       ],
       "properties": {
         "requestId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "observedDuringRequestId": {
+          "anyOf": [{ "$ref": "#/$defs/nonBlankString" }, { "type": "null" }]
         },
         "ownerRequestId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "executionArn": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "kind": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "atMs": {
           "type": "number",
           "minimum": 0
         }
       },
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "admission_probe"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "probe",
-          "outcome"
-        ],
-        "properties": {
-          "probe": {
-            "enum": [
-              "operation",
-              "checkpoint"
-            ]
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "admission_probe"
+              }
+            }
           },
-          "outcome": {
-            "enum": [
-              "ACCEPTED",
-              "REJECTED"
-            ]
+          "then": {
+            "required": [
+              "probe",
+              "outcome"
+            ],
+            "properties": {
+              "probe": {
+                "enum": [
+                  "operation",
+                  "checkpoint"
+                ]
+              },
+              "outcome": {
+                "enum": [
+                  "ACCEPTED",
+                  "REJECTED"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["checkpoint_call", "poll_call"] } }
+          },
+          "then": {
+            "required": ["callId"],
+            "properties": {
+              "callId": { "$ref": "#/$defs/nonBlankString" },
+              "outcome": { "enum": ["DISPATCHED", "REJECTED"] }
+            }
           }
         }
-      },
-      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Behavior observations do not require the complete physical stream. See evidence-schema.md. Physical retirement locally restores observed_task_start/observed_task_exit only with matching sourceKind, rejects malformed or unknown observed_task aliases, and audits their complete work pairs without changing behavior evidence."
+      ],
+      "$comment": "Independent physical retirement additionally requires unique nonnegative integer sequence per request; wrapper_enter and wrapper_return or wrapper_raise; task_start/task_exit by taskId including root; io_start/io_exit by distinct interval taskId; checkpoint_call/checkpoint_exit and poll_call/poll_exit by callId. Dispatched checkpoint and state-poll SDK requests must match an observed start by requestId, callId and atMs in the independent retirement audit. Behavior observations do not require the complete physical stream. See evidence-schema.md. Physical retirement locally restores observed_task_start/observed_task_exit only with matching sourceKind, rejects malformed or unknown observed_task aliases, and audits their complete work pairs without changing behavior evidence."
     },
     "request": {
       "type": "object",
@@ -717,24 +742,35 @@
       ],
       "properties": {
         "requestId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "observedDuringRequestId": {
+          "anyOf": [{ "$ref": "#/$defs/nonBlankString" }, { "type": "null" }]
         },
         "ownerRequestId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "executionArn": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "method": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "atMs": {
           "type": "number",
           "minimum": 0
+        },
+        "updates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "action"],
+            "properties": {
+              "id": { "$ref": "#/$defs/nonBlankString" },
+              "type": { "$ref": "#/$defs/nonBlankString" },
+              "action": { "$ref": "#/$defs/nonBlankString" }
+            }
+          }
         },
         "outcome": {
           "enum": [
@@ -755,29 +791,22 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "name": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
+          "anyOf": [
+            { "$ref": "#/$defs/nonBlankString" },
+            { "type": "null" }
+          ]
         },
         "type": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "status": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "parentId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [{ "$ref": "#/$defs/nonBlankString" }, { "type": "null" }]
         },
         "startedAtMs": {
           "type": "number",
@@ -799,12 +828,10 @@
       ],
       "properties": {
         "executionArn": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "ownerCaseId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "status": {
           "enum": [
@@ -837,16 +864,13 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "kind": {
-          "type": "string",
-          "minLength": 1
+          "enum": ["invocation", "execution", "callback", "control"]
         },
         "ownerCaseId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         }
       }
     },
@@ -858,12 +882,10 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "ownerCaseId": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/nonBlankString"
         },
         "releasedAtMs": {
           "type": "number",
@@ -875,6 +897,11 @@
       "allOf": [
         {
           "$ref": "#/$defs/operation"
+        },
+        {
+          "properties": {
+            "status": { "enum": ["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] }
+          }
         },
         {
           "if": {
@@ -909,19 +936,13 @@
       ],
       "properties": {
         "attemptId": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+          "$ref": "#/$defs/nonBlankString"
         },
         "requestId": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+          "$ref": "#/$defs/nonBlankString"
         },
         "outcome": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+          "$ref": "#/$defs/nonBlankString"
         }
       }
     },
@@ -934,9 +955,7 @@
       ],
       "properties": {
         "operationId": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+          "$ref": "#/$defs/nonBlankString"
         },
         "count": {
           "type": "integer",

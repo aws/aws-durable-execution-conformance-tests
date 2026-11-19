@@ -186,7 +186,7 @@ def test_local_budget_allowance_is_still_numeric_finite_and_nonnegative(tmp_path
     plan["scenarios"][0]["behavior_budgets"]["allowance"] = bad
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    with pytest.raises(ValueError, match="behavior budgets"):
+    with pytest.raises(ValueError, match=r"behavior budgets|JSON numbers must be finite"):
         load_manifest(path, suite=definition())
 
 
@@ -306,3 +306,43 @@ def test_caller_owned_rules_cannot_masquerade_as_shared_conformance(tmp_path: Pa
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match=r"shared|namespace"):
         load_manifest(path, suite=suite)
+
+
+@pytest.mark.parametrize("minimum", [1, 3])
+def test_suite_slots_reject_overlap_without_shadowing_disjoint_exact_slot(tmp_path: Path, minimum: int) -> None:
+    plan, _ = plan_and_evidence()
+    suite = definition()
+    exact = suite.cases[0]
+    wildcard = replace(exact, native_concurrency=None, minimum_native_concurrency=minimum, roles=("warm",))
+    suite = replace(suite, cases=(wildcard, exact))
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    if minimum == 1:
+        with pytest.raises(ValueError, match="case definitions overlap"):
+            load_manifest(path, suite=suite)
+        with pytest.raises(ValueError, match="case definitions overlap"):
+            coverage_inventory(plan, suite=suite)
+    else:
+        assert load_manifest(path, suite=suite) == plan
+        assert len(coverage_inventory(plan, suite=suite)["missing"]) == 1
+
+
+@pytest.mark.parametrize("observed", [None, 10, 1000])
+def test_suite_without_policy_key_binds_top_level_budgets(tmp_path: Path, observed: int | None) -> None:
+    plan, value = plan_and_evidence()
+    suite = replace(definition(), evidence_policy_key=None)
+    if observed is not None:
+        value["budgets"] = {"settleMs": observed, "allowance": 0}
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path, suite=suite)[0]
+    assert result["status"] == ("PASSED" if observed == 10 else "FAILED")
+    if observed != 10:
+        assert result["errors"] == ["INCOMPLETE: observed behavior budgets do not match the declared case budgets"]
+
+
+def test_empty_local_suite_cannot_report_passing_coverage() -> None:
+    plan, _ = plan_and_evidence()
+    plan["scenarios"] = []
+    suite = replace(definition(), requirements={}, cases=())
+    with pytest.raises(ValueError, match="must declare at least one mandatory case"):
+        build_report(plan, [], suite=suite)

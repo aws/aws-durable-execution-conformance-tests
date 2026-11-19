@@ -34,6 +34,86 @@ def evidence_factories() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
+    ("kind", "outcome", "is_valid"),
+    [
+        ("callback", "SUCCEEDED", True),
+        ("callback", "PENDING", False),
+        ("control", "DELETED", True),
+        ("control", "DELETE_REQUESTED", False),
+        ("timer", "STILL_RUNNING", False),
+    ],
+)
+def test_retirement_resource_completion_contract(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    kind: str,
+    outcome: str,
+    is_valid: bool,
+) -> None:
+    value = evidence_factories["evidence"]()
+    resource = {"id": "additional-resource", "kind": kind, "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/resource.json", "outcome": outcome}
+    )
+    assert schema_validator.is_valid(value) is is_valid
+
+
+@pytest.mark.parametrize(
+    ("kind", "outcome", "reason"),
+    [
+        ("invocation", "SUCCEEDED", "invocation quiescence is not established"),
+        ("execution", "RUNNING", "an execution may still resume after retirement"),
+    ],
+)
+def test_schema_and_validator_require_settled_invocation_and_execution_outcomes(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    kind: str,
+    outcome: str,
+    reason: str,
+) -> None:
+    value = evidence_factories["evidence"]()
+    schema_validator.validate(value)
+    index, resource = next(
+        (index, resource) for index, resource in enumerate(value["retirement"]["resources"]) if resource["kind"] == kind
+    )
+    resource["outcome"] = outcome
+    assert ["retirement", "resources", index, "outcome"] in [
+        list(error.path) for error in schema_validator.iter_errors(value)
+    ]
+    assert any(reason in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        (("runId",), "runId"),
+        (("caseId",), "caseId"),
+        (("collection", "evidenceUris", 0), "collection.evidenceUris"),
+        (("retirement", "resources", 0, "evidenceUri"), "retirement.resources.evidenceUri"),
+        (("artifact", "sdk"), "artifact.sdk"),
+        (("attempts", 0, "workerId"), "workerId"),
+    ],
+)
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
+def test_schema_and_validator_reject_blank_identity(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    path: tuple[str | int, ...],
+    reason: str,
+    blank: str,
+) -> None:
+    value = evidence_factories["evidence"]()
+    record = value
+    for key in path[:-1]:
+        record = record[key]
+    record[path[-1]] = blank
+    assert list(path) in [list(error.path) for error in schema_validator.iter_errors(value)]
+    assert any(reason in error and "non-empty string" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
     ("factory", "arguments"),
     [
         ("evidence", (1,)),
@@ -476,3 +556,34 @@ def test_physical_retirement_rejects_noninteger_sequence_numbers(evidence_factor
     evidence_factories["complete_retirement_events"](value)
     value["events"][0]["sequence"] = invalid
     assert any("sequence" in error for error in validate_retirement_evidence(value))
+
+
+@pytest.mark.parametrize("updates", [None, [None], [{}], [{"id": "", "type": "STEP", "action": "SUCCEED"}]])
+def test_wire_schema_rejects_malformed_checkpoint_updates(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], updates: Any
+) -> None:
+    value = evidence_factories["evidence"](2)
+    value["sdkRequests"][0]["updates"] = updates
+    assert not schema_validator.is_valid(value)
+
+
+@pytest.mark.parametrize("kind", ["checkpoint_call", "poll_call"])
+@pytest.mark.parametrize("extra", [{}, {"callId": " "}, {"callId": "call", "outcome": "UNKNOWN"}])
+def test_wire_and_behavior_reject_malformed_sdk_call_event(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], kind: str, extra: dict[str, str]
+) -> None:
+    value = evidence_factories["evidence"](2)
+    value["events"].append(evidence_factories["event"](value["attempts"][0], kind, 26, **extra))
+    assert not schema_validator.is_valid(value)
+    assert any("observed SDK call" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("parent", ["", " "])
+def test_schema_and_validator_reject_blank_operation_parent(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], parent: str
+) -> None:
+    value = evidence_factories["replay_evidence"]()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        operations[0]["parentId"] = parent
+    assert not schema_validator.is_valid(value)
+    assert any("parentId must be a non-empty string" in error for error in validate_evidence(value))

@@ -8,6 +8,7 @@ import json
 import re
 import xml.etree.ElementTree as ET
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 from runpy import run_path
 from types import SimpleNamespace
@@ -135,6 +136,42 @@ def test_manifest_preserves_large_integer_capacity_without_float_conversion(tmp_
     assert admitted["profiles"][1]["capacity"] == 10**1000
 
 
+@pytest.mark.parametrize("behavior_budget", [False, True])
+def test_manifest_rejects_budgets_that_overflow_float(tmp_path, behavior_budget):
+    plan, _ = timed_plan(3)
+    if behavior_budget:
+        plan["scenarios"][0]["behavior_budgets"]["admissionMs"] = 10**400
+    else:
+        plan["budgets"] = {"execution": 10**400}
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="budgets must"):
+        load_manifest(path)
+
+
+def test_manifest_default_profiles_are_independent_of_order(tmp_path):
+    plan = manifest()
+    extra = {
+        **plan["profiles"][1],
+        "profile_id": "extra",
+        "resource_id": "arn:extra",
+        "incompatibilityReason": "different worker configuration",
+    }
+    plan["profiles"].insert(0, extra)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    assert load_manifest(path) == plan
+
+
+def test_manifest_rejects_not_implemented_with_evidence(tmp_path):
+    plan = manifest()
+    plan["scenarios"][0].update(not_implemented="unavailable", evidence_file="evidence.json")
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="cannot declare both evidence_file and not_implemented"):
+        load_manifest(path)
+
+
 def test_strict_acceptance_requires_every_mandatory_requirement():
     plan = manifest()
     results = passed_results(plan)
@@ -236,6 +273,17 @@ def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
     assert load_manifest(path) == plan
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_offline_evidence_rejects_nonfinite_json_numbers(tmp_path, literal):
+    plan = manifest()
+    plan["scenarios"][0]["evidence_file"] = "evidence.json"
+    (tmp_path / "evidence.json").write_text('{"result": [' + literal + "]}")
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE"
+    assert result["errors"] == ["INCOMPLETE: JSON numbers must be finite"]
+    assert "evidence" not in result
 
 
 def test_evidence_cannot_be_substituted_between_cases_or_artifacts(tmp_path):
@@ -582,6 +630,115 @@ def test_offline_cli_final_validation_rejects_observed_fault_release_after_retir
     assert result["errors"] == (
         ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
     )
+
+
+@pytest.mark.parametrize("omit_declared", [False, True])
+def test_offline_budget_binding_permits_extensions_but_requires_declared_keys(tmp_path, omit_declared):
+    plan, value = timed_plan(3)
+    plan["scenarios"][0]["behavior_budgets"]["extraBudget"] = 1
+    value["budgets"]["adapterMetadata"] = None
+    if not omit_declared:
+        value["budgets"]["extraBudget"] = 1
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == ("FAILED" if omit_declared else "PASSED"), result["errors"]
+
+
+def test_offline_evidence_preserves_large_integral_decimal_values(tmp_path):
+    plan = manifest()
+    plan["scenarios"][0]["evidence_file"] = "evidence.json"
+    (tmp_path / "evidence.json").write_text('{"result":9007199254740993.0}')
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["evidence"]["result"] == 9007199254740993
+
+
+def test_offline_evidence_round_trips_high_precision_json_numbers(tmp_path):
+    plan = manifest()
+    plan["scenarios"][0]["evidence_file"] = "raw.json"
+    raw_number = "0.100000000000000000001"
+    raw = tmp_path / "raw.json"
+    raw.write_text('{"result":' + raw_number + "}")
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    output = tmp_path / "out"
+    with pytest.raises(SystemExit):
+        run(["--manifest", str(path), "--output", str(output)])
+    results = json.loads((output / "evidence.json").read_text(), parse_float=Decimal)
+    assert results[0]["evidence"]["result"] == Decimal(raw_number)
+
+
+def test_offline_evidence_flags_cross_case_launch_ownership(tmp_path):
+    plan = manifest()
+    for index, case in enumerate(plan["scenarios"][:2]):
+        case["evidence_file"] = f"evidence-{index}.json"
+        (tmp_path / case["evidence_file"]).write_text(
+            json.dumps(
+                {
+                    "attempts": [{"requestId": "same-request", "executionArn": "same-execution"}],
+                    "resourcesCreated": [
+                        {"kind": "control", "id": "same-control"},
+                        {"kind": "callback", "id": "same-callback"},
+                    ],
+                    "faultsCreated": [{"id": "same-fault"}],
+                }
+            )
+        )
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app._identity_errors", return_value=[]),
+        patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]),
+    ):
+        first, second = evidence_results(plan, tmp_path)[:2]
+    for result in (first, second):
+        assert result["status"] == "FAILED"
+        assert "INCOMPLETE: requestId same-request is claimed by multiple cases" in result["errors"]
+        assert "INCOMPLETE: executionArn same-execution is claimed by multiple cases" in result["errors"]
+        assert "INCOMPLETE: control same-control is claimed by multiple cases" in result["errors"]
+        assert "INCOMPLETE: callback same-callback is claimed by multiple cases" in result["errors"]
+        assert "INCOMPLETE: fault same-fault is claimed by multiple cases" in result["errors"]
+
+
+def test_offline_runner_does_not_overwrite_concurrent_output_claim(tmp_path, monkeypatch):
+    plan_path = tmp_path / "manifest.json"
+    plan_path.write_text(json.dumps(manifest()))
+    output = tmp_path / "out"
+    winner = output / "manifest.json"
+    original_iterdir = type(output).iterdir
+
+    def raced_iterdir(path):
+        if path == output:
+            winner.write_text("winning run")
+            return iter(())
+        return original_iterdir(path)
+
+    monkeypatch.setattr(type(output), "iterdir", raced_iterdir)
+    with pytest.raises(SystemExit) as error:
+        run(["--manifest", str(plan_path), "--output", str(output)])
+    assert error.value.code == 2
+    assert winner.read_text() == "winning run"
+
+
+def test_offline_json_accepts_exact_integral_exponents_without_float_overflow(tmp_path):
+    plan = manifest()
+    plan["scenarios"][0]["evidence_file"] = "evidence.json"
+    path = tmp_path / "evidence.json"
+    path.write_text('{"result":1e400}')
+    assert evidence_results(plan, tmp_path)[0]["evidence"]["result"] == 10**400
+    path.write_text('{"result":0e9999}')
+    assert evidence_results(plan, tmp_path)[0]["evidence"]["result"] == 0
+    path.write_text('{"result":1e9999}')
+    assert evidence_results(plan, tmp_path)[0]["errors"] == [
+        "INCOMPLETE: JSON integral number exceeds the supported digit limit"
+    ]
+
+
+def test_manifest_rejects_whitespace_only_extra_role(tmp_path):
+    plan = manifest()
+    case = next(item for item in plan["scenarios"] if item["requirement_id"] == "lmi-lifecycle-1")
+    case["roles"] = ["victim", "peer", " "]
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="distinct required cohort roles"):
+        load_manifest(path)
 
 
 @pytest.mark.parametrize("requirement", [3, 4])

@@ -72,7 +72,12 @@ Events may outlive wrapper return and the native invocation interval, but must
 remain inside `observationEndedAtMs`.
 
 `sdkRequests` retains every attempted SDK request, including rejected requests.
-Each has the same ownership/time fields plus `method` and `outcome` (`DISPATCHED`
+Lifecycle 1 requires a checkpoint dispatch from each successful selected original
+invocation during their native overlap and
+exactly one successful STEP named `record-marker` in each selected service
+history. The step result must match that execution's fixture-declared expected
+result. Use distinct expected results for the two selected executions. Each SDK request has the same
+ownership/time fields plus `method` and `outcome` (`DISPATCHED`
 or `REJECTED`). No dispatch is allowed at or after that invocation's first
 `wrapper_return`, `wrapper_raise`, or `admission_closed`. A raised wrapper exit
 closes admission for peers, resumes, retries, and warm requests too. The disposal
@@ -84,10 +89,11 @@ and a recorded `outcome`. For the selected `victim` in `lmi-lifecycle-2` or
 or after actual wrapper return. An `operation` probe at that boundary is
 optional and diagnostic; its outcome may be `ACCEPTED` or `REJECTED`, and it
 must meet the same ownership and observation rules as other events. The victim
-must have one wrapper exit: a return. If a victim probe and a closure share a
+must have one wrapper exit: a return. If a dispatch or a disposal probe and a closure share a
 timestamp, use their per-request `sequence` values to order them when both
 are present; these must be distinct nonnegative integers. With either
-sequence absent, the timestamp boundary remains inclusive. This exception
+sequence absent, only the dispatch or probe comparison against a closure
+keeps the inclusive timestamp boundary. This exception
 does not permit late SDK dispatch or require forced cancellation of previously
 dispatched work.
 
@@ -97,7 +103,8 @@ does not gain an exception from a later boundary. Deadline and recovery
 fixtures still require both rejected probes at or after `admission_closed`.
 
 `histories` contains every launched execution's service history, with
-`executionArn`, `ownerCaseId`, `status`, `result` or `error`, and `operations`.
+`executionArn`, `ownerCaseId`, `status`, and `operations`. Retain the stored
+`result` or `error` when the service reports it; a held `RUNNING` history can have neither.
 Optional `startedAtMs` is the actual service execution start from
 `GetDurableExecution.StartTimestamp` or `ExecutionStarted.EventTimestamp`,
 normalized to UTC Unix epoch milliseconds. When supplied, it must be finite,
@@ -119,7 +126,7 @@ its fault is held may instead declare `allowedStatuses`, a nonempty list of
 unique recognized statuses. Exactly one of `status` or `allowedStatuses` is
 required. Only a list containing `RUNNING` permits omission of `result`/`error`;
 any declared output expectation is still compared. For example,
-`{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"], "result": null}`
+`{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]}`
 permits an active timeout victim without accepting a successful outcome. This
 observation allowance does not establish retirement: every owned execution still
 needs a terminal retirement record. All declared expected fields are compared;
@@ -145,10 +152,18 @@ watermarks cover the full window. Independent retirement applies the same rule.
 | `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM process, or distinct Python processes. Histories and fixture expectations preserve attribution. |
 | `lmi-lifecycle-2` | Normal return: `victim` and `root_completed` both have outcome `SUCCEEDED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
 | `lmi-lifecycle-3` | `victim` with `work_in_flight`, actual `platform_timeout` (`source: platform`) satisfying `startedAtMs + profile.timeoutMs <= platform_timeout.atMs <= endedAtMs`, `admission_closed`, both rejected probes, and cooperative `task_exit` after timeout. Closure, probes and cleanup may follow native completion. `budgets.admissionMs` and `budgets.cleanupMs` are agreed fixture limits, not product SLAs. |
-| `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. Recovery must use an execution distinct from the victim and every selected peer. Python recovery must also use a process distinct from every held peer; reuse of the victim's process requires recovery admission at or after the victim's native invocation `endedAtMs`, regardless of worker naming or policy. Background task exit remains a separate boundary. The recovery request must succeed. |
+| `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. Recovery must use an execution distinct from the victim and every selected peer. Python recovery must also use a process distinct from every held peer; reuse of the victim's process requires platform-sourced recovery admission at or after the victim's platform-sourced native invocation `endedAtMs`, regardless of worker naming or policy. Background task exit remains a separate boundary. The recovery request must succeed. |
 | `lmi-lifecycle-5` | Original `victim` returns PENDING with `pending` and `wrapper_return`; selected `resume` starts later against the same execution. `replay.before` stores completed success and failure operations. `replay.after` preserves each completed operation unchanged by operation ID and matches collected final history; completed operations need not form a positional prefix. `replay.operationExecutions` records actual user-code entries by request/operation (and `attemptId` for retries), proving completed code did not run again. `replay.retry` identifies an incomplete operation and at least two distinct observed attempts, first failed and last successful. `replay.sideEffects` records `operationId`, actual `count`, and fixture-defined `expectedCount` for completed operations and retries. |
 | `lmi-lifecycle-6` | Original `victim` and sequential `warm` request reuse the same environment, worker, and process. The warm request starts after the victim's `wrapper_return` and at or after its native invocation `endedAtMs`. Victim-owned activity may outlive that native interval: `late_activity` retains victim ownership and identifies the warm request in `observedDuringRequestId`. Separate `task_exit` follows the late activity; no stale SDK dispatch is permitted. |
 | `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
+
+For lifecycle 3 and 4, `work_in_flight` must precede the platform timeout.
+`admission_closed` and `task_exit` must follow it. The `work_in_flight`
+and `task_exit` observations must carry the same `taskId`. Any recorded start
+for that task must precede the in-flight observation. If they share a
+timestamp, distinct per-request sequences must establish that order. When one of these events shares the timeout timestamp, distinct per-request
+`sequence` values for that event and the timeout must prove the order.
+A missing or ambiguous sequence leaves the order incomplete.
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run and case identifiers isolate evidence and controls;
@@ -252,6 +267,16 @@ with the ownership and normalized timestamp fields above. It requires:
   Neither an unmatched start nor an unmatched exit establishes completion, and
   each start must precede or equal its exit.
 
+- Every dispatched `CheckpointDurableExecution` or `GetDurableExecutionState`
+  request carries its `callId` and matches the corresponding checkpoint or poll
+  start with the same request, call ID, and dispatch timestamp. The start must
+  have a matching exit. In behavior validation a recorded checkpoint or poll
+  start matches exactly one SDK request with the same method, `requestId`,
+  `callId`, `atMs`, and outcome (`DISPATCHED` by default or `REJECTED`).
+  A rejected start can omit its exit when corroborated by a matching rejected
+  request. Other dispatched methods require a completion contract before
+  retirement can be established.
+
 | Start | Exit | Identity within a request |
 | --- | --- | --- |
 | `task_start` | `task_exit` | Nonempty `taskId`, with `root` reserved for the root task |
@@ -282,3 +307,105 @@ outcome. Only invocation, execution, callback, and control resource kinds have
 completion contracts in this audit; an unknown retained resource kind cannot
 permit target reuse. Successful retirement does not clear failed behavior
 assertions, and unresolved completion keeps the target quarantined.
+
+
+When a work start is present in the behavior stream, final validation requires
+its completion before its invocation settles. A completion collected after
+the observation window can be placed in `retirement.completions`, with the
+same request and work identities as the start. Tied timestamps require distinct
+per-request sequences to establish interval order. Behavior validation reads only
+the frozen observation stream.
+
+For lifecycle 6, the selected victim's `endedAtMs` must come from the platform
+native invocation completion record and the warm attempt's `startedAtMs` from
+its platform start record. Set their corresponding `endedAtMsSource` and
+`startedAtMsSource` to `platform`. A provisional fixture or wrapper timestamp
+cannot prove sequential reuse.
+
+Checkpoint `updates` entries use lowercase `id`, `type`, and `action` keys.
+For lifecycle 1 the selected request's overlap checkpoint contains a
+`STEP` update with action `SUCCEED` for its marker operation ID. Lifecycle 5
+requires a `WAIT` or `CALLBACK` update with action `START` and the same
+operation ID and type as a successful operation in the collected service
+history. That operation's recorded completion must follow the pending wrapper
+return and precede or coincide with a later invocation's admission. The request must belong to a PENDING
+invocation of the selected execution, precede its wrapper return, and be
+followed by another invocation of that execution. This establishes an observed
+wait or callback suspension even when an earlier invocation paused for retry. Replay also needs at least one completed STEP in
+`replay.before`. Every completed STEP in that snapshot needs an original-request
+entry in `operationExecutions` and a victim-owned `body` event whose
+`operationId` matches the step ID. The body must precede the victim's `pending`
+event. If they share a timestamp, distinct sequences must establish that order.
+Any supplied step completion time must be at or before that suspension. For lifecycle 2 and 7, when the selected execution
+has only one invocation, both its terminal service history and final retirement
+outcome must agree with the required invocation outcome.
+
+A retry `body` event for the retried operation identifies a declared attempt by
+`attemptId`, or by `requestId:attempt` when the producer records a numeric
+`attempt`. There is at most one timed body per attempt. Its timing must agree
+with retry order and precede or coincide with the recorded operation completion.
+Completed step bodies likewise cannot follow their recorded completion.
+
+The offline reader preserves precise fractional values in checkpoint payloads
+and extension fields. Python callers may receive a `Decimal` for fractions that
+cannot round-trip as floats. Timings and budgets still use the runner's finite
+clock precision.
+
+## Offline lifecycle runner
+
+Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
+--output output` with an empty output directory. The runner reads existing
+evidence. Under strict coverage, failed, missing, uncovered, and
+`not_implemented` cases all produce a nonzero exit status.
+
+An inventory with two default profiles and no evidence cases looks like this.
+The runner reports all mandatory cases as uncovered until cases are added.
+
+```json
+{
+  "schemaVersion": 1,
+  "runId": "sample-run",
+  "runtime": "python",
+  "capabilityProfile": "lifecycle",
+  "profiles": [
+    {
+      "profile_id": "native-1",
+      "resource_id": "arn:example:function:native-1",
+      "native_concurrency": 1,
+      "capacity": 1,
+      "artifact_id": "sdk-revision",
+      "configuration_id": "config-1"
+    },
+    {
+      "profile_id": "native-2",
+      "resource_id": "arn:example:function:native-2",
+      "native_concurrency": 2,
+      "capacity": 2,
+      "artifact_id": "sdk-revision",
+      "configuration_id": "config-2"
+    }
+  ],
+  "scenarios": []
+}
+```
+
+Each scenario declares `case_id`, `requirement_id`, `scenario`, and
+`profile_id`. Use the catalog's scenario identifier: `native-overlap` (1),
+`normal-return` (2), `deadline-during-step` (3), `peer-recovery` (4),
+`suspension-retry` (5), `warm-reuse` (6), or `normal-failure` (7).
+Additional target profiles need a nonempty
+`incompatibilityReason`. Each case can declare `slots` up to the profile's
+capacity. For an exclusive requirement, `exclusive` may be omitted or set to
+`true`. Case roles
+default to the requirement's roles and must match evidence `selectedRequests`.
+List additional roles explicitly when the fixture uses them. Lifecycle 3 and 4
+cases must declare positive `behavior_budgets` for `admissionMs` (timeout to
+admission close), `cleanupMs` (timeout to task exit), and
+`observationGraceMs` (continued observation after the scenario boundary).
+Lifecycle 4 also requires `recoveryMs`, the budget from the victim's timeout
+to `worker_recovered`. The evidence must
+report each declared budget with the same value. If the profile declares
+`recovery_policy`, it must match evidence `profile.recoveryPolicy`.
+
+Set `evidence_file` to the retained JSON path relative to the manifest. For
+an unavailable fixture, use `not_implemented` with an optional reason instead.
