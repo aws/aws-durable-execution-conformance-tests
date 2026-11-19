@@ -77,7 +77,10 @@ when their timestamps tie, and for every event when proving physical retirement.
 Each has the same ownership/time fields plus `method` and `outcome` (`DISPATCHED`
 or `REJECTED`). No dispatch is allowed at or after that invocation's first
 `wrapper_return`, `wrapper_raise`, or `admission_closed`. A raised wrapper exit
-closes admission for peers, resumes, retries, and warm requests too. The disposal
+closes admission for peers, resumes, retries, and warm requests too. If no
+closure is recorded and a dispatch follows the attempt's `endedAtMs`, the
+evidence is incomplete. The recorded end may come from a fixture observation
+and does not establish when admission closed. The disposal
 fixtures specifically require a `wrapper_return`, including their normal root
 failure case; a wrapper that itself throws is a different boundary. Admission
 probes are separate `admission_probe` events with `probe: operation | checkpoint`

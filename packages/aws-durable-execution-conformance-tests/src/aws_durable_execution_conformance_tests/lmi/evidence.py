@@ -409,7 +409,7 @@ class _Evidence:
 
     def no_late_dispatch(self) -> None:
         disposal = self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
-        for request_id in self.attempts:
+        for request_id, attempt in self.attempts.items():
             closures = [
                 event
                 for event in self.events
@@ -417,9 +417,24 @@ class _Evidence:
                 and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
                 and isinstance(event.get("atMs"), (float, int))
             ]
-            if not closures:
+            closed = min((event["atMs"] for event in closures), default=None)
+            ended = attempt.get("endedAtMs")
+            for request in self.value.get("sdkRequests", []):
+                if (
+                    not isinstance(request, Mapping)
+                    or request.get("requestId") != request_id
+                    or request.get("outcome") != "DISPATCHED"
+                    or not isinstance(at := request.get("atMs"), (float, int))
+                ):
+                    continue
+                if closed is not None and at >= closed:
+                    self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
+                elif closed is None and isinstance(ended, (float, int)) and at > ended:
+                    self.error(
+                        f"request {request_id} dispatched SDK work after its recorded end without closure evidence"
+                    )
+            if closed is None:
                 continue
-            closed = min(event["atMs"] for event in closures)
             wrapper = None
             if disposal and request_id == self.selected.get("victim", {}).get("requestId"):
                 exits = [event for event in closures if event["kind"] != "admission_closed"]
@@ -427,15 +442,6 @@ class _Evidence:
                     wrapper = exits[0]
                 elif len(exits) > 1:
                     self.error("disposal needs exactly one wrapper exit for the selected victim")
-            for request in self.value.get("sdkRequests", []):
-                if (
-                    isinstance(request, Mapping)
-                    and request.get("requestId") == request_id
-                    and request.get("outcome") == "DISPATCHED"
-                    and isinstance(request.get("atMs"), (float, int))
-                    and request["atMs"] >= closed
-                ):
-                    self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
             for event in self.events:
                 if (
                     event.get("requestId") == request_id

@@ -9,6 +9,7 @@ from typing import Any, Literal
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    EvidenceValidator,
     _Evidence,
     same_json,
     validate_common_evidence,
@@ -430,35 +431,39 @@ def test_dispatch_after_wrapper_return_is_rejected() -> None:
 
 
 @pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
 @pytest.mark.parametrize(
-    "keep_peer_return",
+    ("keep_peer_return", "at", "outcome", "expected"),
     [
-        pytest.param(True, id="with-peer-return"),
-        pytest.param(
+        (True, 100, "DISPATCHED", "ASSERTION: request request-peer dispatched SDK work after admission closed"),
+        (
             False,
-            id="missing-peer-return",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=pytest.fail.Exception,
-                reason="PR #193: a peer dispatch can pass validation when its wrapper return is missing",
-            ),
+            100,
+            "DISPATCHED",
+            "INCOMPLETE: request request-peer dispatched SDK work after its recorded end without closure evidence",
         ),
+        (False, 41, "DISPATCHED", None),
+        (False, 42, "DISPATCHED", None),
+        (False, 100, "REJECTED", None),
     ],
 )
-def test_late_peer_dispatch(phase: Literal["observations", "final"], keep_peer_return: bool) -> None:
+def test_late_peer_dispatch(
+    phase: Literal["observations", "final"],
+    validate: EvidenceValidator,
+    keep_peer_return: bool,
+    at: int,
+    outcome: str,
+    expected: str | None,
+) -> None:
     value = evidence()
     peer = value["attempts"][1]
     if not keep_peer_return:
         value["events"].remove(
             next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
         )
-    value["sdkRequests"].append(event(peer, "request", 100, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+    value["sdkRequests"].append(event(peer, "request", at, method="CheckpointDurableExecution", outcome=outcome))
 
-    errors = validate_evidence(value, phase=phase)
-    if keep_peer_return:
-        assert any(peer["requestId"] in error and "after admission closed" in error for error in errors), errors
-    elif errors == []:
-        pytest.fail("validate_evidence returned [] for the 100 ms peer dispatch without a recorded wrapper return")
+    assert validate(value, phase=phase) == ([expected] if expected is not None else [])
 
 
 def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
