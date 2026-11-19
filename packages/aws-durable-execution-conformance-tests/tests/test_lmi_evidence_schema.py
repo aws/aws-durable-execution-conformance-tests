@@ -240,6 +240,34 @@ def test_additional_replay_records_preserve_nonempty_values_without_new_enums(
 ABSENT = object()
 
 
+@pytest.mark.parametrize("field", ["probe", "outcome"])
+@pytest.mark.parametrize("invalid", [ABSENT, None, "UNKNOWN"])
+def test_admission_probe_requires_recognized_fields(schema_validator, evidence_factories, field, invalid):
+    value = evidence_factories["evidence"](2)
+    probe = next(event for event in value["events"] if event["kind"] == "admission_probe")
+    if invalid is ABSENT:
+        del probe[field]
+    else:
+        probe[field] = invalid
+
+    assert not schema_validator.is_valid(value)
+    for phase in ("observations", "final"):
+        assert validate_evidence(value, phase=phase)
+        assert validate_common_evidence(value, phase=phase)
+        assert validate_common_evidence(value, phase=phase, requirement_ids=(value["requirementId"],))
+
+    evidence_factories["complete_retirement_events"](value)
+    assert validate_retirement_evidence(value) == []
+
+
+def test_adapter_events_can_supply_their_own_probe_fields(schema_validator, evidence_factories):
+    value = evidence_factories["evidence"](2)
+    probe = next(event for event in value["events"] if event["kind"] == "admission_probe")
+    value["events"].append({**probe, "kind": "adapter_probe", "probe": "adapter-specific", "outcome": None})
+    schema_validator.validate(value)
+    assert validate_evidence(value) == []
+
+
 def ordinary_evidence_with_optional_fields(evidence_factories, factory):
     value = evidence_factories[factory]() if factory == "warm_evidence" else evidence_factories["evidence"](2)
     value["scenario"] = "adapter-specific-description"

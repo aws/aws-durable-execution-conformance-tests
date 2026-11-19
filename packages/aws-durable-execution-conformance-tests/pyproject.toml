@@ -19,7 +19,7 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-  "boto3>=1.42.1",
+  "boto3>=1.43.0",
   "packaging>=24.0",
   "pyyaml>=6.0",
 ]
