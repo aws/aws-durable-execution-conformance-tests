@@ -466,6 +466,20 @@ def test_late_peer_dispatch(
     assert validate(value, phase=phase) == ([expected] if expected is not None else [])
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_dispatch_after_recorded_end_before_explicit_closure_is_allowed(
+    phase: Literal["observations", "final"], validate: EvidenceValidator
+) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    closure = next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    closure.update(kind="admission_closed", atMs=50)
+    value["sdkRequests"].append(event(peer, "request", 45, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+
+    assert validate(value, phase=phase) == []
+
+
 def test_missing_dispatch_collection_cannot_prove_no_dispatch() -> None:
     value = evidence(2)
     value["sdkRequests"] = []
