@@ -1,0 +1,76 @@
+# Lambda Managed Instances lifecycle conformance
+
+**Design reconstructed from the PR stack · November 19, 2026**
+
+Lambda Managed Instances (LMI) can run overlapping invocations in one execution environment and reuse workers across requests. A platform timeout can end an invocation while user code is still running. Durable execution history can show the persisted outcome, but proving invocation isolation also requires knowing which request owned the work, when the SDK dispatched it, and what happened to the original worker and its peers. JavaScript, Java, and Python need the same acceptance rules across different runtime models. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161)
+
+## Scope
+
+Add an opt-in, language-neutral `lmi-lifecycle` suite with seven required scenarios per supported runtime and a shared harness for live AWS runs. Preserve the existing ordinary-conformance entry points, including `--suite all`. Keep language-specific fixtures and regressions in each SDK. LMI OpenTelemetry and plugin conformance are deferred. The lifecycle contract requires observable isolation and bounded recovery. It leaves cancellation mechanisms to SDKs and makes no hard-termination guarantee for arbitrary user I/O. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193) · [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161)
+
+## Required behavior
+
+The table summarizes the contract merged in #193. See its evidence guide and requirement YAML for the full assertions. Later stack branches still need to incorporate that merged contract. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193)
+
+| ID | Scenario | What the evidence must establish |
+| --- | --- | --- |
+| 1 | Native overlap | The original victim and peer belong to distinct durable executions and reach the barrier during observed overlap at the runtime’s sharing boundary. Each dispatches its own successful `record-marker` step checkpoint during overlap. The stored results match distinct fixture expectations for their respective invocations. |
+| 2 | Normal return | The root succeeds and the wrapper returns. A victim-owned checkpoint probe at or after actual wrapper return is rejected, and the SDK dispatches no new request for the closed invocation. |
+| 3 | Deadline during step | Controlled work is in flight at the platform timeout. Admission closes within `admissionMs` of the timeout, both probes are rejected at or after closure, and the task exits within `cleanupMs` of the timeout. |
+| 4 | Peer recovery | Establish the overlap and deadline observations. The original peers occupy every other native slot through recovery and show progress before timeout and again by recovery. An independent recovery request records `worker_recovered` in the original environment under the selected worker policy within `recoveryMs` of timeout, and succeeds. |
+| 5 | Suspension and retry | The service resumes the same execution after `PENDING`. Replay preserves operation identity, including unnamed operations, and reuses stored successes and failures without rerunning completed bodies. An incomplete operation has a failed attempt followed by success, with the expected side-effect counts. |
+| 6 | Warm reuse | The warm request runs in the same environment, worker and process after the victim invocation. Victim-owned late activity occurs during the warm request and precedes the victim task’s exit. |
+| 7 | Normal failure | The root fails and the wrapper returns the failure. Preserve the outcome and apply the same post-return checkpoint rules as in case 2. |
+
+The merged #193 contract makes the selected victim’s operation probe optional at or after actual wrapper return. A supplied outcome is retained. If admission had closed before wrapper return, an observed `ACCEPTED` probe fails the case. An omitted or rejected operation probe is still allowed. The rejected checkpoint probe at or after wrapper return remains required. The #199 snapshot still requires both rejected probes and needs the merged contract integrated. A separate late SDK dispatch fails even when the checkpoint probe reports rejection or service history lacks the request. An earlier dispatch may settle after closure. Cases 2 and 7 also require a separate victim task exit at or after root completion. A raised wrapper and a returned failure are distinct boundaries. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193) · [Closed disposal draft #200](https://github.com/aws/aws-durable-execution-conformance-tests/pull/200)
+
+## Architecture
+
+| Layer | Responsibility |
+| --- | --- |
+| Contract and validator | The catalog defines roles, minimum native concurrency and scheduling constraints. The version 1 JSON Schema describes final evidence. The executable Python validator checks structure and semantics for observation and final validation, including ownership, causal order, replay, coverage and retirement. |
+| Coordinator | Admits the manifest, budgets and schedules cases, journals dispatch, retains evidence, and audits retirement independently of the behavioral verdict. It can run against fake or SDK adapters without embedding AWS transport logic. |
+| Shared AWS driver | Deploys persistent concurrency-1 and concurrency-2 targets, drives barriers and faults, invokes fixtures, and normalizes service history and S3 ledger records. It manages run-scoped cleanup and persistent retirement fences. |
+| SDK adapter | Binds the deployed SDK fixture to the scenarios and supplies public-API fixtures, runtime configuration, lifecycle hooks and expected-outcome policy where needed. The shared driver can be packaged without importing a language SDK. |
+| Reusable workflow | Runs the harness and trusted cloud jobs, owns OIDC and account verification, refreshes credentials, and collects cleanup results, artifacts and summaries. SDK callers supply a stage script that builds and deploys the tested SDK artifact, and pin the workflow and package to the same revision. |
+
+The runtime profile describes real placement. Node.js overlap occurs within a worker, Java overlap within a JVM, and Python overlap across worker processes in one environment. Python warm reuse establishes sequential reuse of a specific process. The scheduler reserves capacity, while placement assertions use observed environment and worker identities. Use a new deployment profile when the scenario needs incompatible runtime or function settings. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193) · [Coordinator #195](https://github.com/aws/aws-durable-execution-conformance-tests/pull/195) · [Driver #189](https://github.com/aws/aws-durable-execution-conformance-tests/pull/189) · [Workflow #190](https://github.com/aws/aws-durable-execution-conformance-tests/pull/190)
+
+## Execution and evidence
+
+1. Admit the manifest and retain a copy. Validate catalog membership and bind each case to its declared profile, roles and budgets. Report declared `NOT_IMPLEMENTED` cases without dispatching them.
+2. Schedule compatible cases against an unchanged target within its capacity. Exclusive cases require other owners to retire. The coordinator lets an adapter release its native capacity reservation after its requests are idle and reacquire it before controlled dispatch, while retaining target ownership. The #199 snapshot releases the built-in callback case’s reservation after `PENDING` and reacquires it after callback lookup. The agreed #189 change keeps built-in cases’ reservations through callback lookup, automatic retries and retirement. Record the attempt in `attempts.jsonl` before dispatch and abort the launch if the write fails.
+3. Run the selected invocations under bounded provisioning, placement, execution and collection phases. Correlate run and case IDs, request IDs, execution ARNs and worker identities. The shared driver journals a stable durable execution name before invoking and uses it for transport retries, including ambiguous responses. Service invocation timestamps and SDK lifecycle events establish different parts of the timeline.
+4. Validate the retained evidence against the original admitted case. SDK request records can show attempts that service history cannot see. Compare those records with lifecycle events and persisted history. Preserve prior observations, failures and identity across snapshots. Use declared behavior budgets for assertions. Host-monotonic coordination deadlines never become evidence. At #199, individual driver calls still use their own timeouts. The agreed #189 design propagates the remaining phase budget to each wait, including callback lookup.
+5. Release case-owned faults and audit outstanding executions, callbacks, requests and tasks. A cleanup request is evidence of an attempt to retire work. Positive settlement and ownership evidence are required before reuse. Preserve both behavioral and retirement failures. Use `results.jsonl` as the live coordinator journal. Both modes write final per-case results to `evidence.json`, coverage to `coverage.json`, and JSON and JUnit reports. Strict acceptance exits nonzero for failed, missing or unimplemented required cases. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193) · [Coordinator #195](https://github.com/aws/aws-durable-execution-conformance-tests/pull/195) · [Driver #189](https://github.com/aws/aws-durable-execution-conformance-tests/pull/189)
+
+```sh
+# Validate retained evidence without AWS credentials.
+durable-execution-conformance lmi-lifecycle --manifest manifest.json --output lmi-offline
+
+# Schedule a live run through an SDK adapter.
+durable-execution-conformance lmi-lifecycle --manifest manifest.json \
+  --adapter sdk_harness:factory --output lmi-live
+```
+
+## Target ownership and failure recovery
+
+In-process quarantine prevents the coordinator from dispatching to a target whose retirement is unproven. The driver's S3 fence persists across runs and protects a target if cleanup fails or the process is interrupted. At #199 the driver conditionally creates fences, then checks run and commit before deletion. The agreed #189 changes add a unique acquisition identity, exact-record readback after an ambiguous acquisition, and ETag-conditional deletion to protect against replacement between verification and deletion. Unknown ownership or incomplete retirement requires explicit recovery before reuse. Other targets can continue. [Coordinator #195](https://github.com/aws/aws-durable-execution-conformance-tests/pull/195) · [Driver #189](https://github.com/aws/aws-durable-execution-conformance-tests/pull/189)
+
+The workflow's fixed concurrency group serializes cloud jobs within each caller repository with cancellation disabled. Separate SDK callers need isolated capacity because GitHub concurrency groups are repository-scoped. Fork and Dependabot changes remain on the unprivileged harness path. The workflow collects artifacts and attempts cleanup on failure so operators can distinguish assertion failures, evidence gaps and unresolved retirement. [Workflow #190](https://github.com/aws/aws-durable-execution-conformance-tests/pull/190)
+
+## Tradeoffs
+
+- SDK-only suites can exercise language-specific races directly, but duplicate placement and evidence checks. Shared validation gives these runtimes one acceptance contract while preserving SDK-specific fixtures.
+- Per-case deployment simplifies isolation but repeats provisioning and makes reuse across scenarios harder to measure. Persistent profiles reduce deploys, with leases, ownership and retirement fences needed to keep reuse safe.
+- Service-history-only checks are simpler to collect but miss attempted transport sends and worker-local behavior. A normalized evidence ledger lets the same assertions run offline at the cost of requiring trustworthy instrumentation and complete collection. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161) · [Driver #189](https://github.com/aws/aws-durable-execution-conformance-tests/pull/189)
+
+## Follow-ups and rollout
+
+- **Warm reuse ordering.** The stack follow-up uses distinct per-request sequence numbers when victim late activity and task exit share a millisecond timestamp. Missing or ambiguous ordering makes the evidence incomplete. [#197](https://github.com/aws/aws-durable-execution-conformance-tests/pull/197)
+- **Missing peer wrapper return.** A regression draft shows that a late peer dispatch can pass when the wrapper-return record is omitted. The cutoff and classification are still open in the draft. [#198](https://github.com/aws/aws-durable-execution-conformance-tests/pull/198)
+- **Held-fault recovery.** The draft reproduces false passes for early release and an unrelated gate. It also reports a false pass with an empty fault inventory, with regression coverage pending. The proposed rule requires a recorded fault tied to the victim’s actual gate and held until the selected recovery request succeeds. The draft also proposes manifest and evidence agreement on `reuse-worker` or `replace-worker`. A fixture's own deadline signal cannot substitute for platform timeout or task exit. [#199](https://github.com/aws/aws-durable-execution-conformance-tests/pull/199)
+
+The core merge order is **#193 → #195 → #189 → #190**, followed by Python caller **#931** pinned to the final shared workflow revision. The core PRs report offline, fake transport and fixture validation. The rollout gate requires retained evidence and regression-sensitivity controls on at least two distinct real runtime models. Each supported runtime still needs to pass all seven cases for conformance. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161) · [Python #931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931)
+
+GitHub shows #197, #198 and #199 above the core changes. The #199 snapshot this document is based on contains the held-fault regressions. The warm-reuse fix and missing-return regressions live on separate commits outside that snapshot. [Stack #196](https://github.com/aws/aws-durable-execution-conformance-tests/stack/196)
