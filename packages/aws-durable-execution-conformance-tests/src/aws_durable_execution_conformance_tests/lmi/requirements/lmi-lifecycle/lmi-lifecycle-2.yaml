@@ -1,0 +1,17 @@
+---
+id: lmi-lifecycle-2
+description: Normal return and disposal
+scenario: normal-return
+scheduling: shared
+minimumNativeConcurrency: 1
+contract: Observe root completion and actual wrapper return independently for successful handlers.
+  For the selected invocation, require a rejected checkpoint probe at or after actual wrapper return,
+  and verify no SDK request is dispatched at or after the invocation's first closure. At actual wrapper
+  return, an operation probe is optional diagnostic evidence and may be accepted or rejected. This does
+  not relax admission at an earlier close or a raised wrapper exit. Previously dispatched I/O need
+  not be forcibly terminated.
+limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
+  user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture
+  is NOT_IMPLEMENTED, never not applicable.
+roles:
+  - victim

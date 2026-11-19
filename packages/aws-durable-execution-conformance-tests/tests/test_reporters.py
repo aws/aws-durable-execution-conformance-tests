@@ -12,6 +12,9 @@ from pathlib import Path
 import pytest
 
 from aws_durable_execution_conformance_tests.report import (
+    FAIL_ON_FAILED,
+    FAIL_ON_FAILED_UNCOVERED,
+    FAIL_ON_STRICT,
     Report,
     ReportEntry,
     ReportStatus,
@@ -67,6 +70,27 @@ def test_console_shows_warnings() -> None:
     text = render_console(report)
     assert "Warnings:" in text
     assert "declared NotImplemented but is covered" in text
+
+
+@pytest.mark.parametrize("fail_on", [FAIL_ON_FAILED, FAIL_ON_FAILED_UNCOVERED, FAIL_ON_STRICT])
+@pytest.mark.parametrize("optional", [False, True])
+def test_console_not_implemented_label_respects_policy(fail_on: str, optional: bool) -> None:
+    report = Report(
+        run=RunMetadata(name="run", template="t.yaml", region="us-west-2"),
+        entries=[ReportEntry(id="8-13", suite="parallel", status=ReportStatus.NOT_IMPLEMENTED, is_optional=optional)],
+        fail_on=fail_on,
+    )
+
+    text = render_console(report)
+
+    if fail_on == FAIL_ON_STRICT:
+        assert "Not implemented (declared SDK gap):" in text
+        assert "non-blocking" not in text
+    else:
+        assert "Not implemented (declared SDK gap, non-blocking):" in text
+    expected_exit = 1 if fail_on == FAIL_ON_STRICT and not optional else 0
+    assert f"Exit code: {expected_exit} (fail-on: {fail_on})" in text
+    assert ("[optional]" in text) == optional
 
 
 def test_json_is_valid_and_schema_versioned() -> None:
