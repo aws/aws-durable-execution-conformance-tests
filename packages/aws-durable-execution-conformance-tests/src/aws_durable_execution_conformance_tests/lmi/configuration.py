@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from .runtime import RuntimeDefinition
+from .runtime import MEMORY_GIB_PER_VCPU, RuntimeDefinition
 
 
 def configuration_identity(deployment: Mapping[str, Any], key: str, runtime: RuntimeDefinition) -> str:
@@ -28,6 +28,7 @@ def configuration_identity(deployment: Mapping[str, Any], key: str, runtime: Run
         nativeConcurrency=deployment["concurrencies"][key],
         architecture=runtime.architecture,
         memorySize=runtime.memory_size,
+        memoryGiBPerVCpu=MEMORY_GIB_PER_VCPU,
         handler=runtime.handler,
         scaling={"MinExecutionEnvironments": 1, "MaxExecutionEnvironments": 1},
     )

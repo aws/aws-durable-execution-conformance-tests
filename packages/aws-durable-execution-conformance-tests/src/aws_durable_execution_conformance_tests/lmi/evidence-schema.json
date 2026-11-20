@@ -184,6 +184,20 @@
           },
           "$comment": "Semantic validation identifies retry.operationId in this array and the collected final history, requires SUCCEEDED and a stored result key (including JSON null), and permits unrelated pending operations without a result. JSON Schema cannot express this cross-record ID comparison."
         },
+        "projectionErrors": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "\\S"}
+        },
+        "expectedBefore": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/operation"}
+        },
+        "durableWaitObserved": {
+          "type": "boolean"
+        },
+        "suspensionCheckpointMatches": {
+          "type": "boolean"
+        },
         "operationExecutions": {
           "type": "array",
           "minItems": 1,
@@ -221,11 +235,19 @@
             },
             "attempts": {
               "type": "array",
-              "minItems": 2,
+              "minItems": 1,
               "items": {
                 "$ref": "#/$defs/retryAttempt"
               }
             }
+          }
+        },
+        "missingExpectedEffects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
           }
         },
         "sideEffects": {
@@ -235,13 +257,30 @@
             "$ref": "#/$defs/sideEffect"
           }
         }
+      },
+      "if": {
+        "required": ["missingExpectedEffects"],
+        "properties": {
+          "missingExpectedEffects": {"contains": {"const": "retry"}}
+        }
+      },
+      "else": {
+        "properties": {
+          "retry": {
+            "properties": {
+              "attempts": {"minItems": 2}
+            }
+          }
+        }
       }
     },
     "expectedHistories": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
+        "dependentRequired": {"resultFingerprint": ["result"]},
         "properties": {
+          "resultFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
           "status": {
             "enum": [
               "SUCCEEDED",
@@ -249,6 +288,8 @@
               "TIMED_OUT",
               "STOPPED",
               "RUNNING",
+              "PAUSING",
+              "PAUSED",
               "PENDING"
             ]
           },
@@ -263,6 +304,8 @@
                 "TIMED_OUT",
                 "STOPPED",
                 "RUNNING",
+                "PAUSING",
+                "PAUSED",
                 "PENDING"
               ]
             }
@@ -308,7 +351,7 @@
             "properties": {
               "allowedStatuses": {
                 "contains": {
-                  "const": "RUNNING"
+                  "enum": ["RUNNING", "PAUSING", "PAUSED"]
                 }
               }
             }
@@ -327,6 +370,17 @@
         "evidenceUris"
       ],
       "properties": {
+        "deferredServiceRequests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["requestId", "executionArn"],
+            "properties": {
+              "requestId": {"type": "string", "pattern": "\\S"},
+              "executionArn": {"type": "string", "pattern": "\\S"}
+            }
+          }
+        },
         "watermarks": {
           "type": "object",
           "required": [
@@ -575,10 +629,35 @@
               "before",
               "after",
               "operationExecutions",
-              "retry",
               "sideEffects"
+            ],
+            "anyOf": [
+              {
+                "required": ["retry"]
+              },
+              {
+                "required": ["missingExpectedEffects"],
+                "properties": {
+                  "missingExpectedEffects": {
+                    "contains": {"const": "retry"}
+                  }
+                }
+              }
             ]
           }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["requirementId"],
+        "properties": {
+          "requirementId": {"not": {"enum": ["lmi-lifecycle-3", "lmi-lifecycle-4"]}}
+        }
+      },
+      "then": {
+        "properties": {
+          "attempts": {"items": {"not": {"required": ["activeAtObservationEnd"]}}}
         }
       }
     }
@@ -594,9 +673,7 @@
         "processId",
         "role",
         "attempt",
-        "startedAtMs",
-        "endedAtMs",
-        "outcome"
+        "startedAtMs"
       ],
       "properties": {
         "requestId": {
@@ -631,6 +708,9 @@
           "type": "number",
           "minimum": 0
         },
+        "activeAtObservationEnd": {
+          "const": true
+        },
         "endedAtMs": {
           "type": "number",
           "minimum": 0
@@ -643,6 +723,24 @@
             "TIMED_OUT"
           ]
         }
+      },
+      "if": {
+        "required": ["activeAtObservationEnd"]
+      },
+      "then": {
+        "properties": {
+          "attempt": {"minimum": 2},
+          "role": {"const": "victim"}
+        },
+        "not": {
+          "anyOf": [
+            {"required": ["endedAtMs"]},
+            {"required": ["outcome"]}
+          ]
+        }
+      },
+      "else": {
+        "required": ["endedAtMs", "outcome"]
       }
     },
     "event": {
@@ -753,6 +851,15 @@
         "status",
         "parentId"
       ],
+      "dependentRequired": {
+        "resultEncoding": ["result"],
+        "resultFingerprint": ["resultEncoding", "result"]
+      },
+      "dependentSchemas": {
+        "resultFingerprint": {
+          "properties": {"resultEncoding": {"const": "json"}}
+        }
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -769,6 +876,8 @@
           "type": "string",
           "minLength": 1
         },
+        "resultEncoding": {"enum": ["json", "raw"]},
+        "resultFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "status": {
           "type": "string",
           "minLength": 1
@@ -797,7 +906,9 @@
         "status",
         "operations"
       ],
+      "dependentRequired": {"resultFingerprint": ["result"]},
       "properties": {
+        "resultFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "executionArn": {
           "type": "string",
           "minLength": 1
@@ -813,6 +924,8 @@
             "TIMED_OUT",
             "STOPPED",
             "RUNNING",
+            "PAUSING",
+            "PAUSED",
             "PENDING"
           ]
         },
@@ -878,25 +991,17 @@
         },
         {
           "if": {
-            "properties": {
-              "status": {
-                "const": "SUCCEEDED"
-              }
-            },
-            "required": [
-              "status"
-            ]
+            "properties": {"status": {"const": "SUCCEEDED"}},
+            "required": ["status"]
           },
           "then": {
-            "required": [
-              "result"
-            ]
+            "if": {
+              "properties": {"type": {"const": "CONTEXT"}},
+              "required": ["type"]
+            },
+            "else": {"required": ["result"]}
           },
-          "else": {
-            "required": [
-              "error"
-            ]
-          }
+          "else": {"required": ["error"]}
         }
       ]
     },
