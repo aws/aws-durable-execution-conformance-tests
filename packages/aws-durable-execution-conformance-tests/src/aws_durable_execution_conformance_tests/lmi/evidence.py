@@ -54,6 +54,16 @@ def is_json_integer(value: Any) -> TypeGuard[int | float]:
     return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
+def is_json_timestamp(value: Any) -> TypeGuard[int | float]:
+    """Accept the finite non-negative numbers that structural checks accept, excluding booleans."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+        and value >= 0
+    )
+
+
 def same_json(left: Any, right: Any) -> bool:
     """Compare decoded checkpoint data without Python's bool/number equality.
 
@@ -866,8 +876,6 @@ class _Evidence:
             ]
             closed = min((event["atMs"] for event in closures), default=None)
             ended = attempt.get("endedAtMs")
-            if isinstance(ended, bool) or not isinstance(ended, (float, int)) or not math.isfinite(ended) or ended < 0:
-                ended = None  # common() reports a malformed recorded end; it cannot order a dispatch.
             for request in sdk_requests:
                 if (
                     request.get("requestId") != request_id
@@ -879,7 +887,8 @@ class _Evidence:
                     late_boundaries = [boundary for boundary in closures if self.at_or_after(request, boundary)]
                     if late_boundaries:
                         self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
-                elif closed is None and ended is not None and at > ended:
+                # common() reports malformed times; they cannot order a dispatch after the recorded end.
+                elif closed is None and is_json_timestamp(ended) and is_json_timestamp(at) and at > ended:
                     self.error(
                         f"request {request_id} dispatched SDK work after its recorded end without closure evidence"
                     )
