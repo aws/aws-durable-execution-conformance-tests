@@ -13,8 +13,8 @@ handler: |
   Canonical schema (both hooks):
   `{"plugin": "CONFPLUGIN", "hook": "operation-start|operation-end", "id": "<operation_id>", "name": "<name>", "type": "<TYPE>", "subType": "<token>", "parentId": "<id>", "status": "<token>", "startTimestamp": "<ISO-8601>", "endTimestamp": "<ISO-8601>", "error": "<message>", "attempt": <int>, "isReplay": <bool>}`.
   status/startTimestamp/attempt at a LIVE first start are dumped when the SDK
-  populates them but NOT asserted: pre-checkpoint population is legitimately
-  SDK-divergent. Every record also carries a `durableExecutionArn` field (ARN
+  populates them but NOT asserted: pre-checkpoint population is
+  implementation-specific. Every record also carries a `durableExecutionArn` field (ARN
   captured at invocation-start, unasserted) so the runner's CloudWatch filter
   can scope logs to the execution.
 invocations: |
@@ -51,7 +51,7 @@ ExpectedExecutionHistory:
     InvocationCompletedDetails: {}
 ExpectedLogs:
   # Operation-start: identity fields and replay flag (live-start
-  # status/startTimestamp/attempt population is SDK-divergent — unasserted)
+  # status/startTimestamp/attempt population is implementation-specific — unasserted)
   - match:
       plugin: CONFPLUGIN
       hook: operation-start
