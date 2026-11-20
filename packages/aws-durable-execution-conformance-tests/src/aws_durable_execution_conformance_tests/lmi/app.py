@@ -745,7 +745,7 @@ def collected_evidence_results(
                 collection_errors = [finding for finding in findings if finding.startswith("INCOMPLETE:")]
                 behavior_findings = [finding for finding in findings if not finding.startswith("INCOMPLETE:")]
                 if result["status"] == "COLLECTED":
-                    collection_errors.extend(frozen_journal_errors(evidence, attempts))
+                    collection_errors.extend(frozen_journal_errors(evidence, attempts, retirement))
                 result["status"], result["errors"], _ = adjudicate_evidence(
                     result["status"],
                     list(dict.fromkeys([*result["errors"], *collection_errors])),

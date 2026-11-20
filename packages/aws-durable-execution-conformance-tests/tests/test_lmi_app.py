@@ -1061,7 +1061,12 @@ def test_collected_replay_binds_frozen_observations_to_journal(mutation):
         }[mutation]
         journal[0][field] = replacement
     result = collected_evidence_results(plan, [capture])[0]
-    assert result["status"] == ("PASSED" if mutation == "later-service" else "INCOMPLETE_EVIDENCE"), result["errors"]
+    assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+    if mutation == "later-service":
+        # A service discovery without retirement proof cannot excuse its absence.
+        assert (
+            "INCOMPLETE: service-discovered request later-service lacks validated retirement proof" in result["errors"]
+        )
 
 
 def test_collected_replay_reports_wrong_victim_outcome_as_failed():
@@ -1092,8 +1097,12 @@ def test_collected_replay_reports_wrong_victim_outcome_as_failed():
     assert "ASSERTION: normal-failure requires the selected victim outcome FAILED" in result["errors"]
 
 
-def test_collected_replay_applies_shared_retirement_allowance_by_default():
+@pytest.mark.parametrize(
+    "proof", ["validated", "absent", "unlisted", "other-role", "other-ordinal", "other-execution", "unsettled"]
+)
+def test_collected_replay_requires_retirement_proof_for_service_discoveries(proof):
     from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
 
     retirement = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
     value, snapshot = retirement["_lifecycle_7_retirement_retry"]()
@@ -1109,18 +1118,52 @@ def test_collected_replay_applies_shared_retirement_allowance_by_default():
     )
     retry = next(row for row in snapshot["attempts"] if row["requestId"] == "service-retry")
     journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
-    journal.append(
-        {key: retry[key] for key in ("requestId", "executionArn", "role", "attempt")} | {"discoveredAtMs": 207}
-    )
+    discovered = {key: retry[key] for key in ("requestId", "executionArn", "role", "attempt")} | {"discoveredAtMs": 207}
+    journal.append(discovered)
+    if proof == "unlisted":
+        # The snapshot stays valid but never mentions this discovery.
+        discovered["requestId"] = "unlisted-retry"
+    elif proof == "other-role":
+        discovered["role"] = "peer"
+    elif proof == "other-ordinal":
+        discovered["attempt"] = 3
+    elif proof == "other-execution":
+        discovered["executionArn"] = "arn:execution:other"
+    elif proof == "unsettled":
+        snapshot["histories"][0]["status"] = "RUNNING"
     capture = {
         **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
         "status": "COLLECTED",
         "errors": [],
         "evidence": value,
-        "retirement_evidence": snapshot,
         "attempts": journal,
     }
-    # The CLI selects the shared rules, so a service retry proven during
-    # retirement is accepted as the single disposal invocation's successor.
+    if proof != "absent":
+        capture["retirement_evidence"] = snapshot
+    if proof != "unsettled":
+        assert validate_retirement_evidence(snapshot) == []
     result = collected_evidence_results(plan, [capture])[0]
-    assert result["status"] == "PASSED", result["errors"]
+    if proof == "validated":
+        # The CLI selects the shared rules, so a service retry proven during
+        # retirement is accepted as the single disposal invocation's successor.
+        assert result["status"] == "PASSED", result["errors"]
+    else:
+        assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+        request = discovered["requestId"]
+        assert f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof" in result["errors"]
+
+
+def test_service_discovery_ordinal_must_be_a_json_integer(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import offline
+
+    # Isolate the identity binding from snapshot validation.
+    monkeypatch.setattr(offline, "validate_retirement_evidence", lambda snapshot: [])
+    observed = {"requestId": "original", "role": "victim", "attempt": 1, "executionArn": "arn:execution:victim"}
+    retired = {"requestId": "retry", "role": "victim", "attempt": 1, "executionArn": "arn:execution:victim"}
+    journal = [{**observed, "launchedAtMs": 1}, {**retired, "discoveredAtMs": 2}]
+    snapshot = {"attempts": [observed, retired]}
+    assert offline.frozen_journal_errors({"attempts": [observed]}, journal, snapshot) == []
+    journal[1]["attempt"] = True
+    assert offline.frozen_journal_errors({"attempts": [observed]}, journal, snapshot) == [
+        "INCOMPLETE: service-discovered request retry lacks validated retirement proof"
+    ]

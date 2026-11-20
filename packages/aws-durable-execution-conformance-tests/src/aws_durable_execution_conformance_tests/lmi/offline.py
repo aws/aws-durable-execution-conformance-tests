@@ -1712,8 +1712,18 @@ def evaluate_evidence(
     return findings
 
 
-def frozen_journal_errors(evidence: Mapping[str, Any], journal: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Bind frozen requests to the journal, allowing later service discoveries."""
+def frozen_journal_errors(
+    evidence: Mapping[str, Any],
+    journal: Sequence[Mapping[str, Any]],
+    retirement_evidence: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Bind frozen requests to the journal.
+
+    A service-initiated request discovered after observations froze may be
+    absent from them only when an independent retirement snapshot that passes
+    ``validate_retirement_evidence`` records the same request, role, ordinal and
+    execution, proving that its work settled.
+    """
     attempts = evidence.get("attempts")
     if not isinstance(attempts, list) or not all(isinstance(row, Mapping) for row in attempts):
         return ["INCOMPLETE: observed attempts are missing or malformed"]
@@ -1742,6 +1752,20 @@ def frozen_journal_errors(evidence: Mapping[str, Any], journal: Sequence[Mapping
         request not in observed and "discoveredAtMs" not in row for request, row in recorded.items()
     ):
         return ["INCOMPLETE: frozen observations do not cover all client-journaled launches"]
+    later = [request for request in recorded if request not in observed]
+    if not later:
+        return []
+    snapshot = retirement_evidence if isinstance(retirement_evidence, Mapping) else {}
+    if not snapshot or validate_retirement_evidence(snapshot):
+        return [f"INCOMPLETE: service-discovered request {later[0]} lacks validated retirement proof"]
+    settled = {attempt.get("requestId"): attempt for attempt in snapshot["attempts"]}
+    for request in later:
+        launch, retired = recorded[request], settled.get(request)
+        # JSON comparison keeps booleans distinct from ordinals.
+        if retired is None or any(
+            not same_json(launch.get(key), retired.get(key)) for key in ("role", "attempt", "executionArn")
+        ):
+            return [f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof"]
     return []
 
 

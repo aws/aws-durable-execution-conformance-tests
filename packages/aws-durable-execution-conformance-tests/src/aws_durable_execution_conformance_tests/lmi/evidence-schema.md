@@ -392,6 +392,10 @@ Re-evaluate a live evidence bundle without loading an adapter:
 durable-execution-conformance lmi-lifecycle --manifest lmi-live/manifest.json --collected-evidence lmi-live/collected-evidence.json --output lmi-offline
 ```
 
+Replay binds the frozen observations to the launch journal. A service-initiated
+attempt journaled after observations froze can be missing from them only if
+the bundle's retirement snapshot passes `validate_retirement_evidence` and records
+the same request, role, ordinal and execution. Otherwise the case is incomplete.
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
 --output output` with an empty output directory. The runner reads existing
