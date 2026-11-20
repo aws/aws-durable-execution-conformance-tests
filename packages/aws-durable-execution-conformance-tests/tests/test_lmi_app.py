@@ -434,7 +434,16 @@ def test_normal_failure_cannot_reuse_success_evidence():
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "missing-evidence", "collectionErrors", "observation_error", "control_error", "non-json"]
+    "failure",
+    [
+        None,
+        "missing-evidence",
+        "collectionErrors",
+        "observation_error",
+        "control_error",
+        "non-json",
+        "missing-sdk-completion",
+    ],
 )
 def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
     import asyncio
@@ -447,6 +456,8 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
 
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = fixtures["evidence"]()
+    if failure != "missing-sdk-completion":
+        fixtures["complete_sdk_dispatches"](value)
     if failure == "missing-evidence":
         value.pop("collection")
         value.pop("retirement")
@@ -454,7 +465,7 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
         value["collectionErrors"] = ["SDK request source collection failed"]
     elif failure == "non-json":
         value["diagnostic"] = b"not JSON"
-    elif failure is not None:
+    elif failure not in (None, "missing-sdk-completion"):
         value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
     finished = []
     plan = manifest()
@@ -513,9 +524,7 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
 
     with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=factory)}):
         results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
-    expected_status = "PASSED" if failure is None else "FAILED"
-    if failure == "non-json":
-        expected_status = "INFRASTRUCTURE_ERROR"
+    expected_status = "PASSED" if failure is None else "INFRASTRUCTURE_ERROR"
     assert results[0]["status"] == expected_status, results
     assert finished == [failure in (None, "non-json")]
     if failure not in (None, "non-json"):
@@ -538,6 +547,12 @@ def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path,
     assert audit[0] == results[1]
     assert audit[0]["status"] == "NOT_IMPLEMENTED"
     assert audit[0]["profile_id"] == plan["scenarios"][1]["profile_id"]
+    if failure is None:
+        from aws_durable_execution_conformance_tests.lmi.app import _dump_json, collected_evidence_results
+
+        captured = json.loads((tmp_path / "collected-evidence.json").read_text())
+        assert captured[0]["status"] == "COLLECTED"
+        assert json.loads(_dump_json(collected_evidence_results(plan, captured))) == json.loads(_dump_json(results))
 
 
 @pytest.mark.parametrize("rollback_fails", [False, True])
@@ -590,9 +605,10 @@ def test_live_circular_case_evidence_does_not_abort_other_reports(tmp_path):
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
     ):
         results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
-    assert [result["status"] for result in results] == ["INFRASTRUCTURE_ERROR", "PASSED"]
+    assert [result["status"] for result in results] == ["INFRASTRUCTURE_ERROR", "INCOMPLETE_EVIDENCE"]
     assert "Could not serialize case evidence" in results[0]["errors"][0]
-    assert [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()] == results
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    assert list({row["case_id"]: row for row in rows}.values()) == results
 
 
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
@@ -632,6 +648,8 @@ def test_live_retirement_callback_claims_are_checked_across_cases(tmp_path, canc
     @dataclass
     class Outcome:
         case_id: str
+        requirement_id: str
+        profile_id: str
         status: str
         errors: list
         retirement_evidence: dict
@@ -640,6 +658,8 @@ def test_live_retirement_callback_claims_are_checked_across_cases(tmp_path, canc
         outcomes = [
             Outcome(
                 case.case_id,
+                case.requirement_id,
+                case.profile_id,
                 "PASSED",
                 [],
                 {"retirement": {"resources": [{"kind": "callback", "id": "shared", "ownerCaseId": case.case_id}]}},
@@ -667,7 +687,9 @@ def test_live_retirement_callback_claims_are_checked_across_cases(tmp_path, canc
     if cancelled:
         results = audit[-2:]
     assert [result["status"] for result in results] == ["FAILED", "FAILED"]
-    assert all("callback shared is claimed by multiple cases" in result["errors"][0] for result in results)
+    assert all(
+        any("callback shared is claimed by multiple cases" in error for error in result["errors"]) for result in results
+    )
     assert audit[-2:] == results
 
 
@@ -682,6 +704,27 @@ def test_empty_adapter_option_cannot_select_offline_validation(tmp_path, capsys)
     assert error.value.code == 2
     assert "--adapter must be a local Python module:factory" in capsys.readouterr().err
     offline.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", [None, "reuse-worker", "replace-worker", "reuse"])
+def test_unused_profile_recovery_policy_matches_live_and_offline_admission(tmp_path, policy):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    plan = manifest()
+    plan["scenarios"] = []
+    plan["profiles"][0]["recovery_policy"] = policy
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    adapter = SimpleNamespace(finish=lambda *_args, **_kwargs: None)
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda _: adapter)}):
+        if policy == "reuse":
+            with pytest.raises(ValueError, match="Unknown recovery policy"):
+                load_manifest(source)
+            with pytest.raises(ValueError, match="Unknown recovery policy"):
+                asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        else:
+            assert load_manifest(source) == plan
+            assert asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path)) == []
 
 
 def test_output_reuse_preserves_previous_run(tmp_path):
@@ -916,6 +959,8 @@ def test_manifest_rejects_whitespace_only_extra_role(tmp_path):
 @pytest.mark.parametrize("source", ["matching", "evidence", "factory", "scenario"])
 def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
     plan, value = timed_plan(requirement)
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
     if source != "matching":
         # Keep every declared budget name so the admitted snapshot stays valid
         # and only its values disagree with the evidence.
@@ -965,3 +1010,83 @@ def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, r
     else:
         assert result["status"] != "PASSED", result
         assert any("behavior budgets" in error for error in result["errors"])
+
+
+def test_live_audit_directory_is_claimed_before_adapter_load(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    (tmp_path / "collected-evidence.json").write_text("previous capture")
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
+        pytest.raises(FileExistsError),
+    ):
+        asyncio.run(live_results(manifest(), "fixture:create", audit_dir=tmp_path))
+    imports.import_module.assert_not_called()
+    assert (tmp_path / "collected-evidence.json").read_text() == "previous capture"
+    assert not (tmp_path / "attempts.jsonl").exists()
+
+
+def test_collected_replay_validates_manifest_admission():
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    plan, _ = timed_plan(3)
+    plan["scenarios"][0].pop("behavior_budgets")
+    with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+        collected_evidence_results(plan, [])
+
+
+@pytest.mark.parametrize("mutation", ["missing", "role", "ordinal", "execution", "later-service"])
+def test_collected_replay_binds_frozen_observations_to_journal(mutation):
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    plan, value = timed_plan(3)
+    case = plan["scenarios"][0]
+    journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "attempts": journal,
+    }
+    if mutation == "missing":
+        capture.pop("attempts")
+    elif mutation == "later-service":
+        journal.append({"requestId": "later-service", "discoveredAtMs": 100, "role": "victim", "attempt": 2})
+    else:
+        field, replacement = {
+            "role": ("role", "invalid-role"),
+            "ordinal": ("attempt", 99),
+            "execution": ("executionArn", "arn:execution:unexpected"),
+        }[mutation]
+        journal[0][field] = replacement
+    result = collected_evidence_results(plan, [capture])[0]
+    assert result["status"] == ("PASSED" if mutation == "later-service" else "INCOMPLETE_EVIDENCE"), result["errors"]
+
+
+def test_collected_replay_reports_wrong_victim_outcome_as_failed():
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"](7)
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    case = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")
+    plan["scenarios"] = [case]
+    case.update(case_id=value["caseId"], roles=list(value["selectedRequests"]))
+    profile = plan["profiles"][1]
+    profile.update(
+        resource_id=value["profile"]["functionArn"],
+        configuration_id=value["profile"]["configurationDigest"],
+        artifact_id=value["artifact"]["sdk"],
+    )
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "attempts": [{**row, "launchedAtMs": 1} for row in value["attempts"]],
+    }
+    result = collected_evidence_results(plan, [capture])[0]
+    assert result["status"] == "FAILED", result["errors"]
+    assert "ASSERTION: normal-failure requires the selected victim outcome FAILED" in result["errors"]

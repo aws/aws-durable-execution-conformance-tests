@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol, TypeGuard
 SCHEMA_VERSION = 1
 REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
 RUNTIMES = ("javascript", "java", "python")
+RECOVERY_POLICIES = ("reuse-worker", "replace-worker")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
 TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
 COMPLETED_OPERATION_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED")
@@ -33,7 +34,9 @@ _CALL_METHODS = {"checkpoint_call": "CheckpointDurableExecution", "poll_call": "
 
 
 class EvidenceValidator(Protocol):
-    def __call__(self, evidence: Mapping[str, Any], *, phase: str = "final") -> Sequence[str]: ...
+    def __call__(
+        self, evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final"
+    ) -> Sequence[str]: ...
 
 
 def is_json_integer(value: Any) -> TypeGuard[int | float]:
@@ -234,6 +237,26 @@ def retry_body_identity(row: Mapping[str, Any]) -> tuple[str, str] | None:
     return None
 
 
+def _valid_history_status_allowance(allowed: Any) -> TypeGuard[list[str]]:
+    return (
+        isinstance(allowed, list)
+        and bool(allowed)
+        and all(isinstance(status, str) and status in HISTORY_STATUSES for status in allowed)
+        and len(set(allowed)) == len(allowed)
+    )
+
+
+def _history_expectation_mismatches(arn: str, history: Mapping[str, Any], expectation: Mapping[str, Any]) -> list[str]:
+    errors = []
+    allowed = expectation.get("allowedStatuses")
+    if _valid_history_status_allowance(allowed) and history.get("status") not in allowed:
+        errors.append(f"ASSERTION: service history {arn}.status is outside the declared allowedStatuses")
+    for key, item in expectation.items():
+        if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
+            errors.append(f"ASSERTION: service history {arn}.{key} differs from the fixture expectation")
+    return errors
+
+
 class _Evidence:
     def __init__(
         self,
@@ -339,10 +362,7 @@ class _Evidence:
             self.string(self.value["coverageProfile"], "coverageProfile")
             if self.standard_behavior and self.value["coverageProfile"] != "standard":
                 self.error("coverageProfile must be standard for shared lifecycle evidence")
-        if "recoveryPolicy" in self.profile and self.profile["recoveryPolicy"] not in (
-            "reuse-worker",
-            "replace-worker",
-        ):
+        if "recoveryPolicy" in self.profile and self.profile["recoveryPolicy"] not in RECOVERY_POLICIES:
             self.error("profile.recoveryPolicy must be reuse-worker or replace-worker")
         if "budgets" in self.value:
             budgets = self.mapping(self.value["budgets"], "budgets")
@@ -609,28 +629,17 @@ class _Evidence:
                     self.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
                 if "allowedStatuses" in expectation:
                     allowed = expectation["allowedStatuses"]
-                    if (
-                        not isinstance(allowed, list)
-                        or not allowed
-                        or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
-                        or len(set(allowed)) != len(allowed)
-                    ):
+                    if not _valid_history_status_allowance(allowed):
                         self.error(
                             f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
                         )
                     else:
                         allow_running = "RUNNING" in allowed
-                        if history.get("status") not in allowed:
-                            self.error(
-                                f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION"
-                            )
                 elif expectation.get("status") not in HISTORY_STATUSES:
                     self.error(f"expectedHistories.{arn}.status must be a recognized execution status")
                 if not allow_running and "result" not in expectation and "error" not in expectation:
                     self.error(f"history {arn} needs an independently declared expected result/error")
-                for key, item in expectation.items():
-                    if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
-                        self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
+                self.errors.extend(_history_expectation_mismatches(arn, history, expectation))
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
         if set(actual) != arns or (check_expectations and set(expected) != arns):
             self.error("histories and expectedHistories must cover every launched execution exactly")
@@ -1243,7 +1252,13 @@ class _Evidence:
                 candidates = [
                     item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
                 ]
-                rejected = start_kind in _CALL_METHODS and start.get("outcome") == "REJECTED"
+                rejected = (
+                    start_kind in _CALL_METHODS
+                    and start.get("outcome") == "REJECTED"
+                    and _has_matching_sdk_request(
+                        start, _CALL_METHODS[start_kind], "REJECTED", self.value.get("sdkRequests", [])
+                    )
+                )
                 if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
                     self.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
                 elif candidates:
@@ -1257,7 +1272,9 @@ class _Evidence:
         if unmatched:
             self.error("retirement-only completion has no unique observed work start")
 
-    def retirement(self, *, audit_observed_work: bool = True) -> None:
+    def retirement(
+        self, *, audit_observed_work: bool = True, retired_requests: Mapping[str, set[str]] | None = None
+    ) -> None:
         retirement = self.mapping(self.value.get("retirement"), "retirement")
         end = self.number(retirement.get("retiredAtMs"), "retirement.retiredAtMs")
         if end < self.value.get("observationEndedAtMs", 0):
@@ -1336,7 +1353,14 @@ class _Evidence:
                             self.standard_behavior
                             and self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
                             and self.selected.get("victim", {}).get("executionArn") == item.get("id")
-                            and sum(attempt.get("executionArn") == item.get("id") for attempt in self.attempts.values())
+                            and len(
+                                {
+                                    request
+                                    for request, attempt in self.attempts.items()
+                                    if attempt.get("executionArn") == item.get("id")
+                                }
+                                | (retired_requests or {}).get(item["id"], set())
+                            )
                             == 1
                             and item.get("outcome")
                             != ("SUCCEEDED" if self.value["requirementId"] == "lmi-lifecycle-2" else "FAILED")
@@ -1385,7 +1409,12 @@ class _Evidence:
                             self.error("fault release cannot retroactively establish cleanup or recovery", "ASSERTION")
 
 
-def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final") -> list[str]:
+def validate_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    phase: Literal["observations", "final"] = "final",
+    retired_requests: Mapping[str, set[str]] | None = None,
+) -> list[str]:
     """Validate all observations, then optionally case-owned retirement.
 
     The coordinator calls ``observations`` before releasing faults and retains
@@ -1411,7 +1440,7 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
             validator.error(f"malformed evidence: {error}")
     if phase == "final":
         try:
-            validator.retirement()
+            validator.retirement(retired_requests=retired_requests)
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             validator.error(f"malformed retirement evidence: {error}")
     return validator.errors
@@ -1460,18 +1489,17 @@ def _validate_observations(validator: _Evidence, evidence: Mapping[str, Any]) ->
         checks[requirement]()
 
 
-def _has_matching_sdk_request(
-    event: Mapping[str, Any], method: str, outcome: str, requests: Sequence[Mapping[str, Any]]
-) -> bool:
+def _has_matching_sdk_request(event: Mapping[str, Any], method: str, outcome: str, requests: Any) -> bool:
     call_id = event.get("callId")
     return (
         isinstance(call_id, str)
         and bool(call_id.strip())
         and sum(
-            request.get("method") == method
+            isinstance(request, Mapping)
+            and request.get("method") == method
             and request.get("outcome") == outcome
             and all(request.get(key) == event.get(key) for key in ("requestId", "callId", "atMs"))
-            for request in requests
+            for request in (requests if isinstance(requests, (list, tuple)) else ())
         )
         == 1
     )
@@ -1491,6 +1519,80 @@ def normalize_retirement_events(events: Sequence[Mapping[str, Any]], errors: lis
                 event = {**event, "kind": aliases[kind]}
         normalized.append(event)
     return normalized
+
+
+def retained_fault_releases(
+    sources: Sequence[Mapping[str, Any]], retired_at: Any
+) -> tuple[list[int | float], list[str]]:
+    """Check observed release receipts even if later snapshots replace them."""
+
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    end = timestamp(retired_at)
+    releases: list[int | float] = []
+    errors: list[str] = []
+    for source in sources:
+        retirement = source.get("retirement")
+        for location, records in (
+            ("faultsCreated", source.get("faultsCreated")),
+            ("retirement.faults", retirement.get("faults") if isinstance(retirement, Mapping) else None),
+        ):
+            for fault in records if isinstance(records, list) else ():
+                if not isinstance(fault, Mapping) or "releasedAtMs" not in fault:
+                    continue
+                released = timestamp(fault["releasedAtMs"])
+                if released is None:
+                    errors.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
+                else:
+                    releases.append(released)
+                    if end is not None and released > end:
+                        errors.append("INCOMPLETE: observed fault release occurred after retirement ended")
+    return releases, list(dict.fromkeys(errors))
+
+
+def _validate_sdk_dispatches(validator: _Evidence, events: Sequence[Mapping[str, Any]]) -> None:
+    call_kinds = {method: kind for kind, method in _CALL_METHODS.items()}
+    dispatches: set[tuple[str, str, str]] = set()
+    for request in validator.value["sdkRequests"]:
+        if request.get("outcome") != "DISPATCHED":
+            continue
+        kind = call_kinds.get(request.get("method"))
+        if kind is None:
+            validator.error("retirement has no completion contract for dispatched SDK method")
+            continue
+        call_id = validator.string(request.get("callId"), "dispatched SDK request.callId")
+        key = (request["requestId"], kind, call_id)
+        if key in dispatches or not any(
+            event.get("requestId") == key[0]
+            and event.get("kind") == kind
+            and event.get("callId") == call_id
+            and event.get("outcome", "DISPATCHED") == "DISPATCHED"
+            and event.get("atMs") == request.get("atMs")
+            for event in events
+        ):
+            validator.error(f"retirement cannot correlate dispatched SDK request with its unique {kind}")
+        dispatches.add(key)
+
+
+def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
+    """Verify settlement against the captured case and its retirement record."""
+    requirement = evidence.get("requirementId")
+    validator = _Evidence(
+        evidence, requirement_ids=(requirement,) if isinstance(requirement, str) else (), standard_behavior=False
+    )
+    try:
+        validator.common(validate_behavior=False)
+        validator.retirement()
+        if not validator.errors:
+            _validate_sdk_dispatches(validator, normalize_retirement_events(validator.events, validator.errors))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+        validator.error(f"malformed retirement evidence: {error}")
+    return validator.errors
 
 
 def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launches: bool = False) -> list[str]:
@@ -1524,27 +1626,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
                 validator.error("retirement service history still permits execution resume")
             if records[arn].get("outcome") != history["status"]:
                 validator.error("retirement execution outcome differs from actual service history")
-        call_kinds = {method: kind for kind, method in _CALL_METHODS.items()}
-        dispatches: set[tuple[str, str, str]] = set()
-        for request in evidence["sdkRequests"]:
-            if request.get("outcome") != "DISPATCHED":
-                continue
-            kind = call_kinds.get(request.get("method"))
-            if kind is None:
-                validator.error("retirement has no completion contract for dispatched SDK method")
-                continue
-            call_id = validator.string(request.get("callId"), "dispatched SDK request.callId")
-            key = (request["requestId"], kind, call_id)
-            if key in dispatches or not any(
-                event.get("requestId") == key[0]
-                and event.get("kind") == kind
-                and event.get("callId") == call_id
-                and event.get("outcome", "DISPATCHED") == "DISPATCHED"
-                and event.get("atMs") == request.get("atMs")
-                for event in validator.events
-            ):
-                validator.error(f"retirement cannot correlate dispatched SDK request with its unique {kind}")
-            dispatches.add(key)
+        _validate_sdk_dispatches(validator, validator.events)
         for request_id in validator.attempts:
             local = [event for event in validator.events if event["requestId"] == request_id]
             sequences = [event.get("sequence") for event in local]

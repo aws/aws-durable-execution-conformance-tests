@@ -16,6 +16,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_evidence,
     validate_retirement_evidence,
 )
+from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence, evaluate_evidence
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:
@@ -755,7 +756,7 @@ def test_warm_reuse_checks_all_recorded_post_closure_probes(
         assert errors == [], errors
 
 
-def complete_retirement_events(value: dict[str, Any]) -> None:
+def complete_sdk_dispatches(value: dict[str, Any]) -> None:
     for index, request in enumerate(value["sdkRequests"]):
         if request["outcome"] != "DISPATCHED":
             continue
@@ -765,9 +766,13 @@ def complete_retirement_events(value: dict[str, Any]) -> None:
         value["events"].extend(
             [
                 {**request, "kind": f"{call_kind}_call"},
-                {**request, "kind": f"{call_kind}_exit"},
+                {**request, "kind": f"{call_kind}_exit", "atMs": request["atMs"] + 0.001},
             ]
         )
+
+
+def complete_retirement_events(value: dict[str, Any]) -> None:
+    complete_sdk_dispatches(value)
     for owner in value["attempts"]:
         value["events"].extend(
             [
@@ -2453,6 +2458,22 @@ def test_retirement_rejects_dispatched_request_matched_to_rejected_call() -> Non
         if not (item["kind"] == "checkpoint_exit" and item.get("callId") == "dispatch-0")
     ]
     assert any("cannot correlate dispatched SDK request" in error for error in validate_retirement_evidence(value))
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_observed_retirement
+
+    assert any(
+        "lacks a unique completed checkpoint_call/checkpoint_exit" in error
+        for error in validate_observed_retirement(value)
+    )
+
+
+@pytest.mark.parametrize("requests", [[None], ["bad"], {"not": "an array"}])
+def test_sdk_request_rejection_check_handles_malformed_records(requests: Any) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    call = next(row for row in value["events"] if row["kind"] == "checkpoint_call")
+    call["outcome"] = "REJECTED"
+    value["sdkRequests"] = requests
+    assert any("sdkRequests" in error for error in validate_evidence(value))
 
 
 def test_replay_requires_observed_durable_suspension_checkpoint() -> None:
@@ -3019,3 +3040,152 @@ def test_retry_sequences_order_nonadjacent_bodies_on_the_same_request(last_seque
         assert "ASSERTION: retry attempt order contradicts timed user-code entries" in errors
     else:
         assert not errors
+
+
+@pytest.mark.parametrize("retained_at", [50, 201])
+def test_offline_checks_retained_terminal_settlement_against_observation_window(retained_at: int) -> None:
+    frozen = deadline_evidence()
+    arn = frozen["histories"][0]["executionArn"]
+    frozen["histories"][0]["status"] = "RUNNING"
+    frozen["expectedHistories"][arn] = {"allowedStatuses": ["RUNNING", "TIMED_OUT"]}
+    independent = deepcopy(frozen)
+    resource = next(row for row in independent["retirement"]["resources"] if row["id"] == arn)
+    resource.update(outcome="SUCCEEDED", settledAtMs=210)
+    retained = deepcopy(independent)
+    next(row for row in retained["retirement"]["resources"] if row["id"] == arn)["settledAtMs"] = retained_at
+    frozen_copy, retained_copy, independent_copy = map(deepcopy, (frozen, retained, independent))
+
+    findings = evaluate_evidence(
+        frozen,
+        retirement_evidence=independent,
+        cleanup_evidence={"release": [retained]},
+        validator=validate_evidence,
+        standard=True,
+    )
+
+    assert any("outside the declared allowedStatuses" in finding for finding in findings) == (retained_at == 50)
+    assert (frozen, retained, independent) == (frozen_copy, retained_copy, independent_copy)
+
+
+def test_offline_deadline_budget_targets_the_controlled_task() -> None:
+    frozen = deadline_evidence()
+    victim = frozen["attempts"][0]
+    independent = deepcopy(frozen)
+    independent["events"].extend(
+        [event(victim, "task_start", 13, taskId="child"), event(victim, "task_exit", 15, taskId="child")]
+    )
+    findings = evaluate_evidence(
+        frozen,
+        retirement_evidence=independent,
+        cleanup_evidence={},
+        validator=validate_evidence,
+        standard=True,
+    )
+    assert not any(
+        "cleanupMs measurement" in finding or "exited before the observed" in finding for finding in findings
+    )
+
+
+@pytest.mark.parametrize(("factory", "kind"), [(deadline_evidence, "platform_timeout"), (replay_evidence, "pending")])
+def test_offline_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str) -> None:
+    frozen = factory()
+    independent = deepcopy(frozen)
+    duplicate = deepcopy(next(row for row in independent["events"] if row["kind"] == kind))
+    duplicate["atMs"] += 0.5
+    independent["events"].append(duplicate)
+    findings = evaluate_evidence(
+        frozen,
+        retirement_evidence=independent,
+        cleanup_evidence={},
+        validator=validate_evidence,
+        standard=True,
+    )
+    assert any(f"needs exactly one {kind} event" in finding for finding in findings)
+
+
+@pytest.mark.parametrize(("start", "fails"), [(199, True), (201, False)])
+def test_offline_overlap_excludes_retries_in_frozen_window(start: int, fails: bool) -> None:
+    frozen = evidence()
+    independent = deepcopy(frozen)
+    victim = frozen["attempts"][0]
+    independent["attempts"].append({**victim, "requestId": "extra", "attempt": 2, "startedAtMs": start})
+    findings = evaluate_evidence(
+        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
+    )
+    assert any("original successful execution without retry" in item for item in findings) is fails
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+def test_offline_lifecycle_grace_uses_frozen_observation_window(requirement: int) -> None:
+    frozen = deadline_evidence() if requirement == 3 else recovery_evidence()
+    boundary_kind, fixed_at = ("platform_timeout", 30.5) if requirement == 3 else ("worker_recovered", 45.5)
+    frozen["budgets"]["observationGraceMs"] = 170 if requirement == 3 else 155
+    independent = deepcopy(frozen)
+    independent["observationEndedAtMs"] = 201
+    next(row for row in independent["events"] if row["kind"] == boundary_kind)["atMs"] = fixed_at
+    findings = evaluate_evidence(
+        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
+    )
+    assert any("cleanup observation window lacks the declared grace after" in item for item in findings)
+
+
+def test_offline_rejects_multiple_disposal_root_completions_in_one_frame() -> None:
+    frozen = evidence(2)
+    independent = deepcopy(frozen)
+    root = next(row for row in independent["events"] if row["kind"] == "root_completed")
+    independent["events"].append({**root, "atMs": 36})
+    findings = evaluate_evidence(
+        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
+    )
+    assert any("needs exactly one root_completed event" in item for item in findings)
+
+
+@pytest.mark.parametrize("allowed", [[], ["UNKNOWN"], ["FAILED", "FAILED"], [[]]])
+def test_offline_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> None:
+    frozen = evidence(2)
+    arn = frozen["histories"][0]["executionArn"]
+    frozen["expectedHistories"][arn].pop("status")
+    frozen["expectedHistories"][arn]["allowedStatuses"] = allowed
+    findings = validate_evidence(frozen, phase="observations")
+    assert any(item.startswith("INCOMPLETE:") and "allowedStatuses" in item for item in findings)
+    assert not any(item.startswith("ASSERTION:") and "allowedStatuses" in item for item in findings)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [None, 1, {"kind": "task_exit", "requestId": [], "taskId": []}],
+)
+def test_offline_invalid_retirement_completion_is_incomplete(invalid: Any) -> None:
+    frozen = evidence(2)
+    retirement = deepcopy(frozen)
+    retirement["retirement"]["completions"] = [invalid]
+    status, findings, _ = adjudicate_evidence(
+        "COLLECTED",
+        [],
+        frozen,
+        retirement_evidence=retirement,
+        cleanup_evidence={},
+        validator=validate_evidence,
+        standard=True,
+    )
+    assert status == "INCOMPLETE_EVIDENCE", findings
+    assert any("malformed captured retirement completions" in item for item in findings)
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_offline_retains_trustworthy_behavior_failure_after_cleanup_error(trusted: bool) -> None:
+    frozen = evidence(2)
+    frozen["expectedHistories"][frozen["histories"][0]["executionArn"]]["result"] = "different"
+    status, findings, _ = adjudicate_evidence(
+        "INFRASTRUCTURE_ERROR",
+        ["cleanup failed"],
+        frozen,
+        retirement_evidence={},
+        cleanup_evidence={},
+        validator=validate_evidence,
+        standard=True,
+        trusted_observations=trusted,
+    )
+    assert status == ("FAILED" if trusted else "INFRASTRUCTURE_ERROR")
+    assert "cleanup failed" in findings
+    assert any(item.startswith("ASSERTION:") for item in findings)

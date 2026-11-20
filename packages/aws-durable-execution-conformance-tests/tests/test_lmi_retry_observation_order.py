@@ -26,6 +26,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import same_json, vali
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
     fixture = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = fixture["replay_evidence"]()
+    fixture["complete_sdk_dispatches"](value)
     attempts = [
         {
             "attemptId": f"retry-{index + 1}",
@@ -160,7 +161,9 @@ def test_retry_order_conflict_survives_corrected_collection(source: str) -> None
     )
     assert result.status != "PASSED", result.errors
     assert any("retry attempt order" in error for error in result.errors), result.errors
-    assert scheduler.quarantine_reason(value["profile"]["functionArn"])
+    # Retry order is an offline verdict. Only the interrupted capture lacks
+    # the physical retirement required to reuse the target.
+    assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (source == "partial")
 
 
 @pytest.mark.parametrize("known", [(1, 2, 3), (0, 3), (0, 1)])
@@ -696,3 +699,13 @@ def test_integral_json_side_effect_observations_are_valid(field: str) -> None:
     known[field] = float(known[field])
     result, _ = _run(SideEffectObservationAdapter(value, [known]))
     assert result.status == "PASSED", result.errors
+
+
+def test_missing_side_effect_observation_does_not_block_target_reuse() -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    value["replay"]["sideEffects"].remove(_effect(value))
+    result, scheduler = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status != "PASSED", result.errors
+    assert any("omitted or changed retained side-effect observations" in error for error in result.errors)
+    assert scheduler.quarantine_reason(value["profile"]["functionArn"]) is None

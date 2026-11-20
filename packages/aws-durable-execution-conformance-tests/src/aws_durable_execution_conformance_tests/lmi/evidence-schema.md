@@ -43,6 +43,8 @@ There is no additional cohort identifier; roles bind its original invocations.
 coordinator must bind this map to its launch journal, before interpreting results.
 A later service retry cannot replace a selected original request. Every launched
 attempt remains in `attempts`, including failed placement and unrelated retries.
+Adapters call `record_attempt` before dispatch and `record_service_attempt` when
+discovering a service-initiated attempt against an already journaled execution.
 Each attempt records:
 
 - `requestId`, `executionArn`, `environmentId`, `workerId`, `processId`, `role`;
@@ -236,13 +238,13 @@ timestamps must be at or before `retirement.retiredAtMs`. An absent original rel
 remains valid when the final acknowledgment proves release. Releasing a fault
 before the asserted cleanup or recovery is a failure regardless of release mode.
 
-The coordinator first freezes collected observations and validates with
-`phase="observations"`, before release. It preserves those findings while adding
-retirement observations for `phase="final"`. Final retirement validation runs
-even when earlier observation records were malformed or incomplete. Successful emergency release cannot
-rewrite failed behavior. Missing or uncertain retirement quarantines the affected
-profile; other profiles remain independent. A blanket `passed` or `cleanedUp`
-boolean is not evidence for any requirement.
+The coordinator freezes collected observations before release and verifies
+physical retirement before allowing target reuse. Missing or uncertain
+retirement quarantines the affected profile. The offline evaluator checks
+the frozen observations with `phase="observations"` and combines a copy
+with retirement records for `phase="final"`. Emergency release cannot
+erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
+insufficient evidence.
 
 The SDK adapter is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
@@ -367,7 +369,23 @@ and publishes case outcomes to `results.jsonl`, including predeclared skips.
 Both JSONL journals may have multiple records for a case. The last record for
 the case contains its latest published attempts or outcome.
 
+The live runner holds each target through physical retirement of its own cases.
+Each profile can release its external lock independently. A conflict with a
+claim discovered after release is reported against both cases and quarantines
+the affected targets in the current scheduler. The external release cannot
+be revoked. After all targets
+are released or quarantined, it writes frozen observations and separate cleanup
+evidence to `collected-evidence.json` and uses the offline evaluator to produce
+the final report. A journal row with status `COLLECTED` awaits that verdict.
+
 ## Offline lifecycle runner
+
+Re-evaluate a live evidence bundle without loading an adapter:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest lmi-live/manifest.json --collected-evidence lmi-live/collected-evidence.json --output lmi-offline
+```
+
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
 --output output` with an empty output directory. The runner reads existing

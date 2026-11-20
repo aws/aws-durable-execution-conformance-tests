@@ -240,6 +240,8 @@ def test_local_live_suite_enforces_admission_before_adapter_import(
 @pytest.mark.parametrize("mutate", [False, True])
 def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(tmp_path: Path, mutate: bool) -> None:
     plan, value = plan_and_evidence()
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
     if mutate:
         plan["scenarios"][0]["behavior_budgets"]["settleMs"] = 5
     original = deepcopy(plan)
