@@ -5,10 +5,12 @@
 import asyncio
 import io
 import json
+import time
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import Mock
 
@@ -19,12 +21,14 @@ from aws_durable_execution_conformance_tests.lmi import adapter as adapter_modul
 from aws_durable_execution_conformance_tests.lmi import cloud as cloud_module
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Profile,
+    ResourceScheduler,
     Scenario,
     ScenarioContext,
+    run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, ProvisioningError
 
-from .support import FIXTURES, ScenarioDriver, configuration_identity
+from .support import FIXTURES, ScenarioDriver, build_evidence, configuration_identity
 
 FUNCTION = "arn:aws:lambda:us-west-2:123456789012:function:lmi:$LATEST.PUBLISHED"
 EXECUTION = FUNCTION + "/durable-execution/name/id"
@@ -74,10 +78,11 @@ def deployment():
 @pytest.fixture
 def cloud(monkeypatch, tmp_path):
     clients = {name: Mock() for name in ("lambda", "s3", "logs")}
-    clients["lambda"].invoke.return_value = {
+    clients["lambda"].invoke.side_effect = lambda **kwargs: {
         "StatusCode": 202,
-        "DurableExecutionArn": EXECUTION,
+        "DurableExecutionArn": f"{kwargs['FunctionName']}/durable-execution/{kwargs['DurableExecutionName']}/id",
     }
+    clients["s3"].put_object.return_value = {"ResponseMetadata": {"RetryAttempts": 0}}
     clients["s3"].get_paginator.return_value.paginate.return_value = []
     return cloud_module.Cloud(
         deployment(),
@@ -94,7 +99,7 @@ def enter(item, request, at):
         "phase": "WRAPPER_ENTER",
         "marker": item["marker"],
         "request": request,
-        "execution": EXECUTION,
+        "execution": item.get("arn") or EXECUTION,
         "time": at,
         "sequence": 0,
         "run": "run",
@@ -120,7 +125,10 @@ def test_direct_launch_is_journaled_before_public_runner_transport(cloud):
         observed.append(kwargs)
         assert len(cloud.case_context.attempts) == 1
         assert "requestId" not in cloud.case_context.attempts[0]
-        return {"StatusCode": 202, "DurableExecutionArn": EXECUTION}
+        return {
+            "StatusCode": 202,
+            "DurableExecutionArn": f"{kwargs['FunctionName']}/durable-execution/{kwargs['DurableExecutionName']}/id",
+        }
 
     cloud.lam.invoke.side_effect = invoke
     item = cloud.start(
@@ -199,8 +207,13 @@ def test_lost_invoke_response_retains_launch_and_recovers_identity(cloud):
     assert item["arn"] is None
     record = json.loads((cloud.artifacts_dir / f"invocations/{item['marker']}.json").read_text())
     assert "response lost" in record["error"]
-    refresh_entries(cloud, enter(item, "original", 1))
-    assert item["arn"] == EXECUTION
+    event = enter(item, "original", 1)
+    with pytest.raises(CollectionError, match="journaled launch"):
+        refresh_entries(cloud, event)
+    assert item["arn"] is None
+    arn = FUNCTION + f"/durable-execution/{record['durableExecutionName']}/id"
+    refresh_entries(cloud, {**event, "execution": arn})
+    assert item["arn"] == arn
     assert cloud.case_context.attempts[0]["requestId"] == "original"
     assert cloud.lam.invoke.call_count == 1
 
@@ -223,6 +236,7 @@ def test_case_controls_and_collection_cannot_touch_another_case(cloud, tmp_path)
         cloud.refresh(markers=[])
     with pytest.raises(CollectionError, match="only its own"):
         cloud.collect(full_run=True)
+    cloud.s3.get_object.side_effect = lambda **_: {"Body": io.BytesIO(b"hold"), "ETag": '"hold"'}
     cloud.release_all()
     keys = [call.kwargs["Key"] for call in cloud.s3.put_object.call_args_list]
     assert all(key.startswith(cloud.control_prefix) for key in keys)
@@ -254,7 +268,10 @@ class FakeCloud:
         self.artifacts_dir, self.case_context = Path(artifacts_dir), case_context
         self.cancel_event = Event()
         self.actions = []
+        self.invocations = []
+        self.control_records = []
         self.s3: Any = Mock()
+        self.s3.put_object.return_value = {"ResponseMetadata": {"RetryAttempts": 0}}
         self.s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
         self.instances.append(self)
 
@@ -307,6 +324,279 @@ def test_prepare_checks_the_actual_deployment_profile(tmp_path):
     bad = Profile("bad", FUNCTION, 1, 2, "sdk-sha", "configuration-sha")
     with pytest.raises(ProvisioningError, match="Native concurrency"):
         asyncio.run(value.prepare(bad))
+
+
+def test_finish_releases_fence_acquired_after_cancelled_preparation(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import quarantine
+
+    entered, unblock = Event(), Event()
+    actions: list[str] = []
+
+    def acquire(*args, **kwargs):
+        entered.set()
+        assert unblock.wait(2)
+        actions.append("acquire")
+        return "owned-token"
+
+    def release(storage, manifest, resource, token):
+        assert token == "owned-token"
+        (receipt,) = tmp_path.rglob("*-fence.json")
+        assert json.loads(receipt.read_text())["state"] == "RETIRED"
+        actions.append("release")
+        raise ClientError({"Error": {"Code": "ExpiredToken"}}, "DeleteObject")
+
+    monkeypatch.setattr(quarantine, "acquire_fence", acquire)
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    async def exercise():
+        value = adapter(tmp_path)
+        valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+        preparing = asyncio.create_task(value.prepare(valid))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            preparing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await preparing
+            finishing = asyncio.create_task(value.finish(valid, quiescent=True))
+            await asyncio.sleep(0)
+            assert not finishing.done()
+        finally:
+            unblock.set()
+        with pytest.raises(ClientError, match="ExpiredToken"):
+            await finishing
+        (receipt,) = tmp_path.rglob("*-fence.json")
+        assert json.loads(receipt.read_text())["token"] == "owned-token"
+        assert actions == ["acquire", "release"]
+
+    asyncio.run(exercise())
+
+
+def test_profile_verification_holds_fence_and_releases_its_token_on_failure(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import quarantine
+
+    events: list[str] = []
+
+    def acquire(storage, manifest, resource, **kwargs):
+        events.append("acquire")
+        return "owned-token"
+
+    def release(storage, manifest, resource, token):
+        assert token == "owned-token"
+        (receipt,) = tmp_path.rglob("*-fence.json")
+        assert json.loads(receipt.read_text())["state"] == "NOT_ADMITTED"
+        events.append("release")
+        raise ClientError({"Error": {"Code": "ExpiredToken"}}, "DeleteObject")
+
+    class InvalidCloud(FakeCloud):
+        def verify(self):
+            assert events == ["acquire"]
+            events.append("verify")
+            raise ProvisioningError("profile drifted")
+
+    monkeypatch.setattr(quarantine, "acquire_fence", acquire)
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    async def exercise():
+        value = adapter(tmp_path, factory=InvalidCloud)
+        valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+        with pytest.raises(ProvisioningError, match="profile drifted"):
+            await value.prepare(valid)
+        await value.finish(valid, quiescent=True)
+
+    asyncio.run(exercise())
+    (receipt,) = tmp_path.rglob("*-fence.json")
+    assert json.loads(receipt.read_text())["token"] == "owned-token"
+    assert events == ["acquire", "verify", "release"]
+
+
+def test_missing_fixture_does_not_create_retirement_evidence(tmp_path):
+    async def exercise():
+        value = adapter(tmp_path)
+        value.driver_factory = partial(adapter_module.ScenarioDriver, runtime="python", fixtures={})
+        ctx = context()
+        with pytest.raises(NotImplementedError, match="fixture"):
+            await value.start(ctx)
+        await value.release(ctx)
+        assert await value.retire(ctx)
+        assert not ctx.evidence
+        assert not ctx.retirement_evidence
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("journaled", [False, True])
+def test_preflight_value_error_does_not_retain_empty_case_but_keeps_a_prepared_intent(tmp_path, journaled):
+    class Driver:
+        def __init__(self, context, cloud):
+            self.cloud = cloud
+
+        def start(self):
+            if journaled:
+                intents = self.cloud.artifacts_dir / "invocations"
+                intents.mkdir(parents=True)
+                (intents / "prepared.json").write_text('{"dispatchState":"PREPARED"}')
+            raise ValueError("invalid binding")
+
+    async def exercise():
+        value = adapter(tmp_path)
+        value.driver_factory = Driver  # type: ignore[assignment]
+        ctx = context()
+        with pytest.raises(ValueError, match="invalid binding"):
+            await value.start(ctx)
+        assert (ctx.scenario.case_id in value.cases) is journaled
+        if not journaled:
+            assert await value.retire(ctx)
+            assert not ctx.retirement_evidence
+
+    asyncio.run(exercise())
+
+
+def test_pending_observations_do_not_fence_after_audited_retirement(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import quarantine, source_evidence
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    class ObservedCloud(FakeCloud):
+        observation_ended_at: float
+        retired_at: float | None = None
+        source_uris: ClassVar[set[str]] = {"memory://source"}
+        execution_results: ClassVar[dict[str, dict[str, str]]] = {EXECUTION: {"Status": "SUCCEEDED"}}
+        terminal_histories: ClassVar[set[str]] = {EXECUTION}
+
+        def _save(self, name, evidence):
+            pass
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            self.context.record_attempt("launch", requestId="request", executionArn=EXECUTION, role="victim")
+            self.cloud.invocations.append({"arn": EXECUTION, "marker": "marker", "native_requests": ["request"]})
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+
+        def retire(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.retired_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+            return True
+
+    started = time.time() * 1000 - 100
+
+    def snapshot_sources(ctx, cloud):
+        owned = {"requestId": "request", "ownerRequestId": "request", "executionArn": EXECUTION}
+        events = [
+            {**owned, "kind": "wrapper_enter", "atMs": started},
+            {**owned, "kind": "task_start", "taskId": "root", "atMs": started + 1},
+            {**owned, "kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": started + 2},
+        ]
+        if cloud.retired_at is not None:
+            events.append({**owned, "kind": "task_exit", "taskId": "root", "atMs": started + 3})
+        raw_events = [
+            {"phase": "WRAPPER_ENTER", "request": "request", "sequence": 1, "time": started / 1000},
+            *(
+                {
+                    "phase": "CONFORMANCE",
+                    "request": "request",
+                    "sequence": capture + 1,
+                    "observation": {"captureSequence": capture},
+                }
+                for capture, _ in enumerate(events, 1)
+            ),
+        ]
+        if cloud.retired_at is not None:
+            raw_events.append(
+                {
+                    "phase": "SEALED",
+                    "request": "request",
+                    "sequence": len(raw_events) + 1,
+                    "sourceProtocol": 2,
+                    "throughCapture": len(events),
+                }
+            )
+        for event in raw_events:
+            event.update(marker="marker", execution=EXECUTION)
+        cloud.events = dict(enumerate(raw_events, 1))
+        cloud.raw_histories = {
+            EXECUTION: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                {"EventType": "ExecutionSucceeded", "EventId": 2, "EventTimestamp": started / 1000},
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 3,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "request",
+                        "StartTimestamp": started / 1000,
+                        "EndTimestamp": (started + 3) / 1000,
+                    },
+                },
+            ]
+        }
+        attempt = {
+            **owned,
+            "environmentId": "environment",
+            "workerId": "worker",
+            "processId": "process",
+            "role": "victim",
+            "attempt": 1,
+            "startedAtMs": started,
+            "endedAtMs": started + 3,
+            "outcome": "SUCCEEDED",
+        }
+        history = {
+            "executionArn": EXECUTION,
+            "ownerCaseId": ctx.scenario.case_id,
+            "status": "SUCCEEDED",
+            "operations": [],
+        }
+        return SimpleNamespace(
+            observations=lambda **kwargs: (events, []),
+            histories=lambda **kwargs: ([history], {}, []),
+            attempts=lambda events, **kwargs: ([attempt], {"victim": "request"}, []),
+        )
+
+    monkeypatch.setattr(
+        source_evidence.CaseSources,
+        "capture",
+        lambda ctx, cloud, **options: cloud.normalized_sources,
+    )
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    case = Scenario(
+        "case", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path, factory=ObservedCloud)
+    value.evidence_builder = build_evidence
+    value.driver_factory = Driver  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    def validator(evidence, *, phase="final"):
+        required = {"lifecycle", "sdkRequests", "history"}
+        return (
+            []
+            if required == evidence["collection"]["watermarks"].keys()
+            else ["INCOMPLETE: observation window still open"]
+        )
+
+    (result,) = asyncio.run(
+        run_scenarios([case], [profile], value, run_id="run", validator=validator, scheduler=scheduler)
+    )
+    assert "INCOMPLETE: observation window still open" in result.errors
+    assert result.evidence["collectionErrors"] == []
+    assert result.retirement_evidence["collection"]["watermarks"]
+    assert scheduler.quarantine_reason(FUNCTION) is None, result.errors
+    release.assert_called_once()
 
 
 def test_foreign_target_prevents_any_driver_launch(tmp_path):
@@ -363,8 +653,8 @@ class ScriptCloud:
     def __init__(self, native=1):
         self.concurrency = native
         self.manifest = {"driverTimeout": 1, "invocationTimeout": 60}
+        self.suspension_mode = "callback"
         self.actions = []
-        self.callback_records = []
         self.invocations = []
         self.raw_histories = {}
         self.source_uris = set()
@@ -437,17 +727,146 @@ class ScriptCloud:
         pass
 
 
-def test_callback_uses_same_execution_and_actual_pending_before_response():
+@pytest.mark.parametrize(
+    ("encoder", "encoded_marker"),
+    [(None, b"victim"), (lambda marker: json.dumps(marker).encode(), b'"victim"')],
+)
+@pytest.mark.parametrize("response_lost", [None, "ServiceException", "CallbackTimeoutException"])
+def test_callback_uses_same_execution_and_actual_pending_before_response(
+    monkeypatch, encoder, encoded_marker, response_lost
+):
     cloud = ScriptCloud()
-    driver = ScenarioDriver(context(), cloud)
+    options = {"callback_encoder": encoder} if encoder is not None else {}
+    driver = ScenarioDriver(context(), cloud, **options)
     driver.start()
     driver.place()
-    driver.execute()
-    assert len(cloud.invocations) == 1
     runner = cloud.invocations[0]["runner"]
-    runner.wait_for_callback.assert_called_once_with("execution:victim", name="completion", timeout=1)
-    runner.send_callback_success.assert_called_once_with("callback-id", result=b"victim")
-    assert cloud.callback_records[0]["executionArn"] == "execution:victim"
+    if response_lost:
+        runner.send_callback_success.side_effect = ClientError(
+            {
+                "Error": {"Code": response_lost},
+                "ResponseMetadata": {"HTTPStatusCode": 503 if response_lost == "ServiceException" else 410},
+            },
+            "SendDurableExecutionCallbackSuccess",
+        )
+    first = {
+        "EventType": "InvocationCompleted",
+        "InvocationCompletedDetails": {
+            "RequestId": "first",
+            "StartTimestamp": 0,
+            "EndTimestamp": 1.1,
+        },
+    }
+    second = {
+        "EventType": "InvocationCompleted",
+        "InvocationCompletedDetails": {
+            "RequestId": "second",
+            "StartTimestamp": 2,
+            "EndTimestamp": 3.1,
+        },
+    }
+    checkpoint = {
+        "EventType": "CallbackStarted",
+        "Id": "operation",
+        "Name": "completion",
+        "EventTimestamp": 2.1,
+        "CallbackStartedDetails": {"CallbackId": "callback-id"},
+    }
+    reads = 0
+
+    def history(_):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return [first, checkpoint]
+        if reads > 2:
+            return [
+                first,
+                checkpoint,
+                second,
+                {
+                    "EventType": "CallbackSucceeded",
+                    "Id": "operation",
+                    "CallbackSucceededDetails": {"Result": {"Payload": encoded_marker.decode(), "Truncated": False}},
+                },
+            ]
+        return [first, checkpoint, second]
+
+    def events(_):
+        return [
+            *ScriptCloud.for_item(cloud, None),
+            {"phase": "WRAPPER_RETURN", "status": "PENDING", "time": 3, "request": "second"},
+        ]
+
+    def poll(predicate, **_):
+        if not runner.send_callback_success.called:
+            assert not predicate()  # The previous PENDING is only retry backoff.
+            runner.send_callback_success.assert_not_called()
+        assert predicate()
+
+    monkeypatch.setattr(cloud, "history", history)
+    monkeypatch.setattr(cloud, "for_item", events)
+    monkeypatch.setattr(cloud, "poll", poll)
+    driver.execute()
+    runner.send_callback_success.assert_called_once_with("callback-id", result=encoded_marker)
+
+
+@pytest.mark.parametrize("durable_wait", [True, False])
+def test_wait_only_suspension_selects_native_timer_proof(durable_wait):
+    from aws_durable_execution_conformance_tests.lmi.observations import wait_crossed_suspension
+
+    cloud = ScriptCloud()
+    ledger = [
+        *cloud.for_item(None),
+        {
+            "phase": "CONFORMANCE",
+            "request": "first",
+            "observation": {
+                "kind": "invocation_end",
+                "outcome": "PENDING",
+                "atMs": 900,
+            },
+        },
+    ]
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {
+                "RequestId": "first",
+                "StartTimestamp": 0,
+                "EndTimestamp": 1.1,
+            },
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {
+                "RequestId": "second",
+                "StartTimestamp": 2,
+                "EndTimestamp": 3,
+            },
+        },
+        {
+            "EventType": "StepFailed",
+            "Id": "retry",
+            "StepFailedDetails": {"RetryDetails": {"NextAttemptDelaySeconds": 1}},
+        },
+    ]
+    if durable_wait:
+        history.extend(
+            [
+                {"EventType": "WaitStarted", "Id": "timer", "EventTimestamp": 0.8},
+                # Timer elapses during wrapper teardown, after the SDK's PENDING decision.
+                {"EventType": "WaitSucceeded", "Id": "timer", "EventTimestamp": 0.95},
+            ]
+        )
+    assert wait_crossed_suspension(ledger, history) is durable_wait
+    driver = ScenarioDriver(context(), cloud, suspension_mode="wait")
+    driver.start()
+    driver.execute()
+    assert cloud.suspension_mode == "wait"
+    runner = cloud.invocations[0]["runner"]
+    runner.send_callback_success.assert_not_called()
+    assert ("finish", "victim", "SUCCEEDED") in cloud.actions
 
 
 def test_each_case_has_independent_artifact_namespace(monkeypatch, tmp_path):
@@ -474,14 +893,37 @@ def test_each_case_has_independent_artifact_namespace(monkeypatch, tmp_path):
     asyncio.run(exercise())
 
 
+def seal_fixture_events(events):
+    events[:] = [event for event in events if event["phase"] != "SEALED"]
+    captures = 0
+    for sequence, event in enumerate(events, 1):
+        event.update(sequence=sequence, marker="marker", execution="execution")
+        if event["phase"] == "CONFORMANCE":
+            captures += 1
+            event["observation"]["captureSequence"] = captures
+    events.append(
+        {
+            "phase": "SEALED",
+            "request": "native",
+            "sequence": len(events) + 1,
+            "sourceProtocol": 2,
+            "throughCapture": captures,
+            "marker": "marker",
+            "execution": "execution",
+        }
+    )
+
+
 def settled_cloud(*, view=None):
     cloud = ScriptCloud()
-    cloud.invocations = [{"arn": "execution", "native_requests": ["native"]}]
+    cloud.invocations = [{"arn": "execution", "marker": "marker", "native_requests": ["native"]}]
     events = [
         {"phase": "WRAPPER_ENTER", "request": "native"},
         {"phase": "WRAPPER_RETURN", "request": "native"},
         {
             "phase": "CONFORMANCE",
+            "request": "native",
+            "execution": "execution",
             "observation": {
                 "kind": "task_start",
                 "taskId": "root",
@@ -490,6 +932,8 @@ def settled_cloud(*, view=None):
         },
         {
             "phase": "CONFORMANCE",
+            "request": "native",
+            "execution": "execution",
             "observation": {
                 "kind": "task_exit",
                 "taskId": "root",
@@ -497,6 +941,7 @@ def settled_cloud(*, view=None):
             },
         },
     ]
+    seal_fixture_events(events)
     cloud.refresh = Mock(return_value=events)  # type: ignore[method-assign]
     driver = ScenarioDriver(context(), cloud)
     return driver, events
@@ -515,10 +960,20 @@ def test_retirement_requires_every_real_task_and_call_to_exit(start, end, identi
     driver, events = settled_cloud()
     assert driver.quiescent()
     event = {"requestId": "native", identity: "outstanding"}
-    events.append({"phase": "CONFORMANCE", "observation": {**event, "kind": start}})
+    envelope = {"phase": "CONFORMANCE", "request": "native", "execution": "execution"}
+    events.append({**envelope, "observation": {**event, "kind": start}})
+    seal_fixture_events(events)
     assert not driver.quiescent()
-    events.append({"phase": "CONFORMANCE", "observation": {**event, "kind": end}})
+    events.append({**envelope, "observation": {**event, "kind": end}})
+    seal_fixture_events(events)
     assert driver.quiescent()
+
+
+def test_missing_producer_seal_cannot_claim_physical_retirement():
+    driver, events = settled_cloud()
+    assert driver.quiescent()
+    events.pop()
+    assert not driver.quiescent()
 
 
 def test_unidentified_launch_or_missing_root_hook_cannot_claim_retirement():
@@ -527,10 +982,12 @@ def test_unidentified_launch_or_missing_root_hook_cannot_claim_retirement():
     assert not driver.quiescent()
     driver.cloud.invocations[0]["native_requests"] = ["native"]
     events[:] = [event for event in events if event.get("observation", {}).get("kind") != "task_exit"]
+    seal_fixture_events(events)
     assert not driver.quiescent()
 
 
 def test_wrong_function_response_is_never_adopted_for_case_cleanup(cloud):
+    cloud.lam.invoke.side_effect = None
     cloud.lam.invoke.return_value = {
         "StatusCode": 202,
         "DurableExecutionArn": "arn:another-function/durable-execution/name/id",
@@ -555,17 +1012,22 @@ def test_canonical_observations_keep_authoritative_outer_identity_and_hook_misma
                 "phase": "CONFORMANCE",
                 "request": "outer",
                 "execution": "execution",
+                "time": 1,
                 "observation": {
                     "kind": "invocation_start",
                     "requestId": "wrong-hook-request",
+                    "ownerRequestId": "wrong-hook-request",
+                    "executionArn": "wrong-execution",
                 },
             },
         ]
     )
     assert records[0]["requestId"] == records[0]["ownerRequestId"] == "outer"
     assert records[0]["executionArn"] == "execution"
-    assert records[1]["requestId"] == "wrong-hook-request"
-    assert records[1]["ownerRequestId"] == "outer"
+    assert records[1]["kind"] == "observation_error"
+    assert records[1]["requestId"] == records[1]["ownerRequestId"] == "outer"
+    assert records[1]["executionArn"] == "execution"
+    assert "requestId, ownerRequestId, executionArn" in records[1]["message"]
 
 
 def test_late_original_stream_is_rejected_across_refreshes(cloud):
@@ -598,14 +1060,16 @@ def test_failed_retirement_fences_a_second_run_with_terminal_execution_and_live_
         def get_object(self, *, Bucket, Key):
             if Key not in objects:
                 raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
-            return {"Body": io.BytesIO(objects[Key])}
+            return {"Body": io.BytesIO(objects[Key]), "ETag": '"fence-etag"'}
 
         def put_object(self, *, Bucket, Key, Body, IfNoneMatch):
             assert IfNoneMatch == "*"
             assert Key not in objects
             objects[Key] = Body
+            return {"ResponseMetadata": {"RetryAttempts": 0}}
 
-        def delete_object(self, *, Bucket, Key):
+        def delete_object(self, *, Bucket, Key, IfMatch):
+            assert IfMatch == '"fence-etag"'
             del objects[Key]
 
     storage = Storage()
@@ -620,7 +1084,9 @@ def test_failed_retirement_fences_a_second_run_with_terminal_execution_and_live_
     asyncio.run(first.prepare(valid))
     # The durable execution is terminal, but its root task has not exited.
     driver, events = settled_cloud()
-    events[:] = [event for event in events if event.get("observation", {}).get("kind") != "task_exit"]
+    task_exit = next(event for event in events if event.get("observation", {}).get("kind") == "task_exit")
+    events.remove(task_exit)
+    seal_fixture_events(events)
     assert not driver.quiescent()
     asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
     record = json.loads(objects[fence_key(FUNCTION)])
@@ -635,9 +1101,8 @@ def test_failed_retirement_fences_a_second_run_with_terminal_execution_and_live_
         require_unfenced(storage, deployment()["bucket"], FUNCTION)
     assert fence_key(FUNCTION) in objects
     # A positive audited retirement in the owning run permits reuse.
-    events.append(
-        {"phase": "CONFORMANCE", "observation": {"kind": "task_exit", "taskId": "root", "requestId": "native"}}
-    )
+    events.append(task_exit)
+    seal_fixture_events(events)
     assert driver.quiescent()
     asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
     asyncio.run(second.prepare(second_valid))
@@ -649,8 +1114,128 @@ def test_quiescent_finish_cannot_clear_a_foreign_run_fence(tmp_path):
 
     storage = Mock()
     storage.get_object.return_value = {
-        "Body": io.BytesIO(json.dumps({"resourceId": FUNCTION, "runId": "foreign", "commit": "sdk-sha"}).encode())
+        "Body": io.BytesIO(
+            json.dumps(
+                {"resourceId": FUNCTION, "runId": "foreign", "commit": "sdk-sha", "token": "foreign-token"}
+            ).encode()
+        ),
+        "ETag": '"fence-etag"',
     }
-    with pytest.raises(ProvisioningError, match="another run"):
-        release_fence(storage, deployment(), FUNCTION)
+    with pytest.raises(ProvisioningError, match="unverified persistent retirement fence"):
+        release_fence(storage, deployment(), FUNCTION, "owned-token")
     storage.delete_object.assert_not_called()
+
+
+def test_retried_profile_fence_persists_token_without_verifying_or_deleting(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.artifacts import case_key
+
+    class RetriedCloud(FakeCloud):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.s3.put_object.return_value = {"ResponseMetadata": {"RetryAttempts": 1}}
+
+    value = adapter(tmp_path, factory=RetriedCloud)
+    valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    with pytest.raises(ProvisioningError, match="single-attempt response"):
+        asyncio.run(value.prepare(valid))
+    cloud = FakeCloud.instances[-1]
+    journal = value.artifacts_dir / "configuration" / f"{case_key(FUNCTION)}-fence.json"
+    saved = json.loads(journal.read_text())
+    sent = json.loads(cloud.s3.put_object.call_args.kwargs["Body"])
+    assert saved["token"] == sent["token"]
+    assert saved["state"] == "ACQUIRING"
+    assert "verify" not in cloud.actions
+    asyncio.run(value.finish(valid, quiescent=True))
+    cloud.s3.delete_object.assert_not_called()
+    assert journal.is_file()
+
+
+def test_attempt_audit_failure_does_not_mark_invocation_submitted(cloud):
+    def reject(_):
+        (intent,) = (cloud.artifacts_dir / "invocations").glob("*.json")
+        assert json.loads(intent.read_text())["dispatchState"] == "PREPARED"
+        raise OSError("audit failed")
+
+    cloud.case_context._on_attempt = reject
+    with pytest.raises(CollectionError, match="invocation API failed"):
+        cloud.start("fixture", role="victim")
+    (intent,) = (cloud.artifacts_dir / "invocations").glob("*.json")
+    assert json.loads(intent.read_text())["dispatchState"] == "PREPARED"
+    assert cloud.case_context.attempts == []
+    assert cloud.invocations == []
+    cloud.lam.invoke.assert_not_called()
+
+
+def test_profile_journal_race_preserves_other_writer_receipt(tmp_path, monkeypatch):
+    actual_save = adapter_module.save
+
+    def raced(path, value, **kwargs):
+        if kwargs.get("exclusive"):
+            actual_save(path, {**value, "token": "other"})
+        return actual_save(path, value, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "save", raced)
+    value = adapter(tmp_path)
+    valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    with pytest.raises(ProvisioningError, match="Existing profile fence journal"):
+        asyncio.run(value.prepare(valid))
+    (receipt,) = tmp_path.rglob("*-fence.json")
+    assert json.loads(receipt.read_text())["token"] == "other"
+    FakeCloud.instances[-1].s3.put_object.assert_not_called()
+
+
+def test_rejected_first_hold_leaves_only_prepared_intent(tmp_path):
+    storage, function = Mock(), Mock()
+    storage.put_object.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"RetryAttempts": 0}}, "PutObject"
+    )
+
+    def factory(*args, **kwargs):
+        return cloud_module.Cloud(
+            *args,
+            **kwargs,
+            verify_profile=Mock(),
+            client_factory=lambda service, _: storage if service == "s3" else function,
+        )
+
+    value = adapter(tmp_path, factory=factory)
+    ctx = context()
+
+    async def exercise():
+        with pytest.raises(ClientError, match="AccessDenied"):
+            await value.start(ctx)
+        assert await value.retire(ctx)
+        assert ctx.attempts == []
+        (intent,) = tuple(tmp_path.rglob("invocations/*.json"))
+        assert json.loads(intent.read_text())["dispatchState"] == "PREPARED"
+        function.invoke.assert_not_called()
+        storage.delete_object.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_profile_acquisition_lock_blocks_parallel_cleanup_before_admission(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi import runner
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+
+    class ObservedCloud(FakeCloud):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+            def put(**_):
+                errors = runner._recover_profile_fences(
+                    deployment(),
+                    value.artifacts_dir,
+                    {profile.profile_id: {"resource_id": FUNCTION}},
+                    self.s3,
+                )
+                assert len(errors) == 1 and "Journal ownership is busy" in errors[0]
+                self.s3.delete_object.assert_not_called()
+                return {"ResponseMetadata": {"RetryAttempts": 0}}
+
+            self.s3.put_object.side_effect = put
+
+    value = adapter(tmp_path, factory=ObservedCloud)
+    asyncio.run(value.prepare(profile))
+    assert FakeCloud.instances[-1].actions == ["verify"]

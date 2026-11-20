@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control intent and acknowledgement are separate, retained observations."""
 
+import io
 import json
 from threading import Event
 
@@ -24,6 +25,9 @@ def test_release_intent_is_saved_before_transport_and_ack_only_after_success(tmp
 
     class S3:
         fail = False
+
+        def get_object(self, **kwargs):
+            return {"Body": io.BytesIO(b"hold"), "ETag": '"hold"'}
 
         def put_object(self, **kwargs):
             recorded = json.loads((tmp_path / "control-records.json").read_text())

@@ -5,8 +5,9 @@
 
 import asyncio
 import copy
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -66,7 +67,56 @@ class Adapter:
         await asyncio.sleep(0.005)
 
     async def collect(self, context):
+        name = context.scenario.case_id
+        attempts = []
+        events = []
+        histories = []
+        resources: list[dict[str, Any]] = []
+        for journal in context.attempts:
+            request = journal["requestId"]
+            arn = f"arn:execution:{request}"
+            attempts.append(
+                {
+                    **{key: journal[key] for key in ("requestId", "role", "attempt")},
+                    "executionArn": arn,
+                    "environmentId": "env",
+                    "workerId": "worker",
+                    "processId": "process",
+                    "startedAtMs": 10,
+                    "endedAtMs": 50,
+                    "outcome": "SUCCEEDED",
+                }
+            )
+            histories.append({"executionArn": arn, "ownerCaseId": name, "status": "SUCCEEDED", "operations": []})
+            resources.extend(
+                (
+                    {"kind": "invocation", "id": request, "ownerCaseId": name},
+                    {"kind": "execution", "id": arn, "ownerCaseId": name},
+                )
+            )
+            for sequence, (kind, time, details) in enumerate(
+                (
+                    ("wrapper_enter", 10, {}),
+                    ("task_start", 11, {"taskId": "root"}),
+                    ("task_exit", 49, {"taskId": "root"}),
+                    ("wrapper_return", 50, {"outcome": "SUCCEEDED"}),
+                )
+            ):
+                events.append(
+                    {
+                        "requestId": request,
+                        "ownerRequestId": request,
+                        "executionArn": arn,
+                        "kind": kind,
+                        "atMs": time,
+                        "sequence": sequence,
+                        **details,
+                    }
+                )
         return {
+            "schemaVersion": 1,
+            "runtime": "python",
+            "coverageProfile": context.scenario.coverage_profile,
             "runId": context.run_id,
             "caseId": context.scenario.case_id,
             "requirementId": context.scenario.requirement_id,
@@ -74,10 +124,21 @@ class Adapter:
                 "functionArn": context.profile.resource_id,
                 "configurationDigest": context.profile.configuration_id,
                 "nativeConcurrency": context.profile.native_concurrency,
+                "timeoutMs": 100,
             },
-            "artifact": {"sdk": context.profile.artifact_id},
+            "artifact": {"sdk": context.profile.artifact_id, "conformance": "fixture"},
             "selectedRequests": {item["role"]: item["requestId"] for item in context.attempts if item["attempt"] == 1},
-            "attempts": [{name: item[name] for name in ("requestId", "role", "attempt")} for item in context.attempts],
+            "attempts": attempts,
+            "events": events,
+            "histories": histories,
+            "resourcesCreated": resources,
+            "faultsCreated": [],
+            "sdkRequests": [],
+            "observationEndedAtMs": 70,
+            "collection": {
+                "evidenceUris": ["memory://observations"],
+                "watermarks": dict.fromkeys(("lifecycle", "sdkRequests", "history"), 70),
+            },
         }
 
     async def release(self, context):
@@ -86,7 +147,20 @@ class Adapter:
     async def retire(self, context):
         self.retired.append(context.scenario.case_id)
         self.live.discard(context.scenario.case_id)
-        context.evidence["retirement"] = {"ownerCaseId": context.scenario.case_id}
+        context.evidence["retirement"] = {
+            "ownerCaseId": context.scenario.case_id,
+            "retiredAtMs": 80,
+            "faults": [],
+            "resources": [
+                {
+                    **resource,
+                    "outcome": "QUIESCENT" if resource["kind"] == "invocation" else "SUCCEEDED",
+                    "settledAtMs": 75,
+                    "evidenceUri": "memory://retirement",
+                }
+                for resource in context.evidence.get("resourcesCreated", [])
+            ],
+        }
         return True
 
 
@@ -502,7 +576,6 @@ def test_emergency_release_cannot_overwrite_observed_failure():
     result = run([case("victim")], CleanupAdapter())[0]
     assert result.status == "FAILED"
     assert "Worker did not recover before fault release" in result.errors
-    assert "Launched work has no independent retirement evidence" in result.errors
     assert result.evidence["assertionErrors"] == ["Worker did not recover before fault release"]
 
 
@@ -881,7 +954,7 @@ def test_attempt_journal_failure_prevents_unrecorded_transport_dispatch():
     result = run([case("victim")], JournalAdapter(), on_attempt=failing_sink)[0]
     assert result.status == "INFRASTRUCTURE_ERROR"
     assert transported == []
-    assert result.attempts[0]["attemptId"] == "launch"
+    assert result.attempts == []
 
 
 def test_cleanup_cannot_launch_uncollected_work_and_claim_quiescence():
@@ -1106,3 +1179,1317 @@ def test_single_run_cancellation_allows_slower_case_retirement_to_finish():
         assert not any("retirement: CancelledError" in error for result in reported for error in result.errors)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("dispatch_sequence", [9, 11])
+def test_cleanup_dispatch_uses_semantic_sequence_at_closure(dispatch_sequence):
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    original: dict[str, Any] = {
+        "attempts": [{"requestId": "request"}],
+        "events": [{"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}],
+    }
+    snapshot = {
+        "events": [{**original["events"][0], "sequence": 100}],
+        "sdkRequests": [
+            {
+                "requestId": "request",
+                "method": "CheckpointDurableExecution",
+                "outcome": "DISPATCHED",
+                "atMs": 40,
+                "sequence": dispatch_sequence + 90,
+            }
+        ],
+    }
+    errors = _cleanup_behavior_errors(original, snapshot, standard=False)
+    assert any("dispatched SDK work after admission closed" in error for error in errors) == (dispatch_sequence == 11)
+
+
+@pytest.mark.parametrize("timeout_sequence", [9, 11])
+def test_cleanup_deadline_uses_semantic_sequence_for_inflight_work(timeout_sequence):
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    original: dict[str, Any] = {
+        "requirementId": "lmi-lifecycle-3",
+        "attempts": [{"requestId": "request", "startedAtMs": 10, "endedAtMs": 40}],
+        "selectedRequests": {"victim": "request"},
+        "profile": {"timeoutMs": 20},
+        "events": [{"requestId": "request", "kind": "work_in_flight", "atMs": 30, "sequence": 10}],
+    }
+    snapshot = {
+        "events": [
+            {**original["events"][0], "sequence": 100},
+            {
+                "requestId": "request",
+                "kind": "platform_timeout",
+                "source": "platform",
+                "atMs": 30,
+                "sequence": timeout_sequence + 90,
+            },
+        ]
+    }
+    errors = _cleanup_behavior_errors(original, snapshot, standard=True)
+    assert any("contradicts the frozen in-flight" in error for error in errors) == (timeout_sequence == 9)
+
+
+def test_cleanup_body_event_cannot_replay_completed_user_code():
+    from pathlib import Path
+    from runpy import run_path
+
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    original = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["replay_evidence"]()
+    resumed = next(row for row in original["attempts"] if row["role"] == "resume")
+    operation_id = original["replay"]["before"][0]["id"]
+    snapshot = {
+        "events": [
+            {
+                "kind": "body",
+                "requestId": resumed["requestId"],
+                "executionArn": resumed["executionArn"],
+                "operationId": operation_id,
+                "atMs": resumed["startedAtMs"] + 1,
+            }
+        ]
+    }
+    errors = _cleanup_behavior_errors(original, snapshot, standard=True)
+    assert f"ASSERTION: cleanup evidence reports repeated completed user code for {operation_id}" in errors
+
+
+def test_independent_ownership_audit_does_not_require_selected_cohort():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _ownership_errors
+
+    async def check():
+        adapter = Adapter()
+        context = ScenarioContext("run", case("one"), PROFILE)
+        await adapter.start(context)
+        observed = await adapter.collect(context)
+        observed["selectedRequests"] = {}
+        assert not _ownership_errors(context, observed, complete_cohort=False)
+        assert _ownership_errors(context, observed)
+
+    asyncio.run(check())
+
+
+def test_retirement_completions_project_only_to_matching_frozen_starts():
+    from aws_durable_execution_conformance_tests.lmi.offline import _project_retirement_completions
+
+    retained = {"kind": "io_exit", "requestId": "request", "taskId": "present"}
+    completions = [
+        retained,
+        {"kind": "io_exit", "requestId": "other", "taskId": "present"},
+        {"kind": "io_exit", "requestId": "request", "taskId": "discovered-later"},
+        {"kind": "task_exit", "requestId": "request", "taskId": "present"},
+    ]
+    frozen = [{"kind": "io_start", "requestId": "request", "taskId": "present"}]
+    assert _project_retirement_completions(frozen, completions) == [retained]
+    assert len(completions) == 4
+
+
+def test_widened_native_invocation_end_can_enrich_fixture_source_to_platform():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    original = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
+    collected = {"attempts": [{"requestId": "request", "endedAtMs": 40, "endedAtMsSource": "platform"}]}
+    merged, changes = _retain_observations(original, collected)
+    assert merged == collected
+    assert not changes
+    later_fixture = {"attempts": [{"requestId": "request", "endedAtMs": 45, "endedAtMsSource": "fixture"}]}
+    merged, changes = _retain_observations(collected, later_fixture)
+    assert merged == collected
+    assert not changes
+
+
+def test_result_sink_failure_does_not_interrupt_other_cases():
+    def sink(result):
+        if result.case_id == "one":
+            raise OSError("audit unavailable")
+
+    adapter = Adapter()
+    first, other = run([case("one"), case("other")], adapter, on_result=sink)
+    assert first.status == "INFRASTRUCTURE_ERROR"
+    assert other.status == "PASSED"
+    assert sorted(adapter.retired) == ["one", "other"]
+
+
+def test_cleanup_reconciles_call_with_later_request():
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    call = {"kind": "checkpoint_call", "requestId": "request", "callId": "call", "atMs": 20}
+    request = {**call, "method": "CheckpointDurableExecution", "outcome": "DISPATCHED"}
+    assert any(
+        "lacks a unique matching SDK request" in error
+        for error in _cleanup_behavior_errors({}, {"events": [call]}, standard=False, final=True)
+    )
+    assert not any(
+        "lacks a unique matching SDK request" in error
+        for error in _cleanup_behavior_errors(
+            {}, {"sdkRequests": [request]}, known_snapshots=[{"events": [call]}], standard=False, final=True
+        )
+    )
+
+
+def test_attempt_delta_carries_native_timestamp_source():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _observation_updates
+
+    first = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
+    later = {"attempts": [{"requestId": "request", "endedAtMs": 35, "endedAtMsSource": "fixture"}]}
+    assert _observation_updates(first, later) == later
+
+
+@pytest.mark.parametrize("kind", ["alias", "dispatch", "execution"])
+def test_retirement_cannot_discard_previously_observed_work(kind):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+
+    async def check():
+        context = ScenarioContext("run", case("one"), PROFILE)
+        final = await Adapter().collect(context)
+        final["retirement"] = {"retiredAtMs": 220, "resources": []}
+        previous: dict[str, Any] = {}
+        if kind == "alias":
+            previous["events"] = [
+                {
+                    "kind": "observed_task_start",
+                    "sourceKind": "task_start",
+                    "requestId": "request",
+                    "taskId": "child",
+                    "atMs": 40,
+                }
+            ]
+            expected = "Retirement omitted or changed previously observed work"
+        elif kind == "dispatch":
+            call = {"kind": "checkpoint_call", "requestId": "request", "callId": "call", "atMs": 40}
+            previous["events"] = [call]
+            final["events"] = [{**call, "outcome": "REJECTED"}]
+            expected = "Retirement omitted or changed previously observed work"
+        else:
+            operation = {"id": "operation", "status": "SUCCEEDED", "result": None}
+            previous["histories"] = [
+                {
+                    "executionArn": "execution",
+                    "startedAtMs": 40,
+                    "operations": [{**operation, "endedAtMs": 150}],
+                }
+            ]
+            final["histories"] = [{"executionArn": "execution", "operations": [operation]}]
+            final["retirement"]["resources"] = [{"id": "execution", "kind": "execution", "settledAtMs": 120}]
+            expected = "Retirement execution execution settled before its originally observed service activity"
+        assert expected in _retirement_ownership_errors(context, previous, final)
+
+    asyncio.run(check())
+
+
+def test_cleanup_dispatch_tie_without_a_shared_snapshot_cannot_establish_order():
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    original = {
+        "attempts": [{"requestId": "request"}],
+        "events": [{"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}],
+    }
+    snapshot = {
+        "sdkRequests": [
+            {
+                "requestId": "request",
+                "method": "CheckpointDurableExecution",
+                "outcome": "DISPATCHED",
+                "atMs": 40,
+                "sequence": 11,
+            }
+        ]
+    }
+    errors = _cleanup_behavior_errors(original, snapshot, standard=False, final=True)
+    assert any("same-time observations need sequences in one snapshot" in error for error in errors)
+    assert not any("dispatched SDK work after admission closed" in error for error in errors)
+
+
+def test_independent_retirement_projects_post_window_io_exit_from_events():
+    from pathlib import Path
+    from runpy import run_path
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
+    value = fixtures["_standard_retirement_snapshot"]("evidence", requirement=1)
+    victim = next(attempt for attempt in value["attempts"] if attempt["role"] == "victim")
+    start = {
+        "kind": "io_start",
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "taskId": "pending-io",
+        "atMs": victim["startedAtMs"] + 1,
+    }
+    value["events"].append(start)
+    fixtures["_resequence"](value)
+    cutoff = value["observationEndedAtMs"]
+
+    def retire(snapshot):
+        at = cutoff + 1
+        snapshot["events"].append({**start, "kind": "io_exit", "atMs": at})
+        snapshot["observationEndedAtMs"] = at
+        snapshot["collection"]["watermarks"] = dict.fromkeys(snapshot["collection"]["watermarks"], at)
+
+    result = fixtures["_run_standard_cleanup_discovery"](value, retire, phase="retirement", path="independent")
+    assert result.status == "PASSED", result.errors
+    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
+
+    assert any(
+        event["kind"] == "io_exit" and event.get("taskId") == "pending-io"
+        for event in result.retirement_evidence["events"]
+    )
+    assert all(event["kind"] != "io_exit" for event in result.evidence["events"] if event.get("taskId") == "pending-io")
+
+    def check_projection(
+        evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final"
+    ) -> list[str]:
+        if phase == "final":
+            assert evidence["retirement"]["completions"][0]["taskId"] == "pending-io"
+        return []
+
+    assert (
+        evaluate_evidence(
+            result.evidence,
+            retirement_evidence=result.retirement_evidence,
+            cleanup_evidence=result.cleanup_evidence,
+            validator=check_projection,
+            standard=True,
+        )
+        == []
+    )
+
+
+def test_independent_retirement_cannot_backdate_observed_completion():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+
+    async def check():
+        context = ScenarioContext("run", case("one"), PROFILE)
+        final = await Adapter().collect(context)
+        completion = {"kind": "io_exit", "requestId": "request", "atMs": 215, "taskId": "work"}
+        previous = {"retirement": {"completions": [completion]}}
+        final["retirement"] = {"retiredAtMs": 220, "completions": [{**completion, "atMs": 205}]}
+        assert "Retirement omitted or changed previously observed work" in _retirement_ownership_errors(
+            context, previous, final
+        )
+
+    asyncio.run(check())
+
+
+def test_later_duplicate_sdk_request_is_rejected_despite_earlier_unique_match():
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    call = {"kind": "checkpoint_call", "requestId": "request", "callId": "call", "atMs": 20, "outcome": "REJECTED"}
+    request = {**call, "method": "CheckpointDurableExecution"}
+    errors = _cleanup_behavior_errors(
+        {"events": [call], "sdkRequests": [request]},
+        {"sdkRequests": [request, request]},
+        standard=False,
+        final=True,
+    )
+    assert "ASSERTION: cleanup observed SDK call lacks a unique matching SDK request" in errors
+
+
+@pytest.mark.parametrize("dispatch", [99, 101])
+def test_retirement_sdk_request_renumbering_preserves_relative_order(dispatch):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+
+    async def check():
+        context = ScenarioContext("run", case("one"), PROFILE)
+        context.record_attempt("first", requestId="request")
+        final = await Adapter().collect(context)
+        request = {
+            "requestId": "request",
+            "method": "CheckpointDurableExecution",
+            "callId": "call",
+            "outcome": "DISPATCHED",
+            "atMs": 40,
+            "sequence": 9,
+        }
+        closure = {"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}
+        final.update(
+            sdkRequests=[{**request, "sequence": dispatch}],
+            events=[{**closure, "sequence": 100}],
+            retirement={"retiredAtMs": 50},
+        )
+        errors = _retirement_ownership_errors(context, {"sdkRequests": [request], "events": [closure]}, final)
+        assert bool(errors) == (dispatch > 100), errors
+
+    asyncio.run(check())
+
+
+def test_source_only_attempt_update_uses_its_own_platform_timestamp():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _observation_updates, _retain_observations
+
+    fixture = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
+    platform = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "platform"}]}
+    later = {"attempts": [{"requestId": "request", "endedAtMs": 35, "endedAtMsSource": "fixture"}]}
+    updates = _observation_updates(fixture, platform)
+    merged, changes = _retain_observations(later, updates)
+    assert not changes
+    assert merged == platform
+
+
+def test_finish_is_skipped_when_target_admission_prevents_prepare():
+    async def check():
+        scheduler = ResourceScheduler()
+        scheduler.register(PROFILE.resource_id, PROFILE.capacity)
+        lease = await scheduler.acquire(PROFILE.resource_id, "active")
+        adapter = Adapter()
+        try:
+            result = await run_scenarios(
+                [case("one")],
+                [PROFILE],
+                adapter,
+                run_id="run",
+                validator=validator,
+                scheduler=scheduler,
+                budgets=replace(Budgets(), lease=0.01),
+            )
+            assert result[0].status == "INFRASTRUCTURE_ERROR"
+            assert not adapter.preparations and not adapter.finished
+            assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+        finally:
+            await lease.release(quiescent=True)
+
+    asyncio.run(check())
+
+
+def test_invalid_attempt_update_retains_native_identity_without_bad_diagnostics():
+    def validate(attempt):
+        if "invalid" in attempt:
+            raise ValueError("unsupported diagnostic")
+
+    context = ScenarioContext("run", case("one"), PROFILE, _validate_attempt=validate)
+    context.record_attempt("first")
+    with pytest.raises(ValueError, match="unsupported diagnostic"):
+        context.update_attempt("first", requestId="request", executionArn="execution", invalid=object())
+    assert context.attempts[0]["requestId"] == "request"
+    assert context.attempts[0]["executionArn"] == "execution"
+    assert "invalid" not in context.attempts[0]
+
+
+def test_normal_retirement_audits_previously_reported_resource_identity_and_time():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retained_retirement_errors
+
+    earlier = {
+        "retirement": {
+            "resources": [
+                {"id": "lost", "kind": "callback", "ownerCaseId": "one", "outcome": "PENDING"},
+                {"id": "late", "kind": "callback", "ownerCaseId": "one", "settledAtMs": 230},
+            ]
+        }
+    }
+    final = {
+        "retirement": {
+            "retiredAtMs": 220,
+            "resources": [
+                {"id": "late", "kind": "callback", "ownerCaseId": "one", "settledAtMs": 210, "outcome": "SUCCEEDED"},
+            ],
+        }
+    }
+    assert _retained_retirement_errors([earlier], final) == [
+        "Final retirement omitted or changed observed resource lost",
+        "Observed settlement for late follows final retirement",
+    ]
+
+
+def test_recover_waits_until_residual_adapter_task_has_settled():
+    async def check():
+        scheduler = ResourceScheduler()
+        cancelled, allow_exit, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class InterruptedAdapter(Adapter):
+            async def execute(self, context):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await allow_exit.wait()
+                    exited.set()
+
+        async def verify():
+            assert exited.is_set()
+            return True
+
+        result = await run_scenarios(
+            [case("one")],
+            [PROFILE],
+            InterruptedAdapter(),
+            run_id="run",
+            validator=validator,
+            scheduler=scheduler,
+            budgets=replace(Budgets(), execution=0.01),
+        )
+        assert cancelled.is_set()
+        assert result[0].status == "INFRASTRUCTURE_ERROR"
+        with pytest.raises(QuarantinedError, match="interrupted adapter task"):
+            await scheduler.recover(PROFILE.resource_id, verify)
+        allow_exit.set()
+        await asyncio.wait_for(exited.wait(), timeout=1)
+        await scheduler.recover(PROFILE.resource_id, verify)
+
+    asyncio.run(check())
+
+
+def test_public_deployment_waits_until_run_finishes():
+    async def check():
+        scheduler = ResourceScheduler()
+        preparing, proceed = asyncio.Event(), asyncio.Event()
+        order = []
+
+        class BlockingAdapter(Adapter):
+            async def prepare(self, profile):
+                preparing.set()
+                await proceed.wait()
+
+            async def start(self, context):
+                order.append("case")
+                await super().start(context)
+
+            async def finish(self, profile, *, quiescent):
+                order.append("finished")
+
+        async def publish():
+            async with scheduler.deployment(PROFILE.resource_id, "publisher", timeout=1):
+                order.append("published")
+
+        async with asyncio.timeout(2):
+            run_task = asyncio.create_task(
+                run_scenarios(
+                    [case("one")],
+                    [PROFILE],
+                    BlockingAdapter(),
+                    run_id="run",
+                    validator=validator,
+                    scheduler=scheduler,
+                )
+            )
+            await preparing.wait()
+            publisher = asyncio.create_task(publish())
+            await asyncio.sleep(0)
+            proceed.set()
+            results, _ = await asyncio.gather(run_task, publisher)
+        assert results[0].status == "PASSED"
+        assert order == ["case", "finished", "published"]
+
+    asyncio.run(check())
+
+
+def test_normal_post_window_completion_does_not_require_independent_proof():
+    from pathlib import Path
+    from runpy import run_path
+
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"]()
+    fixtures["complete_sdk_dispatches"](value)
+    owner = value["attempts"][0]
+    value["events"].append(fixtures["event"](owner, "io_start", 30, taskId="held"))
+    value["retirement"]["completions"] = [fixtures["event"](owner, "io_exit", 205, taskId="held")]
+    assert validate_evidence(value) == []
+    deployment = value["profile"]
+    profile = Profile(
+        "fixture",
+        deployment["functionArn"],
+        2,
+        deployment["nativeConcurrency"],
+        value["artifact"]["sdk"],
+        deployment["configurationDigest"],
+    )
+
+    class CompletionAdapter(Adapter):
+        async def start(self, context):
+            for row in value["attempts"]:
+                context.record_attempt(row["requestId"], role=row["role"], requestId=row["requestId"])
+
+        async def collect(self, context):
+            observed = copy.deepcopy(value)
+            observed.pop("retirement")
+            return observed
+
+        async def retire(self, context):
+            context.evidence["retirement"] = copy.deepcopy(value["retirement"])
+            return True
+
+    scenario = Scenario(
+        value["caseId"], value["requirementId"], profile.profile_id, "fixture", roles=tuple(value["selectedRequests"])
+    )
+    results = asyncio.run(
+        run_scenarios(
+            [scenario],
+            [profile],
+            CompletionAdapter(),
+            run_id=value["runId"],
+            validator=lambda evidence, *, phase="final": validate_evidence(
+                evidence, phase="observations" if phase == "observations" else "final"
+            ),
+        )
+    )
+    assert results[0].status == "PASSED", results[0].errors
+    assert results[0].retirement_evidence.get("retirement") == results[0].evidence.get("retirement")
+
+
+def test_verified_pre_window_completion_releases_target_despite_incomplete_frozen_observations():
+    from pathlib import Path
+    from runpy import run_path
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
+    value = fixtures["_standard_retirement_snapshot"]("evidence", requirement=1)
+    owner = value["attempts"][0]
+    start = {
+        "kind": "io_start",
+        "requestId": owner["requestId"],
+        "ownerRequestId": owner["requestId"],
+        "executionArn": owner["executionArn"],
+        "taskId": "held",
+        "atMs": 30,
+    }
+    value["events"].append(start)
+    fixtures["_resequence"](value)
+
+    def complete(snapshot):
+        snapshot["events"].append({**start, "kind": "io_exit", "atMs": 199})
+
+    result = fixtures["_run_standard_cleanup_discovery"](value, complete, phase="retirement", path="independent")
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+
+
+def test_collection_merges_renumbered_sdk_request_without_duplicate():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    request = {
+        "requestId": "request",
+        "method": "CheckpointDurableExecution",
+        "callId": "call",
+        "outcome": "DISPATCHED",
+        "atMs": 40,
+        "sequence": 9,
+    }
+    closure = {"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}
+    early = {"sdkRequests": [request], "events": [closure]}
+    complete = {"sdkRequests": [{**request, "sequence": 99}], "events": [{**closure, "sequence": 100}]}
+    merged, changes = _retain_observations(early, complete)
+    assert merged == complete and not changes
+    complete["sdkRequests"][0]["sequence"] = 101
+    _, changes = _retain_observations(early, complete)
+    assert ("sdkRequests", "sequence") in changes.conflicts
+
+
+def test_source_less_endpoint_cannot_replace_platform_timestamp():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    platform = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "platform"}]}
+    estimate = {"attempts": [{"requestId": "request", "endedAtMs": 35}]}
+    merged, _ = _retain_observations(platform, estimate)
+    assert merged == platform
+
+
+def test_physical_audit_does_not_treat_fixture_end_as_activity_after_platform_correction():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+
+    async def check():
+        context = ScenarioContext("run", case("one"), PROFILE)
+        context.record_attempt("launch", requestId="request")
+        final = await Adapter().collect(context)
+        final["attempts"][0].update(endedAtMs=30, endedAtMsSource="platform")
+        final["retirement"] = {
+            "retiredAtMs": 33,
+            "resources": [{"kind": "invocation", "id": "request", "settledAtMs": 32}],
+        }
+        before = {
+            "attempts": [
+                {**final["attempts"][0], "endedAtMs": 35, "endedAtMsSource": "fixture"},
+            ]
+        }
+        assert _retirement_ownership_errors(context, before, final) == []
+
+    asyncio.run(check())
+
+
+def test_pending_callback_claim_without_launch_keeps_target_quarantined():
+    class CallbackAdapter(Adapter):
+        async def start(self, context):
+            context.evidence["retirement"] = {
+                "resources": [{"id": "callback", "kind": "callback", "outcome": "PENDING", "ownerCaseId": "one"}],
+            }
+            raise RuntimeError("setup failed")
+
+        async def retire(self, context):
+            return True
+
+    scheduler = ResourceScheduler()
+    result = run([case("one")], CallbackAdapter(), scheduler=scheduler)[0]
+    assert "Owned work has no independent retirement evidence" in result.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_final_retirement_cannot_drop_fault_claim_without_release_time():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retained_retirement_errors
+
+    early = {"retirement": {"faults": [{"id": "pending", "ownerCaseId": "one"}]}}
+    final = {"retirement": {"retiredAtMs": 50, "faults": []}}
+    assert _retained_retirement_errors([early], final) == ["Final retirement omitted or changed observed fault pending"]
+
+
+def test_collection_cannot_move_authoritative_platform_start_earlier():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    baseline = {"attempts": [{"requestId": "request", "startedAtMs": 12, "startedAtMsSource": "platform"}]}
+    rewritten = {"attempts": [{"requestId": "request", "startedAtMs": 10, "startedAtMsSource": "platform"}]}
+    merged, changes = _retain_observations(baseline, rewritten)
+    assert merged == baseline
+    assert ("attempts", "startedAtMs") in changes.conflicts
+
+
+def test_cleanup_uses_platform_end_to_reject_timeout_after_completion():
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    before = {
+        "requirementId": "lmi-lifecycle-3",
+        "selectedRequests": {"victim": "request"},
+        "profile": {"timeoutMs": 20},
+        "attempts": [{"requestId": "request", "startedAtMs": 10, "endedAtMs": 40, "endedAtMsSource": "fixture"}],
+        "events": [{"kind": "platform_timeout", "source": "platform", "requestId": "request", "atMs": 30}],
+    }
+    final = {"attempts": [{"requestId": "request", "endedAtMs": 29, "endedAtMsSource": "platform"}]}
+    assert "ASSERTION: cleanup timeout falls outside the configured native deadline" in _cleanup_behavior_errors(
+        before, final, standard=True, final=True
+    )
+
+
+def test_in_place_sdk_request_delta_cannot_hide_late_dispatch():
+    class RenumberingAdapter(Adapter):
+        async def execute(self, context):
+            request_id = context.attempts[0]["requestId"]
+            context.evidence["events"] = [
+                {"requestId": request_id, "kind": "wrapper_return", "atMs": 40, "sequence": 10}
+            ]
+            context.evidence["sdkRequests"] = [
+                {
+                    "requestId": request_id,
+                    "method": "CheckpointDurableExecution",
+                    "outcome": "DISPATCHED",
+                    "atMs": 40,
+                    "sequence": 11,
+                }
+            ]
+
+        async def collect(self, context):
+            context.evidence["sdkRequests"][0]["sequence"] = 9
+            return {**await super().collect(context), **context.evidence}
+
+    result = run([case("one")], RenumberingAdapter())[0]
+    assert result.status != "PASSED"
+    assert any("conflict with retained facts" in error and "sdkRequests.sequence" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("source", [None, "fixture"])
+def test_unchanged_platform_time_keeps_authority_when_later_label_is_weaker(source):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import (
+        _retain_observations,
+        _retirement_ownership_errors,
+    )
+
+    async def check():
+        context = ScenarioContext("run", case("one"), PROFILE)
+        context.record_attempt("launch", requestId="request")
+        final = await Adapter().collect(context)
+        final["attempts"][0]["endedAtMs"] = 30
+        if source is not None:
+            final["attempts"][0]["endedAtMsSource"] = source
+        final["retirement"] = {
+            "retiredAtMs": 33,
+            "resources": [{"kind": "invocation", "id": "request", "settledAtMs": 32}],
+        }
+        before = {"attempts": [{**final["attempts"][0], "endedAtMsSource": "platform"}]}
+        merged, changes = _retain_observations(before, {"attempts": final["attempts"]})
+        assert merged == before and not changes
+        assert _retirement_ownership_errors(context, before, final) == []
+
+    asyncio.run(check())
+
+
+def test_sdk_request_keeps_known_sequence_if_later_partial_row_omits_it():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    request = {"requestId": "request", "method": "CheckpointDurableExecution", "outcome": "DISPATCHED", "atMs": 40}
+    original = {"sdkRequests": [{**request, "sequence": 9}]}
+    merged, changes = _retain_observations(original, {"sdkRequests": [request]})
+    assert merged == original
+    assert changes.omitted
+
+
+def test_adapter_cannot_clear_coordinator_journal_after_dispatch():
+    class ClearingAdapter(Adapter):
+        async def start(self, context):
+            context.record_attempt("first", requestId="request")
+            context.attempts.clear()
+            raise RuntimeError("transport failed after dispatch")
+
+        async def retire(self, context):
+            return True
+
+    scheduler = ResourceScheduler()
+    result = run([case("one")], ClearingAdapter(), scheduler=scheduler)[0]
+    assert [row["requestId"] for row in result.attempts] == ["request"]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_repeated_cancellation_during_retirement_cannot_strand_profile():
+    async def check():
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        scheduler = ResourceScheduler()
+
+        class SlowRetirement(Adapter):
+            async def retire(self, context):
+                entered.set()
+                await proceed.wait()
+                return await super().retire(context)
+
+        adapter = SlowRetirement()
+        task = asyncio.create_task(
+            run_scenarios(
+                [case("one")],
+                [PROFILE],
+                adapter,
+                run_id="run",
+                validator=validator,
+                scheduler=scheduler,
+            )
+        )
+        async with asyncio.timeout(2):
+            await entered.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            proceed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            async with scheduler.deployment(PROFILE.resource_id, "publisher", timeout=0.1):
+                pass
+        assert adapter.finished == [(PROFILE.profile_id, True)]
+
+    asyncio.run(check())
+
+
+def test_partial_sdk_sequence_does_not_mix_with_an_inherited_closure():
+    class PartialSequenceAdapter(Adapter):
+        async def start(self, context):
+            await super().start(context)
+            self.collected = await super().collect(context)
+            attempt = self.collected["attempts"][0]
+            request = attempt["requestId"]
+            self.dispatch = {
+                "requestId": request,
+                "ownerRequestId": request,
+                "executionArn": attempt["executionArn"],
+                "method": "CheckpointDurableExecution",
+                "outcome": "DISPATCHED",
+                "callId": "checkpoint",
+                "atMs": 50,
+                "sequence": 9,
+            }
+            self.closure = {**self.collected["events"][-1], "sequence": 10}
+            context.evidence = {"sdkRequests": [self.dispatch], "events": [self.closure]}
+
+        async def place(self, context):
+            context.evidence = {"sdkRequests": [{**self.dispatch, "sequence": 99}]}
+
+        async def collect(self, context):
+            return {
+                **self.collected,
+                "sdkRequests": [{**self.dispatch, "sequence": 99}],
+                "events": [
+                    *self.collected["events"][:-1],
+                    {**self.dispatch, "kind": "checkpoint_call", "sequence": 97},
+                    {**self.dispatch, "kind": "checkpoint_exit", "sequence": 98},
+                    {**self.closure, "sequence": 100},
+                ],
+            }
+
+    result = run([case("one")], PartialSequenceAdapter())[0]
+    assert result.status == "PASSED", result.errors
+
+
+def test_unpaired_platform_source_cannot_certify_later_fixture_time():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    source_only = {"attempts": [{"requestId": "request", "endedAtMsSource": "platform"}]}
+    fixture = {"attempts": [{"requestId": "request", "endedAtMs": 40, "endedAtMsSource": "fixture"}]}
+    kept, _ = _retain_observations({}, source_only)
+    collected, _ = _retain_observations(kept, fixture)
+    assert collected == fixture
+
+
+def test_source_aware_native_interval_ignores_superseded_fixture_times():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _native_intervals
+
+    first = {"attempts": [{"requestId": "request", "startedAtMs": 50, "endedAtMs": 90}]}
+    later = {
+        "attempts": [
+            {
+                "requestId": "request",
+                "startedAtMs": 55,
+                "startedAtMsSource": "platform",
+                "endedAtMs": 80,
+                "endedAtMsSource": "platform",
+            }
+        ]
+    }
+    assert _native_intervals([first, later]) == {"request": {"startedAtMs": (55, True), "endedAtMs": (80, True)}}
+
+
+def test_prelaunch_control_can_retire_without_native_records():
+    from pathlib import Path
+    from runpy import run_path
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
+    control = {"id": "control", "kind": "control", "ownerCaseId": "failed"}
+
+    class PrelaunchAdapter(Adapter):
+        async def start(self, context):
+            if context.scenario.case_id != "failed":
+                await super().start(context)
+                return
+            proof = fixtures["_snapshot"](context)
+            for field in ("attempts", "events", "histories", "sdkRequests", "faultsCreated"):
+                proof[field] = []
+            proof["selectedRequests"] = {}
+            proof["resourcesCreated"] = [control]
+            proof["retirement"].update(
+                resources=[{**control, "outcome": "DELETED", "settledAtMs": 20900, "evidenceUri": "memory://proof"}],
+                faults=[],
+            )
+            self.proof = proof
+            context.evidence = {"resourcesCreated": [control]}
+            raise RuntimeError("setup failed before launch")
+
+        async def retire(self, context):
+            if context.scenario.case_id != "failed":
+                return await super().retire(context)
+            context.retirement_evidence = self.proof
+            return True
+
+    adapter = PrelaunchAdapter()
+    results, scheduler = fixtures["_run"](adapter)
+    assert results[0].status == "INFRASTRUCTURE_ERROR"
+    assert results[1].status == "PASSED", results[1].errors
+    assert adapter.finished == [(fixtures["PROFILE"].profile_id, True)]
+    assert scheduler.quarantine_reason(fixtures["PROFILE"].resource_id) is None
+
+
+def test_cancelled_drain_does_not_spin_when_finishing_profile():
+    async def check():
+        finishing = asyncio.Event()
+
+        class BlockingFinish(Adapter):
+            async def finish(self, profile, *, quiescent):
+                finishing.set()
+                await asyncio.Event().wait()
+
+        running = asyncio.create_task(
+            run_scenarios(
+                [case("one")],
+                [PROFILE],
+                BlockingFinish(),
+                run_id="run",
+                validator=validator,
+            )
+        )
+        async with asyncio.timeout(2):
+            await finishing.wait()
+            drain = next(task for task in asyncio.all_tasks() if task.get_name() == "drain_and_finish")
+            running.cancel()
+            drain.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+    asyncio.run(check())
+
+
+def test_collection_replaces_unlabeled_attempt_estimates_with_platform_pairs():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
+
+    before = {"attempts": [{"requestId": "request", "startedAtMs": 50, "endedAtMs": 90}]}
+    measured = {
+        "attempts": [
+            {
+                "requestId": "request",
+                "startedAtMs": 55,
+                "endedAtMs": 80,
+                "startedAtMsSource": "platform",
+                "endedAtMsSource": "platform",
+            }
+        ]
+    }
+    retained, changes = _retain_observations(before, measured)
+    assert retained == measured
+    assert not changes
+
+
+def test_partial_event_sequence_does_not_mix_with_inherited_sequence():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import (
+        _event_frames_order_changed,
+        _retain_observations,
+    )
+
+    first = {"kind": "one", "requestId": "request", "atMs": 30, "sequence": 9}
+    second = {"kind": "two", "requestId": "request", "atMs": 30, "sequence": 10}
+    early = {"events": [first, second]}
+    partial = {"events": [{**first, "sequence": 99}]}
+    final = {"events": [{**first, "sequence": 99}, {**second, "sequence": 100}]}
+    merged, _ = _retain_observations(early, partial, compare_sdk_order=False)
+    retained, changes = _retain_observations(merged, final, compare_sdk_order=False)
+    assert not _event_frames_order_changed(early, final)
+    assert ("events", "sequence") not in changes.conflicts
+    assert retained == final
+
+
+def test_partial_same_time_dispatch_does_not_override_complete_order():
+    from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+    request = {"requestId": "request", "method": "CheckpointDurableExecution", "outcome": "DISPATCHED", "atMs": 40}
+    closure = {"kind": "wrapper_return", "requestId": "request", "atMs": 40, "sequence": 10}
+    original = {
+        "attempts": [{"requestId": "request"}],
+        "events": [closure],
+        "sdkRequests": [{**request, "sequence": 9}],
+    }
+    partial = {"events": [closure], "sdkRequests": [request]}
+    errors = _cleanup_behavior_errors(original, original, standard=False, known_snapshots=[partial], final=True)
+    assert not any("dispatched SDK work after admission closed" in error or "same-time" in error for error in errors)
+
+
+def test_nested_attempt_diagnostics_do_not_alias_caller_data():
+    publications = []
+    context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=lambda ctx: publications.append(ctx.attempts))
+    initial = {"200": 1}
+    context.record_attempt("launch", statusCounts=initial)
+    initial.clear()
+    assert context.attempts[0]["statusCounts"] == {"200": 1}
+    updated = {"202": 2}
+    context.update_attempt("launch", statusCounts=updated)
+    updated.clear()
+    assert context.attempts == publications[-1]
+    assert context.attempts[0]["statusCounts"] == {"202": 2}
+
+
+def test_released_lease_cannot_alter_capacity_of_reacquired_owner():
+    async def check():
+        scheduler = ResourceScheduler()
+        scheduler.register("function", 1)
+        old = await scheduler.acquire("function", "owner")
+        await old.release(quiescent=True)
+        current = await scheduler.acquire("function", "owner")
+        with pytest.raises(RuntimeError, match="has been released"):
+            await old.release_capacity()
+        with pytest.raises(RuntimeError, match="has been released"):
+            await old.reserve_capacity()
+        await old.release(quiescent=False)
+        peer = asyncio.create_task(scheduler.acquire("function", "peer"))
+        await asyncio.sleep(0)
+        assert not peer.done()
+        await current.release(quiescent=True)
+        await (await peer).release(quiescent=True)
+
+    asyncio.run(check())
+
+
+def test_adapter_operation_cancellation_does_not_abort_other_profiles():
+    class CancellingAdapter(Adapter):
+        async def execute(self, context):
+            if context.scenario.case_id == "cancelled":
+                cancelled = asyncio.get_running_loop().create_future()
+                cancelled.cancel()
+                await cancelled
+            else:
+                await super().execute(context)
+
+    other = replace(PROFILE, profile_id="other", resource_id="other-function")
+    results = run([case("cancelled"), case("healthy", profile=other)], CancellingAdapter(), profiles=(PROFILE, other))
+    assert results[0].status == "INFRASTRUCTURE_ERROR"
+    assert "RuntimeError: execution operation was cancelled" in results[0].errors
+    assert results[1].status == "PASSED"
+
+
+def test_cancelled_drain_allows_case_retirement_and_finishes_profile():
+    async def check():
+        executing = asyncio.Event()
+        retiring = asyncio.Event()
+        retired = asyncio.Event()
+
+        class BlockingRetirement(Adapter):
+            async def execute(self, context):
+                executing.set()
+                await asyncio.Event().wait()
+
+            async def retire(self, context):
+                retiring.set()
+                await retired.wait()
+                return await super().retire(context)
+
+        adapter = BlockingRetirement()
+        scheduler = ResourceScheduler()
+        running = asyncio.create_task(
+            run_scenarios([case("one")], [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler)
+        )
+        async with asyncio.timeout(2):
+            await executing.wait()
+            running.cancel()
+            await retiring.wait()
+            drain = next(task for task in asyncio.all_tasks() if task.get_name() == "drain_and_finish")
+            drain.cancel()
+            await asyncio.sleep(0)
+            assert not running.done()
+            retired.set()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+            assert adapter.finished == [(PROFILE.profile_id, False)]
+            assert not scheduler._resources[PROFILE.resource_id].profile_active
+
+    asyncio.run(check())
+
+
+def test_service_attempt_keeps_native_identity_when_audit_fails():
+    def audit(context):
+        if context.attempts[-1].get("discoveredAtMs"):
+            raise OSError("disk full")
+
+    context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=audit)
+    context.record_attempt("first", requestId="original", executionArn="first-execution")
+    context.record_attempt("second", requestId="second", executionArn="second-execution")
+    with pytest.raises(OSError, match="disk full"):
+        context.record_service_attempt(
+            "retry", original_request_id="second", execution_arn="second-execution", role="victim"
+        )
+    assert [item["requestId"] for item in context.attempts] == ["original", "second", "retry"]
+
+
+def test_recovery_timeout_keeps_quarantine_until_residual_verifier_stops():
+    async def check():
+        scheduler = ResourceScheduler()
+        scheduler.register("target", 1)
+        await scheduler.quarantine("target", "unretired")
+        stopped = asyncio.Event()
+        release = asyncio.Event()
+
+        async def verify():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            stopped.set()
+            return True
+
+        async def fresh_verify():
+            return True
+
+        with pytest.raises(TimeoutError):
+            await scheduler.recover("target", verify, timeout=0.01)
+        try:
+            with pytest.raises(QuarantinedError, match="interrupted adapter task"):
+                await scheduler.recover("target", fresh_verify)
+            assert scheduler.quarantine_reason("target") == "unretired"
+        finally:
+            release.set()
+            await stopped.wait()
+        await scheduler.recover("target", fresh_verify)
+        assert scheduler.quarantine_reason("target") is None
+
+    asyncio.run(check())
+
+
+def test_finished_profile_releases_cross_run_ownership_while_other_profile_runs():
+    async def check():
+        other = replace(PROFILE, profile_id="other", resource_id="arn:other")
+        scheduler = ResourceScheduler()
+        release = asyncio.Event()
+        running = asyncio.Event()
+
+        class BlockingOther(Adapter):
+            async def execute(self, context):
+                if context.profile == other:
+                    running.set()
+                    await release.wait()
+
+        adapter = BlockingOther()
+        run = asyncio.create_task(
+            run_scenarios(
+                [case("fast"), case("slow", profile=other)],
+                [PROFILE, other],
+                adapter,
+                run_id="first",
+                validator=validator,
+                scheduler=scheduler,
+            )
+        )
+        try:
+            await running.wait()
+            result = await run_scenarios(
+                [case("next")],
+                [PROFILE],
+                Adapter(),
+                run_id="second",
+                validator=validator,
+                scheduler=scheduler,
+                budgets=Budgets(lease=0.2),
+            )
+            assert result[0].status == "PASSED", result[0].errors
+            assert adapter.finished == [(PROFILE.profile_id, True)]
+        finally:
+            release.set()
+            await run
+
+    asyncio.run(check())
+
+
+def test_caller_suite_service_transition_preserves_original_execution():
+    scenario = Scenario(
+        "case",
+        "custom-replay",
+        PROFILE.profile_id,
+        "replay",
+        roles=("initial", "continued"),
+        coverage_profile="custom",
+        service_role_transitions=frozenset({("initial", "continued")}),
+    )
+    context = ScenarioContext("run", scenario, PROFILE)
+    context.record_attempt("initial", role="initial", requestId="initial", executionArn="original-execution")
+    with pytest.raises(ValueError, match="existing journaled execution"):
+        context.record_service_attempt(
+            "new", original_request_id="initial", execution_arn="unrelated-execution", role="continued"
+        )
+    context.record_service_attempt(
+        "continued", original_request_id="initial", execution_arn="original-execution", role="continued"
+    )
+    assert [(item["role"], item["attempt"]) for item in context.attempts] == [("initial", 1), ("continued", 1)]
+
+
+@pytest.mark.parametrize("inventory", ["operationExecutions", "retry.attempts"])
+def test_cleanup_replay_discovery_requires_settlement(inventory):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _cleanup_record_errors
+
+    record = {"requestId": "discovered", "operationId": "step"}
+    replay = {inventory: [record]} if inventory == "operationExecutions" else {"retry": {"attempts": [record]}}
+    final: dict[str, Any] = {
+        "attempts": [{"requestId": "discovered", "executionArn": "execution"}],
+        "retirement": {"resources": []},
+    }
+    assert any(
+        f"cleanup replay.{inventory} native owner discovered is not settled" in error
+        for error in _cleanup_record_errors([{"replay": replay}, final], final)
+    )
+    final["retirement"]["resources"] = [
+        {"kind": "invocation", "id": "discovered", "outcome": "QUIESCENT", "settledAtMs": 20},
+        {"kind": "execution", "id": "execution", "outcome": "SUCCEEDED", "settledAtMs": 20},
+    ]
+    assert _cleanup_record_errors([{"replay": replay}, final], final) == []
+
+
+@pytest.mark.parametrize(
+    ("released", "diagnostic"),
+    [
+        (False, "releasedAtMs must be a finite non-negative number"),
+        (81, "observed fault release occurred after retirement ended"),
+    ],
+)
+def test_cleanup_cannot_erase_invalid_fault_release(released, diagnostic):
+    class InvalidRelease(Adapter):
+        async def collect(self, context):
+            evidence = await super().collect(context)
+            evidence["faultsCreated"] = [{"id": "fault", "ownerCaseId": context.scenario.case_id}]
+            return evidence
+
+        async def release(self, context):
+            context.evidence["faultsCreated"][0]["releasedAtMs"] = released
+            await super().release(context)
+
+        async def retire(self, context):
+            context.evidence["faultsCreated"][0].pop("releasedAtMs")
+            await super().retire(context)
+            context.evidence["retirement"]["faults"] = [
+                {"id": "fault", "ownerCaseId": context.scenario.case_id, "releasedAtMs": 75, "mode": "normal"}
+            ]
+            return True
+
+    adapter = InvalidRelease()
+    result = run([case("one")], adapter)[0]
+    assert any(diagnostic in error for error in result.errors)
+    assert adapter.finished == [(PROFILE.profile_id, False)]
+
+
+def test_no_validator_reports_collected_and_deduplicates_unchanged_observations():
+    class ConstantObservations(Adapter):
+        async def start(self, context):
+            await super().start(context)
+            context.evidence = await super().collect(context)
+
+        async def collect(self, context):
+            return context.evidence
+
+    statuses = []
+    (result,) = asyncio.run(
+        run_scenarios(
+            [case("one")],
+            [PROFILE],
+            ConstantObservations(),
+            run_id="capture",
+            on_result=lambda emitted: statuses.append(emitted.status),
+        )
+    )
+    assert result.status == "COLLECTED"
+    assert statuses and set(statuses) == {"COLLECTED"}
+    assert len(result.observation_evidence) == 1
+
+
+def test_prelaunch_partial_collection_surfaces_missing_control_retirement():
+    class PrelaunchControl(Adapter):
+        async def start(self, context):
+            raise OSError("failed before launch")
+
+        async def collect_partial(self, context):
+            return {"resourcesCreated": [{"kind": "control", "id": "control", "ownerCaseId": context.scenario.case_id}]}
+
+        async def retire(self, context):
+            return True
+
+    adapter = PrelaunchControl()
+    (result,) = asyncio.run(run_scenarios([case("one")], [PROFILE], adapter, run_id="capture"))
+    assert result.status == "INFRASTRUCTURE_ERROR"
+    assert not result.attempts
+    assert result.evidence["resourcesCreated"][0]["id"] == "control"
+    assert adapter.finished == [(PROFILE.profile_id, False)]
+
+
+@pytest.mark.parametrize("history_only", [False, True])
+def test_known_cross_profile_claim_blocks_both_external_releases(history_only):
+    async def check():
+        other = replace(PROFILE, profile_id="other", resource_id="arn:other")
+        ready = asyncio.Event()
+        claimed: set[str] = set()
+
+        class Claims(Adapter):
+            async def start(self, context):
+                if history_only and context.scenario.case_id == "first":
+                    context.evidence["histories"] = [
+                        {
+                            "executionArn": "arn:execution:shared",
+                            "ownerCaseId": "first",
+                            "status": "RUNNING",
+                        }
+                    ]
+                else:
+                    context.record_attempt("launch", requestId="shared-request", executionArn="arn:execution:shared")
+
+            async def execute(self, context):
+                claimed.add(context.scenario.case_id)
+                if len(claimed) == 2:
+                    ready.set()
+                await ready.wait()
+
+        adapter = Claims()
+        results = await run_scenarios(
+            [case("first"), case("second", profile=other)], [PROFILE, other], adapter, run_id="capture"
+        )
+        assert all(result.status == "FAILED" for result in results)
+        assert set(adapter.finished) == {(PROFILE.profile_id, False), (other.profile_id, False)}
+
+    asyncio.run(check())
