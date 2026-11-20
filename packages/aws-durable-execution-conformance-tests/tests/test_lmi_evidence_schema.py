@@ -144,6 +144,23 @@ def test_optional_event_sequence_has_schema_and_runner_parity(schema_validator, 
     assert validate_evidence(value) == ([] if valid else ["INCOMPLETE: event.sequence must be a non-negative integer"])
 
 
+@pytest.mark.parametrize(
+    ("sequence", "valid"), [(True, False), (-1, False), (1.5, False), ("1", False), (None, False), (1.0, True)]
+)
+def test_optional_retirement_completion_sequence_has_schema_and_runner_parity(
+    schema_validator, evidence_factories, sequence, valid
+):
+    value = evidence_factories["evidence"]()
+    victim, event = value["attempts"][0], evidence_factories["event"]
+    value["events"].append(event(victim, "io_start", 30, taskId="held"))
+    value["retirement"]["completions"] = [event(victim, "io_exit", 205, taskId="held", sequence=sequence)]
+
+    assert schema_validator.is_valid(value) is valid
+    assert validate_evidence(value) == (
+        [] if valid else ["INCOMPLETE: retirement.completion.sequence must be a non-negative integer"]
+    )
+
+
 @pytest.mark.parametrize("field", ["before", "after", "operationExecutions", "retry", "sideEffects"])
 @pytest.mark.parametrize("mutation", ["missing", "empty", "wrong-type"])
 def test_replay_requires_complete_nonempty_structures(schema_validator, evidence_factories, field, mutation):

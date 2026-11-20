@@ -20,6 +20,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     _CALL_METHODS,
+    _UNORDERED_CLEANUP_LATE_ACTIVITY,
     _WORK_INTERVALS,
     TERMINAL_STATUSES,
     EvidenceValidator,
@@ -41,6 +42,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     retained_fault_releases,
     retry_body_identity,
     same_json,
+    tied_late_activity_follows_exit,
     validate_evidence,
     validate_retirement_evidence,
 )
@@ -1488,9 +1490,11 @@ def _cleanup_behavior_errors(
             )
         else:
             victim_id = role("victim").get("requestId")
-            exited = boundary("victim", "task_exit")
+            victim_exit = boundary_record("victim", "task_exit")
+            exited = timestamp(victim_exit.get("atMs"))
             for source in sources:
-                for event in records(source.get("events")):
+                source_events = records(source.get("events"))
+                for event in source_events:
                     if event.get("kind") != "late_activity":
                         continue
                     request_id = event.get("requestId")
@@ -1505,13 +1509,17 @@ def _cleanup_behavior_errors(
                     if during is not None and bound_execution(during) is None:
                         continue
                     observed_at = timestamp(event.get("atMs"))
-                    if (
-                        request_id == victim_id
-                        and observed_at is not None
-                        and exited is not None
-                        and observed_at > exited
-                    ):
+                    if request_id != victim_id or observed_at is None or exited is None:
+                        continue
+                    follows = (
+                        observed_at > exited
+                        if observed_at != exited
+                        else tied_late_activity_follows_exit(source_events, event, victim_exit)
+                    )
+                    if follows:
                         findings.append("ASSERTION: cleanup late activity continued after the frozen victim task exit")
+                    elif follows is None and final and source is snapshot:
+                        findings.append(_UNORDERED_CLEANUP_LATE_ACTIVITY)
     return findings
 
 

@@ -1758,6 +1758,13 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
                 if field is not None and field in record and not identifier(record[field]):
                     findings.append(f"INCOMPLETE: cleanup {collection}.{field} must be a non-empty string")
                 if (
+                    collection == "events"
+                    and "sequence" in record
+                    and not (is_json_integer(record["sequence"]) and record["sequence"] >= 0)
+                ):
+                    # A later snapshot cannot repair a sequence that was explicitly malformed.
+                    findings.append("INCOMPLETE: cleanup events.sequence must be a non-negative integer")
+                if (
                     collection == "sdkRequests"
                     and "outcome" in record
                     and record["outcome"] not in ("DISPATCHED", "REJECTED")

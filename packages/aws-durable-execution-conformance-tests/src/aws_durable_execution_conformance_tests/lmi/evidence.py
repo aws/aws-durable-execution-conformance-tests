@@ -680,10 +680,7 @@ class _Evidence:
                 if event.get("outcome") not in ("ACCEPTED", "REJECTED"):
                     subject = f"{probe} probe" if probe in ("operation", "checkpoint") else "admission probe"
                     self.error(f"{subject} outcome must be ACCEPTED or REJECTED")
-            if "sequence" in event:
-                sequence = event["sequence"]
-                if not is_json_integer(sequence) or sequence < 0:
-                    self.error("event.sequence must be a non-negative integer")
+            self.event_sequence(event, "event")
             if kind in {"observation_error", "control_error"}:
                 self.error(f"{kind} reports failed observation or control publication")
         sdk_requests = self.records(value.get("sdkRequests"), "sdkRequests")
@@ -742,6 +739,10 @@ class _Evidence:
             for index, uri in enumerate(references):
                 self.string(uri, f"collection.evidenceUris[{index}]")
         return collection
+
+    def event_sequence(self, event: Mapping[str, Any], path: str) -> None:
+        if "sequence" in event and (not is_json_integer(event["sequence"]) or event["sequence"] < 0):
+            self.error(f"{path}.sequence must be a non-negative integer")
 
     def owned_record(self, record: Mapping[str, Any], kind: str, end: float) -> None:
         request_id = record.get("requestId")
@@ -1466,6 +1467,7 @@ class _Evidence:
         )
         for completion in completions:
             self.owned_record(completion, "retirement.completion", end)
+            self.event_sequence(completion, "retirement.completion")
             if self.number(completion.get("atMs"), "retirement.completion.atMs") <= self.value.get(
                 "observationEndedAtMs", 0
             ):
@@ -1943,6 +1945,31 @@ def _physical_event_kind(event: Mapping[str, Any]) -> Any:
     if isinstance(kind, str) and (source := _TASK_EVENT_ALIASES.get(kind)) == event.get("sourceKind") and source:
         return source
     return kind
+
+
+def tied_late_activity_follows_exit(
+    source_events: Sequence[Mapping[str, Any]], late: Mapping[str, Any], task_exit: Mapping[str, Any]
+) -> bool | None:
+    """Order late activity against a task exit with the same timestamp in one snapshot.
+
+    Snapshots may renumber sequences, so ``late`` is compared only with this
+    snapshot's copy of the exit. ``None`` means the snapshot cannot order them.
+    """
+    sequences = [
+        event.get("sequence")
+        for event in source_events
+        if _physical_event_kind(event) == "task_exit"
+        and event.get("requestId") == task_exit.get("requestId")
+        and same_json(event.get("taskId"), task_exit.get("taskId"))
+        and type(event.get("atMs")) in (int, float)
+        and event.get("atMs") == task_exit.get("atMs")
+    ]
+    late_sequence, exit_sequence = late.get("sequence"), sequences[0] if len(sequences) == 1 else None
+    if not is_json_integer(late_sequence) or not is_json_integer(exit_sequence):
+        return None
+    if late_sequence < 0 or exit_sequence < 0 or late_sequence == exit_sequence:
+        return None
+    return late_sequence > exit_sequence
 
 
 def frozen_history_work_errors(original: Mapping[str, Any], final: Mapping[str, Any]) -> list[str]:
@@ -2932,6 +2959,11 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
     return findings
 
 
+_UNORDERED_CLEANUP_LATE_ACTIVITY = (
+    "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
+)
+
+
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -3321,8 +3353,13 @@ def _cleanup_behavior_errors(
         else:
             victim_id = role("victim").get("requestId")
             exited = boundary("victim", "task_exit")
+            victim_exit = next(
+                (event for event in events if event.get("requestId") == victim_id and event.get("kind") == "task_exit"),
+                {},
+            )
             for source in sources:
-                for event in records(source.get("events")):
+                source_events = records(source.get("events"))
+                for event in source_events:
                     if event.get("kind") != "late_activity":
                         continue
                     request_id = event.get("requestId")
@@ -3337,13 +3374,17 @@ def _cleanup_behavior_errors(
                     if during is not None and bound_execution(during) is None:
                         continue
                     observed_at = timestamp(event.get("atMs"))
-                    if (
-                        request_id == victim_id
-                        and observed_at is not None
-                        and exited is not None
-                        and observed_at > exited
-                    ):
+                    if request_id != victim_id or observed_at is None or exited is None:
+                        continue
+                    follows = (
+                        observed_at > exited
+                        if observed_at != exited
+                        else tied_late_activity_follows_exit(source_events, event, victim_exit)
+                    )
+                    if follows:
                         findings.append("ASSERTION: cleanup late activity continued after the frozen victim task exit")
+                    elif follows is None and final and source is snapshot:
+                        findings.append(_UNORDERED_CLEANUP_LATE_ACTIVITY)
     return findings
 
 

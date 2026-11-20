@@ -1401,6 +1401,102 @@ def test_cleanup_late_activity_cannot_outlive_the_frozen_task_exit(path: str, la
     assert result.evidence["events"] == frozen_events
 
 
+def _tied_late_activity_fixture(*, frozen_tie: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    value = _standard_retirement_snapshot("warm_evidence", "python")
+    victim = next(item for item in value["attempts"] if item["role"] == "victim")
+    if frozen_tie:
+        # Frozen victim activity also shares the exit timestamp, but precedes it.
+        late = next(item for item in value["events"] if item["kind"] == "late_activity")
+        value["events"].remove(late)
+        index = next(
+            index
+            for index, item in enumerate(value["events"])
+            if item["requestId"] == victim["requestId"] and item["kind"] == "task_exit"
+        )
+        value["events"].insert(index, {**late, "atMs": 65})
+        _resequence(value)
+        assert validate_evidence(value) == []
+    owner = {key: victim[key] for key in ("requestId", "executionArn")}
+    owner["ownerRequestId"] = victim["requestId"]
+    return value, owner
+
+
+def _insert_tied_late_activity(snapshot: dict[str, Any], owner: dict[str, Any], *, late_first: bool) -> None:
+    index = next(
+        index
+        for index, item in enumerate(snapshot["events"])
+        if item["requestId"] == owner["requestId"] and item["kind"] == "task_exit"
+    )
+    assert snapshot["events"][index]["atMs"] == 65
+    # Resequencing keeps list order for equal timestamps, so placement sets the tie order.
+    position = index if late_first else index + 1
+    snapshot["events"][position:position] = [
+        {**owner, "kind": "task_start", "taskId": "discovered-child", "atMs": 55},
+        {**owner, "kind": "late_activity", "atMs": 65, "observedDuringRequestId": "request-warm"},
+        {**owner, "kind": "task_exit", "taskId": "discovered-child", "atMs": 65},
+    ]
+
+
+_CLEANUP_LATE_ACTIVITY = "ASSERTION: cleanup late activity continued after the frozen victim task exit"
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("frozen_tie", [False, True], ids=["frozen-earlier", "frozen-tied"])
+@pytest.mark.parametrize("late_first", [True, False], ids=["before-exit", "after-exit"])
+def test_cleanup_late_activity_tied_with_the_frozen_task_exit_is_ordered_by_sequence(
+    path: str, frozen_tie: bool, late_first: bool
+) -> None:
+    value, owner = _tied_late_activity_fixture(frozen_tie=frozen_tie)
+    frozen_events = deepcopy(value["events"])
+
+    result = _run_standard_cleanup_discovery(
+        value,
+        lambda snapshot: _insert_tied_late_activity(snapshot, owner, late_first=late_first),
+        phase="retire",
+        path=path,
+    )
+
+    if late_first:
+        assert result.status == "PASSED", result.errors
+    else:
+        assert result.status == "FAILED"
+        assert _CLEANUP_LATE_ACTIVITY in result.errors, result.errors
+    assert result.evidence["events"] == frozen_events
+
+
+@pytest.mark.parametrize("alias", [False, True], ids=["task-exit", "observed-task-exit"])
+@pytest.mark.parametrize("late_first", [True, False], ids=["before-exit", "after-exit"])
+def test_saved_retirement_orders_late_activity_tied_with_the_frozen_task_exit(alias: bool, late_first: bool) -> None:
+    value, owner = _tied_late_activity_fixture()
+    snapshot = deepcopy(value)
+    _insert_tied_late_activity(snapshot, owner, late_first=late_first)
+    if alias:
+        exit_event = next(
+            item
+            for item in snapshot["events"]
+            if item["requestId"] == owner["requestId"] and item["kind"] == "task_exit" and item["taskId"] == "root"
+        )
+        exit_event.update(kind="observed_task_exit", sourceKind="task_exit")
+    _resequence(snapshot)
+    assert validate_retirement_evidence(snapshot) == []
+    value["retirementSnapshot"] = snapshot
+
+    assert validate_evidence(value) == ([] if late_first else [_CLEANUP_LATE_ACTIVITY])
+
+
+@pytest.mark.parametrize("final", [False, True])
+def test_cleanup_tie_without_sequences_is_incomplete_in_the_final_snapshot(final: bool) -> None:
+    value, owner = _tied_late_activity_fixture()
+    snapshot = deepcopy(value)
+    snapshot["events"].append({**owner, "kind": "late_activity", "atMs": 65, "observedDuringRequestId": "request-warm"})
+
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=final)
+
+    unordered = "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
+    assert (unordered in findings) is final, findings
+    assert _CLEANUP_LATE_ACTIVITY not in findings
+
+
 def test_cleanup_replay_binding_can_arrive_in_later_retirement_evidence() -> None:
     value = _standard_retirement_snapshot("replay_evidence")
     entry = {"requestId": "discovered-native", "operationId": "not-checkpointed"}
