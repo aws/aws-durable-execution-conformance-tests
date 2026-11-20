@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
 from aws_durable_execution_conformance_tests.lmi.rules.common import (
@@ -22,6 +22,9 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     is_json_integer,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def last_activity(view: CaseView, request_id: Any) -> float:
@@ -389,3 +392,12 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
         validator.error(f"malformed independent retirement evidence: {error}")
     return validator.errors
+
+
+def collect_fault_releases(view: ReconcileView) -> list[int | float]:
+    """Record fault-release errors and return every known release time."""
+    final_retirement = view.snapshot.get("retirement")
+    final_end = final_retirement.get("retiredAtMs") if view.final and isinstance(final_retirement, Mapping) else None
+    releases, release_errors = retained_fault_releases((*view.observation_snapshots, *view.sources), final_end)
+    view.findings.extend(release_errors)
+    return releases

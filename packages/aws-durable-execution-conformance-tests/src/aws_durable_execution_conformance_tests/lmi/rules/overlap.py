@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
+    mappings,
     same_json,
+    timestamp,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def overlap(view: CaseView) -> None:
@@ -105,3 +110,62 @@ def has_overlap_marker_dispatch(
         )
         for request in requests
     )
+
+
+def reconcile_overlap_identity(view: ReconcileView, corrected: Mapping[str, Mapping[str, Any]]) -> dict[str, set[str]]:
+    """Check that each overlap role stays an original execution with one marker step."""
+    marker_ids: dict[str, set[str]] = {}
+    for role_name in ("victim", "peer"):
+        execution = view.role(role_name).get("executionArn")
+        selected_request = view.role(role_name).get("requestId")
+        window = view.window_end
+        if (
+            isinstance(execution, str)
+            and window is not None
+            and any(
+                request != selected_request
+                and attempt.get("executionArn") == execution
+                and (started := timestamp(attempt.get("startedAtMs"))) is not None
+                and started <= window
+                for request, attempt in corrected.items()
+            )
+        ):
+            view.findings.append(f"ASSERTION: overlap {role_name} needs an original successful execution without retry")
+        markers = {
+            operation["id"]
+            for source in view.sources
+            for history in mappings(source.get("histories"))
+            if history.get("executionArn") == execution
+            for operation in mappings(history.get("operations"))
+            if operation.get("type") == "STEP"
+            and operation.get("name") == "record-marker"
+            and isinstance(operation.get("id"), str)
+        }
+        marker_ids[role_name] = markers
+        if len(markers) > 1:
+            view.findings.append(f"ASSERTION: cleanup overlap {role_name} observed more than one record-marker step")
+    return marker_ids
+
+
+def reconcile_barrier(view: ReconcileView, marker_ids: Mapping[str, set[str]]) -> None:
+    """Check barrier arrivals and marker dispatches against the established native overlap."""
+    # Native metadata can widen a provisional interval. A barrier claim is
+    # disproved only after every supplied native interval is available.
+    intervals = [view.known_interval(name) for name in ("victim", "peer")]
+    starts = [start for start, _ in intervals if start is not None]
+    ends = [end for _, end in intervals if end is not None]
+    if len(starts) == len(ends) == 2:
+        for name in ("victim", "peer"):
+            for event in view.observed_events(name, "barrier_arrived"):
+                arrived = timestamp(event.get("atMs"))
+                if arrived is not None and not max(starts) <= arrived < min(ends):
+                    view.findings.append("PLACEMENT: cleanup barrier lies outside the established native overlap")
+        if view.requirement == "lmi-lifecycle-1":
+            requests = [row for source in view.sources for row in mappings(source.get("sdkRequests"))]
+            for name, markers in marker_ids.items():
+                if len(markers) == 1 and not has_overlap_marker_dispatch(
+                    requests, view.role(name).get("requestId"), next(iter(markers)), max(starts), min(ends)
+                ):
+                    view.findings.append(
+                        f"INCOMPLETE: cleanup overlap {name} lacks a marker checkpoint dispatch inside native overlap"
+                    )

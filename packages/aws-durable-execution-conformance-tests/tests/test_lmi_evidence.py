@@ -3214,3 +3214,41 @@ def test_offline_retains_trustworthy_behavior_failure_after_cleanup_error(truste
     assert status == ("FAILED" if trusted else "INFRASTRUCTURE_ERROR")
     assert "cleanup failed" in findings
     assert any(item.startswith("ASSERTION:") for item in findings)
+
+
+def test_offline_shared_rules_check_scenario_observations_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aws_durable_execution_conformance_tests.lmi.rules import engine
+
+    checked: list[Any] = []
+    scenario_rules = engine._validate_observations
+
+    def counted(view: Any, value: Any) -> None:
+        checked.append(value.get("retirement"))
+        scenario_rules(view, value)
+
+    monkeypatch.setattr(engine, "_validate_observations", counted)
+    frozen = evidence(2)
+    retired = deepcopy(frozen)
+    retired["retirement"]["retiredAtMs"] = 221
+    status, findings, projected = adjudicate_evidence(
+        "COLLECTED", [], frozen, retirement_evidence=retired, cleanup_evidence={}, standard=True
+    )
+    assert status == "PASSED", findings
+    # Scenario rules see the frozen observations once; only retirement sees the projection.
+    assert checked == [frozen["retirement"]]
+    assert projected["retirement"]["retiredAtMs"] == 221
+
+
+def test_offline_custom_validator_checks_observations_then_final() -> None:
+    phases: list[str] = []
+
+    def validator(evidence: Any, *, phase: Literal["observations", "final"] = "final") -> list[str]:
+        phases.append(phase)
+        return []
+
+    frozen = evidence(2)
+    findings = evaluate_evidence(
+        frozen, retirement_evidence=deepcopy(frozen), cleanup_evidence={}, standard=True, validator=validator
+    )
+    assert findings == []
+    assert phases == ["observations", "final"]

@@ -59,3 +59,17 @@ def same_json(left: Any, right: Any) -> bool:
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return left == right
     return type(left) is type(right) and bool(left == right)
+
+
+def mappings(value: Any) -> list[Mapping[str, Any]]:
+    """The objects in a JSON array; nothing for any other value."""
+    return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+
+def timestamp(value: Any) -> int | float | None:
+    """A finite non-negative JSON number that is not a boolean, else ``None``."""
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and math.isfinite(value) and value >= 0:
+        return value
+    return None
