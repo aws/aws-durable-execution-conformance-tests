@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.matrix import required_cases
-from aws_durable_execution_conformance_tests.lmi.source_evidence import _decoded, assertion_events, retirement_snapshot
+from aws_durable_execution_conformance_tests.lmi.source_evidence import _decoded, assertion_events
 
 from .support import FIXTURES, ScenarioDriver
 from .test_shared_adapter import ScriptCloud, context
@@ -24,6 +24,24 @@ def test_each_shared_case_uses_its_required_original_roles(cell, monkeypatch):
 
         cloud = RecoveryCloud()
         monkeypatch.setattr(shared_scenarios, "time", SimpleNamespace(time=lambda: cloud.now))
+    elif cell.scenario == "suspension-retry":
+        monkeypatch.setattr(
+            cloud,
+            "history",
+            lambda _: [
+                {
+                    "EventType": "CallbackStarted",
+                    "Id": "operation",
+                    "Name": "completion",
+                    "EventTimestamp": 0.9,
+                    "CallbackStartedDetails": {"CallbackId": "callback-id"},
+                },
+                {
+                    "EventType": "InvocationCompleted",
+                    "InvocationCompletedDetails": {"RequestId": "first", "StartTimestamp": 0, "EndTimestamp": 1.1},
+                },
+            ],
+        )
     driver = ScenarioDriver(
         context(
             scenario=cell.scenario,
@@ -77,5 +95,8 @@ def test_singular_assertion_boundary_does_not_discard_other_task_lifetimes(scena
     assert [e["taskId"] for e in events if e["kind"] == "task_exit"] == [target]
     assert len(events) == len(original)
     assert original == retained
-    restored = retirement_snapshot({"events": events})["events"]
-    assert [{k: v for k, v in e.items() if k != "sourceKind"} for e in restored] == original
+    assert [event for event in events if event["kind"].startswith("observed_task_")] == [
+        {**original_event, "kind": f"observed_{original_event['kind']}", "sourceKind": original_event["kind"]}
+        for original_event in original
+        if original_event["taskId"] != target
+    ]

@@ -10,6 +10,7 @@ from .catalog import RUNTIMES
 
 CONCURRENCIES = {"c1": 1, "c2": 2}
 SCALING = {"MinExecutionEnvironments": 1, "MaxExecutionEnvironments": 1}
+MEMORY_GIB_PER_VCPU = 2
 QUALIFIER = "$LATEST.PUBLISHED"
 
 

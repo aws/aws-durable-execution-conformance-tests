@@ -34,6 +34,86 @@ def evidence_factories() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
+    ("kind", "outcome", "is_valid"),
+    [
+        ("callback", "SUCCEEDED", True),
+        ("callback", "PENDING", False),
+        ("control", "DELETED", True),
+        ("control", "DELETE_REQUESTED", False),
+        ("timer", "STILL_RUNNING", False),
+    ],
+)
+def test_retirement_resource_completion_contract(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    kind: str,
+    outcome: str,
+    is_valid: bool,
+) -> None:
+    value = evidence_factories["evidence"]()
+    resource = {"id": "additional-resource", "kind": kind, "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {**resource, "settledAtMs": 210, "evidenceUri": "s3://evidence/resource.json", "outcome": outcome}
+    )
+    assert schema_validator.is_valid(value) is is_valid
+
+
+@pytest.mark.parametrize(
+    ("kind", "outcome", "reason"),
+    [
+        ("invocation", "SUCCEEDED", "invocation quiescence is not established"),
+        ("execution", "RUNNING", "an execution may still resume after retirement"),
+    ],
+)
+def test_schema_and_validator_require_settled_invocation_and_execution_outcomes(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    kind: str,
+    outcome: str,
+    reason: str,
+) -> None:
+    value = evidence_factories["evidence"]()
+    schema_validator.validate(value)
+    index, resource = next(
+        (index, resource) for index, resource in enumerate(value["retirement"]["resources"]) if resource["kind"] == kind
+    )
+    resource["outcome"] = outcome
+    assert ["retirement", "resources", index, "outcome"] in [
+        list(error.path) for error in schema_validator.iter_errors(value)
+    ]
+    assert any(reason in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        (("runId",), "runId"),
+        (("caseId",), "caseId"),
+        (("collection", "evidenceUris", 0), "collection.evidenceUris"),
+        (("retirement", "resources", 0, "evidenceUri"), "retirement.resources.evidenceUri"),
+        (("artifact", "sdk"), "artifact.sdk"),
+        (("attempts", 0, "workerId"), "workerId"),
+    ],
+)
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
+def test_schema_and_validator_reject_blank_identity(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    path: tuple[str | int, ...],
+    reason: str,
+    blank: str,
+) -> None:
+    value = evidence_factories["evidence"]()
+    record = value
+    for key in path[:-1]:
+        record = record[key]
+    record[path[-1]] = blank
+    assert list(path) in [list(error.path) for error in schema_validator.iter_errors(value)]
+    assert any(reason in error and "non-empty string" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize(
     ("factory", "arguments"),
     [
         ("evidence", (1,)),
@@ -110,6 +190,86 @@ def test_replay_records_require_their_structural_fields(schema_validator, eviden
         record = record[part]
     del record[path[-1]]
     assert not schema_validator.is_valid(value)
+
+
+@pytest.mark.parametrize("retry_count", [0, 1])
+def test_builder_reports_missing_retry_as_behavior_evidence(schema_validator, evidence_factories, retry_count):
+    import json
+
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
+
+    value = evidence_factories["replay_evidence"]()
+    original = value["replay"]
+    victim = value["selectedRequests"]["victim"]
+    resume = value["selectedRequests"]["resume"]
+    execution = next(item["executionArn"] for item in value["attempts"] if item["requestId"] == victim)
+    events = [
+        {"kind": "invocation_start", "requestId": victim, "executionArn": execution},
+        {
+            "kind": "invocation_start",
+            "requestId": resume,
+            "operations": [
+                {
+                    "operationId": operation["id"],
+                    "operationType": operation["type"],
+                    "status": operation["status"],
+                    "name": operation["name"],
+                    "parentId": operation["parentId"],
+                    **(
+                        {"serializedResult": json.dumps(operation["result"])}
+                        if "result" in operation
+                        else {
+                            "error": operation["error"],
+                        }
+                    ),
+                }
+                for operation in original["before"]
+            ],
+        },
+        *(
+            {
+                "kind": "body",
+                "requestId": victim,
+                "operationId": operation["id"],
+                "operation": operation["name"],
+                "attempt": 1,
+            }
+            for operation in original["before"]
+        ),
+    ]
+    history = next(item for item in value["histories"] if item["executionArn"] == execution)
+    history["operations"] = original["before"]
+    if retry_count:
+        history["operations"] = [
+            *history["operations"],
+            {
+                "id": "retry",
+                "name": "retry",
+                "type": "STEP",
+                "status": "SUCCEEDED",
+                "result": "value",
+                "parentId": None,
+            },
+        ]
+        events.extend(
+            [
+                {"kind": "body", "requestId": victim, "operationId": "retry", "operation": "retry", "attempt": 1},
+                {"kind": "task_exit", "requestId": victim, "operationId": "retry", "attempt": 1, "outcome": "FAILED"},
+            ]
+        )
+    expected = {operation["name"]: 1 for operation in original["before"]}
+    value["replay"] = replay_evidence(
+        events, value["histories"], value["selectedRequests"], expected_effects={**expected, "retry": 2}
+    )
+    if retry_count:
+        assert len(value["replay"]["retry"]["attempts"]) == 1
+    else:
+        assert "retry" not in value["replay"]
+    assert value["replay"]["missingExpectedEffects"] == ["retry"]
+    assert schema_validator.is_valid(value)
+    errors = validate_evidence(value)
+    assert any(error.startswith("ASSERTION:") for error in errors)
+    assert "ASSERTION: replay omitted the expected side-effect operation retry" in errors
 
 
 @pytest.mark.parametrize("count", [0, 1])
@@ -487,3 +647,180 @@ def test_physical_retirement_rejects_noninteger_sequence_numbers(evidence_factor
     evidence_factories["complete_retirement_events"](value)
     value["events"][0]["sequence"] = invalid
     assert any("sequence" in error for error in validate_retirement_evidence(value))
+
+
+def test_active_attempt_is_only_an_observation_of_a_deadline_victim_retry(schema_validator, evidence_factories):
+    from copy import deepcopy
+
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
+
+    value = evidence_factories["deadline_evidence"]()
+    active = {
+        **value["attempts"][0],
+        "requestId": "in-flight",
+        "attempt": 2,
+        "startedAtMs": 100,
+        "activeAtObservationEnd": True,
+    }
+    active.pop("endedAtMs")
+    active.pop("outcome")
+    value["attempts"].append(active)
+    assert schema_validator.is_valid(value)
+    assert validate_evidence(value, phase="observations") == []
+    assert any("independent retirement audit" in error for error in validate_evidence(value, phase="final"))
+    assert any("cannot represent an active retry" in error for error in validate_retirement_evidence(value))
+    for invalid in ({"attempt": 1}, {"role": "peer"}, {"endedAtMs": 150}, {"outcome": "PENDING"}):
+        malformed = deepcopy(value)
+        malformed["attempts"][-1].update(invalid)
+        assert not schema_validator.is_valid(malformed)
+
+    for invalid in ({"startedAtMs": 201}, {"executionArn": "another-execution"}):
+        malformed = deepcopy(value)
+        malformed["attempts"][-1].update(invalid)
+        assert validate_evidence(malformed, phase="observations")
+
+
+def test_complete_service_snapshot_detects_a_missing_pre_resume_operation(schema_validator, evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    before = value["replay"]["before"]
+    extra = dict(before[0], id="missing", name="second-completed-success")
+    value["replay"]["expectedBefore"] = [*before, extra]
+    assert schema_validator.is_valid(value)
+    assert any("complete pre-resume service history" in error for error in validate_evidence(value))
+
+
+def test_complete_wait_replay_that_only_suspended_for_backoff_is_a_behavior_failure(evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    value["replay"]["durableWaitObserved"] = False
+    assert validate_evidence(value) == ["ASSERTION: replay did not verify a durable wait across suspension and resume"]
+
+
+def test_duplicate_expected_checkpoint_ids_never_pass(evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    before = value["replay"]["before"]
+    conflicting = dict(before[0], result="conflicting")
+    for expected in ([conflicting, *before], [*before, conflicting]):
+        value["replay"]["expectedBefore"] = expected
+        assert any("duplicate operation IDs" in error for error in validate_evidence(value))
+
+
+def test_resultless_context_preserves_absence_in_replay(schema_validator, evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    before = value["replay"]["before"]
+    context = {"id": "ctx", "name": "context", "type": "CONTEXT", "parentId": None, "status": "SUCCEEDED"}
+    before.append(context)
+    value["replay"]["expectedBefore"] = list(before)
+    value["replay"]["after"].append(dict(context))
+    victim = value["selectedRequests"]["victim"]
+    execution = next(item["executionArn"] for item in value["attempts"] if item["requestId"] == victim)
+    history = next(row for row in value["histories"] if row["executionArn"] == execution)
+    history["operations"] = value["replay"]["after"]
+    value["replay"]["sideEffects"].append({"operationId": "ctx", "count": 0, "expectedCount": 0})
+    assert schema_validator.is_valid(value)
+    assert validate_evidence(value) == []
+    value["replay"]["before"][-1] = {**context, "result": None}
+    assert validate_evidence(value)
+
+
+def test_result_encoding_without_result_fails_both_validators(schema_validator, evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    context = {
+        "id": "ctx",
+        "name": "context",
+        "type": "CONTEXT",
+        "status": "SUCCEEDED",
+        "parentId": None,
+        "resultEncoding": "json",
+    }
+    value["replay"]["before"].append(context)
+    assert not schema_validator.is_valid(value)
+    assert any("resultEncoding requires a stored result" in error for error in validate_evidence(value))
+
+
+def test_saved_projection_error_fails_behavior_without_reclassifying_retirement(evidence_factories):
+    value = evidence_factories["replay_evidence"]()
+    value["replay"]["projectionErrors"] = ["Service operation has no valid event timestamp"]
+    assert any(error.startswith("INCOMPLETE: replay service projection") for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("status", ["PAUSING", "PAUSED"])
+def test_pause_status_is_valid_frozen_history_without_terminal_result(status, schema_validator, evidence_factories):
+    value = evidence_factories["deadline_evidence"]()
+    victim = value["attempts"][0]["executionArn"]
+    history = next(item for item in value["histories"] if item["executionArn"] == victim)
+    history["status"] = status
+    history.pop("result")
+    value["expectedHistories"][victim] = {"allowedStatuses": [status]}
+    assert schema_validator.is_valid(value)
+    assert validate_evidence(value, phase="observations") == []
+
+
+def test_deferred_request_shape_matches_semantic_validation(schema_validator, evidence_factories):
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
+
+    value = evidence_factories["deadline_evidence"]()
+    arn = value["attempts"][0]["executionArn"]
+    value["collection"]["deferredServiceRequests"] = [{"requestId": "future", "executionArn": arn}]
+    assert schema_validator.is_valid(value)
+    assert not validate_evidence(value, phase="observations")
+    assert any("settle every deferred service request" in error for error in validate_retirement_evidence(value))
+    value["collection"]["deferredServiceRequests"] = {}
+    assert not schema_validator.is_valid(value)
+    assert validate_evidence(value, phase="observations")
+
+
+def test_unverified_revision_is_not_behavior_evidence(evidence_factories):
+    value = evidence_factories["deadline_evidence"]()
+    value["artifact"]["conformance"] = "unverified"
+    assert any(
+        "conformance revision is unverified" in error for error in validate_evidence(value, phase="observations")
+    )
+
+
+@pytest.mark.parametrize(("projection", "valid"), [(["chronology unavailable"], True), (True, False), ([" "], False)])
+def test_replay_projection_errors_match_the_schema(schema_validator, evidence_factories, projection, valid):
+    value = evidence_factories["replay_evidence"]()
+    value["replay"]["projectionErrors"] = projection
+    assert schema_validator.is_valid(value) is valid
+
+
+@pytest.mark.parametrize("field", ["histories", "expectedHistories"])
+@pytest.mark.parametrize("digest", ["invalid", "a" * 64])
+def test_execution_history_fingerprint_shape(schema_validator, evidence_factories, field, digest):
+    value = evidence_factories["evidence"](2)
+    record = value["histories"][0] if field == "histories" else next(iter(value["expectedHistories"].values()))
+    record["resultFingerprint"] = digest
+    assert schema_validator.is_valid(value) is (len(digest) == 64)
+    if len(digest) != 64:
+        assert any("resultFingerprint" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("updates", [None, [None], [{}], [{"id": "", "type": "STEP", "action": "SUCCEED"}]])
+def test_wire_schema_rejects_malformed_checkpoint_updates(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], updates: Any
+) -> None:
+    value = evidence_factories["evidence"](2)
+    value["sdkRequests"][0]["updates"] = updates
+    assert not schema_validator.is_valid(value)
+
+
+@pytest.mark.parametrize("kind", ["checkpoint_call", "poll_call"])
+@pytest.mark.parametrize("extra", [{}, {"callId": " "}, {"callId": "call", "outcome": "UNKNOWN"}])
+def test_wire_and_behavior_reject_malformed_sdk_call_event(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], kind: str, extra: dict[str, str]
+) -> None:
+    value = evidence_factories["evidence"](2)
+    value["events"].append(evidence_factories["event"](value["attempts"][0], kind, 26, **extra))
+    assert not schema_validator.is_valid(value)
+    assert any("observed SDK call" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("parent", ["", " "])
+def test_schema_and_validator_reject_blank_operation_parent(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any], parent: str
+) -> None:
+    value = evidence_factories["replay_evidence"]()
+    for operations in (value["replay"]["before"], value["replay"]["after"], value["histories"][0]["operations"]):
+        operations[0]["parentId"] = parent
+    assert not schema_validator.is_valid(value)
+    assert any("parentId must be a non-empty string" in error for error in validate_evidence(value))

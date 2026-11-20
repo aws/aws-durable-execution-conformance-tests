@@ -86,6 +86,7 @@ def main() -> None:
             "deployment",
             "errors",
             "observations",
+            "quarantine",
             "runner",
             "runtime",
             "scenarios",
