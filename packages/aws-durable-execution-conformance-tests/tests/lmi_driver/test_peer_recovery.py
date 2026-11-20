@@ -11,7 +11,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Scenario,
     ScenarioContext,
 )
-from aws_durable_execution_conformance_tests.lmi.errors import PlacementError
+from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, PlacementError
 
 from .support import ScenarioDriver
 from .test_shared_adapter import ScriptCloud
@@ -25,6 +25,7 @@ class RecoveryCloud(ScriptCloud):
         self.retiring = False
         self.configuration = "c2"
         self.manifest["driverTimeout"] = 120
+        self.completion_lag = 0.0
 
     def emit(self, item, phase, **extra):
         request = item["native_requests"][0]
@@ -115,6 +116,15 @@ class RecoveryCloud(ScriptCloud):
     def collect(self, **options):
         self.actions.append(("collect",))
 
+    def native_completion(self, item, *, seconds, category=CollectionError, message=None):
+        # Like Cloud.poll, give up when publication lags past the budget.
+        self.actions.append(("native-completion", item["marker"]))
+        self.completion_wait = (self.now, seconds)
+        if self.completion_lag >= seconds:
+            self.now += seconds
+            raise category(message or "No service invocation completion evidence")
+        self.now += self.completion_lag
+
     def delete_controls(self):
         self.actions.append(("delete-controls",))
 
@@ -154,6 +164,18 @@ def test_peer_has_recovery_headroom_and_fault_is_armed_after_cohort_placement(
     assert ("finish", "peer", "SUCCEEDED") in cloud.actions
     assert not any(action[0] == "terminal" for action in cloud.actions)
     assert ("release", driver.gate("fault")) not in cloud.actions
+    # The peer stays held until the recovery request's native completion is
+    # recorded. Collection then waits for every request's own completion.
+    assert (
+        cloud.actions.index(("finish", "recovery", "SUCCEEDED"))
+        < cloud.actions.index(("native-completion", "recovery"))
+        < cloud.actions.index(("release", driver.gate("peer")))
+        < cloud.actions.index(("finish", "peer", "SUCCEEDED"))
+    )
+    assert ("native-completion", "peer") not in cloud.actions
+    # The recovery completion wait may use the peer's remaining lifetime.
+    started, budget = cloud.completion_wait
+    assert budget == pytest.approx(driver.peer_boundary["deadline"] - started)
     cloud.stop_victim_after_cutoff = Mock()
     monkeypatch.setattr(driver, "_observations_ready", lambda: cloud.collect(full_run=False) or True)
     driver.collect()
@@ -200,6 +222,32 @@ def test_original_peer_cannot_expire_while_waiting_for_recovery_completion(monke
     with pytest.raises(PlacementError, match="Original healthy peer expired"):
         driver.execute()
     assert ("release", driver.gate("peer")) not in cloud.actions
+
+
+def test_original_peer_cannot_expire_while_native_recovery_completion_lags(monkeypatch):
+    driver, cloud = recovery_driver(monkeypatch)
+    driver.start()
+    driver.place()
+    # Logical success and wrapper return arrive first; the native completion
+    # record is published after the original peer's deadline.
+    cloud.completion_lag = driver.peer_boundary["deadline"] + 1 - cloud.now
+    with pytest.raises(PlacementError, match="expired before the recovery native completion"):
+        driver.execute()
+    assert ("native-completion", "recovery") in cloud.actions
+    assert ("release", driver.gate("peer")) not in cloud.actions
+
+
+def test_delayed_recovery_completion_within_peer_lifetime_still_releases_the_peer(monkeypatch):
+    driver, cloud = recovery_driver(monkeypatch)
+    driver.start()
+    driver.place()
+    # Publication lags by more than a fixed 30 seconds but finishes while the peer is active.
+    cloud.completion_lag = 31
+    cloud.invocations[1]["deadline"] = driver.peer_boundary["deadline"] = cloud.now + 200
+    driver.execute()
+    assert cloud.actions.index(("native-completion", "recovery")) < cloud.actions.index(
+        ("release", driver.gate("peer"))
+    )
 
 
 def test_expired_victim_does_not_start_a_peer_or_arm_the_fault(monkeypatch):

@@ -727,8 +727,19 @@ class _Evidence:
                 if not _has_matching_sdk_request(event, method, outcome, sdk_requests):
                     self.error("observed SDK call lacks a unique matching SDK request")
         for fault in self.records(value.get("faultsCreated"), "faultsCreated"):
-            if "releasedAtMs" in fault:
-                self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
+            for field in ("releasedAtMs", "releaseRequestedAtMs", "releaseAcknowledgedAtMs"):
+                if field in fault:
+                    self.number(fault[field], f"faultsCreated.{field}")
+            requested = fault.get("releaseRequestedAtMs")
+            acknowledged = fault.get("releaseAcknowledgedAtMs")
+            if (
+                isinstance(requested, (int, float))
+                and isinstance(acknowledged, (int, float))
+                and not isinstance(requested, bool)
+                and not isinstance(acknowledged, bool)
+                and requested > acknowledged
+            ):
+                self.error("fault release acknowledgment precedes its request")
         self.histories(check_expectations=validate_behavior, allow_no_launches=allow_no_launches)
         for arn in deferred_service_requests(value).values():
             if arn not in {attempt.get("executionArn") for attempt in self.attempts.values()}:
@@ -1114,6 +1125,12 @@ class _Evidence:
         peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         timeout = self.event(victim, "platform_timeout").get("atMs", 0)
         recovered = self.event(recovery, "worker_recovered").get("atMs", 0)
+        completed = recovery.get("endedAtMs", 0)
+        # Occupancy and the held fault are measured against native completions,
+        # not wrapper returns recorded on another clock.
+        for role, attempt in self.selected.items():
+            if (role == "recovery" or role.startswith("peer")) and attempt.get("endedAtMsSource") != "platform":
+                self.error(f"selected {role} endedAtMs must come from its native completion")
         self.observation_grace(recovered)
         if recovery.get("environmentId") != victim.get("environmentId"):
             self.error("replacement environment cannot establish worker recovery", "PLACEMENT")
@@ -1137,6 +1154,21 @@ class _Evidence:
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
+        wrappers = [
+            event
+            for event in self.events
+            if event.get("requestId") == recovery.get("requestId")
+            and event.get("kind") in ("wrapper_return", "wrapper_raise")
+        ]
+        if recovery.get("outcome") == "SUCCEEDED" and any(
+            event.get("kind") == "wrapper_raise" or event.get("outcome", "SUCCEEDED") != "SUCCEEDED"
+            for event in wrappers
+        ):
+            self.error("selected recovery wrapper contradicts successful completion", "ASSERTION")
+        if any(event.get("atMs", 0) > completed for event in wrappers):
+            self.error("selected recovery completion precedes its wrapper return", "ASSERTION")
+        if recovered > completed:
+            self.error("worker recovery marker follows the selected request completion", "ASSERTION")
         # Ordering alone does not bound the measurement: requirement 4 declares
         # recoveryMs, so the observed recovery must fit inside it.
         recovery_budget = self.number(
@@ -1158,9 +1190,15 @@ class _Evidence:
                 elif recovery["startedAtMs"] < victim["endedAtMs"]:
                     self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
         for peer in peers:
-            if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
-                "startedAtMs", 0
-            ) < timeout < recovered <= peer.get("endedAtMs", 0):
+            native_ends = all(attempt.get("endedAtMsSource") == "platform" for attempt in (peer, recovery))
+            if (
+                peer.get("environmentId") != victim.get("environmentId")
+                or not peer.get("startedAtMs", 0) < timeout < recovered
+                or recovered > peer.get("endedAtMs", 0)
+                # Without native ends, holding through the recovery's native
+                # completion is unproven (reported above), not refuted.
+                or (native_ends and completed > peer.get("endedAtMs", 0))
+            ):
                 self.error("established peer capacity was not held through recovery", "PLACEMENT")
             progress = [
                 event.get("atMs", 0)
@@ -1169,9 +1207,32 @@ class _Evidence:
             ]
             if not peer_progress_spans_timeout(progress, timeout, recovered):
                 self.error("healthy peer lacks independent progress across the timeout", "ASSERTION")
-        for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
-            if isinstance(fault.get("releasedAtMs"), (int, float)) and fault["releasedAtMs"] <= recovered:
+        gate = self.event(victim, "work_in_flight").get("gateId")
+        faults = self.records(self.value.get("faultsCreated"), "faultsCreated")
+        victim_faults = [fault for fault in faults if fault.get("id") == gate]
+        if not isinstance(gate, str) or not gate.strip() or not victim_faults:
+            self.error("the selected victim's in-flight gate must identify an inventoried fault")
+        elif len(victim_faults) != 1 or victim_faults[0].get("ownerCaseId") != self.value.get("caseId"):
+            self.error("the selected victim's in-flight gate must identify an owned fault", "ASSERTION")
+        exited = self.event(victim, "task_exit").get("atMs", 0)
+        held_until = max(completed, recovered, exited)
+        for fault in faults:
+            if fault.get("id") == gate:
+                if any(
+                    field in fault and fault[field] <= held_until
+                    for field in ("releasedAtMs", "releaseAcknowledgedAtMs")
+                ):
+                    self.error("fault release preceded successful recovery completion", "ASSERTION")
+                if "releaseRequestedAtMs" in fault and fault["releaseRequestedAtMs"] <= held_until:
+                    self.error("fault release was requested before the held interval was established", "ASSERTION")
+            elif "releasedAtMs" in fault and fault["releasedAtMs"] <= recovered:
                 self.error("fault release cannot satisfy worker recovery", "ASSERTION")
+        for event in self.events:
+            if event.get("kind") != "fault_released":
+                continue
+            release_gate = self.string(event.get("gateId"), "fault_released.gateId")
+            if release_gate and release_gate == gate and event.get("atMs", 0) <= held_until:
+                self.error("fault release preceded successful recovery completion", "ASSERTION")
 
     def replay(self) -> None:
         if not self.require_roles("victim", "resume"):
@@ -1627,6 +1688,9 @@ class _Evidence:
                 if item.get("ownerCaseId") != self.value.get("caseId"):
                     self.error("cleanup attempted to change another case's resources", "ASSERTION")
             if settled_key == "faults":
+                rows = [(created_key, fault) for fault in created] + [("retirement.faults", fault) for fault in settled]
+                for message in provider_release_errors(rows, retirement.get("retiredAtMs")):
+                    self.error(message)
                 for fault in created:
                     if (
                         "releasedAtMs" in fault
@@ -1732,7 +1796,24 @@ class _Evidence:
                                 and event.get("requestId") == recovery.get("requestId")
                             )
                         ]
-                        if asserted and time <= max(asserted):
+                        victim_gate = (
+                            recovery
+                            and self.value.get("requirementId") == "lmi-lifecycle-4"
+                            and any(
+                                event.get("kind") == "work_in_flight"
+                                and event.get("requestId") == victim.get("requestId")
+                                and event.get("gateId") == item.get("id")
+                                for event in self.events
+                            )
+                        )
+                        release_fields: tuple[str, ...] = ("releasedAtMs",)
+                        if victim_gate:
+                            asserted.append(recovery.get("endedAtMs", 0))
+                            release_fields += ("releaseRequestedAtMs", "releaseAcknowledgedAtMs")
+                        if asserted and any(
+                            type(item.get(field)) in (int, float) and item[field] <= max(asserted)
+                            for field in release_fields
+                        ):
                             self.error("fault release cannot retroactively establish cleanup or recovery", "ASSERTION")
 
 
@@ -3175,23 +3256,13 @@ def _cleanup_behavior_errors(
     events = records(original.get("events"))
     admission_sources = (original, *known_snapshots, snapshot)
     findings.extend(_cleanup_record_errors(admission_sources, snapshot if final else None))
-    releases: list[float] = []
     # Absence can be completed later; an explicitly malformed release time is
     # invalid evidence even if a later snapshot replaces or omits that field.
-    for source in admission_sources:
-        fault_collections = [("faultsCreated", source.get("faultsCreated"))]
-        retirement = source.get("retirement")
-        if isinstance(retirement, Mapping):
-            fault_collections.append(("retirement.faults", retirement.get("faults")))
-        for location, collection in fault_collections:
-            for fault in records(collection):
-                if "releasedAtMs" not in fault:
-                    continue
-                released = timestamp(fault["releasedAtMs"])
-                if released is None:
-                    findings.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
-                else:
-                    releases.append(released)
+    # Share the bundle's scan so provider times are reconciled across documents.
+    final_retirement = snapshot.get("retirement")
+    final_end = final_retirement.get("retiredAtMs") if final and isinstance(final_retirement, Mapping) else None
+    releases, release_errors = retained_fault_releases(admission_sources, final_end)
+    findings.extend(release_errors)
     selected = original.get("selectedRequests")
     disposal_victim = (
         selected.get("victim")
@@ -3361,6 +3432,10 @@ def _cleanup_behavior_errors(
         # either observation records or a provisional/final retirement record.
         if releases and known_limits and min(releases) <= max(known_limits):
             findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
+        if requirement == "lmi-lifecycle-4" and standard:
+            # The victim gate is also held through the recovery's native completion.
+            held = held_fault_cleanup_errors(original, admission_sources, final=final)
+            findings.extend(finding for finding in held if finding not in findings)
     if requirement == "lmi-lifecycle-6" and (
         changed_time("victim", "endedAtMs") or changed_time("warm", "startedAtMs")
     ):
@@ -3865,6 +3940,7 @@ def retained_fault_releases(
     end = timestamp(retired_at)
     releases: list[int | float] = []
     errors: list[str] = []
+    provider_rows: list[tuple[str, Mapping[str, Any]]] = []
     for source in sources:
         retirement = source.get("retirement")
         for location, records in (
@@ -3872,16 +3948,250 @@ def retained_fault_releases(
             ("retirement.faults", retirement.get("faults") if isinstance(retirement, Mapping) else None),
         ):
             for fault in records if isinstance(records, list) else ():
-                if not isinstance(fault, Mapping) or "releasedAtMs" not in fault:
+                if not isinstance(fault, Mapping):
                     continue
-                released = timestamp(fault["releasedAtMs"])
-                if released is None:
-                    errors.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
-                else:
-                    releases.append(released)
-                    if end is not None and released > end:
-                        errors.append("INCOMPLETE: observed fault release occurred after retirement ended")
+                if "releasedAtMs" in fault:
+                    released = timestamp(fault["releasedAtMs"])
+                    if released is None:
+                        errors.append(
+                            f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number"
+                        )
+                    else:
+                        releases.append(released)
+                        if end is not None and released > end:
+                            errors.append("INCOMPLETE: observed fault release occurred after retirement ended")
+                provider_rows.append((location, fault))
+    # Provider request and acknowledgment times are independent of the fixture receipt.
+    errors.extend(f"INCOMPLETE: cleanup {message}" for message in provider_release_errors(provider_rows, retired_at))
     return releases, list(dict.fromkeys(errors))
+
+
+def provider_release_errors(rows: Sequence[tuple[str, Mapping[str, Any]]], retired_at: Any) -> list[str]:
+    """Check provider release request and acknowledgment times in fault inventory rows.
+
+    Each row is checked before rows are combined, so an earlier request in one
+    row cannot mask a reversed pair in another. The earliest request for a fault
+    cannot follow its earliest acknowledgment across rows either.
+    """
+
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    fields = {"releaseRequestedAtMs": "request", "releaseAcknowledgedAtMs": "acknowledgment"}
+    end = timestamp(retired_at)
+    errors: list[str] = []
+    earliest: dict[str, dict[str, int | float]] = {}
+    for location, fault in rows:
+        row: dict[str, int | float] = {}
+        for field, label in fields.items():
+            if field not in fault:
+                continue
+            observed = timestamp(fault[field])
+            if observed is None:
+                errors.append(f"{location}.{field} must be a finite non-negative number")
+                continue
+            row[field] = observed
+            if end is not None and observed > end:
+                errors.append(f"observed fault release {label} occurred after retirement ended")
+            fault_id = fault.get("id")
+            if isinstance(fault_id, str) and fault_id.strip():
+                times = earliest.setdefault(fault_id, {})
+                times[field] = min(times.get(field, observed), observed)
+        if len(row) == 2 and row["releaseRequestedAtMs"] > row["releaseAcknowledgedAtMs"]:
+            errors.append("fault release acknowledgment precedes its request")
+    if any(
+        len(times) == 2 and times["releaseRequestedAtMs"] > times["releaseAcknowledgedAtMs"]
+        for times in earliest.values()
+    ):
+        errors.append("fault release acknowledgment precedes its request")
+    return list(dict.fromkeys(errors))
+
+
+def native_owner(record: Mapping[str, Any], bindings: Mapping[str, set[str]], *, final: bool) -> str | None:
+    """Resolve a record's native request the way the cleanup ownership audit does."""
+    for key in ("requestId", "ownerRequestId"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    arn = record.get("executionArn")
+    # observedDuringRequestId names when work was observed, not who owns it, so
+    # a null or set correlation never blocks this. Execution-only binding needs
+    # every snapshot, so it waits for the final pass.
+    if not final or not isinstance(arn, str) or not arn.strip():
+        return None
+    candidates = [request for request, known in bindings.items() if known == {arn}]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def held_fault_cleanup_errors(
+    original: Mapping[str, Any],
+    sources: Sequence[Mapping[str, Any]],
+    *,
+    final: bool,
+    provisional: Sequence[Mapping[str, Any]] = (),
+) -> list[str]:
+    """Check retained lifecycle-4 snapshots against the frozen held-fault measurement.
+
+    The victim fault must stay held past the victim's task exit, the recovery
+    marker and the selected recovery request's native completion. Release
+    receipts are never reconciled across snapshots: an untimed victim-gate or
+    gateless receipt leaves the held interval unproven. ``sources`` starts with
+    the frozen evidence; ``provisional`` snapshots precede it and may carry
+    fixture estimates that a later native completion replaced.
+    """
+    findings: list[str] = []
+    selected = original.get("selectedRequests")
+    if original.get("requirementId") != "lmi-lifecycle-4" or not isinstance(selected, Mapping):
+        return findings
+
+    def records(value: Any) -> list[Mapping[str, Any]]:
+        return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    def identifier(value: Any) -> TypeGuard[str]:
+        return isinstance(value, str) and bool(value.strip())
+
+    victim, recovery = selected.get("victim"), selected.get("recovery")
+    frozen_events = records(original.get("events"))
+    in_flight = [
+        event for event in frozen_events if event.get("requestId") == victim and event.get("kind") == "work_in_flight"
+    ]
+    gate = in_flight[0].get("gateId") if len(in_flight) == 1 else None
+    if not identifier(gate) or not identifier(victim) or not identifier(recovery):
+        return findings  # The frozen observation validator reports the missing measurement.
+    bindings: dict[str, set[str]] = {}
+    retained_sources = (*provisional, *sources)
+    for source in retained_sources:
+        for attempt in records(source.get("attempts")):
+            if identifier(attempt.get("requestId")):
+                known = bindings.setdefault(attempt["requestId"], set())
+                if identifier(attempt.get("executionArn")):
+                    known.add(attempt["executionArn"])
+    retained = [event for source in retained_sources for event in records(source.get("events"))]
+
+    def owned(kind: str, request: str) -> list[Mapping[str, Any]]:
+        return [
+            event
+            for event in retained
+            if event.get("kind") == kind and native_owner(event, bindings, final=final) == request
+        ]
+
+    if any("gateId" in event and not same_json(event["gateId"], gate) for event in owned("work_in_flight", victim)):
+        findings.append("ASSERTION: cleanup work_in_flight changed the selected victim fault gate")
+
+    frozen_attempts = {
+        attempt["requestId"]: attempt
+        for attempt in records(original.get("attempts"))
+        if identifier(attempt.get("requestId"))
+    }
+
+    def native_ends(request: Any) -> set[int | float]:
+        # Only platform ends bound native occupancy; an explicit fixture estimate
+        # never does. Once the frozen attempt has a platform end, a later report
+        # that drops the source tag must still repeat it.
+        established = isinstance(request, str) and frozen_attempts.get(request, {}).get("endedAtMsSource") == "platform"
+        return {
+            end
+            for later, snapshots in ((False, provisional), (True, sources))
+            for source in snapshots
+            for attempt in records(source.get("attempts"))
+            if attempt.get("requestId") == request
+            and (
+                attempt.get("endedAtMsSource") == "platform"
+                or (later and established and "endedAtMsSource" not in attempt)
+            )
+            and (end := timestamp(attempt.get("endedAtMs"))) is not None
+        }
+
+    peers = [(role, request) for role, request in selected.items() if isinstance(role, str) and role.startswith("peer")]
+    recovery_ends = native_ends(recovery)
+    if final:
+        for role, request in (("recovery", recovery), *peers):
+            if len(native_ends(request)) > 1:
+                findings.append(f"INCOMPLETE: cleanup changed an established native completion for the selected {role}")
+        if recovery_ends:
+            for _, request in peers:
+                peer_ends = native_ends(request)
+                if peer_ends and max(recovery_ends) > min(peer_ends):
+                    findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
+    completed = min(recovery_ends) if recovery_ends else None
+    markers = [at for event in owned("worker_recovered", recovery) if (at := timestamp(event.get("atMs"))) is not None]
+    if final and completed is not None and any(marker > completed for marker in markers):
+        findings.append("ASSERTION: cleanup worker recovery marker follows the selected request completion")
+    returned: list[int | float] = []
+    if frozen_attempts.get(recovery, {}).get("outcome") == "SUCCEEDED":
+        for event in (*owned("wrapper_return", recovery), *owned("wrapper_raise", recovery)):
+            if event.get("kind") == "wrapper_raise" or ("outcome" in event and event["outcome"] != "SUCCEEDED"):
+                findings.append("ASSERTION: cleanup recovery wrapper contradicts successful completion")
+            elif (at := timestamp(event.get("atMs"))) is not None:
+                returned.append(at)
+                if final and completed is not None and at > completed:
+                    findings.append("ASSERTION: cleanup recovery wrapper return follows native completion")
+
+    exits = [event for event in frozen_events if event.get("requestId") == victim and event.get("kind") == "task_exit"]
+    exited = timestamp(exits[0].get("atMs")) if len(exits) == 1 else None
+    limits = [time for time in (exited, *markers, *returned, *recovery_ends) if time is not None]
+    candidates: list[int | float] = []
+    for event in retained:
+        if event.get("kind") != "fault_released":
+            continue
+        receipt_gate = event.get("gateId")
+        if "gateId" in event and not identifier(receipt_gate):
+            findings.append("INCOMPLETE: cleanup fault_released event must identify its gate")
+        elif receipt_gate is None:
+            # Any request may observe the victim's release.
+            if final:
+                findings.append("INCOMPLETE: cleanup fault_released event must identify its gate")
+        elif receipt_gate == gate:
+            released = timestamp(event.get("atMs"))
+            if released is not None:
+                candidates.append(released)
+            elif final:
+                findings.append("INCOMPLETE: cleanup victim-gate fault_released event lacks a release time")
+    if final:
+        identities: dict[tuple[str, int], tuple[list[Any], list[Any]]] = {}
+        for event in retained:
+            owner = native_owner(event, bindings, final=final)
+            position = event.get("sourceSequence")
+            if event.get("kind") != "fault_released" or owner is None or not is_json_integer(position):
+                continue
+            gates, times = identities.setdefault((owner, int(position)), ([], []))
+            if "gateId" in event:
+                gates.append(event["gateId"])
+            if "atMs" in event:
+                times.append(event["atMs"])
+
+        def disagree(values: list[Any]) -> bool:
+            return any(not same_json(values[0], other) for other in values[1:])
+
+        if any(disagree(gates) or disagree(times) for gates, times in identities.values()):
+            findings.append("INCOMPLETE: cleanup fault_released records with one source identity disagree")
+    fields = ("releasedAtMs", "releaseRequestedAtMs", "releaseAcknowledgedAtMs")
+    for source in retained_sources:
+        retirement = source.get("retirement")
+        for rows in (
+            source.get("faultsCreated"),
+            retirement.get("faults") if isinstance(retirement, Mapping) else None,
+        ):
+            for row in records(rows):
+                if not identifier(row.get("id")):
+                    if final and any(field in row for field in fields):
+                        findings.append("INCOMPLETE: cleanup fault release lacks a fault identity")
+                elif row["id"] == gate:
+                    candidates.extend(time for field in fields if (time := timestamp(row.get(field))) is not None)
+    if candidates and limits and min(candidates) <= max(limits):
+        findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
+    return list(dict.fromkeys(findings))
 
 
 def _validate_sdk_dispatches(validator: _Evidence, events: Sequence[Mapping[str, Any]]) -> None:

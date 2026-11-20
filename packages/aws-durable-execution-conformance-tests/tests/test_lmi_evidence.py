@@ -171,7 +171,7 @@ def deadline_evidence(requirement: int = 3, runtime: str = "javascript") -> dict
     ]
     value["events"].extend(
         [
-            event(victim, "work_in_flight", 25, taskId="root"),
+            event(victim, "work_in_flight", 25, taskId="root", gateId="fault-1"),
             event(victim, "platform_timeout", 30, source="platform"),
             event(victim, "admission_closed", 31),
             event(victim, "task_exit", 35, taskId="root"),
@@ -192,6 +192,8 @@ def recovery_evidence(runtime: str = "javascript", *, native_concurrency: int = 
     recovery = attempt("recovery", start=40, end=60)
     value["attempts"][0]["endedAtMsSource"] = "platform"
     recovery["startedAtMsSource"] = "platform"
+    # Occupancy and the held fault are measured against native completions.
+    recovery["endedAtMsSource"] = peer["endedAtMsSource"] = "platform"
     value["attempts"].append(recovery)
     value["selectedRequests"]["recovery"] = recovery["requestId"]
     value["events"] = [
@@ -209,6 +211,7 @@ def recovery_evidence(runtime: str = "javascript", *, native_concurrency: int = 
         peer = attempt(
             f"peer{index}", start=12, end=100, process=f"process-{index + 1}" if runtime == "python" else "process-1"
         )
+        peer["endedAtMsSource"] = "platform"
         value["attempts"].append(peer)
         value["selectedRequests"][peer["role"]] = peer["requestId"]
         value["events"].extend(
@@ -1993,47 +1996,269 @@ def test_missing_service_start_is_not_inferred_from_a_later_native_admission() -
     assert validate_common_evidence(value) == []
 
 
-@pytest.mark.parametrize(("released", "rejected"), [(50, False), (40, True)])
-def test_fault_release_is_ordered_against_the_selected_cleanup_and_recovery(released: int, rejected: bool) -> None:
-    # Victim exit at 35 and recovery at 45 are the asserted boundaries. A
-    # healthy peer that stays occupied until 100 must not move them.
-    value = recovery_evidence()
-    peer = next(item for item in value["attempts"] if item["role"] == "peer")
-    value["events"].append(event(peer, "task_exit", 100))
+@pytest.fixture
+def held_fault_recovery() -> dict[str, Any]:
+    value = recovery_evidence("python")
+    victim, peer, recovery = value["attempts"]
+    # The Python fixture stops waiting on its own deadline. It does not observe
+    # an SDK cancellation signal. Platform timeout and task exit are separate records.
+    value["events"].extend(
+        [
+            event(victim, "cooperative_io_cancelled", 34, source="runtime-deadline"),
+            event(recovery, "wrapper_return", recovery["endedAtMs"], outcome="SUCCEEDED"),
+            event(peer, "task_exit", peer["endedAtMs"]),
+        ]
+    )
+    return value
+
+
+@pytest.mark.parametrize("missing", [None, "platform_timeout", "task_exit"])
+def test_held_fault_recovery_with_a_fixture_deadline(held_fault_recovery: dict[str, Any], missing: str | None) -> None:
+    value = held_fault_recovery
+    victim = value["selectedRequests"]["victim"]
+    if missing is not None:
+        value["events"] = [e for e in value["events"] if (e["requestId"], e["kind"]) != (victim, missing)]
+    errors = validate_evidence(value)
+    if missing is None:
+        assert errors == []  # The victim stopped; its exit need not be attributed to SDK cancellation.
+    else:
+        assert any(missing in error for error in errors), errors
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(
+    ("released", "rejected"),
+    [
+        pytest.param(40, True, id="before-worker-recovered"),
+        pytest.param(50, True, id="before-recovery-succeeds"),
+        pytest.param(60, True, id="at-recovery-completion"),
+        pytest.param(70, False, id="after-recovery-succeeds"),
+    ],
+)
+def test_held_fault_recovery_release_order(
+    held_fault_recovery: dict[str, Any], phase: Any, released: int, rejected: bool
+) -> None:
+    value = held_fault_recovery
+    # Victim exit: 35, worker recovered: 45, recovery returns successfully: 60, peer exits: 100.
     value["faultsCreated"][0]["releasedAtMs"] = released
     value["retirement"]["faults"][0]["releasedAtMs"] = released
-    errors = validate_evidence(value)
-    assert any("retroactively" in error or "fault release cannot satisfy" in error for error in errors) is rejected, (
-        errors
-    )
+    errors = validate_evidence(value, phase=phase)
+    if rejected:
+        assert any("release" in error.lower() for error in errors), errors
+    else:
+        assert errors == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_held_fault_recovery_requires_the_victims_fault(held_fault_recovery: dict[str, Any], phase: Any) -> None:
+    value = held_fault_recovery
+    # The inventoried fault stays held, but the victim was waiting at a different gate.
+    next(e for e in value["events"] if e["kind"] == "work_in_flight")["gateId"] = "unrecorded-victim-gate"
+    errors = validate_evidence(value, phase=phase)
+    assert any("fault" in error.lower() or "gate" in error.lower() for error in errors), errors
 
 
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("requirement", [3, 4])
 @pytest.mark.parametrize("released", [None, False, True, "34", -1, float("inf"), float("nan"), [], {}])
+@pytest.mark.parametrize("field", ["releasedAtMs", "releaseRequestedAtMs", "releaseAcknowledgedAtMs"])
 def test_observed_fault_release_requires_a_finite_nonnegative_timestamp(
-    phase: Any, requirement: int, released: Any
+    phase: Any, requirement: int, released: Any, field: str
 ) -> None:
     value = deadline_evidence() if requirement == 3 else recovery_evidence()
-    value["faultsCreated"][0]["releasedAtMs"] = released
+    value["faultsCreated"][0][field] = released
     # A later valid retirement release cannot repair malformed observations.
     assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
     for validate in (validate_evidence, validate_common_evidence):
         errors = validate(value, phase=phase)
-        assert any("faultsCreated.releasedAtMs must be a finite non-negative number" in error for error in errors), (
-            errors
-        )
+        assert any(f"faultsCreated.{field} must be a finite non-negative number" in error for error in errors), errors
 
 
 @pytest.mark.parametrize("phase", ["observations", "final"])
 @pytest.mark.parametrize("requirement", [3, 4])
-@pytest.mark.parametrize("released", [50, 50.5])
+@pytest.mark.parametrize("released", [70, 70.5])
 def test_observed_fault_release_accepts_valid_timestamps(phase: Any, requirement: int, released: int | float) -> None:
     value = deadline_evidence() if requirement == 3 else recovery_evidence()
     value["faultsCreated"][0]["releasedAtMs"] = released
     value["retirement"]["faults"][0]["releasedAtMs"] = released
     for validate in (validate_evidence, validate_common_evidence):
         assert validate(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_held_fault_recovery_rejects_empty_fault_inventory(held_fault_recovery: dict[str, Any], phase: Any) -> None:
+    held_fault_recovery["faultsCreated"] = []
+    held_fault_recovery["retirement"]["faults"] = []
+    assert any("in-flight gate" in error for error in validate_evidence(held_fault_recovery, phase=phase))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_held_fault_recovery_requires_evidence_policy(held_fault_recovery: dict[str, Any], phase: Any) -> None:
+    del held_fault_recovery["profile"]["recoveryPolicy"]
+    assert any("recoveryPolicy" in error for error in validate_evidence(held_fault_recovery, phase=phase))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("released", [50, 70])
+def test_held_fault_recovery_checks_victim_gate_release_event(
+    held_fault_recovery: dict[str, Any], phase: Any, released: int
+) -> None:
+    victim = held_fault_recovery["attempts"][0]
+    gate = held_fault_recovery["faultsCreated"][0]["id"]
+    held_fault_recovery["events"].append(event(victim, "fault_released", released, gateId=gate))
+    errors = validate_evidence(held_fault_recovery, phase=phase)
+    assert errors == (["ASSERTION: fault release preceded successful recovery completion"] if released == 50 else [])
+
+
+def test_held_fault_recovery_checks_acknowledgment_independently(held_fault_recovery: dict[str, Any]) -> None:
+    held_fault_recovery["faultsCreated"][0].update(releasedAtMs=70, releaseAcknowledgedAtMs=50)
+    errors = validate_evidence(held_fault_recovery, phase="observations")
+    assert errors == ["ASSERTION: fault release preceded successful recovery completion"]
+
+
+def test_held_fault_recovery_rejects_release_requested_before_completion(held_fault_recovery: dict[str, Any]) -> None:
+    held_fault_recovery["faultsCreated"][0].update(releaseRequestedAtMs=50, releaseAcknowledgedAtMs=70)
+    errors = validate_evidence(held_fault_recovery, phase="observations")
+    assert any("release was requested before" in error for error in errors), errors
+
+
+def test_held_fault_recovery_requires_gate_on_release_event(held_fault_recovery: dict[str, Any]) -> None:
+    victim = held_fault_recovery["attempts"][0]
+    held_fault_recovery["events"].append(event(victim, "fault_released", 50))
+    errors = validate_evidence(held_fault_recovery)
+    assert any("fault_released.gateId" in error for error in errors), errors
+
+
+def test_held_fault_recovery_completion_cannot_precede_wrapper_return(held_fault_recovery: dict[str, Any]) -> None:
+    recovery = held_fault_recovery["attempts"][-1]
+    wrapper = next(
+        event
+        for event in held_fault_recovery["events"]
+        if event["kind"] == "wrapper_return" and event["requestId"] == recovery["requestId"]
+    )
+    wrapper["atMs"] = 70
+    errors = validate_evidence(held_fault_recovery)
+    assert any("completion precedes its wrapper return" in error for error in errors), errors
+
+
+def test_held_fault_recovery_acknowledgment_cannot_follow_retirement(held_fault_recovery: dict[str, Any]) -> None:
+    held_fault_recovery["faultsCreated"][0]["releaseAcknowledgedAtMs"] = 230
+    errors = validate_evidence(held_fault_recovery)
+    assert any("release acknowledgment occurred after retirement" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("kind,outcome", [("wrapper_raise", "FAILED"), ("wrapper_return", "PENDING")])
+def test_held_fault_recovery_wrapper_must_agree_with_success(
+    held_fault_recovery: dict[str, Any], kind: str, outcome: str
+) -> None:
+    recovery = held_fault_recovery["attempts"][-1]
+    wrapper = next(
+        event
+        for event in held_fault_recovery["events"]
+        if event["kind"] == "wrapper_return" and event["requestId"] == recovery["requestId"]
+    )
+    wrapper.update(kind=kind, outcome=outcome)
+    assert any("wrapper contradicts" in error for error in validate_evidence(held_fault_recovery))
+
+
+def test_held_fault_recovery_rejects_duplicate_fault_ownership(held_fault_recovery: dict[str, Any]) -> None:
+    fault = held_fault_recovery["faultsCreated"][0]
+    held_fault_recovery["faultsCreated"].append({**fault, "ownerCaseId": "other-case"})
+    assert any("owned fault" in error for error in validate_evidence(held_fault_recovery, phase="observations"))
+
+
+@pytest.mark.parametrize("field", ["releaseRequestedAtMs", "releaseAcknowledgedAtMs"])
+def test_held_fault_recovery_checks_provider_fields_in_settlement(
+    held_fault_recovery: dict[str, Any], field: str
+) -> None:
+    held_fault_recovery["retirement"]["faults"][0][field] = 50
+    assert validate_evidence(held_fault_recovery, phase="observations") == []
+    assert any("cannot retroactively establish" in error for error in validate_evidence(held_fault_recovery))
+
+
+@pytest.mark.parametrize("across_inventories", [False, True])
+def test_held_fault_recovery_reconciles_provider_timestamp_order(
+    held_fault_recovery: dict[str, Any], across_inventories: bool
+) -> None:
+    fault = held_fault_recovery["faultsCreated"][0]
+    fault["releaseRequestedAtMs"] = 90
+    receipt = held_fault_recovery["retirement"]["faults"][0] if across_inventories else fault
+    receipt["releaseAcknowledgedAtMs"] = 70
+    errors = validate_evidence(held_fault_recovery, phase="final" if across_inventories else "observations")
+    assert any("acknowledgment precedes its request" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+def test_retirement_fault_row_order_is_not_masked_by_an_earlier_request(requirement: int) -> None:
+    value = deadline_evidence() if requirement == 3 else recovery_evidence("python")
+    value["faultsCreated"][0]["releaseRequestedAtMs"] = 70
+    value["retirement"]["faults"][0].update(releaseRequestedAtMs=90, releaseAcknowledgedAtMs=80)
+    assert validate_evidence(value, phase="observations") == []
+    errors = validate_evidence(value)
+    assert "INCOMPLETE: fault release acknowledgment precedes its request" in errors, errors
+
+
+@pytest.mark.parametrize("role", ["recovery", "peer"])
+@pytest.mark.parametrize("outcome", ["SUCCEEDED", "PENDING"])
+def test_held_fault_recovery_requires_native_end_provenance(
+    held_fault_recovery: dict[str, Any], role: str, outcome: str
+) -> None:
+    selected = next(item for item in held_fault_recovery["attempts"] if item["role"] == role)
+    selected.pop("endedAtMsSource")
+    if role == "peer":
+        selected["outcome"] = outcome
+    errors = validate_evidence(held_fault_recovery, phase="observations")
+    assert f"INCOMPLETE: selected {role} endedAtMs must come from its native completion" in errors, errors
+
+
+def test_held_fault_recovery_fixture_peer_end_is_unproven_not_refuted(held_fault_recovery: dict[str, Any]) -> None:
+    peer = next(item for item in held_fault_recovery["attempts"] if item["role"] == "peer")
+    # A fixture-derived end after the recovery marker but before the native recovery
+    # completion cannot show that the native peer slot was released early.
+    peer.pop("endedAtMsSource")
+    peer["endedAtMs"] = 55
+    errors = validate_evidence(held_fault_recovery, phase="observations")
+    assert "INCOMPLETE: selected peer endedAtMs must come from its native completion" in errors, errors
+    assert not any(error.startswith("PLACEMENT") for error in errors), errors
+
+
+def test_held_fault_recovery_requires_case_ownership(held_fault_recovery: dict[str, Any]) -> None:
+    held_fault_recovery["faultsCreated"][0]["ownerCaseId"] = "other-case"
+    errors = validate_evidence(held_fault_recovery, phase="observations")
+    assert errors == ["ASSERTION: the selected victim's in-flight gate must identify an owned fault"]
+
+
+def test_held_fault_recovery_allows_independent_fault_release(held_fault_recovery: dict[str, Any]) -> None:
+    fault = {"id": "another-fault", "ownerCaseId": "case-1", "releasedAtMs": 50}
+    held_fault_recovery["faultsCreated"].append(fault)
+    held_fault_recovery["retirement"]["faults"].append({**fault, "mode": "normal"})
+    assert validate_evidence(held_fault_recovery) == []
+
+
+def test_held_fault_recovery_rejects_marker_after_completion() -> None:
+    value = recovery_evidence()
+    value["attempts"][-1]["endedAtMs"] = 43
+    assert any("marker follows" in error for error in validate_evidence(value, phase="observations"))
+
+
+def test_held_fault_recovery_requires_peers_through_completion() -> None:
+    value = recovery_evidence()
+    peer = value["attempts"][1]
+    peer["endedAtMs"] = 50
+    next(
+        event
+        for event in value["events"]
+        if event["requestId"] == peer["requestId"] and event["kind"] == "wrapper_return"
+    )["atMs"] = 50
+    assert any("peer capacity was not held" in error for error in validate_evidence(value, phase="observations"))
+
+
+def test_held_fault_recovery_checks_retirement_release_without_observed_release(
+    held_fault_recovery: dict[str, Any],
+) -> None:
+    held_fault_recovery["retirement"]["faults"][0]["releasedAtMs"] = 50
+    assert validate_evidence(held_fault_recovery, phase="observations") == []
+    assert any("fault release" in error for error in validate_evidence(held_fault_recovery))
 
 
 def test_expected_null_does_not_match_a_missing_history_field() -> None:
@@ -2146,6 +2371,7 @@ def test_python_recovery_occupies_distinct_processes_for_every_peer(peer_process
     value = recovery_evidence("python")
     value["profile"]["nativeConcurrency"] = 3
     peer = attempt("peer2", start=12, end=100, process=peer_process)
+    peer["endedAtMsSource"] = "platform"
     value["attempts"].append(peer)
     value["selectedRequests"]["peer2"] = peer["requestId"]
     value["events"].extend(
@@ -2618,7 +2844,7 @@ def test_fault_causality_each_observer_has_an_independent_scenario_boundary(
     phase: Any, requirement: int, source: str, after_boundary: bool
 ) -> None:
     value = deadline_evidence() if requirement == 3 else recovery_evidence()
-    boundary = 35 if requirement == 3 else 45
+    boundary = 35 if requirement == 3 else 60
     release = boundary + int(after_boundary)
     # Keep the other observer safely late so its independent rule cannot mask
     # deletion or inversion of the condition under test.
@@ -2633,7 +2859,7 @@ def test_fault_causality_each_observer_has_an_independent_scenario_boundary(
             if source == "acknowledgment"
             else "fault release supplied the cleanup being asserted"
             if requirement == 3
-            else "fault release cannot satisfy worker recovery"
+            else "fault release preceded successful recovery completion"
         )
         assert errors == [f"ASSERTION: {diagnostic}"]
 

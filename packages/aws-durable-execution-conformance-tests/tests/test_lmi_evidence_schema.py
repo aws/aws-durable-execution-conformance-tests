@@ -413,6 +413,46 @@ def test_recovery_budget_is_required_only_for_recovery(schema_validator, evidenc
         assert schema_validator.is_valid(value) is valid
 
 
+def test_recovery_policy_is_required_only_for_recovery(schema_validator, evidence_factories):
+    for factory, valid in (("deadline_evidence", True), ("recovery_evidence", False)):
+        value = evidence_factories[factory]()
+        del value["profile"]["recoveryPolicy"]
+        assert schema_validator.is_valid(value) is valid
+
+
+@pytest.mark.parametrize("missing", ["faultsCreated", "retirement.faults", "gateId"])
+def test_recovery_schema_requires_fault_inventory_and_gate(schema_validator, evidence_factories, missing):
+    value = evidence_factories["recovery_evidence"]()
+    if missing == "faultsCreated":
+        value["faultsCreated"].clear()
+    elif missing == "retirement.faults":
+        value["retirement"]["faults"].clear()
+    else:
+        next(event for event in value["events"] if event["kind"] == "work_in_flight")["gateId"] = " "
+    assert not schema_validator.is_valid(value)
+
+
+@pytest.mark.parametrize("gate", [None, " ", "fault-1"])
+def test_recovery_schema_requires_gate_on_release_receipt(schema_validator, evidence_factories, gate):
+    value = evidence_factories["recovery_evidence"]()
+    receipt = next(event for event in value["events"] if event["kind"] == "work_in_flight").copy()
+    receipt["kind"] = "fault_released"
+    if gate is None:
+        del receipt["gateId"]
+    else:
+        receipt["gateId"] = gate
+    value["events"].append(receipt)
+    assert schema_validator.is_valid(value) is (gate == "fault-1")
+
+
+@pytest.mark.parametrize("field", ["releaseRequestedAtMs", "releaseAcknowledgedAtMs"])
+@pytest.mark.parametrize("invalid", [True, "50", -1])
+def test_recovery_schema_rejects_invalid_provider_timestamps(schema_validator, evidence_factories, field, invalid):
+    value = evidence_factories["recovery_evidence"]()
+    value["faultsCreated"][0][field] = invalid
+    assert not schema_validator.is_valid(value)
+
+
 @pytest.mark.parametrize("field", ["admissionMs", "cleanupMs", "recoveryMs", "observationGraceMs"])
 @pytest.mark.parametrize("invalid", [None, True, -1, "1"])
 def test_declared_budget_values_are_nonnegative_numbers(schema_validator, evidence_factories, field, invalid):

@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from botocore.stub import ANY, Stubber
 
 from aws_durable_execution_conformance_tests.lmi import cloud as module
-from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
+from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, PlacementError
 from aws_durable_execution_conformance_tests.lmi.summary import summarize
 
 
@@ -182,6 +182,68 @@ def test_requires_request_specific_service_timeout(driver, message):
         driver.history.return_value = events
         with pytest.raises(CollectionError):
             driver.platform_timeout({}, "request")
+
+
+def test_native_completion_polls_for_original_native_request(driver):
+    def completed(request, end=0.060, event_type="InvocationCompleted"):
+        details = {"RequestId": request, "StartTimestamp": 0.040, "EndTimestamp": end}
+        return {"EventType": event_type, "InvocationCompletedDetails": details}
+
+    original, retry = completed("original"), completed("retry", 0.070)
+    logical_success = {"EventType": "ExecutionSucceeded"}
+    item = {"arn": "arn", "native_requests": ["original", "retry"]}
+    driver.raw_histories["arn"] = [logical_success]
+    driver.history = Mock(side_effect=[[logical_success, retry], [logical_success, retry, original]])
+    driver.wait = Mock()
+    # Only the original request's own completion satisfies the wait, not a retry's.
+    assert driver.native_completion(item, seconds=5) == (40, 60)
+    assert driver.history.call_count == 2
+
+    driver.raw_histories["arn"].append(original)
+    driver.history.reset_mock()
+    assert driver.native_completion(item, seconds=5) == (40, 60)
+    driver.history.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        pytest.param([], id="absent"),
+        pytest.param(["duplicate"], id="duplicate"),
+        pytest.param(["invalid-end"], id="invalid-end"),
+    ],
+)
+def test_native_completion_budget_and_defective_records(driver, history):
+    rows = {
+        "duplicate": [
+            {
+                "EventType": "InvocationCompleted",
+                "InvocationCompletedDetails": {"RequestId": "original", "StartTimestamp": 0.04, "EndTimestamp": end},
+            }
+            for end in (0.06, 0.07)
+        ],
+        "invalid-end": [
+            {
+                "EventType": "InvocationCompleted",
+                "InvocationCompletedDetails": {"RequestId": "original", "StartTimestamp": 0.04, "EndTimestamp": None},
+            }
+        ],
+    }
+    driver.raw_histories["arn"] = [row for key in history for row in rows[key]]
+    driver.history = Mock(return_value=driver.raw_histories["arn"])
+    driver.poll = Mock(side_effect=PlacementError("expired"))
+    item = {"arn": "arn", "native_requests": ["original"]}
+    if history:
+        # Retained history only grows, so a defective record is a collection
+        # error now, not a peer expiry after polling.
+        with pytest.raises(CollectionError, match="duplicate or malformed completion"):
+            driver.native_completion(item, seconds=12.5, category=PlacementError, message="m")
+        driver.poll.assert_not_called()
+        return
+    with pytest.raises(PlacementError):
+        driver.native_completion(item, seconds=12.5, category=PlacementError, message="m")
+    _, options = driver.poll.call_args
+    assert options == {"seconds": 12.5, "category": PlacementError, "message": "m"}
 
 
 def test_summary_never_claims_unexecuted_or_skipped_cloud_success(tmp_path):

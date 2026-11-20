@@ -33,6 +33,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     completed_suspension_checkpoint,
     deferred_service_requests,
     has_overlap_marker_dispatch,
+    held_fault_cleanup_errors,
     is_json_integer,
     normalize_retirement_events,
     original_admission_conflicts,
@@ -1158,6 +1159,12 @@ def _cleanup_behavior_errors(
         # either observation records or a provisional/final retirement record.
         if releases and known_limits and min(releases) <= max(known_limits):
             findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
+        if requirement == "lmi-lifecycle-4" and standard:
+            # The victim gate is also held through the recovery's native completion.
+            held = held_fault_cleanup_errors(
+                original, admission_sources, provisional=observation_snapshots, final=final
+            )
+            findings.extend(held)
     if requirement == "lmi-lifecycle-6" and (
         changed_time("victim", "endedAtMs") or changed_time("warm", "startedAtMs")
     ):

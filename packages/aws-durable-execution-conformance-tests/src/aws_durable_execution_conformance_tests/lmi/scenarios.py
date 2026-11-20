@@ -228,7 +228,7 @@ class ScenarioDriver:
             message="Original victim never entered the fault before its deadline",
         )
 
-    def _peer_still_active(self) -> None:
+    def _peer_still_active(self) -> float:
         if self.peer_boundary is None:
             raise CollectionError("Recovery lost the original peer boundary")
         if time.time() >= self.peer_boundary["deadline"]:
@@ -238,6 +238,7 @@ class ScenarioDriver:
             for event in self.cloud.for_item(self.items["peer"])
         ):
             raise PlacementError("Original healthy peer ended during recovery")
+        return self.peer_boundary["deadline"]
 
     def _callback(self, item: dict[str, Any]) -> None:
         deadline = time.monotonic() + self.cloud.manifest.get("driverTimeout", 120)
@@ -348,6 +349,17 @@ class ScenarioDriver:
             self.wait_overlap(("peer", "recovery"), self.boundary["environment"])
             self.cloud.release(self.gate("recovery"))
             self.cloud.finish(recovery)
+            # Logical success and wrapper return can precede the native
+            # completion. Keep the peer held until that completion is recorded,
+            # for as long as the original peer remains active. Collection later
+            # waits for every request's own completion, including the peer's.
+            peer_deadline = self._peer_still_active()
+            self.cloud.native_completion(
+                recovery,
+                seconds=max(0.001, peer_deadline - time.time()),
+                category=PlacementError,
+                message="Original healthy peer expired before the recovery native completion was recorded",
+            )
             self._peer_still_active()
             self.cloud.release(self.gate("peer"))
             self.cloud.finish(self.items["peer"])

@@ -836,6 +836,35 @@ class Cloud:
             message="No service invocation timeout evidence for " + request,
         )
 
+    def native_completion(self, item, *, seconds, category=CollectionError, message=None):
+        """Wait for the original native invocation's own unique completion record."""
+        if not item["native_requests"]:
+            raise CollectionError("No original native request for the selected invocation")
+        request = item["native_requests"][0]
+
+        def completed(history):
+            interval = service_native_intervals(history).get(request)
+            if interval is None and any(
+                event.get("EventType") == "InvocationCompleted"
+                and isinstance(event.get("InvocationCompletedDetails"), dict)
+                and event["InvocationCompletedDetails"].get("RequestId") == request
+                for event in history
+            ):
+                # Retained history only grows: a duplicate or invalid record
+                # cannot become unique by polling until the peer expires.
+                raise CollectionError(f"Native request {request} has a duplicate or malformed completion record")
+            return interval
+
+        cached = completed(self.raw_histories.get(item["arn"], []))
+        if cached is not None:
+            return cached
+        return self.poll(
+            lambda: completed(self.history(item)),
+            seconds=seconds,
+            category=category,
+            message=message or "No service invocation completion evidence for request " + request,
+        )
+
     def collect(self, *, full_run=True, shared_output: Path | None = None):
         self.check_active()
         if self.case_context is not None and full_run:
