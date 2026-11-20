@@ -3,21 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
+import asyncio
 import json
 import re
+import sys
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from runpy import run_path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.app import (
     build_report,
     evidence_results,
+    live_results,
     load_manifest,
     run,
 )
@@ -242,6 +246,11 @@ def test_strict_policy_does_not_change_ordinary_nonblocking_gaps():
         lambda plan: plan["scenarios"].append(plan["scenarios"][0]),
         lambda plan: plan["scenarios"][0].update(requirement_id="not-an-id"),
         lambda plan: plan["scenarios"][0].update(profile_id="not-a-profile"),
+        lambda plan: plan["scenarios"][0].update(slots=1),
+        lambda plan: plan["scenarios"][0].update(roles=["victim"]),
+        lambda plan: next(case for case in plan["scenarios"] if case["requirement_id"] == "lmi-lifecycle-4").update(
+            exclusive=False
+        ),
     ],
 )
 def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
@@ -251,6 +260,12 @@ def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
+        with pytest.raises(ValueError):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
@@ -418,6 +433,300 @@ def test_normal_failure_cannot_reuse_success_evidence():
     )
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "missing-evidence",
+        "collectionErrors",
+        "observation_error",
+        "control_error",
+        "non-json",
+        "missing-sdk-completion",
+    ],
+)
+def test_live_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp_path, failure):
+    import asyncio
+    from copy import deepcopy
+    from pathlib import Path
+    from runpy import run_path
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"]()
+    if failure != "missing-sdk-completion":
+        fixtures["complete_sdk_dispatches"](value)
+    if failure == "missing-evidence":
+        value.pop("collection")
+        value.pop("retirement")
+    elif failure == "collectionErrors":
+        value["collectionErrors"] = ["SDK request source collection failed"]
+    elif failure == "non-json":
+        value["diagnostic"] = b"not JSON"
+    elif failure not in (None, "missing-sdk-completion"):
+        value["events"].append(fixtures["event"](value["attempts"][0], failure, 38))
+    finished = []
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][1], not_implemented="fixture skip")]
+    scenario = plan["scenarios"][0]
+    scenario.update(case_id=value["caseId"], fixtureOptions={"enabled": True})
+    profile = plan["profiles"][1]
+    profile.update(
+        region="fixture-region",
+        resource_id=value["profile"]["functionArn"],
+        artifact_id=value["artifact"]["sdk"],
+        configuration_id=value["profile"]["configurationDigest"],
+    )
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            finished.append(quiescent)
+
+        async def start(self, context):
+            assert context.scenario.slots == 2
+            assert context.scenario.roles == ["victim", "peer"]
+            for attempt in value["attempts"]:
+                context.record_attempt(
+                    attempt["requestId"],
+                    role=attempt["role"],
+                    requestId=attempt["requestId"],
+                    statusCounts={200: 1},
+                )
+                # This is where a real adapter sends the request. The audit is already durable.
+                assert attempt["requestId"] in (tmp_path / "attempts.jsonl").read_text()
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            if "retirement" in value:
+                context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(received):
+        assert received == plan
+        return Adapter()
+
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=factory)}):
+        results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    expected_status = "PASSED" if failure is None else "INFRASTRUCTURE_ERROR"
+    assert results[0]["status"] == expected_status, results
+    assert finished == [failure in (None, "non-json")]
+    if failure not in (None, "non-json"):
+        assert any("retirement" in error for error in results[0]["errors"])
+    if failure in {"collectionErrors", "observation_error", "control_error"}:
+        assert any(failure in error for error in results[0]["errors"])
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    active = [row for row in audit if row["case_id"] == scenario["case_id"]][-1]
+    assert active["status"] == expected_status
+    if failure == "non-json":
+        assert "Could not serialize case evidence" in active["errors"][-1]
+        assert active == results[0]
+        assert "evidence" not in active
+        assert json.dumps(results)
+    else:
+        assert len(active["attempts"]) == 2
+        assert active["attempts"][0]["statusCounts"] == {"200": 1}
+    attempts = [json.loads(line) for line in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    assert attempts[0]["attempts"][0]["statusCounts"] == {"200": 1}
+    assert audit[0] == results[1]
+    assert audit[0]["status"] == "NOT_IMPLEMENTED"
+    assert audit[0]["profile_id"] == plan["scenarios"][1]["profile_id"]
+    if failure is None:
+        from aws_durable_execution_conformance_tests.lmi.app import _dump_json, collected_evidence_results
+
+        captured = json.loads((tmp_path / "collected-evidence.json").read_text())
+        assert captured[0]["status"] == "COLLECTED"
+        assert json.loads(_dump_json(collected_evidence_results(plan, captured))) == json.loads(_dump_json(results))
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_audit_append_repairs_partial_tail_before_the_next_record(tmp_path, rollback_fails):
+    from aws_durable_execution_conformance_tests.lmi.app import _append_audit
+
+    journal = tmp_path / "results.jsonl"
+    _append_audit(journal, {"first": True})
+    with journal.open("a+b", buffering=0) as stream:
+        short_writer = MagicMock(wraps=stream)
+        short_writer.__enter__.return_value = short_writer
+        short_writer.write.side_effect = lambda row: stream.write(row[:5])
+        if rollback_fails:
+            short_writer.truncate.side_effect = OSError("rollback failed")
+        with patch.object(Path, "open", return_value=short_writer), pytest.raises(OSError):
+            _append_audit(journal, {"partial": True})
+    _append_audit(journal, {"last": True})
+    assert [json.loads(line) for line in journal.read_text().splitlines()] == [{"first": True}, {"last": True}]
+
+
+def test_live_circular_case_evidence_does_not_abort_other_reports(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
+
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        outcomes = [
+            ScenarioResult(
+                case.case_id,
+                case.requirement_id,
+                case.profile_id,
+                "PASSED",
+                [],
+                {"diagnostic": cyclic} if index == 0 else {},
+                [],
+                {},
+            )
+            for index, case in enumerate(cases)
+        ]
+        for outcome in outcomes:
+            on_result(outcome)
+        return outcomes
+
+    plan = manifest()
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    assert [result["status"] for result in results] == ["INFRASTRUCTURE_ERROR", "INCOMPLETE_EVIDENCE"]
+    assert "Could not serialize case evidence" in results[0]["errors"][0]
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    assert list({row["case_id"]: row for row in rows}.values()) == results
+
+
+def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    plan = manifest()
+    skipped = dict(plan["scenarios"][1], not_implemented="skip reason")
+    plan["scenarios"] = [plan["scenarios"][0], skipped]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=cancelled),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    assert [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()] == [
+        {
+            "case_id": skipped["case_id"],
+            "requirement_id": skipped["requirement_id"],
+            "profile_id": skipped["profile_id"],
+            "status": "NOT_IMPLEMENTED",
+            "errors": ["skip reason"],
+        }
+    ]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_live_retirement_callback_claims_are_checked_across_cases(tmp_path, cancelled):
+    import asyncio
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    @dataclass
+    class Outcome:
+        case_id: str
+        requirement_id: str
+        profile_id: str
+        status: str
+        errors: list
+        retirement_evidence: dict
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        outcomes = [
+            Outcome(
+                case.case_id,
+                case.requirement_id,
+                case.profile_id,
+                "PASSED",
+                [],
+                {"retirement": {"resources": [{"kind": "callback", "id": "shared", "ownerCaseId": case.case_id}]}},
+            )
+            for case in cases
+        ]
+        for outcome in outcomes:
+            on_result(outcome)
+        if cancelled:
+            raise asyncio.CancelledError
+        return outcomes
+
+    plan = manifest()
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        else:
+            results = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    if cancelled:
+        results = audit[-2:]
+    assert [result["status"] for result in results] == ["FAILED", "FAILED"]
+    assert all(
+        any("callback shared is claimed by multiple cases" in error for error in result["errors"]) for result in results
+    )
+    assert audit[-2:] == results
+
+
+def test_empty_adapter_option_cannot_select_offline_validation(tmp_path, capsys):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.evidence_results") as offline,
+        pytest.raises(SystemExit) as error,
+    ):
+        run(["--manifest", str(source), "--output", str(tmp_path / "out"), "--adapter", ""])
+    assert error.value.code == 2
+    assert "--adapter must be a local Python module:factory" in capsys.readouterr().err
+    offline.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", [None, "reuse-worker", "replace-worker", "reuse"])
+def test_unused_profile_recovery_policy_matches_live_and_offline_admission(tmp_path, policy):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    plan = manifest()
+    plan["scenarios"] = []
+    plan["profiles"][0]["recovery_policy"] = policy
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    adapter = SimpleNamespace(finish=lambda *_args, **_kwargs: None)
+    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=lambda _: adapter)}):
+        if policy == "reuse":
+            with pytest.raises(ValueError, match="Unknown recovery policy"):
+                load_manifest(source)
+            with pytest.raises(ValueError, match="Unknown recovery policy"):
+                asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        else:
+            assert load_manifest(source) == plan
+            assert asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path)) == []
+
+
 def test_output_reuse_preserves_previous_run(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest()))
@@ -494,6 +803,11 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
+        load_adapter = adapter_imports.import_module
+        with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
@@ -639,3 +953,217 @@ def test_manifest_rejects_whitespace_only_extra_role(tmp_path):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="distinct required cohort roles"):
         load_manifest(path)
+
+
+@pytest.mark.parametrize("requirement", [3, 4])
+@pytest.mark.parametrize("source", ["matching", "evidence", "factory", "scenario"])
+def test_standard_live_timing_budgets_preserve_the_admitted_snapshot(tmp_path, requirement, source):
+    plan, value = timed_plan(requirement)
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
+    if source != "matching":
+        # Keep every declared budget name so the admitted snapshot stays valid
+        # and only its values disagree with the evidence.
+        budgets = plan["scenarios"][0]["behavior_budgets"]
+        plan["scenarios"][0]["behavior_budgets"] = {name: 0.5 for name in budgets}
+    original = deepcopy(plan)
+
+    class Adapter:
+        async def prepare(self, profile):
+            pass
+
+        async def finish(self, profile, *, quiescent):
+            pass
+
+        async def start(self, context):
+            if source == "scenario":
+                context.scenario.behavior_budgets.update(value["budgets"])
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context):
+            pass
+
+        async def execute(self, context):
+            pass
+
+        async def collect(self, context):
+            return deepcopy(value)
+
+        async def release(self, context):
+            pass
+
+        async def retire(self, context):
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(received):
+        if source == "factory":
+            received["scenarios"][0]["behavior_budgets"].update(value["budgets"])
+        return Adapter()
+
+    with patch.dict("sys.modules", {"fixture": SimpleNamespace(create=factory)}):
+        result = asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))[0]
+    assert plan == original
+    if source == "matching":
+        assert result["status"] == "PASSED", result
+    else:
+        assert result["status"] != "PASSED", result
+        assert any("behavior budgets" in error for error in result["errors"])
+
+
+def test_live_audit_directory_is_claimed_before_adapter_load(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import live_results
+
+    (tmp_path / "collected-evidence.json").write_text("previous capture")
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
+        pytest.raises(FileExistsError),
+    ):
+        asyncio.run(live_results(manifest(), "fixture:create", audit_dir=tmp_path))
+    imports.import_module.assert_not_called()
+    assert (tmp_path / "collected-evidence.json").read_text() == "previous capture"
+    assert not (tmp_path / "attempts.jsonl").exists()
+
+
+def test_collected_replay_validates_manifest_admission():
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    plan, _ = timed_plan(3)
+    plan["scenarios"][0].pop("behavior_budgets")
+    with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+        collected_evidence_results(plan, [])
+
+
+@pytest.mark.parametrize("mutation", ["missing", "role", "ordinal", "execution", "later-service"])
+def test_collected_replay_binds_frozen_observations_to_journal(mutation):
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    plan, value = timed_plan(3)
+    case = plan["scenarios"][0]
+    journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "attempts": journal,
+    }
+    if mutation == "missing":
+        capture.pop("attempts")
+    elif mutation == "later-service":
+        journal.append({"requestId": "later-service", "discoveredAtMs": 100, "role": "victim", "attempt": 2})
+    else:
+        field, replacement = {
+            "role": ("role", "invalid-role"),
+            "ordinal": ("attempt", 99),
+            "execution": ("executionArn", "arn:execution:unexpected"),
+        }[mutation]
+        journal[0][field] = replacement
+    result = collected_evidence_results(plan, [capture])[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+    if mutation == "later-service":
+        # A service discovery without retirement proof cannot excuse its absence.
+        assert (
+            "INCOMPLETE: service-discovered request later-service lacks validated retirement proof" in result["errors"]
+        )
+
+
+def test_collected_replay_reports_wrong_victim_outcome_as_failed():
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value = fixtures["evidence"](7)
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    case = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")
+    plan["scenarios"] = [case]
+    case.update(case_id=value["caseId"], roles=list(value["selectedRequests"]))
+    profile = plan["profiles"][1]
+    profile.update(
+        resource_id=value["profile"]["functionArn"],
+        configuration_id=value["profile"]["configurationDigest"],
+        artifact_id=value["artifact"]["sdk"],
+    )
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "attempts": [{**row, "launchedAtMs": 1} for row in value["attempts"]],
+    }
+    result = collected_evidence_results(plan, [capture])[0]
+    assert result["status"] == "FAILED", result["errors"]
+    assert "ASSERTION: normal-failure requires the selected victim outcome FAILED" in result["errors"]
+
+
+@pytest.mark.parametrize(
+    "proof", ["validated", "absent", "unlisted", "other-role", "other-ordinal", "other-execution", "unsettled"]
+)
+def test_collected_replay_requires_retirement_proof_for_service_discoveries(proof):
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
+
+    retirement = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
+    value, snapshot = retirement["_lifecycle_7_retirement_retry"]()
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    case = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")
+    plan["scenarios"] = [case]
+    case.update(case_id=value["caseId"], roles=list(value["selectedRequests"]))
+    plan["profiles"][1].update(
+        resource_id=value["profile"]["functionArn"],
+        configuration_id=value["profile"]["configurationDigest"],
+        artifact_id=value["artifact"]["sdk"],
+    )
+    retry = next(row for row in snapshot["attempts"] if row["requestId"] == "service-retry")
+    journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
+    discovered = {key: retry[key] for key in ("requestId", "executionArn", "role", "attempt")} | {"discoveredAtMs": 207}
+    journal.append(discovered)
+    if proof == "unlisted":
+        # The snapshot stays valid but never mentions this discovery.
+        discovered["requestId"] = "unlisted-retry"
+    elif proof == "other-role":
+        discovered["role"] = "peer"
+    elif proof == "other-ordinal":
+        discovered["attempt"] = 3
+    elif proof == "other-execution":
+        discovered["executionArn"] = "arn:execution:other"
+    elif proof == "unsettled":
+        snapshot["histories"][0]["status"] = "RUNNING"
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "attempts": journal,
+    }
+    if proof != "absent":
+        capture["retirement_evidence"] = snapshot
+    if proof != "unsettled":
+        assert validate_retirement_evidence(snapshot) == []
+    result = collected_evidence_results(plan, [capture])[0]
+    if proof == "validated":
+        # The CLI selects the shared rules, so a service retry proven during
+        # retirement is accepted as the single disposal invocation's successor.
+        assert result["status"] == "PASSED", result["errors"]
+    else:
+        assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+        request = discovered["requestId"]
+        assert f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof" in result["errors"]
+
+
+def test_service_discovery_ordinal_must_be_a_json_integer(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import offline
+
+    # Isolate the identity binding from snapshot validation.
+    monkeypatch.setattr(offline, "validate_retirement_evidence", lambda snapshot: [])
+    observed = {"requestId": "original", "role": "victim", "attempt": 1, "executionArn": "arn:execution:victim"}
+    retired = {"requestId": "retry", "role": "victim", "attempt": 1, "executionArn": "arn:execution:victim"}
+    journal = [{**observed, "launchedAtMs": 1}, {**retired, "discoveredAtMs": 2}]
+    snapshot = {"attempts": [observed, retired]}
+    assert offline.frozen_journal_errors({"attempts": [observed]}, journal, snapshot) == []
+    journal[1]["attempt"] = True
+    assert offline.frozen_journal_errors({"attempts": [observed]}, journal, snapshot) == [
+        "INCOMPLETE: service-discovered request retry lacks validated retirement proof"
+    ]
