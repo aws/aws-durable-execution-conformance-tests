@@ -167,7 +167,7 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             observations: list[dict[str, Any]] = [
                 {"kind": "wrapper_enter", "atMs": 100010},
                 {"kind": "task_start", "taskId": "root", "atMs": 100011},
-                {"kind": "work_in_flight", "atMs": 100030},
+                {"kind": "work_in_flight", "taskId": "root", "atMs": 100030},
                 {"kind": "admission_closed", "atMs": 100033},
                 {"kind": "admission_probe", "probe": "operation", "outcome": "REJECTED", "atMs": 100034},
                 {"kind": "admission_probe", "probe": "checkpoint", "outcome": "REJECTED", "atMs": 100035},
@@ -286,7 +286,7 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
         else:
             assert all("activeAtObservationEnd" not in row for row in result.evidence["attempts"])
         return
-    assert result.status == ("FAILED" if deny_observation_stop else "PASSED"), result.errors
+    assert result.status == ("INCOMPLETE_EVIDENCE" if deny_observation_stop else "PASSED"), result.errors
     assert result.evidence["observationEndedAtMs"] == 100200
     assert result.evidence["histories"][0]["status"] == "RUNNING"
     assert result.retirement_evidence["histories"][0]["status"] == "STOPPED"
@@ -361,7 +361,9 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             assert journaled_retry["nativeStartedAtMs"] == 100210
             deferred = result.evidence["collection"]["deferredServiceRequests"]
             assert deferred == [{"requestId": "late-retry", "executionArn": journaled_retry["executionArn"]}]
-            assert any("independent retirement audit" in error for error in validate_evidence(result.evidence))
+            detached = deepcopy(result.evidence)
+            detached.pop("retirementSnapshot", None)
+            assert any("independent retirement audit" in error for error in validate_evidence(detached))
             offline = deepcopy(result.evidence)
             offline["retirementSnapshot"] = {}
             assert validate_common_evidence(offline)

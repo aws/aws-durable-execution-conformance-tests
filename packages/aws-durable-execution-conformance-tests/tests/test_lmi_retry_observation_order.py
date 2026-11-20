@@ -26,6 +26,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import same_json, vali
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
     fixture = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = fixture["replay_evidence"]()
+    fixture["complete_sdk_dispatches"](value)
     attempts = [
         {
             "attemptId": f"retry-{index + 1}",
@@ -160,7 +161,9 @@ def test_retry_order_conflict_survives_corrected_collection(source: str) -> None
     )
     assert result.status != "PASSED", result.errors
     assert any("retry attempt order" in error for error in result.errors), result.errors
-    assert scheduler.quarantine_reason(value["profile"]["functionArn"])
+    # Retry order is an offline verdict. Only the interrupted capture lacks
+    # the physical retirement required to reuse the target.
+    assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (source == "partial")
 
 
 @pytest.mark.parametrize("known", [(1, 2, 3), (0, 3), (0, 1)])
@@ -284,7 +287,9 @@ def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, 
     initial = [known, duplicate] if source == "context" else [known]
     if source == "collector":
         value["replay"]["sideEffects"].append(duplicate)
-    assert validate_evidence(value) == []
+        assert "INCOMPLETE: side-effect counts must be unique per operation" in validate_evidence(value)
+    else:
+        assert validate_evidence(value) == []
     result, _ = _run(SideEffectObservationAdapter(value, initial))
     assert result.status != "PASSED", result.errors
     assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
@@ -292,7 +297,7 @@ def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, 
 
 
 @pytest.mark.parametrize("field", ["count", "expectedCount"])
-@pytest.mark.parametrize("invalid", [1.0, True, -1, float("inf"), "1"])
+@pytest.mark.parametrize("invalid", [1.5, True, -1, float("inf"), "1"])
 def test_invalid_counter_observations_cannot_be_erased_by_valid_collection(field: str, invalid: Any) -> None:
     value = _replay_evidence()
     known = deepcopy(_effect(value))
@@ -370,7 +375,7 @@ def test_in_place_identity_occurrence_increases_survive_later_deduplication(phas
     if inventory == "retry":
         assert any("duplicate retry attemptId" in error for error in result.errors), result.errors
         assert any("distinct observed attempts" in error for error in validate_evidence(result.evidence))
-    assert scheduler.quarantine_reason(value["profile"]["functionArn"])
+    assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (inventory != "sideEffects")
 
 
 @pytest.mark.parametrize(
@@ -445,7 +450,8 @@ def test_checkpoint_snapshots_can_fill_missing_operation_metadata(
 ) -> None:
     value = _replay_evidence()
     for operation in _checkpoint_views(value):
-        operation[timestamp] = 10 if operation["id"] == operation_id else 20
+        if operation["id"] == operation_id:
+            operation[timestamp] = 10 if timestamp == "startedAtMs" else 24
     assert validate_evidence(value) == []
     initial = list(reversed(deepcopy(value["replay"][snapshot])))
     next(operation for operation in initial if operation["id"] == operation_id).pop(timestamp)
@@ -684,3 +690,22 @@ def test_operation_entry_metadata_does_not_hide_completed_code_on_resume() -> No
     result, _ = _run(OperationEntryAdapter(value, [original]))
     assert result.status != "PASSED"
     assert any("repeated completed user code" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("field", ["count", "expectedCount"])
+def test_integral_json_side_effect_observations_are_valid(field: str) -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    known[field] = float(known[field])
+    result, _ = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status == "PASSED", result.errors
+
+
+def test_missing_side_effect_observation_does_not_block_target_reuse() -> None:
+    value = _replay_evidence()
+    known = deepcopy(_effect(value))
+    value["replay"]["sideEffects"].remove(_effect(value))
+    result, scheduler = _run(SideEffectObservationAdapter(value, [known]))
+    assert result.status != "PASSED", result.errors
+    assert any("omitted or changed retained side-effect observations" in error for error in result.errors)
+    assert scheduler.quarantine_reason(value["profile"]["functionArn"]) is None

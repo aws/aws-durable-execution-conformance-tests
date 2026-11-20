@@ -849,6 +849,7 @@ class CaseSources:
             deadline = [event for event in owned if event.get("kind") == "runtime_deadline"]
             observed_start = min([raw["time"] * 1000, *(event["atMs"] for event in owned)])
             started_at = observed_start
+            start_source = "fixture"
             timeout = None
             native_failed = False
             native_end = None
@@ -871,6 +872,7 @@ class CaseSources:
                     )
                 else:
                     started_at = native_start
+                    start_source = "platform"
                 # The service writes the history event after the native invocation exits.
                 try:
                     native_end = _milliseconds(details.get("EndTimestamp"))
@@ -925,6 +927,7 @@ class CaseSources:
                 "marker": raw["marker"],
                 "fixture": item.get("payload", {}).get("scenario"),
                 "startedAtMs": started_at,
+                "startedAtMsSource": start_source,
             }
             if boundaries and native_end is not None:
                 wrapper_outcome = boundaries[-1].get("outcome")
@@ -936,6 +939,8 @@ class CaseSources:
                 attempt.update(outcome="FAILED", endedAtMs=native_end)
             if timeout is not None:
                 attempt.update(outcome="TIMED_OUT", endedAtMs=timeout["atMs"])
+            if "endedAtMs" in attempt:
+                attempt["endedAtMsSource"] = "platform"
             if deadline:
                 deadline_at = deadline[0].get("deadlineAtMs")
                 if _valid_timestamp(deadline_at):

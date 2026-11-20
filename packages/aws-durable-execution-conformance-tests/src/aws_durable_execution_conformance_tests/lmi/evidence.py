@@ -31,10 +31,22 @@ RUNTIMES = ("javascript", "java", "python")
 TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
 CUTOFF_ACTIVE_STATUSES = ("RUNNING", "PAUSING", "PAUSED")
 HISTORY_STATUSES = (*TERMINAL_STATUSES, *CUTOFF_ACTIVE_STATUSES, "PENDING")
+RECOVERY_POLICIES = ("reuse-worker", "replace-worker")
+COMPLETED_OPERATION_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED")
+
+_WORK_INTERVALS = (
+    ("task_start", "task_exit", "taskId"),
+    ("io_start", "io_exit", "taskId"),
+    ("checkpoint_call", "checkpoint_exit", "callId"),
+    ("poll_call", "poll_exit", "callId"),
+)
+_CALL_METHODS = {"checkpoint_call": "CheckpointDurableExecution", "poll_call": "GetDurableExecutionState"}
 
 
 class EvidenceValidator(Protocol):
-    def __call__(self, evidence: Mapping[str, Any], *, phase: str = "final") -> Sequence[str]: ...
+    def __call__(
+        self, evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final"
+    ) -> Sequence[str]: ...
 
 
 def is_json_integer(value: Any) -> TypeGuard[int | float]:
@@ -55,6 +67,11 @@ def same_json(left: Any, right: Any) -> bool:
         return set(left) == set(right) and all(same_json(left[key], right[key]) for key in left)
     if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
         return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, Decimal) or isinstance(right, Decimal):
+        if not isinstance(left, (int, float, Decimal)) or not isinstance(right, (int, float, Decimal)):
+            return False
+        left_number, right_number = Decimal(str(left)), Decimal(str(right))
+        return left_number.is_finite() and right_number.is_finite() and left_number == right_number
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return left == right
     return type(left) is type(right) and bool(left == right)
@@ -157,6 +174,203 @@ def same_checkpoint_set(left: Mapping[Any, Any], right: Mapping[Any, Any]) -> bo
     )
 
 
+def permits_disposal_operation_probe(
+    probe: Mapping[str, Any],
+    wrapper: Mapping[str, Any],
+    following: Sequence[Mapping[str, Any]],
+    precedes: Callable[[Mapping[str, Any], Mapping[str, Any]], bool | None],
+) -> bool:
+    return (
+        probe.get("probe") == "operation"
+        and probe.get("outcome") == "ACCEPTED"
+        and wrapper in following
+        and not any(boundary is not wrapper and precedes(boundary, wrapper) is True for boundary in following)
+    )
+
+
+def completed_suspension_checkpoint(
+    attempts: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    requests: Sequence[Mapping[str, Any]],
+    checkpoints: Sequence[Mapping[str, Any]],
+) -> bool:
+    by_request = {attempt["requestId"]: attempt for attempt in attempts}
+    by_id = {operation.get("id"): operation for operation in checkpoints}
+    suspensions = {
+        event["requestId"]: event["atMs"]
+        for event in events
+        if event.get("kind") == "wrapper_return"
+        and event.get("requestId") in by_request
+        and by_request[event["requestId"]].get("outcome") == "PENDING"
+        and type(event.get("atMs")) in (int, float)
+    }
+    for request in requests:
+        request_id, at = request.get("requestId"), request.get("atMs")
+        if (
+            not isinstance(request_id, str)
+            or request_id not in suspensions
+            or request.get("method") != "CheckpointDurableExecution"
+            or request.get("outcome") != "DISPATCHED"
+            or type(at) not in (int, float)
+            or not by_request[request_id]["startedAtMs"] <= at <= suspensions[request_id]
+            or not isinstance(request.get("updates"), list)
+        ):
+            continue
+        for update in request["updates"]:
+            if (
+                not isinstance(update, Mapping)
+                or update.get("type") not in ("WAIT", "CALLBACK")
+                or update.get("action") != "START"
+                or not isinstance(update.get("id"), str)
+            ):
+                continue
+            operation = by_id.get(update["id"], {})
+            ended = operation.get("endedAtMs")
+            if (
+                operation.get("type") == update["type"]
+                and operation.get("status") == "SUCCEEDED"
+                and type(ended) in (int, float)
+                and suspensions[request_id] < ended
+                and any(later["startedAtMs"] >= ended for later in attempts)
+            ):
+                return True
+    return False
+
+
+def replay_checkpoint_timing(
+    before: Sequence[Mapping[str, Any]],
+    after: Sequence[Mapping[str, Any]],
+    pending_at: int | float,
+    observed_ends: Mapping[str, set[int | float]] | None = None,
+) -> tuple[bool, bool]:
+    """Return whether a completed checkpoint is omitted or ends after suspension."""
+    before_ids = {operation.get("id") for operation in before}
+
+    def times(operation: Mapping[str, Any]) -> set[int | float]:
+        operation_id = operation.get("id")
+        ends = (
+            observed_ends.get(operation_id, set())
+            if observed_ends is not None and isinstance(operation_id, str)
+            else set()
+        )
+        end = operation.get("endedAtMs")
+        return {*ends, end} if isinstance(end, (int, float)) and not isinstance(end, bool) else ends
+
+    omitted = any(
+        operation.get("status") in COMPLETED_OPERATION_STATUSES
+        and operation.get("id") not in before_ids
+        and any(end <= pending_at for end in times(operation))
+        for operation in after
+    )
+    late = any(
+        operation.get("type") == "STEP" and any(end > pending_at for end in times(operation)) for operation in before
+    )
+    return omitted, late
+
+
+def original_admission_conflicts(
+    selected: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]
+) -> tuple[bool, bool]:
+    """Report an earlier or tied native admission to the selected execution."""
+    request, execution, start = selected.get("requestId"), selected.get("executionArn"), selected.get("startedAtMs")
+    if not isinstance(request, str) or not isinstance(execution, str) or type(start) not in (int, float):
+        return False, False
+    other_starts = [
+        attempt["startedAtMs"]
+        for attempt in attempts
+        if attempt.get("requestId") != request
+        and attempt.get("executionArn") == execution
+        and type(attempt.get("startedAtMs")) in (int, float)
+    ]
+    return any(other < start for other in other_starts), start in other_starts
+
+
+def has_overlap_marker_dispatch(
+    requests: Sequence[Mapping[str, Any]], request_id: Any, marker_id: Any, start: int | float, end: int | float
+) -> bool:
+    return any(
+        request.get("requestId") == request_id
+        and request.get("method") == "CheckpointDurableExecution"
+        and request.get("outcome") == "DISPATCHED"
+        and isinstance(at := request.get("atMs"), (int, float))
+        and not isinstance(at, bool)
+        and start <= at < end
+        and isinstance(request.get("updates"), list)
+        and any(
+            isinstance(update, Mapping)
+            and update.get("id") == marker_id
+            and update.get("type") == "STEP"
+            and update.get("action") == "SUCCEED"
+            for update in request["updates"]
+        )
+        for request in requests
+    )
+
+
+def peer_progress_spans_timeout(progress: Sequence[int | float], timeout: int | float, recovered: int | float) -> bool:
+    return any(at < timeout for at in progress) and any(timeout < at <= recovered for at in progress)
+
+
+def completed_replay_step_witness(
+    operation_id: Any,
+    request_id: Any,
+    entries: Sequence[Mapping[str, Any]],
+    bodies: Sequence[Mapping[str, Any]],
+    before_suspension: Callable[[Mapping[str, Any]], bool],
+    ended_at: int | float | None,
+) -> bool:
+    return any(
+        row.get("requestId") == request_id and row.get("operationId") == operation_id for row in entries
+    ) and any(
+        row.get("kind") == "body"
+        and row.get("requestId") == request_id
+        and row.get("operationId") == operation_id
+        and before_suspension(row)
+        and (ended_at is None or row["atMs"] <= ended_at)
+        for row in bodies
+    )
+
+
+def retry_body_identity(row: Mapping[str, Any]) -> tuple[str, str] | None:
+    request_id, attempt_id = row.get("requestId"), row.get("attemptId")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return None
+    if attempt_id is None and row.get("kind") == "body":
+        attempt_number = row.get("attempt")
+        if is_json_integer(attempt_number) and attempt_number >= 1:
+            attempt_id = f"{request_id}:{int(attempt_number)}"
+    if isinstance(attempt_id, str) and attempt_id.strip():
+        return request_id, attempt_id
+    return None
+
+
+def _valid_history_status_allowance(allowed: Any) -> TypeGuard[list[str]]:
+    return (
+        isinstance(allowed, list)
+        and bool(allowed)
+        and all(isinstance(status, str) and status in HISTORY_STATUSES for status in allowed)
+        and len(set(allowed)) == len(allowed)
+    )
+
+
+def _history_expectation_mismatches(arn: str, history: Mapping[str, Any], expectation: Mapping[str, Any]) -> list[str]:
+    errors = []
+    allowed = expectation.get("allowedStatuses")
+    if _valid_history_status_allowance(allowed) and history.get("status") not in allowed:
+        errors.append(f"ASSERTION: service history {arn}.status is outside the declared allowedStatuses")
+    for key, item in expectation.items():
+        if key == "allowedStatuses":
+            continue
+        matches = (
+            _same_execution_result(history, expectation)
+            if key == "result"
+            else key in history and same_json(history[key], item)
+        )
+        if not matches:
+            errors.append(f"ASSERTION: service history {arn}.{key} differs from the fixture expectation")
+    return errors
+
+
 class _Evidence:
     def __init__(
         self,
@@ -249,13 +463,15 @@ class _Evidence:
         if "parentId" not in operation:
             if not partial:
                 self.error(f"{path}.parentId is required (null for the root)")
-        elif operation["parentId"] is not None and not isinstance(operation["parentId"], str):
-            self.error(f"{path}.parentId must be a string or null")
+        elif operation["parentId"] is not None:
+            self.string(operation["parentId"], f"{path}.parentId")
         start = self.number(operation["startedAtMs"], f"{path}.startedAtMs") if "startedAtMs" in operation else None
         end = self.number(operation["endedAtMs"], f"{path}.endedAtMs") if "endedAtMs" in operation else None
         if check_interval and start is not None and end is not None and end < start:
             self.error(f"{path} endedAtMs precedes startedAtMs")
         if completed and not partial:
+            if operation.get("status") not in COMPLETED_OPERATION_STATUSES:
+                self.error(f"{path} must have a terminal operation status")
             outcome_key = "result" if operation.get("status") == "SUCCEEDED" else "error"
             if outcome_key not in operation and not (outcome_key == "result" and operation.get("type") == "CONTEXT"):
                 self.error(f"{path} must preserve the stored {outcome_key}")
@@ -268,10 +484,7 @@ class _Evidence:
             self.string(self.value["coverageProfile"], "coverageProfile")
             if self.standard_behavior and self.value["coverageProfile"] != "standard":
                 self.error("coverageProfile must be standard for shared lifecycle evidence")
-        if "recoveryPolicy" in self.profile and self.profile["recoveryPolicy"] not in (
-            "reuse-worker",
-            "replace-worker",
-        ):
+        if "recoveryPolicy" in self.profile and self.profile["recoveryPolicy"] not in RECOVERY_POLICIES:
             self.error("profile.recoveryPolicy must be reuse-worker or replace-worker")
         if "budgets" in self.value:
             budgets = self.mapping(self.value["budgets"], "budgets")
@@ -341,7 +554,7 @@ class _Evidence:
         if self.number(self.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
             self.error("profile.timeoutMs must be positive")
 
-    def common(self, *, validate_behavior: bool = True) -> None:
+    def common(self, *, validate_behavior: bool = True, allow_no_launches: bool = False) -> None:
         self.envelope()
         value = self.value
         if validate_behavior:
@@ -354,7 +567,7 @@ class _Evidence:
             self.optional_shapes()
         observation_end = self.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
         attempt_ordinals: set[tuple[str, int]] = set()
-        for attempt in self.records(value.get("attempts"), "attempts", nonempty=True):
+        for attempt in self.records(value.get("attempts"), "attempts", nonempty=not allow_no_launches):
             request_id = self.string(attempt.get("requestId"), "attempt.requestId")
             if request_id in self.attempts:
                 self.error(f"duplicate requestId {request_id}")
@@ -391,8 +604,28 @@ class _Evidence:
                 self.error(f"attempt {request_id} has an invalid observation interval")
             if attempt.get("outcome") not in ("SUCCEEDED", "FAILED", "PENDING", "TIMED_OUT"):
                 self.error(f"attempt {request_id} has no recognized invocation outcome")
-        selected = self.mapping(value.get("selectedRequests"), "selectedRequests")
-        if not selected:
+            for field in ("startedAtMsSource", "endedAtMsSource"):
+                if field in attempt and attempt[field] not in ("platform", "fixture"):
+                    self.error(f"attempt {request_id}.{field} must be platform or fixture")
+        if validate_behavior:
+            by_role: dict[str, list[tuple[float, int]]] = {}
+            for attempt in self.attempts.values():
+                admission_role = attempt.get("role")
+                admitted_at = attempt.get("startedAtMs")
+                ordinal = attempt.get("attempt")
+                if (
+                    isinstance(admission_role, str)
+                    and isinstance(admitted_at, (int, float))
+                    and is_json_integer(ordinal)
+                ):
+                    by_role.setdefault(admission_role, []).append((admitted_at, int(ordinal)))
+            for admission_role, admissions in by_role.items():
+                if any(
+                    earlier[0] < later[0] and earlier[1] > later[1] for earlier, later in pairwise(sorted(admissions))
+                ):
+                    self.error(f"attempt ordinals contradict the admission order for {admission_role}", "PLACEMENT")
+        selected = self.mapping(value.get("selectedRequests"), "selectedRequests") if validate_behavior else {}
+        if validate_behavior and not selected:
             self.error("selectedRequests must not be empty")
         seen: set[str] = set()
         for role, request_id in selected.items():
@@ -405,6 +638,30 @@ class _Evidence:
             attempt = self.attempts[request_id]
             if attempt.get("role") != role or attempt.get("attempt") != 1:
                 self.error(f"selectedRequests.{role} is a retry or a substituted role", "PLACEMENT")
+            if (
+                self.standard_behavior
+                and role not in ("resume", "recovery")
+                and self.value.get("requirementId") != "lmi-lifecycle-5"
+                and any(
+                    other.get("executionArn") == attempt.get("executionArn")
+                    and self.number(other.get("startedAtMs"), "prior attempt.startedAtMs")
+                    < self.number(attempt.get("startedAtMs"), "selected attempt.startedAtMs")
+                    for other in self.attempts.values()
+                )
+            ):
+                self.error(f"selectedRequests.{role} is not the first invocation of its execution", "PLACEMENT")
+            if (
+                self.standard_behavior
+                and self.value.get("requirementId") == "lmi-lifecycle-4"
+                and (role == "victim" or role.startswith("peer"))
+                and any(
+                    other is not attempt
+                    and other.get("executionArn") == attempt.get("executionArn")
+                    and other.get("startedAtMs") == attempt.get("startedAtMs")
+                    for other in self.attempts.values()
+                )
+            ):
+                self.error(f"tied native admissions cannot establish the original {role} invocation")
             self.selected[role] = attempt
         victim = self.selected.get("victim", {})
         for request_id, attempt in self.attempts.items():
@@ -412,7 +669,7 @@ class _Evidence:
                 request_id in seen or attempt.get("executionArn") != victim.get("executionArn")
             ):
                 self.error(f"attempt {request_id} is not a nonselected retry on the victim execution")
-        self.events = self.records(value.get("events"), "events", nonempty=True)
+        self.events = self.records(value.get("events"), "events", nonempty=not allow_no_launches)
         for event in self.events:
             kind = self.string(event.get("kind"), "event.kind")
             self.owned_record(event, "event", observation_end)
@@ -425,15 +682,32 @@ class _Evidence:
                     self.error(f"{subject} outcome must be ACCEPTED or REJECTED")
             if kind in {"observation_error", "control_error"}:
                 self.error(f"{kind} reports failed observation or control publication")
-        for request in self.records(value.get("sdkRequests"), "sdkRequests"):
+        sdk_requests = self.records(value.get("sdkRequests"), "sdkRequests")
+        for request in sdk_requests:
             self.owned_record(request, "sdkRequest", observation_end)
             self.string(request.get("method"), "sdkRequest.method")
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
+            if validate_behavior and "updates" in request:
+                for update in self.records(request["updates"], "sdkRequest.updates"):
+                    for field in ("id", "type", "action"):
+                        self.string(update.get(field), f"sdkRequest.updates.{field}")
+        if validate_behavior:
+            for event in self.events:
+                call_kind = event.get("kind")
+                method = _CALL_METHODS.get(call_kind) if isinstance(call_kind, str) else None
+                if method is None:
+                    continue
+                outcome = event.get("outcome", "DISPATCHED")
+                if outcome not in ("DISPATCHED", "REJECTED"):
+                    self.error("observed SDK call outcome must be DISPATCHED or REJECTED")
+                    continue
+                if not _has_matching_sdk_request(event, method, outcome, sdk_requests):
+                    self.error("observed SDK call lacks a unique matching SDK request")
         for fault in self.records(value.get("faultsCreated"), "faultsCreated"):
             if "releasedAtMs" in fault:
                 self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
-        self.histories(check_expectations=validate_behavior)
+        self.histories(check_expectations=validate_behavior, allow_no_launches=allow_no_launches)
         for arn in deferred_service_requests(value).values():
             if arn not in {attempt.get("executionArn") for attempt in self.attempts.values()}:
                 self.error("deferred service request is outside the observed execution inventory")
@@ -458,12 +732,11 @@ class _Evidence:
                 if self.number(watermarks.get(source), f"collection.watermarks.{source}") < observation_end:
                     self.error(f"{source} collection does not cover the observation window")
         references = collection.get("evidenceUris")
-        if (
-            not isinstance(references, list)
-            or not references
-            or any(not isinstance(uri, str) or not uri for uri in references)
-        ):
+        if not isinstance(references, list) or not references:
             self.error("collection.evidenceUris must retain the raw evidence references")
+        else:
+            for index, uri in enumerate(references):
+                self.string(uri, f"collection.evidenceUris[{index}]")
         return collection
 
     def owned_record(self, record: Mapping[str, Any], kind: str, end: float) -> None:
@@ -499,10 +772,10 @@ class _Evidence:
         ):
             self.error(f"{path}.resultFingerprint requires a stored result and a SHA-256 digest")
 
-    def histories(self, *, check_expectations: bool = True) -> None:
+    def histories(self, *, check_expectations: bool = True, allow_no_launches: bool = False) -> None:
         expected = self.mapping(self.value.get("expectedHistories"), "expectedHistories") if check_expectations else {}
         actual: dict[str, Mapping[str, Any]] = {}
-        for history in self.records(self.value.get("histories"), "histories", nonempty=True):
+        for history in self.records(self.value.get("histories"), "histories", nonempty=not allow_no_launches):
             arn = self.string(history.get("executionArn"), "history.executionArn")
             if arn in actual:
                 self.error(f"duplicate service history {arn}")
@@ -542,52 +815,39 @@ class _Evidence:
                     self.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
                 if "allowedStatuses" in expectation:
                     allowed = expectation["allowedStatuses"]
-                    if (
-                        not isinstance(allowed, list)
-                        or not allowed
-                        or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
-                        or len(set(allowed)) != len(allowed)
-                    ):
+                    if not _valid_history_status_allowance(allowed):
                         self.error(
                             f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
                         )
                     else:
                         allows_unfinished = any(status in allowed for status in CUTOFF_ACTIVE_STATUSES)
-                        if history.get("status") not in allowed:
-                            self.error(
-                                f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION"
-                            )
                 elif expectation.get("status") not in HISTORY_STATUSES:
                     self.error(f"expectedHistories.{arn}.status must be a recognized execution status")
                 if not allows_unfinished and "result" not in expectation and "error" not in expectation:
                     self.error(f"history {arn} needs an independently declared expected result/error")
-                for key, item in expectation.items():
-                    if key == "allowedStatuses":
-                        continue
-                    matches = (
-                        _same_execution_result(history, expectation)
-                        if key == "result"
-                        else key in history and same_json(history[key], item)
-                    )
-                    if not matches:
-                        self.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
+                self.errors.extend(_history_expectation_mismatches(arn, history, expectation))
         arns = {attempt.get("executionArn") for attempt in self.attempts.values()}
         if set(actual) != arns or (check_expectations and set(expected) != arns):
             self.error("histories and expectedHistories must cover every launched execution exactly")
 
-    def probe_at_or_after(self, probe: Mapping[str, Any], boundary: Mapping[str, Any]) -> bool:
-        at, closed = probe["atMs"], boundary["atMs"]
+    def at_or_after(
+        self, observation: Mapping[str, Any], boundary: Mapping[str, Any], *, require_sequence: bool = False
+    ) -> bool | None:
+        at, closed = observation["atMs"], boundary["atMs"]
         if at != closed:
             return at > closed
-        sequences = [row["sequence"] for row in (probe, boundary) if "sequence" in row]
+        sequences = [row["sequence"] for row in (observation, boundary) if "sequence" in row]
         if any(not is_json_integer(seq) or seq < 0 for seq in sequences):
-            self.error("same-time admission probe and closure need valid sequence numbers when supplied")
-            return False
+            self.error("same-time admission observation and closure need valid sequence numbers when supplied")
+            return None
         if len(sequences) < 2:
-            return True  # The observation format permits timestamps alone, with an inclusive return boundary.
+            if require_sequence:
+                self.error("same-time observations need sequence numbers to establish their order")
+                return None
+            return True  # Admission evidence otherwise uses an inclusive timestamp boundary.
         if sequences[0] == sequences[1]:
-            self.error("same-time admission probe and closure need distinct sequence numbers")
-            return False
+            self.error("same-time admission observation and closure need distinct sequence numbers")
+            return None
         return sequences[0] > sequences[1]
 
     def no_late_dispatch(self) -> None:
@@ -618,7 +878,9 @@ class _Evidence:
                     and isinstance(request.get("atMs"), (float, int))
                     and request["atMs"] >= closed
                 ):
-                    self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
+                    late_boundaries = [boundary for boundary in closures if self.at_or_after(request, boundary)]
+                    if late_boundaries:
+                        self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
             for event in self.events:
                 if (
                     event.get("requestId") == request_id
@@ -630,8 +892,17 @@ class _Evidence:
                     if wrapper is not None:
                         # Check every tied closure even if an earlier one already closed admission.
                         # Short-circuiting here would hide malformed evidence based on its array order.
-                        following = [boundary for boundary in closures if self.probe_at_or_after(event, boundary)]
-                        if probe == "operation" and wrapper in following:
+                        following = [boundary for boundary in closures if self.at_or_after(event, boundary)]
+                        if permits_disposal_operation_probe(
+                            event,
+                            wrapper,
+                            following,
+                            lambda first, second: (
+                                None
+                                if (order := self.at_or_after(first, second, require_sequence=True)) is None
+                                else not order
+                            ),
+                        ):
                             continue
                         if not following:
                             continue  # The probe was ordered before every closure in the same millisecond.
@@ -664,6 +935,49 @@ class _Evidence:
             if not start <= barrier.get("atMs", -1) < end:
                 self.error("cohort barrier was not established inside actual native overlap", "PLACEMENT")
 
+        if self.value.get("requirementId") == "lmi-lifecycle-1":
+            self.overlap_activity()
+
+    def overlap_activity(self) -> None:
+        if not self.require_roles("victim", "peer"):
+            return
+        expectations = self.value["expectedHistories"]
+        victim = expectations[self.selected["victim"]["executionArn"]]
+        peer = expectations[self.selected["peer"]["executionArn"]]
+        if "result" in victim and "result" in peer and same_json(victim["result"], peer["result"]):
+            self.error("overlap fixture must declare distinct expected results for the selected executions")
+        requests = self.records(self.value.get("sdkRequests"), "sdkRequests")
+        histories = self.records(self.value.get("histories"), "histories")
+        overlap_start = max(self.selected[role]["startedAtMs"] for role in ("victim", "peer"))
+        overlap_end = min(self.selected[role]["endedAtMs"] for role in ("victim", "peer"))
+        for role in ("victim", "peer"):
+            attempt = self.selected[role]
+            if attempt.get("outcome") != "SUCCEEDED" or any(
+                other.get("executionArn") == attempt.get("executionArn") and other is not attempt
+                for other in self.attempts.values()
+            ):
+                self.error(f"overlap {role} needs an original successful execution without retry", "ASSERTION")
+            arn = attempt.get("executionArn")
+            history = next((history for history in histories if history.get("executionArn") == arn), {})
+            expectation = expectations[arn]
+            markers = [
+                operation
+                for operation in self.records(history.get("operations"), "overlap history.operations")
+                if operation.get("type") == "STEP" and operation.get("name") == "record-marker"
+            ]
+            if len(markers) != 1 or "result" not in expectation:
+                self.error(f"overlap {role} needs exactly one record-marker step and an expected result")
+            elif (
+                markers[0].get("status") != "SUCCEEDED"
+                or "result" not in markers[0]
+                or not same_json(markers[0]["result"], expectation["result"])
+            ):
+                self.error(f"overlap {role} record-marker step does not match the fixture expectation", "ASSERTION")
+            elif not has_overlap_marker_dispatch(
+                requests, attempt["requestId"], markers[0]["id"], overlap_start, overlap_end
+            ):
+                self.error(f"overlap {role} lacks an attributed checkpoint dispatch for record-marker during overlap")
+
     def disposal(self, expected_outcome: str) -> None:
         if not self.require_roles("victim"):
             return
@@ -674,6 +988,11 @@ class _Evidence:
             self.error("root completion and actual invocation outcome disagree", "ASSERTION")
         if victim.get("outcome") != expected_outcome:
             self.error(f"disposal requires the selected victim outcome {expected_outcome}", "ASSERTION")
+        arn = victim.get("executionArn")
+        if sum(attempt.get("executionArn") == arn for attempt in self.attempts.values()) == 1:
+            history = next(item for item in self.value["histories"] if item["executionArn"] == arn)
+            if history.get("status") in TERMINAL_STATUSES and history["status"] != expected_outcome:
+                self.error("terminal service history disagrees with the single disposal invocation", "ASSERTION")
         if root.get("atMs", 0) > wrapper.get("atMs", 0):
             self.error("wrapper return precedes root completion", "ASSERTION")
         if wrapper:
@@ -689,11 +1008,8 @@ class _Evidence:
                 event.get("requestId") == victim.get("requestId")
                 and event.get("kind") == "admission_probe"
                 and event.get("probe") == probe
-                and (
-                    self.probe_at_or_after(event, boundary)
-                    if boundary.get("kind") == "wrapper_return"
-                    else event.get("atMs", -1) >= boundary.get("atMs", 0)
-                )
+                and "atMs" in boundary
+                and self.at_or_after(event, boundary)
                 for event in self.events
             ):
                 self.error(f"missing post-closure {probe} admission probe")
@@ -714,6 +1030,21 @@ class _Evidence:
         inflight = self.event(victim, "work_in_flight")
         closed = self.event(victim, "admission_closed")
         exited = self.event(victim, "task_exit")
+        if inflight and exited:
+            controlled = self.string(inflight.get("taskId"), "work_in_flight.taskId")
+            finished = self.string(exited.get("taskId"), "task_exit.taskId")
+            if controlled and finished and controlled != finished:
+                self.error("deadline task exit is not the controlled in-flight task", "ASSERTION")
+            for event in normalize_retirement_events(self.events, self.errors):
+                if event.get("requestId") != victim.get("requestId") or event.get("taskId") != controlled:
+                    continue
+                if (
+                    event.get("kind") == "task_start"
+                    and self.at_or_after(inflight, event, require_sequence=True) is False
+                ):
+                    self.error("controlled task started after it was observed in flight", "ASSERTION")
+                if event.get("kind") == "task_exit" and event is not exited:
+                    self.error("deadline controlled task must have exactly one recorded exit")
         time = timeout.get("atMs", 0)
         if time < victim.get("startedAtMs", 0) + self.profile.get("timeoutMs", 0):
             self.error("platform timeout did not cross the configured invocation deadline", "ASSERTION")
@@ -721,13 +1052,19 @@ class _Evidence:
             self.error("platform timeout follows native invocation completion", "ASSERTION")
         if victim.get("outcome") != "TIMED_OUT" or timeout.get("source") != "platform":
             self.error("deadline requires an observed platform timeout, not a simulated cancellation", "ASSERTION")
-        if not inflight.get("atMs", time) < time <= exited.get("atMs", 0):
+        ordering = {
+            kind: self.at_or_after(event, timeout, require_sequence=True)
+            if "atMs" in event and "atMs" in timeout
+            else None
+            for kind, event in (("inflight", inflight), ("admissionMs", closed), ("cleanupMs", exited))
+        }
+        if ordering["inflight"] is True or ordering["cleanupMs"] is False:
             self.error("controlled work was not in flight across the real deadline", "ASSERTION")
         budgets = self.mapping(self.value.get("budgets"), "budgets")
         for field, event in (("admissionMs", closed), ("cleanupMs", exited)):
             budget = self.number(budgets.get(field), f"budgets.{field}")
-            if not time <= event.get("atMs", -1) <= time + budget:
-                self.error(f"deadline {field} exceeds the declared fixture budget", "ASSERTION")
+            if ordering[field] is False or event.get("atMs", time) > time + budget:
+                self.error(f"deadline {field} exceeds the declared fixture budget or precedes the timeout", "ASSERTION")
         if check_grace:
             self.observation_grace(time)
         self.require_probes(victim, closed, "operation", "checkpoint")
@@ -759,9 +1096,12 @@ class _Evidence:
                 self.error("replacement must identify the original failed worker capacity", "PLACEMENT")
         else:
             self.error("profile.recoveryPolicy must explicitly select reuse-worker or replace-worker")
+        earlier, tied = original_admission_conflicts(recovery, list(self.attempts.values()))
+        if tied:
+            self.error("tied native admissions cannot establish the original recovery invocation")
         if recovery.get("outcome") != "SUCCEEDED":
             self.error("recovered capacity did not complete the selected recovery request", "ASSERTION")
-        if any(recovery.get("executionArn") == attempt.get("executionArn") for attempt in (victim, *peers)):
+        if earlier or any(recovery.get("executionArn") == attempt.get("executionArn") for attempt in (victim, *peers)):
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
@@ -780,10 +1120,11 @@ class _Evidence:
                 self.error("recovery peers must occupy distinct Python processes", "PLACEMENT")
             if any(recovery.get("processId") == peer.get("processId") for peer in peers):
                 self.error("recovery cannot use an occupied Python peer process", "PLACEMENT")
-            if recovery.get("processId") == victim.get("processId") and recovery.get("startedAtMs", 0) < victim.get(
-                "endedAtMs", 0
-            ):
-                self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
+            if recovery.get("processId") == victim.get("processId"):
+                if victim.get("endedAtMsSource") != "platform" or recovery.get("startedAtMsSource") != "platform":
+                    self.error("same-process Python recovery requires platform native completion and admission")
+                elif recovery["startedAtMs"] < victim["endedAtMs"]:
+                    self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
         for peer in peers:
             if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
                 "startedAtMs", 0
@@ -794,9 +1135,7 @@ class _Evidence:
                 for event in self.events
                 if event.get("kind") == "peer_progress" and event.get("requestId") == peer.get("requestId")
             ]
-            if not any(time < timeout for time in progress) or not any(
-                timeout < time <= recovered for time in progress
-            ):
+            if not peer_progress_spans_timeout(progress, timeout, recovered):
                 self.error("healthy peer lacks independent progress across the timeout", "ASSERTION")
         for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
             if isinstance(fault.get("releasedAtMs"), (int, float)) and fault["releasedAtMs"] <= recovered:
@@ -832,6 +1171,16 @@ class _Evidence:
                 self.error(
                     "replay checkpoint snapshot differs from the complete pre-resume service history", "ASSERTION"
                 )
+        same_execution = [
+            attempt for attempt in self.attempts.values() if attempt.get("executionArn") == victim.get("executionArn")
+        ]
+        has_earlier, tied = original_admission_conflicts(victim, same_execution)
+        if has_earlier:
+            self.error("replay victim is not the original invocation of the selected execution", "PLACEMENT")
+        if tied:
+            self.error("tied native admissions cannot establish the original replay invocation")
+        if not completed_suspension_checkpoint(same_execution, self.events, self.value["sdkRequests"], after):
+            self.error("replay needs an observed wait or callback checkpoint followed by suspension and resume")
         if any(not same_checkpoint(after_by_id.get(operation.get("id")), operation) for operation in before):
             self.error("replay changed completed operation identity, result, or failure", "ASSERTION")
         ids: set[str] = set()
@@ -855,6 +1204,9 @@ class _Evidence:
         if not {"SUCCEEDED", "FAILED"} <= statuses:
             self.error("replay must preserve both a completed success and a completed failure")
         completed = {operation.get("id") for operation in before}
+        omitted, late = replay_checkpoint_timing(before, after, pending.get("atMs", 0))
+        if omitted:
+            self.error("replay.before omits an operation known to have completed before suspension")
         # Operations completed before the first resume stay completed for every
         # later invocation of the same execution, and a body without external
         # effects is invisible to the side-effect counts. So no request after
@@ -873,6 +1225,51 @@ class _Evidence:
                 self.error("operationExecutions references an unrecorded request")
             if request_id in later and operation_id in completed:
                 self.error("resume repeated completed user code", "ASSERTION")
+        if any(
+            event.get("kind") == "body"
+            and event.get("operationId") in completed
+            and (
+                event.get("requestId") in later
+                or (
+                    event.get("requestId") == victim.get("requestId")
+                    and "atMs" in pending
+                    and self.at_or_after(event, pending, require_sequence=True) is True
+                )
+            )
+            for event in self.events
+        ):
+            self.error("resume repeated completed user code", "ASSERTION")
+        if late:
+            self.error("replay.before contains an operation that completed after suspension", "ASSERTION")
+        completed_steps = [
+            operation
+            for operation in before
+            if operation.get("type") == "STEP" and operation.get("status") in COMPLETED_OPERATION_STATUSES
+        ]
+        if not completed_steps:
+            self.error("replay requires a completed user-code step before suspension")
+        for operation in completed_steps:
+            operation_id = operation.get("id")
+            timed_bodies = [
+                event
+                for event in self.events
+                if event.get("kind") == "body"
+                and event.get("requestId") == victim.get("requestId")
+                and event.get("operationId") == operation_id
+            ]
+            if not completed_replay_step_witness(
+                operation_id,
+                victim.get("requestId"),
+                executions,
+                timed_bodies,
+                lambda event: "atMs" in pending and self.at_or_after(event, pending, require_sequence=True) is False,
+                operation.get("endedAtMs"),
+            ):
+                self.error(
+                    "completed replay step lacks observed user-code execution on the original request before suspension"
+                )
+            if "endedAtMs" in operation and any(event["atMs"] > operation["endedAtMs"] for event in timed_bodies):
+                self.error("completed replay step body occurred after recorded completion", "ASSERTION")
         missing = replay.get("missingExpectedEffects", [])
         for name in missing:
             self.error(f"replay omitted the expected side-effect operation {name}", "ASSERTION")
@@ -903,6 +1300,63 @@ class _Evidence:
                     for item in executions
                 ):
                     self.error("retry attempt lacks observed user-code execution")
+            observed_retry_bodies = [
+                (item.get("requestId"), item.get("attemptId"))
+                for item in executions
+                if item.get("operationId") == retry_id
+                and item.get("requestId") in self.attempts
+                and self.attempts[item["requestId"]].get("executionArn") == victim.get("executionArn")
+            ]
+            declared_retry_bodies = [(item.get("requestId"), item.get("attemptId")) for item in retry_attempts]
+            if len(observed_retry_bodies) != len(declared_retry_bodies) or any(
+                observed_retry_bodies.count(body) != 1 for body in declared_retry_bodies
+            ):
+                self.error("retry body executions must match the declared retry attempts exactly")
+            timed_retries: dict[tuple[str, str], Mapping[str, Any]] = {}
+            for event in self.events:
+                retry_request_id = event.get("requestId")
+                if (
+                    event.get("kind") != "body"
+                    or event.get("operationId") != retry_id
+                    or not isinstance(retry_request_id, str)
+                    or self.attempts[retry_request_id].get("executionArn") != victim.get("executionArn")
+                ):
+                    continue
+                identity = retry_body_identity(event)
+                if identity is None:
+                    self.error("observed retry body does not match a declared attempt")
+                    continue
+                if identity not in declared_retry_bodies:
+                    self.error("observed retry body does not match a declared attempt")
+                elif identity in timed_retries:
+                    self.error("retry attempt has multiple timed user-code entries")
+                else:
+                    timed_retries[identity] = event
+            timed_retry_bodies = [
+                timed_retries[identity] for identity in declared_retry_bodies if identity in timed_retries
+            ]
+            last_by_request: dict[str, Mapping[str, Any]] = {}
+            invalid_order = any(
+                earlier["atMs"] > later_body["atMs"] for earlier, later_body in pairwise(timed_retry_bodies)
+            )
+            for body in timed_retry_bodies:
+                request_id = body["requestId"]
+                earlier = last_by_request.get(request_id)
+                if earlier is not None and self.at_or_after(body, earlier, require_sequence=True) is False:
+                    invalid_order = True
+                last_by_request[request_id] = body
+            if invalid_order:
+                self.error("retry attempt order contradicts timed user-code entries", "ASSERTION")
+            latest_admission = 0
+            for declared_request, declared_attempt in declared_retry_bodies:
+                if not isinstance(declared_request, str) or not isinstance(declared_attempt, str):
+                    continue
+                owner = self.attempts.get(declared_request)
+                if owner is not None:
+                    latest_admission = max(latest_admission, owner["startedAtMs"])
+                timed_body = timed_retries.get((declared_request, declared_attempt))
+                if timed_body is not None and timed_body["atMs"] < latest_admission:
+                    self.error("retry body precedes a prior attempt's admission", "ASSERTION")
             # replay.after equals the collected final history (checked above), so a
             # retry that never checkpointed cannot satisfy the retry semantics.
             retried = next((operation for operation in after if operation.get("id") == retry_id), None)
@@ -910,14 +1364,31 @@ class _Evidence:
                 self.error("the retried operation must succeed in the collected final history", "ASSERTION")
             elif "result" not in retried:
                 self.error("the retried operation must preserve its stored result", "INCOMPLETE")
+            if (
+                retried is not None
+                and "endedAtMs" in retried
+                and any(body["atMs"] > retried["endedAtMs"] for body in timed_retry_bodies)
+            ):
+                self.error("timed retry body occurred after the recorded operation completion", "ASSERTION")
+            if (
+                retried is not None
+                and "endedAtMs" in retried
+                and any(
+                    item.get("requestId") in self.attempts
+                    and self.attempts[item["requestId"]]["startedAtMs"] > retried["endedAtMs"]
+                    for item in retry_attempts
+                )
+            ):
+                self.error("retry owner was admitted after the recorded operation completion", "ASSERTION")
             if retry_id in completed:
                 self.error("retry must not repeat an already completed operation", "ASSERTION")
         elif "retry" not in missing:
             self.error("replay.retry must be an object")
         counts = self.records(replay.get("sideEffects"), "replay.sideEffects", nonempty=True)
         effect_ids = {self.string(item.get("operationId"), "replay.sideEffects.operationId") for item in counts}
-        required_effect_ids = completed | ({retry_id} if retry_id is not None else set())
-        if not required_effect_ids <= effect_ids:
+        if len(effect_ids) != len(counts):
+            self.error("side-effect counts must be unique per operation")
+        if not completed | ({retry_id} if retry_id is not None else set()) <= effect_ids:
             self.error("side-effect counts must cover stored successes, failures, and retries")
         for count in counts:
             actual = count.get("count")
@@ -931,6 +1402,10 @@ class _Evidence:
         if not self.require_roles("victim", "warm"):
             return
         victim, warm = self.selected["victim"], self.selected["warm"]
+        if victim.get("endedAtMsSource") != "platform":
+            self.error("warm reuse requires the victim's platform native completion time")
+        if warm.get("startedAtMsSource") != "platform":
+            self.error("warm reuse requires the warm request's platform native start time")
         closed = self.event(victim, "wrapper_return")
         if any(victim.get(key) != warm.get(key) for key in ("environmentId", "workerId", "processId")):
             self.error("warm reuse must identify the original process and worker", "PLACEMENT")
@@ -964,11 +1439,64 @@ class _Evidence:
         ]
         return max(valid, default=0.0)
 
-    def retirement(self) -> None:
+    def observed_retirement_work(self, retirement: Mapping[str, Any], end: float) -> None:
+        events = normalize_retirement_events(self.events, self.errors)
+        settled_by_request = {
+            item.get("id"): item.get("settledAtMs")
+            for item in self.records(retirement.get("resources"), "retirement.resources")
+            if item.get("kind") == "invocation"
+        }
+        completions = normalize_retirement_events(
+            self.records(retirement.get("completions", []), "retirement.completions"), self.errors
+        )
+        for completion in completions:
+            self.owned_record(completion, "retirement.completion", end)
+            if self.number(completion.get("atMs"), "retirement.completion.atMs") <= self.value.get(
+                "observationEndedAtMs", 0
+            ):
+                self.error("retirement-only completion must follow the behavior observation window")
+        unmatched = set(range(len(completions)))
+        for start_kind, end_kind, identity in _WORK_INTERVALS:
+            starts = [event for event in events if event.get("kind") == start_kind]
+            ends = [event for event in events if event.get("kind") == end_kind]
+            ends.extend(completion for completion in completions if completion.get("kind") == end_kind)
+            seen: set[tuple[str, str]] = set()
+            for start in starts:
+                request_id = self.string(start.get("requestId"), f"{start_kind}.requestId")
+                work_id = self.string(start.get(identity), f"{start_kind}.{identity}")
+                key = (request_id, work_id)
+                candidates = [
+                    item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
+                ]
+                rejected = (
+                    start_kind in _CALL_METHODS
+                    and start.get("outcome") == "REJECTED"
+                    and _has_matching_sdk_request(
+                        start, _CALL_METHODS[start_kind], "REJECTED", self.value.get("sdkRequests", [])
+                    )
+                )
+                if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
+                    self.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
+                elif candidates:
+                    completion = candidates[0]
+                    if self.at_or_after(completion, start, require_sequence=True) is False or completion[
+                        "atMs"
+                    ] > self.number(settled_by_request.get(request_id), "invocation.settledAtMs"):
+                        self.error(f"retirement {start_kind}/{end_kind} interval lies outside settlement")
+                    unmatched.difference_update([index for index in unmatched if completions[index] is completion])
+                seen.add(key)
+        if unmatched:
+            self.error("retirement-only completion has no unique observed work start")
+
+    def retirement(
+        self, *, audit_observed_work: bool = True, retired_requests: Mapping[str, set[str]] | None = None
+    ) -> None:
         retirement = self.mapping(self.value.get("retirement"), "retirement")
         end = self.number(retirement.get("retiredAtMs"), "retirement.retiredAtMs")
         if end < self.value.get("observationEndedAtMs", 0):
             self.error("retirement precedes completion of assertions")
+        if audit_observed_work or "completions" in retirement:
+            self.observed_retirement_work(retirement, end)
         created_resources = self.records(self.value.get("resourcesCreated"), "resourcesCreated")
         identities = {
             (item.get("kind"), item.get("id"))
@@ -1014,12 +1542,9 @@ class _Evidence:
                     original = next((resource for resource in created if resource.get("id") == item.get("id")), {})
                     if original.get("kind") != kind:
                         self.error("retirement changed an owned resource's kind")
-                    if kind == "execution" and item.get("outcome") not in (
-                        "SUCCEEDED",
-                        "FAILED",
-                        "TIMED_OUT",
-                        "STOPPED",
-                    ):
+                    if kind not in {"invocation", "execution", "callback", "control"}:
+                        self.error(f"retirement has no completion contract for resource kind {kind}")
+                    if kind == "execution" and item.get("outcome") not in TERMINAL_STATUSES:
                         self.error("an execution may still resume after retirement")
                     if kind == "execution":
                         histories = self.value.get("histories")
@@ -1040,6 +1565,33 @@ class _Evidence:
                             observed["startedAtMs"], "history execution.startedAtMs"
                         ):
                             self.error("execution settled before its service start")
+                        if (
+                            self.standard_behavior
+                            and self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
+                            and self.selected.get("victim", {}).get("executionArn") == item.get("id")
+                            and len(
+                                {
+                                    request
+                                    for request, attempt in self.attempts.items()
+                                    if attempt.get("executionArn") == item.get("id")
+                                }
+                                | (retired_requests or {}).get(item["id"], set())
+                            )
+                            == 1
+                            and item.get("outcome")
+                            != ("SUCCEEDED" if self.value["requirementId"] == "lmi-lifecycle-2" else "FAILED")
+                        ):
+                            self.error(
+                                "terminal retirement outcome disagrees with the single disposal invocation", "ASSERTION"
+                            )
+                        operations = self.records(observed.get("operations", []), "history.operations")
+                        if any(
+                            self.number(operation[field], f"history operation.{field}") > time
+                            for operation in operations
+                            for field in ("startedAtMs", "endedAtMs")
+                            if field in operation
+                        ):
+                            self.error("execution settled before its recorded service operation")
                     if kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
                     if kind == "invocation" and time < self.last_activity(item.get("id")):
@@ -1250,7 +1802,7 @@ def cleanup_admission_errors(
         if len(wrappers) > 1 or next(iter(known_wrappers))[0] != "wrapper_return":
             return False
         check = _Evidence({})
-        following = [event for event in boundaries if check.probe_at_or_after(record, event)]
+        following = [event for event in boundaries if check.at_or_after(record, event)]
         for error in check.errors:
             if error not in findings:
                 findings.append(error)
@@ -2840,7 +3392,12 @@ def _check_active_retirement(validator: _Evidence) -> None:
     )
 
 
-def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final") -> list[str]:
+def validate_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    phase: Literal["observations", "final"] = "final",
+    retired_requests: Mapping[str, set[str]] | None = None,
+) -> list[str]:
     """Validate all observations, then optionally case-owned retirement.
 
     The coordinator calls ``observations`` before releasing faults and retains
@@ -2866,7 +3423,7 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
             validator.error(f"malformed evidence: {error}")
     if phase == "final":
         try:
-            validator.retirement()
+            validator.retirement(retired_requests=retired_requests)
             _check_active_retirement(validator)
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             validator.error(f"malformed retirement evidence: {error}")
@@ -3046,7 +3603,113 @@ def _validate_controls_only(validator: _Evidence) -> list[str]:
     return validator.errors
 
 
-def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
+def _has_matching_sdk_request(event: Mapping[str, Any], method: str, outcome: str, requests: Any) -> bool:
+    call_id = event.get("callId")
+    return (
+        isinstance(call_id, str)
+        and bool(call_id.strip())
+        and sum(
+            isinstance(request, Mapping)
+            and request.get("method") == method
+            and request.get("outcome") == outcome
+            and all(request.get(key) == event.get(key) for key in ("requestId", "callId", "atMs"))
+            for request in (requests if isinstance(requests, (list, tuple)) else ())
+        )
+        == 1
+    )
+
+
+def normalize_retirement_events(events: Sequence[Mapping[str, Any]], errors: list[str]) -> list[Mapping[str, Any]]:
+    aliases = {"observed_task_start": "task_start", "observed_task_exit": "task_exit"}
+    normalized = []
+    for event in events:
+        kind = event.get("kind")
+        if isinstance(kind, str) and (kind == "observed_task" or kind.startswith("observed_task_")):
+            if kind not in aliases:
+                errors.append("INCOMPLETE: retirement task alias has an unsupported kind")
+            elif event.get("sourceKind") != aliases[kind]:
+                errors.append("INCOMPLETE: retirement task alias has missing or mismatched sourceKind")
+            else:
+                event = {**event, "kind": aliases[kind]}
+        normalized.append(event)
+    return normalized
+
+
+def retained_fault_releases(
+    sources: Sequence[Mapping[str, Any]], retired_at: Any
+) -> tuple[list[int | float], list[str]]:
+    """Check observed release receipts even if later snapshots replace them."""
+
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    end = timestamp(retired_at)
+    releases: list[int | float] = []
+    errors: list[str] = []
+    for source in sources:
+        retirement = source.get("retirement")
+        for location, records in (
+            ("faultsCreated", source.get("faultsCreated")),
+            ("retirement.faults", retirement.get("faults") if isinstance(retirement, Mapping) else None),
+        ):
+            for fault in records if isinstance(records, list) else ():
+                if not isinstance(fault, Mapping) or "releasedAtMs" not in fault:
+                    continue
+                released = timestamp(fault["releasedAtMs"])
+                if released is None:
+                    errors.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
+                else:
+                    releases.append(released)
+                    if end is not None and released > end:
+                        errors.append("INCOMPLETE: observed fault release occurred after retirement ended")
+    return releases, list(dict.fromkeys(errors))
+
+
+def _validate_sdk_dispatches(validator: _Evidence, events: Sequence[Mapping[str, Any]]) -> None:
+    call_kinds = {method: kind for kind, method in _CALL_METHODS.items()}
+    dispatches: set[tuple[str, str, str]] = set()
+    for request in validator.value["sdkRequests"]:
+        if request.get("outcome") != "DISPATCHED":
+            continue
+        kind = call_kinds.get(request.get("method"))
+        if kind is None:
+            validator.error("retirement has no completion contract for dispatched SDK method")
+            continue
+        call_id = validator.string(request.get("callId"), "dispatched SDK request.callId")
+        key = (request["requestId"], kind, call_id)
+        if key in dispatches or not any(
+            event.get("requestId") == key[0]
+            and event.get("kind") == kind
+            and event.get("callId") == call_id
+            and event.get("outcome", "DISPATCHED") == "DISPATCHED"
+            and event.get("atMs") == request.get("atMs")
+            for event in events
+        ):
+            validator.error(f"retirement cannot correlate dispatched SDK request with its unique {kind}")
+        dispatches.add(key)
+
+
+def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
+    """Verify settlement against the captured case and its retirement record."""
+    requirement = evidence.get("requirementId")
+    validator = _Evidence(
+        evidence, requirement_ids=(requirement,) if isinstance(requirement, str) else (), standard_behavior=False
+    )
+    try:
+        validator.common(validate_behavior=False)
+        validator.retirement()
+        if not validator.errors:
+            _validate_sdk_dispatches(validator, normalize_retirement_events(validator.events, validator.errors))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+        validator.error(f"malformed retirement evidence: {error}")
+    return validator.errors
+
+
+def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launches: bool = False) -> list[str]:
     """Audit a separate post-cleanup snapshot without accepting its behavior.
 
     Failed cases may lack mandatory scenario roles, but every actual launch must
@@ -3068,42 +3731,21 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
             return validator.errors
         if controls_only_retirement(evidence):
             return _validate_controls_only(validator)
-        validator.common(validate_behavior=False)
-        physical_events: list[Mapping[str, Any]] = []
-        for event in validator.events:
-            kind = event.get("kind")
-            if isinstance(kind, str) and (kind == "observed_task" or kind.startswith("observed_task_")):
-                if kind not in _TASK_EVENT_ALIASES:
-                    validator.error("retirement task alias has an unsupported kind")
-                elif _physical_event_kind(event) == kind:
-                    validator.error("retirement task alias has missing or mismatched sourceKind")
-                else:
-                    event = {**event, "kind": _physical_event_kind(event)}
-            physical_events.append(event)
-        # Restore the full physical stream locally; retain the caller's singular
-        # scenario task boundary and its raw source facts unchanged.
-        validator.events = physical_events
-        validator.retirement()
+        validator.common(validate_behavior=False, allow_no_launches=allow_no_launches)
+        validator.events = normalize_retirement_events(validator.events, validator.errors)
+        validator.retirement(audit_observed_work=False)
         if validator.errors:
             return validator.errors
         retirement = evidence["retirement"]
+        validator.events.extend(normalize_retirement_events(retirement.get("completions", []), validator.errors))
         records = {item["id"]: item for item in retirement["resources"]}
         histories = {item["executionArn"]: item for item in evidence["histories"]}
-        for resource in evidence["resourcesCreated"]:
-            kind = resource["kind"]
-            if kind not in {"invocation", "execution", "callback", "control"}:
-                validator.error(f"retirement has no completion contract for resource kind {kind}")
         for arn, history in histories.items():
-            if history["status"] not in {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}:
+            if history["status"] not in TERMINAL_STATUSES:
                 validator.error("retirement service history still permits execution resume")
             if records[arn].get("outcome") != history["status"]:
                 validator.error("retirement execution outcome differs from actual service history")
-        pairs = (
-            ("task_start", "task_exit", "taskId"),
-            ("io_start", "io_exit", "taskId"),
-            ("checkpoint_call", "checkpoint_exit", "callId"),
-            ("poll_call", "poll_exit", "callId"),
-        )
+        _validate_sdk_dispatches(validator, validator.events)
         for request_id in validator.attempts:
             local = [event for event in validator.events if event["requestId"] == request_id]
             sequences = [event.get("sequence") for event in local]
@@ -3132,7 +3774,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 (event["atMs"] for event in local), default=0
             ):
                 validator.error("invocation retirement precedes its last actual activity")
-            for start_kind, end_kind, identity in pairs:
+            for start_kind, end_kind, identity in _WORK_INTERVALS:
                 started = [event for event in local if event["kind"] == start_kind]
                 ended = [event for event in local if event["kind"] == end_kind]
                 identifiers = {
@@ -3141,8 +3783,18 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 for identifier in identifiers:
                     starts = [event for event in started if event.get(identity) == identifier]
                     ends = [event for event in ended if event.get(identity) == identifier]
-                    if len(starts) != 1 or len(ends) != 1:
+                    rejected = (
+                        start_kind in _CALL_METHODS
+                        and len(starts) == 1
+                        and starts[0].get("outcome") == "REJECTED"
+                        and _has_matching_sdk_request(
+                            starts[0], _CALL_METHODS[start_kind], "REJECTED", evidence["sdkRequests"]
+                        )
+                    )
+                    if len(starts) != 1 or (len(ends) != 1 and not (rejected and not ends)):
                         validator.error(f"retirement lacks the unique {start_kind}/{end_kind} completion pair")
+                        continue
+                    if not ends:
                         continue
                     start, end = starts[0], ends[0]
                     if boundary(start) > boundary(end):
