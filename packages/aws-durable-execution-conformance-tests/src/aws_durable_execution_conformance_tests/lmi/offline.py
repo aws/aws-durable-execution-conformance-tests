@@ -25,8 +25,12 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
     _has_matching_sdk_request,
     _history_expectation_mismatches,
+    cleanup_replay_count_errors,
+    cleanup_replay_history_errors,
+    cleanup_replay_projection_errors,
     completed_replay_step_witness,
     completed_suspension_checkpoint,
+    deferred_service_requests,
     has_overlap_marker_dispatch,
     is_json_integer,
     normalize_retirement_events,
@@ -1452,6 +1456,7 @@ def _cleanup_behavior_errors(
                     if final:
                         findings.append("INCOMPLETE: cleanup replay observations must be an object")
                     continue
+                findings.extend(cleanup_replay_history_errors(replay, observed_replay))
                 entries = observed_replay.get("operationExecutions", [])
                 if not isinstance(entries, list):
                     if final:
@@ -1495,16 +1500,7 @@ def _cleanup_behavior_errors(
                             findings.append("INCOMPLETE: cleanup side-effect observation lacks an operationId")
                         continue
                     expected = expected_counts.get(operation_id)
-                    if expected is None:
-                        continue  # Cleanup cannot invent an oracle for an unasserted operation.
-                    if "expectedCount" in count and not same_json(count["expectedCount"], expected):
-                        findings.append(
-                            f"ASSERTION: cleanup side-effect expectation for {operation_id} changed the frozen fixture oracle"
-                        )
-                    if is_json_integer(count.get("count")) and count["count"] != expected:
-                        findings.append(
-                            f"ASSERTION: cleanup side-effect count for {operation_id} differs from the frozen fixture oracle"
-                        )
+                    findings.extend(cleanup_replay_count_errors(count, expected))
             findings.extend(
                 _cleanup_retry_errors(
                     replay,
@@ -1603,6 +1599,9 @@ def _evaluate_capture(
             )
         )
 
+        for frame in [*frames, retirement_snapshot]:
+            if isinstance(replay := frame.get("replay"), Mapping):
+                findings.extend(cleanup_replay_projection_errors(replay))
         raw_retirement = retirement_evidence.get("retirement")
         if isinstance(raw_retirement, Mapping):
             retirement = copy.deepcopy(dict(raw_retirement))
@@ -1658,6 +1657,15 @@ def _evaluate_capture(
                 if completions or "completions" in retirement:
                     retirement["completions"] = completions
             final_evidence["retirement"] = retirement
+        deferred = deferred_service_requests(evidence)
+        if retirement_evidence and (
+            deferred
+            or any(
+                isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
+                for item in evidence.get("attempts", [])
+            )
+        ):
+            final_evidence["retirementSnapshot"] = retirement_evidence
         observed_attempts = evidence.get("attempts")
         observed_requests = {
             attempt["requestId"]
@@ -1668,6 +1676,7 @@ def _evaluate_capture(
             "launchedAtMs" in attempt
             and isinstance(attempt.get("requestId"), str)
             and attempt["requestId"] not in observed_requests
+            and attempt["requestId"] not in deferred
             for attempt in attempts
         ):
             findings.append("INCOMPLETE: frozen observations do not cover all client-journaled launches")

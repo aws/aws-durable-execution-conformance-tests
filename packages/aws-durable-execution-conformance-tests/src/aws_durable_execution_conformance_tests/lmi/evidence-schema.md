@@ -120,13 +120,13 @@ a name. Optional operation `startedAtMs` and `endedAtMs` are finite, nonnegative
 timestamps; when both are supplied, the end must be at or after the start.
 Execution history status and its fixture
 expectation must be recognized `SUCCEEDED`, `FAILED`, `TIMED_OUT`, `STOPPED`,
-`RUNNING`, or `PENDING` values; nonterminal observations cannot establish final
+`RUNNING`, `PAUSING`, `PAUSED`, or `PENDING` values; nonterminal observations cannot establish final
 retirement. `expectedHistories` is keyed by execution
 ARN and declares the fixture's expected `status` and `result`/`error` independently
 of the fetched service output. A fixture whose execution can remain active while
 its fault is held may instead declare `allowedStatuses`, a nonempty list of
 unique recognized statuses. Exactly one of `status` or `allowedStatuses` is
-required. Only a list containing `RUNNING` permits omission of `result`/`error`;
+required. Only a list containing `RUNNING`, `PAUSING`, or `PAUSED` permits omission of `result`/`error`;
 any declared output expectation is still compared. For example,
 `{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]}`
 permits an active timeout victim without accepting a successful outcome. This
@@ -140,6 +140,42 @@ Never generate expectations by copying the observed status or output.
 `collection.evidenceUris` references retained raw records under this case's
 namespace. An empty query without a collection watermark cannot prove absence.
 Source collection failures and incomplete observations must remain visible.
+An observation that excludes an owned service-only retry retains its request
+and execution identity in `collection.deferredServiceRequests`. Final
+validation requires the independent retirement snapshot to contain every
+deferred request and its actual completion.
+A service retry first discovered during retirement also appears in the saved
+audit obligations. Final validation checks both quiescence and late SDK
+dispatches against the retained snapshot.
+
+Live replay observations compare `replay.before` with
+`replay.expectedBefore`, the complete set of stored operation outcomes in
+service history strictly before the selected native resume. When an actual
+serialized value provides encoding evidence, `resultEncoding` distinguishes
+JSON text from raw strings without requiring identical JSON formatting.
+For a serialized JSON execution result, the builder records a
+`resultFingerprint` on the service history before rounding the display. The
+validator derives the comparison fingerprint from the declared fixture result
+and checks both the fingerprint and the displayed structure.
+The optional `resultFingerprint` preserves exact numeric semantics of
+serialized JSON even when the displayed result is rounded. Matching digests
+reconcile corresponding numeric values only when one display is the
+binary64 rounding of the other. They do not override structure or
+nonnumeric values. A finite number outside the display's numeric range is
+rendered as canonical decimal text while remaining JSON in the replay
+comparison. A saved replay
+can report `projectionErrors` when service chronology is incomplete.
+Those errors invalidate behavior evidence without erasing the physical audit.
+Timer fixtures report `replay.durableWaitObserved` after complete service
+collection. Live callback and timer fixtures also verify the native request
+resumed by the public operation and report `replay.suspensionCheckpointMatches`.
+A wakeup tied with the resume timestamp counts only for the independently
+identified waking operation. A false value is a behavior failure.
+
+A complete replay observation may report `replay.missingExpectedEffects` when
+a fixture's named effect has no durable operation identity or when no retry
+attempts were observed. When `missingExpectedEffects` includes `retry`, the
+retry record may be absent or retain one observed attempt. This fails the behavior check. It does not invalidate independent retirement evidence.
 The optional `collectionErrors` array retains non-empty source error messages;
 omit it or use an empty array when collection succeeded. Owned lifecycle events
 with kind `observation_error` or `control_error` retain failed observation or
@@ -148,6 +184,22 @@ evidence incomplete in both observation and final validation, even when source
 watermarks cover the full window. Independent retirement applies the same rule.
 
 ## Scenario observations
+
+Live shared runs require a conformance revision in the generated plan.
+Historical evidence without known provenance cannot pass behavior validation.
+
+A lifecycle-3 or lifecycle-4 observation may mark a nonselected victim retry
+with `activeAtObservationEnd: true`. Its sealed ledger and matching service
+completion must prove that it started by the cutoff and ended afterwards.
+The observation retains its in-window events, SDK requests and
+`startedAtMs`, and omits `endedAtMs` and `outcome`. Independent retirement
+must retain the same native start, the actual post-cutoff end and the
+observed outcome. Earlier V1 documents are unchanged. Offline validation
+of an observation with this marker requires independent retirement proof.
+For direct final validation, pass the independent evidence in
+`retirementSnapshot`. The offline evaluator supplies it only to validation;
+the coordinator keeps the two retained artifacts separate.
+
 
 | ID | Required observations |
 | --- | --- |
@@ -214,11 +266,23 @@ enforces the same correspondence; a settlement entry alone cannot account for
 an unobserved invocation or execution.
 `retirement.resources` matches every created resource exactly once, preserving
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
-be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,
-or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle ownership.
-An execution's settlement must be at or after its service history's `startedAtMs`
-when supplied. Native admission is a separate boundary and does not substitute
-for missing service-start metadata.
+be `QUIESCENT` or `UNDISPATCHED`; executions must have terminal `SUCCEEDED`, `FAILED`,
+`TIMED_OUT`, or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle
+ownership. An execution's settlement must be at or after its service history's
+`startedAtMs` when supplied. Native admission is a separate boundary and does
+not substitute for missing service-start metadata.
+
+An invocation the service rejected before any handler ran may settle as
+`UNDISPATCHED`, in physical retirement only. `executionArn` is the owned
+execution whose history holds the request's only `InvocationCompleted` event.
+`sourceEventId` is that event's `EventId`. `serviceErrorType` is its
+`Error.Payload.ErrorType` and must exactly match the validator's allowlist.
+`startedAtMs` and `settledAtMs` are its normalized `StartTimestamp` and
+`EndTimestamp`, with `settledAtMs <= retiredAtMs`. `evidenceUri` is the
+retained raw history, listed in `collection.evidenceUris`. The request has no
+attempt, event, SDK request or completion. Behavior validation reports every
+`UNDISPATCHED` invocation as INCOMPLETE; it never satisfies a role, attempt or
+deferred-request obligation.
 Durable callbacks use `kind: callback` and require an observed `SUCCEEDED`,
 `FAILED`, or `TIMED_OUT` outcome; their `evidenceUri` retains the service completion
 record. Case-owned control objects use `kind: control` and require `DELETED`,
@@ -310,6 +374,24 @@ completion contracts in this audit; an unknown retained resource kind cannot
 permit target reuse. Successful retirement does not clear failed behavior
 assertions, and unresolved completion keeps the target quarantined.
 
+A proven `UNDISPATCHED` invocation is exempt from the entry/exit/sequence
+completion contract above: the service's own rejection record, not a wrapper
+stream, is its proof. The audit still requires its `executionArn`,
+`serviceErrorType`, `sourceEventId`, `startedAtMs`, and `settledAtMs` to be
+internally consistent and that no event, SDK request, `observedDuringRequestId`,
+or retirement completion names the request. This settles physical retirement
+only; behavior validation always reports it INCOMPLETE.
+
+
+An independent retirement snapshot may mark `retirement.mode` as
+`controls-only` after a case fails before any Invoke could succeed. This
+audit requires a reconciled launch journal with only local PREPARED intents
+or definite REJECTED attempts, empty runtime inventories and no replay
+assertions or collection watermarks. Every possibly held control must
+have one acknowledged release and subsequent deletion receipt under the
+admitted case's S3 control prefix. Each settlement references the retained
+case control journal and uses its acknowledged deletion timestamp. The
+coordinator retains the original case failure.
 
 When a work start is present in the behavior stream, final validation requires
 its completion before its invocation settles. A completion collected after

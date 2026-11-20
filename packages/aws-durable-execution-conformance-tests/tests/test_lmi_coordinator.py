@@ -1595,6 +1595,86 @@ def test_normal_retirement_audits_previously_reported_resource_identity_and_time
     ]
 
 
+def test_switching_from_quiescent_to_undispatched_still_changes_the_terminal_outcome():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retained_retirement_errors
+
+    earlier = {
+        "retirement": {
+            "resources": [
+                {
+                    "id": "rejected",
+                    "kind": "invocation",
+                    "ownerCaseId": "one",
+                    "outcome": "QUIESCENT",
+                    "settledAtMs": 100,
+                },
+            ]
+        }
+    }
+    final = {
+        "retirement": {
+            "retiredAtMs": 220,
+            "resources": [
+                {
+                    "id": "rejected",
+                    "kind": "invocation",
+                    "ownerCaseId": "one",
+                    "outcome": "UNDISPATCHED",
+                    "settledAtMs": 110,
+                },
+            ],
+        }
+    }
+    assert _retained_retirement_errors([earlier], final) == [
+        "Final retirement changed the terminal outcome of observed resource rejected",
+    ]
+
+
+def test_undispatched_settlement_does_not_satisfy_a_prior_frames_native_owner_reference():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _cleanup_record_errors
+
+    earlier = {
+        "attempts": [{"requestId": "rejected", "executionArn": "execution"}],
+        "events": [
+            {
+                "requestId": "rejected",
+                "ownerRequestId": "rejected",
+                "executionArn": "execution",
+                "kind": "task_start",
+                "atMs": 10,
+            }
+        ],
+    }
+    final: dict[str, Any] = {
+        "attempts": [{"requestId": "rejected", "executionArn": "execution"}],
+        "retirement": {
+            "resources": [
+                {
+                    "kind": "invocation",
+                    "id": "rejected",
+                    "outcome": "UNDISPATCHED",
+                    "settledAtMs": 20,
+                    "executionArn": "execution",
+                    "serviceErrorType": "TooManyRequestsException",
+                    "sourceEventId": 4,
+                    "startedAtMs": 5,
+                },
+                {"kind": "execution", "id": "execution", "outcome": "SUCCEEDED", "settledAtMs": 20},
+            ]
+        },
+    }
+    # A proven UNDISPATCHED settlement still needs QUIESCENT and a bound
+    # attempt to satisfy an earlier frame's raw reference to the same request;
+    # an earlier or later ledger row contradicts the undispatched proof.
+    assert any(
+        "native owner rejected is not settled" in error for error in _cleanup_record_errors([earlier, final], final)
+    )
+    quiescent_final = copy.deepcopy(final)
+    quiescent_resource = next(item for item in quiescent_final["retirement"]["resources"] if item["id"] == "rejected")
+    quiescent_resource["outcome"] = "QUIESCENT"
+    assert _cleanup_record_errors([earlier, quiescent_final], quiescent_final) == []
+
+
 def test_recover_waits_until_residual_adapter_task_has_settled():
     async def check():
         scheduler = ResourceScheduler()
