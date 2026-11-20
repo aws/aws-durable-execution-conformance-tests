@@ -9,9 +9,9 @@ name: OpenTelemetry Conformance Tests
 #   requirements).
 # - sdk_ref defaults to SDK main (resolved to a commit per run), so SDK handler
 #   and template fixes apply here once they merge. Cases that SDK main declares
-#   NotImplemented report NOT_IMPLEMENTED; new cases are UNCOVERED until their
-#   handlers reach SDK main. Manual dispatch can select another revision
-#   without reducing the coverage threshold.
+#   NotImplemented report NOT_IMPLEMENTED. New invocation or execution cases
+#   report UNCOVERED until their handlers reach SDK main. Manual dispatch can
+#   select another revision without reducing the coverage threshold.
 
 on:
   pull_request:
