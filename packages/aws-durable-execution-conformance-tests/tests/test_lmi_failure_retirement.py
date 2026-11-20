@@ -1484,16 +1484,53 @@ def test_saved_retirement_orders_late_activity_tied_with_the_frozen_task_exit(al
     assert validate_evidence(value) == ([] if late_first else [_CLEANUP_LATE_ACTIVITY])
 
 
+@pytest.mark.parametrize(
+    ("frame_copies", "final_copies", "unordered"),
+    [
+        (0, "unsequenced", True),
+        (0, "equal-sequence", True),
+        (0, "ambiguous-exit", True),
+        (1, "absent", True),
+        (1, "ordered", False),
+        (2, "ordered", True),
+    ],
+    ids=[
+        "final-unsequenced",
+        "final-equal-sequence",
+        "final-ambiguous-exit",
+        "earlier-frame-only",
+        "ordered-later",
+        "repeated-activity",
+    ],
+)
 @pytest.mark.parametrize("final", [False, True])
-def test_cleanup_tie_without_sequences_is_incomplete_in_the_final_snapshot(final: bool) -> None:
+def test_cleanup_tie_must_be_ordered_by_the_final_verdict(
+    frame_copies: int, final_copies: str, unordered: bool, final: bool
+) -> None:
     value, owner = _tied_late_activity_fixture()
+    tied = {**owner, "kind": "late_activity", "atMs": 65, "observedDuringRequestId": "request-warm"}
+    frame = deepcopy(value)
+    frame["events"].extend(deepcopy(tied) for _ in range(frame_copies))
     snapshot = deepcopy(value)
-    snapshot["events"].append({**owner, "kind": "late_activity", "atMs": 65, "observedDuringRequestId": "request-warm"})
+    exit_event = next(
+        item for item in snapshot["events"] if item["requestId"] == owner["requestId"] and item["kind"] == "task_exit"
+    )
+    if final_copies == "unsequenced":
+        snapshot["events"].append(deepcopy(tied))
+    elif final_copies == "equal-sequence":
+        snapshot["events"].append({**tied, "sequence": exit_event["sequence"]})
+    elif final_copies in ("ordered", "ambiguous-exit"):
+        _insert_tied_late_activity(snapshot, owner, late_first=True)
+        _resequence(snapshot)
+        if final_copies == "ambiguous-exit":
+            # A second, alias copy of the frozen exit leaves the tie unordered.
+            alias = {**exit_event, "kind": "observed_task_exit", "sourceKind": "task_exit", "sequence": 99}
+            snapshot["events"].append(alias)
 
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=final)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, known_snapshots=[frame], final=final)
 
-    unordered = "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
-    assert (unordered in findings) is final, findings
+    message = "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
+    assert (message in findings) is (final and unordered), findings
     assert _CLEANUP_LATE_ACTIVITY not in findings
 
 

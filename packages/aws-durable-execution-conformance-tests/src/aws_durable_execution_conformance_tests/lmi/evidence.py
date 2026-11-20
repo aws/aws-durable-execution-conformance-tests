@@ -1972,6 +1972,82 @@ def tied_late_activity_follows_exit(
     return late_sequence > exit_sequence
 
 
+_CLEANUP_LATE_ACTIVITY = "ASSERTION: cleanup late activity continued after the frozen victim task exit"
+_UNORDERED_CLEANUP_LATE_ACTIVITY = (
+    "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
+)
+_LATE_ACTIVITY_IDENTITY = ("taskId", "callId", "gateId", "operationId", "attemptId", "attempt")
+
+
+def cleanup_late_activity_errors(
+    frozen: Mapping[str, Any],
+    sources: Sequence[Mapping[str, Any]],
+    victim_exit: Mapping[str, Any],
+    bound_execution: Callable[[Any], str | None],
+    *,
+    final: bool,
+) -> list[str]:
+    """Check late activity seen during cleanup against the victim's frozen task exit.
+
+    Each tie is ordered within one snapshot. By the final verdict, every tied
+    activity a cleanup snapshot reported must be ordered in some snapshot; an
+    identity seen several times needs as many ordered copies.
+    """
+
+    def timestamp(value: Any) -> float | None:
+        try:
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                return value
+        except OverflowError:
+            pass
+        return None
+
+    findings: list[str] = []
+    victim_id, exited = victim_exit.get("requestId"), timestamp(victim_exit.get("atMs"))
+    seen: Counter[str] = Counter()
+    ordered: Counter[str] = Counter()
+    for source in sources:
+        raw = source.get("events")
+        events = [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, list) else []
+        local_seen: Counter[str] = Counter()
+        local_ordered: Counter[str] = Counter()
+        for event in events:
+            if event.get("kind") != "late_activity":
+                continue
+            request_id = event.get("requestId")
+            execution_arn = bound_execution(request_id)
+            if execution_arn is None:
+                continue
+            if event.get("ownerRequestId") != request_id or event.get("executionArn") != execution_arn:
+                if final:
+                    findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
+                continue
+            during = event.get("observedDuringRequestId")
+            if during is not None and bound_execution(during) is None:
+                continue
+            observed_at = timestamp(event.get("atMs"))
+            if request_id != victim_id or observed_at is None or exited is None:
+                continue
+            if observed_at != exited:
+                if observed_at > exited:
+                    findings.append(_CLEANUP_LATE_ACTIVITY)
+                continue
+            identity = json.dumps([event.get(key) for key in _LATE_ACTIVITY_IDENTITY], default=str)
+            local_seen[identity] += 1
+            follows = tied_late_activity_follows_exit(events, event, victim_exit)
+            if follows is not None:
+                local_ordered[identity] += 1
+            if follows:
+                findings.append(_CLEANUP_LATE_ACTIVITY)
+        # The live check already reports an unordered tie in frozen evidence.
+        if source is not frozen:
+            seen |= local_seen
+        ordered |= local_ordered
+    if final and any(ordered[identity] < count for identity, count in seen.items()):
+        findings.append(_UNORDERED_CLEANUP_LATE_ACTIVITY)
+    return findings
+
+
 def frozen_history_work_errors(original: Mapping[str, Any], final: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
 
@@ -2959,11 +3035,6 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
     return findings
 
 
-_UNORDERED_CLEANUP_LATE_ACTIVITY = (
-    "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
-)
-
-
 def _cleanup_behavior_errors(
     original: Mapping[str, Any],
     snapshot: Mapping[str, Any],
@@ -3352,39 +3423,16 @@ def _cleanup_behavior_errors(
             )
         else:
             victim_id = role("victim").get("requestId")
-            exited = boundary("victim", "task_exit")
-            victim_exit = next(
-                (event for event in events if event.get("requestId") == victim_id and event.get("kind") == "task_exit"),
-                {},
+            exits = [
+                event
+                for event in events
+                if victim_id is not None and event.get("requestId") == victim_id and event.get("kind") == "task_exit"
+            ]
+            findings.extend(
+                cleanup_late_activity_errors(
+                    original, sources, exits[0] if len(exits) == 1 else {}, bound_execution, final=final
+                )
             )
-            for source in sources:
-                source_events = records(source.get("events"))
-                for event in source_events:
-                    if event.get("kind") != "late_activity":
-                        continue
-                    request_id = event.get("requestId")
-                    execution_arn = bound_execution(request_id)
-                    if execution_arn is None:
-                        continue
-                    if event.get("ownerRequestId") != request_id or event.get("executionArn") != execution_arn:
-                        if final:
-                            findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
-                        continue
-                    during = event.get("observedDuringRequestId")
-                    if during is not None and bound_execution(during) is None:
-                        continue
-                    observed_at = timestamp(event.get("atMs"))
-                    if request_id != victim_id or observed_at is None or exited is None:
-                        continue
-                    follows = (
-                        observed_at > exited
-                        if observed_at != exited
-                        else tied_late_activity_follows_exit(source_events, event, victim_exit)
-                    )
-                    if follows:
-                        findings.append("ASSERTION: cleanup late activity continued after the frozen victim task exit")
-                    elif follows is None and final and source is snapshot:
-                        findings.append(_UNORDERED_CLEANUP_LATE_ACTIVITY)
     return findings
 
 
