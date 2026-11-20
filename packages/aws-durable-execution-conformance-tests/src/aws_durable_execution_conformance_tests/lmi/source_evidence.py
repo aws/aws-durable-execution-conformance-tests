@@ -1394,6 +1394,51 @@ def _public_suspension_histories(
     return suspension_resumptions([row for row in ledger if row.get("execution") == victim_arn], history, mode)
 
 
+def _project_held_fault_release(
+    fault: dict[str, Any], records: Sequence[Mapping[str, Any]], errors: list[str], retired_at: Any = None
+) -> None:
+    """Keep the earliest provider request and acknowledgment for a held victim fault.
+
+    Either the victim gate or the case's release-all control can release it,
+    even when a release call's response was lost. Every call is checked before
+    taking minima, so an early call cannot hide a reversed or post-retirement one.
+    """
+
+    def seconds(value: Any) -> float | None:
+        return float(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+    gate = fault["id"]
+    retired = seconds(retired_at)
+    starts: list[float] = []
+    acknowledgments: list[float] = []
+    for record in records:
+        if record.get("action") != "release" or record.get("gate") not in (gate, "release-all"):
+            continue
+        started = seconds(record.get("started"))
+        if started is None:
+            errors.append(f"Fault {gate} release is missing a request timestamp")
+        else:
+            starts.append(started)
+            if retired is not None and started > retired:
+                errors.append(f"Fault {gate} release was requested after retirement")
+        if record.get("state", "ACKNOWLEDGED") != "ACKNOWLEDGED":
+            continue
+        acknowledged = seconds(record.get("time"))
+        if acknowledged is None:
+            errors.append(f"Fault {gate} release has an invalid acknowledgment timestamp")
+        elif started is not None and started > acknowledged:
+            errors.append(f"Fault {gate} release acknowledgment precedes its request")
+        else:
+            acknowledgments.append(acknowledged)
+            if retired is not None and acknowledged > retired:
+                errors.append(f"Fault {gate} release was acknowledged after retirement")
+    if starts:
+        fault["releaseRequestedAtMs"] = min(starts) * 1000
+    if acknowledgments:
+        fault["releaseAcknowledgedAtMs"] = min(acknowledgments) * 1000
+        fault.setdefault("releasedAtMs", fault["releaseAcknowledgedAtMs"])
+
+
 def build_evidence(
     context: ScenarioContext,
     cloud: Cloud,
@@ -1733,6 +1778,14 @@ def build_evidence(
         receipts = [
             event["atMs"] for event in events if event.get("gateId") == gate and event.get("kind") == "fault_released"
         ]
+        if receipts:
+            fault["releasedAtMs"] = min(receipts)
+        if context.scenario.requirement_id == "lmi-lifecycle-4":
+            _project_held_fault_release(
+                fault, cloud.control_records, errors, cloud.retired_at if phase == "final" else None
+            )
+            faults.append(fault)
+            continue
         releases = [
             record
             for record in cloud.control_records
@@ -1740,8 +1793,6 @@ def build_evidence(
             and record["action"] == "release"
             and record.get("state", "ACKNOWLEDGED") == "ACKNOWLEDGED"
         ]
-        if receipts:
-            fault["releasedAtMs"] = min(receipts)
         if releases:
             release = releases[0]
             requested = release.get("started", release["time"]) * 1000

@@ -134,6 +134,13 @@ Older adapters that supplied these limits only in evidence must add them to the
 manifest. The run-level `budgets` above separately limits controller phases in
 seconds.
 
+For each profile that runs an implemented `peer-recovery` case, set
+`recovery_policy` to `"reuse-worker"` or `"replace-worker"` according to the
+expected recovery behavior; the manifest is rejected before deployment without
+it. Lifecycle-4 evidence must report the same value in `profile.recoveryPolicy`.
+Other cases on that profile may omit `profile.recoveryPolicy`, but a reported
+value must match.
+
 A retry stays in the original evidence attempt list;
 never replace the original case with a successful retry.
 

@@ -216,6 +216,14 @@ def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
     )
 
 
+def _validate_recovery_policy(profile: Mapping[str, Any], *, required: bool = False) -> None:
+    policy = profile.get("recovery_policy")
+    if policy is not None and policy not in RECOVERY_POLICIES:
+        raise ValueError("Unknown recovery policy")
+    if required and policy is None:
+        raise ValueError("profile.recovery_policy must declare reuse-worker or replace-worker")
+
+
 def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
     if (
@@ -244,8 +252,7 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         for key in ("profile_id", "resource_id", "artifact_id", "configuration_id"):
             if not isinstance(profile.get(key), str) or not profile[key].strip():
                 raise ValueError(f"profile.{key} must be a non-empty string")
-        if (policy := profile.get("recovery_policy")) is not None and policy not in RECOVERY_POLICIES:
-            raise ValueError("Unknown recovery policy")
+        _validate_recovery_policy(profile)
         if profile["profile_id"] in ids or profile["resource_id"] in resources:
             raise ValueError("profile IDs and function resources must be unique")
         ids.add(profile["profile_id"])
@@ -302,6 +309,8 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         if scenario["profile_id"] not in ids:
             raise ValueError(f"unknown profile: {scenario['profile_id']}")
         profile = next(profile for profile in profiles if profile["profile_id"] == scenario["profile_id"])
+        if scenario["requirement_id"] == "lmi-lifecycle-4" and "not_implemented" not in scenario:
+            _validate_recovery_policy(profile, required=True)
         definition = _case_definition(manifest, scenario, profile, suite)
         if profile["native_concurrency"] < definition.minimum_native_concurrency:
             raise ValueError("scenario requires a higher deployed native concurrency")
@@ -369,6 +378,7 @@ def _identity_errors(
     if evidence.get("coverageProfile", "standard") != coverage_profile:
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
+    _validate_recovery_policy(profile, required=scenario["requirement_id"] == "lmi-lifecycle-4")
     definition = _case_definition(manifest, scenario, profile, suite)
     # A manifest may declare roles beyond the requirement's defaults. Live
     # runs reject an incomplete cohort through the coordinator's ownership
@@ -422,7 +432,11 @@ def _identity_errors(
     revision = deployment.get("conformanceRevision") if isinstance(deployment, Mapping) else None
     if revision is not None and artifact.get("conformance") != revision:
         errors.append("INCOMPLETE: evidence conformance revision does not match the admitted plan")
-    if profile.get("recovery_policy") is not None and observed.get("recoveryPolicy") != profile["recovery_policy"]:
+    if (
+        profile.get("recovery_policy") is not None
+        and (scenario["requirement_id"] == "lmi-lifecycle-4" or "recoveryPolicy" in observed)
+        and observed.get("recoveryPolicy") != profile["recovery_policy"]
+    ):
         errors.append("INCOMPLETE: observed recovery policy does not match the declared profile")
     return errors
 

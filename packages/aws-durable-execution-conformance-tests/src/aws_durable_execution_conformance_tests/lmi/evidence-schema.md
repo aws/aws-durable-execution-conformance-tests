@@ -211,7 +211,7 @@ keeps the two retained artifacts separate.
 | `lmi-lifecycle-1` | Original `victim` and `peer`, distinct executions, overlapping intervals, and `barrier_arrived` for each inside the overlap. Same environment always; same Node.js worker/process, same JVM process, or distinct Python processes. Histories and fixture expectations preserve attribution. |
 | `lmi-lifecycle-2` | Normal return: `victim` and `root_completed` both have outcome `SUCCEEDED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
 | `lmi-lifecycle-3` | `victim` with `work_in_flight`, actual `platform_timeout` (`source: platform`) satisfying `startedAtMs + profile.timeoutMs <= platform_timeout.atMs <= endedAtMs`, `admission_closed`, both rejected probes, and cooperative `task_exit` after timeout. Closure, probes and cleanup may follow native completion. `budgets.admissionMs` and `budgets.cleanupMs` are agreed fixture limits, not product SLAs. |
-| `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests until recovery, each with `peer_progress` before and after timeout. Recovery must use an execution distinct from the victim and every selected peer. Python recovery must also use a process distinct from every held peer; reuse of the victim's process requires platform-sourced recovery admission at or after the victim's platform-sourced native invocation `endedAtMs`, regardless of worker naming or policy. Background task exit remains a separate boundary. The recovery request must succeed. |
+| `lmi-lifecycle-4` | Deadline and overlap observations plus original `recovery` request and `worker_recovered`. `profile.recoveryPolicy` explicitly selects `reuse-worker` (same process/worker) or `replace-worker` (different worker, with `replacesWorkerId` naming the original). Both stay in the original environment. All other native slots are occupied by selected `peer*` requests through the selected recovery request’s native completion, each with `peer_progress` before and after timeout. Recovery must use an execution distinct from the victim and every selected peer. Python recovery must also use a process distinct from every held peer; reuse of the victim's process requires platform-sourced recovery admission at or after the victim's platform-sourced native invocation `endedAtMs`, regardless of worker naming or policy. Background task exit remains a separate boundary. The recovery request must succeed before the victim fault is released. The selected victim’s `work_in_flight.gateId` must identify exactly one case-owned entry in `faultsCreated`, and the profile must declare `recovery_policy` in the manifest. |
 | `lmi-lifecycle-5` | Original `victim` returns PENDING with `pending` and `wrapper_return`; selected `resume` starts later against the same execution. `replay.before` stores completed success and failure operations. `replay.after` preserves each completed operation unchanged by operation ID and matches collected final history; completed operations need not form a positional prefix. `replay.operationExecutions` records actual user-code entries by request/operation (and `attemptId` for retries), proving completed code did not run again. `replay.retry` identifies an incomplete operation and at least two distinct observed attempts, first failed and last successful. `replay.sideEffects` records `operationId`, actual `count`, and fixture-defined `expectedCount` for completed operations and retries. |
 | `lmi-lifecycle-6` | Original `victim` and sequential `warm` request reuse the same environment, worker, and process. The warm request starts after the victim's `wrapper_return` and at or after its native invocation `endedAtMs`. Victim-owned activity may outlive that native interval: `late_activity` retains victim ownership and identifies the warm request in `observedDuringRequestId`. Separate `task_exit` follows the late activity. When both events have the same `atMs`, each needs a distinct non-negative integer `sequence`; the earlier event has the lower sequence. Otherwise, timestamps determine their order. No stale SDK dispatch is permitted. |
 | `lmi-lifecycle-7` | Normal failure: `victim` and `root_completed` both have outcome `FAILED`, followed by `wrapper_return`, a rejected checkpoint probe, and separate `task_exit`; operation admission is optional diagnostic evidence as described above. |
@@ -223,6 +223,25 @@ for that task must precede the in-flight observation. If they share a
 timestamp, distinct per-request sequences must establish that order. When one of these events shares the timeout timestamp, distinct per-request
 `sequence` values for that event and the timeout must prove the order.
 A missing or ambiguous sequence leaves the order incomplete.
+
+For lifecycle 4, the victim fault is held strictly past H, the latest of the
+victim's controlled `task_exit`, `worker_recovered`, the recovery wrapper return
+and the selected recovery request's native completion. The selected `recovery`
+and every `peer*` attempt need `endedAtMsSource: "platform"`: their `endedAtMs` is
+the request's own `InvocationCompletedDetails.EndTimestamp`, not a wrapper
+return. Every lifecycle-4 `fault_released` event names its gate in `gateId`. A
+victim-gate receipt, `releasedAtMs`, `releaseRequestedAtMs` or
+`releaseAcknowledgedAtMs` at or before H is a failure; a release requested during
+the hold fails even if the provider acknowledged it later. With H at 60, a
+release at 50 or 60 fails and a release at 61 does not; an independent fault may
+still release at 50, after the task exit and recovery marker.
+
+Retained cleanup snapshots are never reconciled with each other to complete a
+release receipt. In any retained snapshot, a victim-gate `fault_released` without
+a valid `atMs`, a `fault_released` without a `gateId`, or a fault row with release
+times but no `id` leaves the held interval unproven. So do two records with the
+same resolved owner and `sourceSequence` that disagree on `gateId` or `atMs`, and
+a selected recovery or peer whose platform `endedAtMs` changes between snapshots.
 
 Use static durable operation names. Routing uses fixture/scenario and immutable
 handler inputs. Run and case identifiers isolate evidence and controls;
@@ -289,6 +308,11 @@ and `mode: normal | emergency`. Its timestamp records the provider release
 acknowledgment or retained release confirmation. The fixture's release receipt
 and the provider's acknowledgment are observations from independent sources;
 either may arrive first, so their timestamps need not equal or order each other.
+Either fault inventory can also record the provider call’s optional
+`releaseRequestedAtMs` and `releaseAcknowledgedAtMs`, for every requirement. Each
+is a finite nonnegative number at or before `retirement.retiredAtMs`; within a
+row and across both inventories for one fault, the earliest request cannot follow
+the earliest acknowledgment.
 For example, a release request at 205, provider acknowledgment at 210, and fixture
 polling receipt at 215 are consistent with retirement at 220. Both supplied
 timestamps must be at or before `retirement.retiredAtMs`. An absent original release time

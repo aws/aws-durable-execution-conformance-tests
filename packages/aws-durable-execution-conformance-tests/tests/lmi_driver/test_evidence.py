@@ -1,4 +1,5 @@
 import copy
+from typing import Any
 
 import pytest
 
@@ -63,7 +64,7 @@ def test_different_environment_and_sequential_invocations_cannot_pass():
 
 def sources(raw, **cloud_fields):
     from types import SimpleNamespace
-    from typing import Any, cast
+    from typing import cast
 
     from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
 
@@ -421,3 +422,122 @@ def test_unsealed_gap_is_pending_during_collection():
     _, errors = case_sources.observations(pending=pending)
     assert errors == []
     assert pending == ["Raw source publication is incomplete for r1"]
+
+
+@pytest.mark.parametrize("release_gate", ["victim-gate", "release-all"])
+@pytest.mark.parametrize("state", ["PENDING", "ACKNOWLEDGED", "missing-intent", "reversed"])
+def test_recovery_fault_retains_first_release_intent_after_retry(release_gate, state):
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import _project_held_fault_release
+
+    records: list[dict[str, Any]] = [{"action": "hold", "gate": "victim-gate"}]
+    if state == "missing-intent":
+        records.append({"action": "release", "gate": release_gate, "time": 0.060, "state": "ACKNOWLEDGED"})
+    elif state == "reversed":
+        # An earlier pending call must not mask a later call's reversed pair.
+        records.append({"action": "release", "gate": release_gate, "started": 0.070, "state": "PENDING"})
+        records.append(
+            {"action": "release", "gate": release_gate, "started": 0.090, "time": 0.080, "state": "ACKNOWLEDGED"}
+        )
+    else:
+        records.append({"action": "release", "gate": release_gate, "started": 0.050, "state": "PENDING"})
+        if state == "ACKNOWLEDGED":
+            records.append({"action": "release", "gate": release_gate, "started": 0.070, "time": 0.080, "state": state})
+    records.append(
+        {"action": "release", "gate": "other-gate", "started": 0.010, "time": 0.020, "state": "ACKNOWLEDGED"}
+    )
+    fault: dict[str, Any] = {"id": "victim-gate", "ownerCaseId": "case"}
+    errors: list[str] = []
+    _project_held_fault_release(fault, records, errors)
+    if state == "missing-intent":
+        assert "releaseRequestedAtMs" not in fault
+        assert errors == ["Fault victim-gate release is missing a request timestamp"]
+        assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 60
+    elif state == "reversed":
+        assert errors == ["Fault victim-gate release acknowledgment precedes its request"]
+        assert fault["releaseRequestedAtMs"] == 70
+        assert "releaseAcknowledgedAtMs" not in fault
+    else:
+        assert errors == []
+        assert fault["releaseRequestedAtMs"] == 50
+        if state == "ACKNOWLEDGED":
+            assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 80
+        else:
+            assert "releasedAtMs" not in fault
+            assert "releaseAcknowledgedAtMs" not in fault
+
+
+def test_recovery_fault_keeps_an_earlier_fixture_receipt():
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import _project_held_fault_release
+
+    fault: dict[str, Any] = {"id": "victim-gate", "ownerCaseId": "case", "releasedAtMs": 75}
+    records = [{"action": "release", "gate": "victim-gate", "started": 0.070, "time": 0.080, "state": "ACKNOWLEDGED"}]
+    _project_held_fault_release(fault, records, [])
+    assert (fault["releasedAtMs"], fault["releaseAcknowledgedAtMs"]) == (75, 80)
+
+
+@pytest.mark.parametrize(
+    "requirement,scenario,expected",
+    [
+        ("lmi-lifecycle-4", "peer-recovery", {"releaseRequestedAtMs": 50.0, "releaseAcknowledgedAtMs": 80.0}),
+        ("lmi-lifecycle-3", "deadline-during-step", {"releaseRequestedAtMs": 70.0, "releaseAcknowledgedAtMs": 80.0}),
+    ],
+)
+def test_build_evidence_projects_held_fault_release_intents(tmp_path, requirement, scenario, expected):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from .support import build_evidence
+    from .test_shared_partial_evidence import context
+
+    ctx = context()
+    roles = ("victim", "peer", "recovery") if scenario == "peer-recovery" else ("victim", "retry")
+    ctx.scenario = replace(ctx.scenario, requirement_id=requirement, scenario=scenario, roles=roles)
+    cloud = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private", "conformanceRevision": "conformance"},
+        control_prefix="runs/run/cases/case/control/",
+        observation_ended_at=1,
+        retired_at=None,
+        source_uris={"memory://source"},
+        events={},
+        raw_histories={},
+        terminal_histories=set(),
+        control_records=[
+            {"action": "hold", "gate": "victim-gate"},
+            # A pending release-all intent counts for lifecycle 4 only.
+            {"action": "release", "gate": "release-all", "started": 0.050, "state": "PENDING"},
+            {"action": "release", "gate": "victim-gate", "started": 0.070, "time": 0.080, "state": "ACKNOWLEDGED"},
+            {"action": "release", "gate": "victim-gate", "time": 0.090, "state": "ACKNOWLEDGED"},
+        ],
+        invocations=[{"role": "victim", "payload": {"gate": "victim-gate"}}],
+        execution_results={},
+        artifacts_dir=tmp_path,
+        _save=lambda *args: None,
+    )
+    sources = SimpleNamespace(
+        observations=lambda **_: ([], []), histories=lambda **_: ([], {}, []), attempts=lambda *_, **__: ([], {}, [])
+    )
+    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
+        evidence = build_evidence(ctx, cloud)
+    fault = evidence["faultsCreated"][0]
+    assert {key: fault[key] for key in expected} == expected
+    missing = "Fault victim-gate release is missing a request timestamp"
+    assert (missing in evidence["collectionErrors"]) is (requirement == "lmi-lifecycle-4")
+
+
+def test_recovery_fault_release_calls_are_checked_against_retirement():
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import _project_held_fault_release
+
+    records = [
+        {"action": "release", "gate": "release-all", "started": 0.070, "time": 0.080, "state": "ACKNOWLEDGED"},
+        {"action": "release", "gate": "victim-gate", "started": 0.230, "time": 0.235, "state": "ACKNOWLEDGED"},
+    ]
+    fault: dict[str, Any] = {"id": "victim-gate", "ownerCaseId": "case"}
+    errors: list[str] = []
+    _project_held_fault_release(fault, records, errors, retired_at=0.220)
+    # The earliest call does not hide a later call after retirement.
+    assert (fault["releaseRequestedAtMs"], fault["releaseAcknowledgedAtMs"]) == (70, 80)
+    assert errors == [
+        "Fault victim-gate release was requested after retirement",
+        "Fault victim-gate release was acknowledged after retirement",
+    ]
