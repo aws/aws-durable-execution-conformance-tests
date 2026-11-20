@@ -1549,17 +1549,24 @@ def _evaluate_capture(
     *,
     retirement_evidence: Mapping[str, Any],
     cleanup_evidence: Mapping[str, Sequence[Mapping[str, Any]]],
-    validator: EvidenceValidator,
     standard: bool,
+    validator: EvidenceValidator | None = None,
     observation_evidence: Sequence[Mapping[str, Any]] = (),
     attempts: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[list[str], list[str], dict[str, Any]]:
-    """Evaluate captured evidence without querying a live target or mutating the capture."""
+    """Evaluate captured evidence without querying a live target or mutating the capture.
+
+    ``validator=None`` selects the shared standard rules, including the
+    lifecycle 2/7 allowance for retries proven during retirement. A supplied
+    validator is a custom suite policy and is applied as given.
+    """
+    shared_rules = validator is None
+    rules: EvidenceValidator = validate_evidence if validator is None else validator
     if not evidence:
         return [], ["INCOMPLETE: no captured observations"], {}
 
     try:
-        findings = list(validator(copy.deepcopy(dict(evidence)), phase="observations"))
+        findings = list(rules(copy.deepcopy(dict(evidence)), phase="observations"))
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError):
         return [], ["INCOMPLETE: malformed captured observations"], dict(evidence)
     retry_orderings: set[tuple[str, ...]] = set()
@@ -1664,18 +1671,14 @@ def _evaluate_capture(
             for attempt in attempts
         ):
             findings.append("INCOMPLETE: frozen observations do not cover all client-journaled launches")
-        if (
-            validator is validate_evidence
-            and standard
-            and evidence.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
-        ):
+        if shared_rules and standard and evidence.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7"):
             retired_requests: dict[str, set[str]] = {}
             if retirement_evidence and not validate_retirement_evidence(retirement_evidence):
                 for attempt in retirement_evidence["attempts"]:
                     retired_requests.setdefault(attempt["executionArn"], set()).add(attempt["requestId"])
             findings.extend(validate_evidence(final_evidence, retired_requests=retired_requests))
         else:
-            findings.extend(validator(copy.deepcopy(final_evidence), phase="final"))
+            findings.extend(rules(copy.deepcopy(final_evidence), phase="final"))
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError):
         findings.append("INCOMPLETE: malformed captured evidence")
     return observation_findings, list(dict.fromkeys(findings)), final_evidence
@@ -1686,12 +1689,17 @@ def evaluate_evidence(
     *,
     retirement_evidence: Mapping[str, Any],
     cleanup_evidence: Mapping[str, Sequence[Mapping[str, Any]]],
-    validator: EvidenceValidator,
     standard: bool,
+    validator: EvidenceValidator | None = None,
     observation_evidence: Sequence[Mapping[str, Any]] = (),
     attempts: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
-    """Evaluate captured evidence without querying or mutating the capture."""
+    """Evaluate captured evidence without querying or mutating the capture.
+
+    ``validator=None`` selects the shared standard rules. A supplied validator
+    is a custom suite policy and is applied as given, without the shared
+    lifecycle 2/7 retirement allowance, even if it is ``validate_evidence``.
+    """
     _, findings, _ = _evaluate_capture(
         evidence,
         retirement_evidence=retirement_evidence,
@@ -1744,14 +1752,19 @@ def adjudicate_evidence(
     *,
     retirement_evidence: Mapping[str, Any],
     cleanup_evidence: Mapping[str, Sequence[Mapping[str, Any]]],
-    validator: EvidenceValidator,
     standard: bool,
+    validator: EvidenceValidator | None = None,
     observation_evidence: Sequence[Mapping[str, Any]] = (),
     attempts: Sequence[Mapping[str, Any]] = (),
     trusted_observations: bool = False,
     observation_findings: Sequence[str] = (),
 ) -> tuple[str, list[str], dict[str, Any]]:
-    """Resolve a capture status with the shared offline verdict rules."""
+    """Resolve a capture status with the offline verdict rules.
+
+    ``validator=None`` selects the shared standard rules. A supplied validator
+    is a custom suite policy and is applied as given, without the shared
+    lifecycle 2/7 retirement allowance, even if it is ``validate_evidence``.
+    """
     observed, findings, projected = _evaluate_capture(
         evidence,
         retirement_evidence=retirement_evidence,

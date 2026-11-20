@@ -378,6 +378,12 @@ are released or quarantined, it writes frozen observations and separate cleanup
 evidence to `collected-evidence.json` and uses the offline evaluator to produce
 the final report. A journal row with status `COLLECTED` awaits that verdict.
 
+The coordinator only collects evidence and decides whether a target can be
+reused. Its `run_scenarios` API returns collection statuses and never reports
+`PASSED`. Live runs and `--collected-evidence` replays judge the coordinator's
+captures with the same offline evaluator. Standalone evidence files listed in
+the manifest are validated as described below.
+
 ## Offline lifecycle runner
 
 Re-evaluate a live evidence bundle without loading an adapter:

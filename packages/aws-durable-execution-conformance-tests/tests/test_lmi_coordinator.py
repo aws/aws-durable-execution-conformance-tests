@@ -5,8 +5,11 @@
 
 import asyncio
 import copy
+import inspect
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
+from runpy import run_path
 from typing import Any, Literal
 
 import pytest
@@ -21,6 +24,8 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ScenarioResult,
     run_scenarios,
 )
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
 
 PROFILE = Profile("native-2", "arn:aws:lambda:us-west-2:123:function:lmi:1", 2, 2, "sdk-sha", "config-sha")
 
@@ -165,7 +170,7 @@ class Adapter:
 
 
 def run(cases, adapter, *, profiles=(PROFILE,), **kwargs):
-    return asyncio.run(run_scenarios(cases, profiles, adapter, run_id="run-1", validator=validator, **kwargs))
+    return asyncio.run(run_and_adjudicate(cases, profiles, adapter, run_id="run-1", validator=validator, **kwargs))
 
 
 def test_shared_cases_overlap_prepare_once_and_keep_case_owned_cleanup():
@@ -642,13 +647,13 @@ def test_separate_runs_cannot_replace_an_artifact_with_live_owners():
         first_adapter = BlockingAdapter()
         next_adapter = Adapter()
         first = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("first")], [PROFILE], first_adapter, run_id="first", validator=validator, scheduler=scheduler
             )
         )
         await entered.wait()
         second = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("second")], [PROFILE], next_adapter, run_id="second", validator=validator, scheduler=scheduler
             )
         )
@@ -674,7 +679,7 @@ def test_cancelling_run_retires_owners_before_finishing_profile():
         adapter = BlockingAdapter()
         scheduler = ResourceScheduler()
         running = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("victim")], [PROFILE], adapter, run_id="cancelled", validator=validator, scheduler=scheduler
             )
         )
@@ -699,7 +704,7 @@ def test_cancellation_at_lease_acquisition_does_not_strand_resource_ownership():
         scheduler = ResourceScheduler()
         emitted: list[ScenarioResult] = []
         running = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("victim")],
                 [PROFILE],
                 adapter,
@@ -729,7 +734,7 @@ def test_cancellation_at_lease_acquisition_does_not_strand_resource_ownership():
             return True
 
         await scheduler.recover(PROFILE.resource_id, verify_no_launched_work)
-        following = await run_scenarios(
+        following = await run_and_adjudicate(
             [case("following")], [PROFILE], Adapter(), run_id="next", validator=validator, scheduler=scheduler
         )
         assert following[0].status == "PASSED", following[0].errors
@@ -750,7 +755,7 @@ def test_case_lease_timeout_retains_phase_error_and_timing_without_quarantine():
                 waiter_finished.set()
 
         adapter = HoldingAdapter()
-        results = await run_scenarios(
+        results = await run_and_adjudicate(
             [case("holding", exclusive=True), case("waiting")],
             [PROFILE],
             adapter,
@@ -885,7 +890,7 @@ def test_queued_exclusive_profile_does_not_consume_other_profiles_scenario_slots
                     other_progressed.set()
 
         adapter = IndependentAdapter()
-        results = await run_scenarios(
+        results = await run_and_adjudicate(
             [case("exclusive", exclusive=True), case("queued"), case("independent", profile=other)],
             [PROFILE, other],
             adapter,
@@ -918,7 +923,7 @@ def test_attempt_sink_runs_before_transport_and_preserves_cancelled_result():
                 await asyncio.sleep(60)
 
         task = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("victim")],
                 [PROFILE],
                 JournalAdapter(),
@@ -1076,7 +1081,7 @@ def test_runs_sharing_a_scheduler_keep_separate_work_budgets():
         scheduler = ResourceScheduler()
         first, second = SlowAdapter(), SlowAdapter()
         await asyncio.gather(
-            run_scenarios(
+            run_and_adjudicate(
                 [case(f"s{i}", profile=serial) for i in range(3)],
                 [serial],
                 first,
@@ -1085,7 +1090,7 @@ def test_runs_sharing_a_scheduler_keep_separate_work_budgets():
                 scenario_concurrency=1,
                 scheduler=scheduler,
             ),
-            run_scenarios(
+            run_and_adjudicate(
                 [case(f"w{i}", profile=wide) for i in range(3)],
                 [wide],
                 second,
@@ -1113,7 +1118,7 @@ def test_cancellation_during_preparation_reports_waiting_cases():
 
     async def exercise():
         run = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("waiting")],
                 [PROFILE],
                 BlockedPreparation(),
@@ -1160,7 +1165,7 @@ def test_single_run_cancellation_allows_slower_case_retirement_to_finish():
         adapter = UnevenRetirement()
         reported: list[ScenarioResult] = []
         running = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("fast"), case("slow")],
                 [PROFILE],
                 adapter,
@@ -1533,7 +1538,7 @@ def test_finish_is_skipped_when_target_admission_prevents_prepare():
         lease = await scheduler.acquire(PROFILE.resource_id, "active")
         adapter = Adapter()
         try:
-            result = await run_scenarios(
+            result = await run_and_adjudicate(
                 [case("one")],
                 [PROFILE],
                 adapter,
@@ -1608,7 +1613,7 @@ def test_recover_waits_until_residual_adapter_task_has_settled():
             assert exited.is_set()
             return True
 
-        result = await run_scenarios(
+        result = await run_and_adjudicate(
             [case("one")],
             [PROFILE],
             InterruptedAdapter(),
@@ -1652,7 +1657,7 @@ def test_public_deployment_waits_until_run_finishes():
 
         async with asyncio.timeout(2):
             run_task = asyncio.create_task(
-                run_scenarios(
+                run_and_adjudicate(
                     [case("one")],
                     [PROFILE],
                     BlockingAdapter(),
@@ -1713,7 +1718,7 @@ def test_normal_post_window_completion_does_not_require_independent_proof():
         value["caseId"], value["requirementId"], profile.profile_id, "fixture", roles=tuple(value["selectedRequests"])
     )
     results = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [scenario],
             [profile],
             CompletionAdapter(),
@@ -1946,7 +1951,7 @@ def test_repeated_cancellation_during_retirement_cannot_strand_profile():
 
         adapter = SlowRetirement()
         task = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("one")],
                 [PROFILE],
                 adapter,
@@ -2086,7 +2091,7 @@ def test_cancelled_drain_does_not_spin_when_finishing_profile():
                 await asyncio.Event().wait()
 
         running = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("one")],
                 [PROFILE],
                 BlockingFinish(),
@@ -2229,7 +2234,9 @@ def test_cancelled_drain_allows_case_retirement_and_finishes_profile():
         adapter = BlockingRetirement()
         scheduler = ResourceScheduler()
         running = asyncio.create_task(
-            run_scenarios([case("one")], [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler)
+            run_and_adjudicate(
+                [case("one")], [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler
+            )
         )
         async with asyncio.timeout(2):
             await executing.wait()
@@ -2312,7 +2319,7 @@ def test_finished_profile_releases_cross_run_ownership_while_other_profile_runs(
 
         adapter = BlockingOther()
         run = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [case("fast"), case("slow", profile=other)],
                 [PROFILE, other],
                 adapter,
@@ -2323,7 +2330,7 @@ def test_finished_profile_releases_cross_run_ownership_while_other_profile_runs(
         )
         try:
             await running.wait()
-            result = await run_scenarios(
+            result = await run_and_adjudicate(
                 [case("next")],
                 [PROFILE],
                 Adapter(),
@@ -2416,7 +2423,10 @@ def test_cleanup_cannot_erase_invalid_fault_release(released, diagnostic):
     assert adapter.finished == [(PROFILE.profile_id, False)]
 
 
-def test_no_validator_reports_collected_and_deduplicates_unchanged_observations():
+def test_coordinator_reports_collected_and_deduplicates_unchanged_observations():
+    # Conformance verdicts come only from the offline evaluator.
+    assert "validator" not in inspect.signature(run_scenarios).parameters
+
     class ConstantObservations(Adapter):
         async def start(self, context):
             await super().start(context)

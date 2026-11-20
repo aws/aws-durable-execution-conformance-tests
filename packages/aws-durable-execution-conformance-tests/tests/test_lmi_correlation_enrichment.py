@@ -18,9 +18,10 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Scenario,
     ScenarioContext,
     ScenarioResult,
-    run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
 
 
 def _warm_evidence() -> dict[str, Any]:
@@ -146,7 +147,7 @@ def _run(adapter: CorrelationAdapter) -> tuple[ScenarioResult, ResourceScheduler
     )
     scheduler = ResourceScheduler()
     (result,) = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [case],
             [profile],
             adapter,

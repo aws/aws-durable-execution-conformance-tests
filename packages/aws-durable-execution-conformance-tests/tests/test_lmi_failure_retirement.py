@@ -22,7 +22,6 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ScenarioContext,
     ScenarioResult,
     _event_frames_order_changed,
-    run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
@@ -32,6 +31,8 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
 
 PROFILE = Profile("native-1", "arn:function:c1", 1, 1, "sdk@sha256:tested", "sha256:configuration")
 ORIGINAL_FAILURE = "ASSERTION: original SDK behavior failed"
@@ -264,7 +265,7 @@ def _run(
     scheduler = ResourceScheduler()
     cases = [_case("failed", retry=retry), _case("next")]
     results = asyncio.run(
-        run_scenarios(cases, [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler)
+        run_and_adjudicate(cases, [PROFILE], adapter, run_id="run", validator=validator, scheduler=scheduler)
     )
     return results, scheduler
 
@@ -434,7 +435,7 @@ def _run_standard_cleanup_discovery(
     scheduler = ResourceScheduler()
 
     async def exercise() -> ScenarioResult:
-        results = await run_scenarios(
+        results = await run_and_adjudicate(
             [case], [profile], Adapter(), run_id=value["runId"], validator=validator, scheduler=scheduler
         )
         # A conformance failure is distinct from residual physical work.
@@ -2011,7 +2012,7 @@ def test_cancelled_collectors_retain_discoveries_from_replaced_input_objects(
 
     async def exercise() -> None:
         try:
-            await run_scenarios(
+            await run_and_adjudicate(
                 [_case("failed")],
                 [PROFILE],
                 adapter,
@@ -2281,7 +2282,7 @@ def test_cleanup_cannot_change_reported_case_or_deployment_identity(
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     scheduler = ResourceScheduler()
     failed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2316,7 +2317,7 @@ def test_cleanup_accepts_unchanged_and_completed_identity_metadata(
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     scheduler = ResourceScheduler()
     result, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2335,7 +2336,7 @@ def test_cleanup_accepts_unchanged_and_completed_identity_metadata(
 def test_cleanup_identity_checks_use_frozen_admission_when_context_changes(phase: str) -> None:
     adapter = CleanupIdentityAdapter(phase, ("runId",), "other-run", restore=True, mutate_context=True)
     failed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [PROFILE],
             adapter,
@@ -2357,7 +2358,7 @@ def test_cleanup_recovery_policy_uses_declared_admission_when_not_observed_earli
     adapter = InitiallyUndeclaredAdapter("retire", ("profile", "recoveryPolicy"), "replace-worker")
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     failed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2392,7 +2393,7 @@ def test_cleanup_identity_failure_does_not_block_other_profiles() -> None:
     adapter = IsolatedAdapter("release", ("artifact", "sdk"), "sdk@other", restore=True)
     scheduler = ResourceScheduler()
     failed, following, independent = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next"), replace(_case("independent"), profile_id=other.profile_id)],
             [PROFILE, other],
             adapter,
@@ -2432,7 +2433,7 @@ def test_duplicate_native_ownership_quarantines_before_profile_finish() -> None:
     adapter = DuplicateAdapter()
     scheduler = ResourceScheduler()
     results = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("first"), _case("second")],
             [PROFILE],
             adapter,
@@ -2479,7 +2480,7 @@ def test_independent_retirement_cannot_change_frozen_deployment_identity(path: t
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     scheduler = ResourceScheduler()
     failed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2510,7 +2511,7 @@ def test_independent_retirement_policy_cannot_be_authorized_by_mutating_context(
     )
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     failed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2542,7 +2543,7 @@ def test_independent_retirement_can_fill_unobserved_identity_metadata(path: tupl
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     scheduler = ResourceScheduler()
     result, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [profile],
             adapter,
@@ -2639,7 +2640,7 @@ def test_cleanup_source_failures_remain_visible_and_quarantine_only_their_profil
     scheduler = ResourceScheduler()
     cases = [_case("failed"), _case("next"), replace(_case("unrelated"), profile_id=other.profile_id)]
     first, following, unrelated = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             cases,
             [PROFILE, other],
             adapter,
@@ -2902,7 +2903,7 @@ def test_malformed_cleanup_context_preserves_results_and_quarantines_only_its_ta
     emitted: list[ScenarioResult] = []
     cases = [_case("failed"), _case("next"), replace(_case("unrelated"), profile_id=other.profile_id)]
     failed, following, unrelated = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             cases,
             [PROFILE, other],
             adapter,
@@ -2944,7 +2945,7 @@ def test_interrupted_phase_cannot_use_a_cleanup_snapshot_to_bypass_quarantine(ca
         scheduler = ResourceScheduler()
         observed: list[ScenarioResult] = []
         running = asyncio.create_task(
-            run_scenarios(
+            run_and_adjudicate(
                 [_case("failed")],
                 [PROFILE],
                 adapter,
@@ -3148,7 +3149,7 @@ def test_pending_invocation_and_its_resume_keep_independent_native_outcomes() ->
     scheduler = ResourceScheduler()
     cases = [replace(_case("failed"), roles=("victim", "resume")), _case("next")]
     observed, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             cases,
             [PROFILE],
             adapter,
@@ -4461,7 +4462,7 @@ def test_collection_cannot_rewrite_a_predeclared_history_expectation(
 
     adapter = RewrittenExpectationAdapter(phase="none" if phase == "normal" else "placement")
     results = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [PROFILE],
             adapter,
@@ -4530,7 +4531,7 @@ def test_collection_can_add_an_expectation_for_a_newly_observed_execution(phase:
 
     adapter = AdditionalExecutionAdapter(phase="none" if phase == "normal" else "placement")
     collected, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [PROFILE],
             adapter,
@@ -4744,7 +4745,7 @@ def test_retained_immutable_conflicts_survive_a_later_matching_collection(phase:
 
     adapter = ConflictingContextAdapter(phase="placement" if phase == "partial" else "none")
     collected, following = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed"), _case("next")],
             [PROFILE],
             adapter,
@@ -4794,7 +4795,7 @@ def test_provisional_context_omissions_do_not_invent_immutable_conflicts(phase: 
             return self.observations(context)
 
     results = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed")],
             [PROFILE],
             IncompleteContextAdapter(phase="none"),
@@ -4955,7 +4956,7 @@ def test_status_only_completion_retains_present_outcomes_before_a_later_phase(
     adapter = StatusOnlyCompletionAdapter(phase="none")
     scheduler = ResourceScheduler()
     (collected,) = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [_case("failed")],
             [PROFILE],
             adapter,
@@ -5400,7 +5401,7 @@ def test_cleanup_common_record_late_native_binding_can_establish_physical_retire
         return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
 
     async def exercise() -> ScenarioResult:
-        (result,) = await run_scenarios(
+        (result,) = await run_and_adjudicate(
             [case], [profile], Adapter(), run_id=value["runId"], validator=validator, scheduler=scheduler
         )
         lease = await scheduler.acquire(profile.resource_id, "subsequent-case", exclusive=True, timeout=0.1)
@@ -6018,10 +6019,8 @@ def test_cleanup_recovery_rejects_two_recoveries_in_one_snapshot() -> None:
     )
 
 
-def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
-    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
-    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
-
+def _lifecycle_7_retirement_retry() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A lifecycle 7 capture whose service retry is proven only by the retirement snapshot."""
     original = _standard_retirement_snapshot("failure_evidence")
     first = original["attempts"][0]
     arn = first["executionArn"]
@@ -6052,15 +6051,57 @@ def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
     )
     next(row for row in snapshot["retirement"]["resources"] if row["id"] == arn).update(outcome="SUCCEEDED")
     _resequence(snapshot)
+    return original, snapshot
+
+
+def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
+    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
+
+    original, snapshot = _lifecycle_7_retirement_retry()
     assert validate_retirement_evidence(snapshot) == []
     errors = evaluate_evidence(
         original,
         retirement_evidence=snapshot,
         cleanup_evidence={},
-        validator=validate_evidence,
         standard=True,
     )
     assert errors == []
+    # Retry-order observations must not change which rules apply.
+    frames = [
+        {"replay": {"retry": {"operationId": "retry", "attempts": [{"attemptId": a}, {"attemptId": b}]}}}
+        for a, b in (("first-1", "first-2"), ("second-1", "second-2"))
+    ]
+    assert (
+        evaluate_evidence(
+            original, retirement_evidence=snapshot, cleanup_evidence={}, standard=True, observation_evidence=frames
+        )
+        == []
+    )
+
+    marker = "ASSERTION: custom suite policy applied"
+
+    def custom(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        findings = validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
+        return [*findings, marker] if phase == "final" else findings
+
+    class FalseyCustom:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+            return custom(evidence, phase=phase)
+
+    # The retirement allowance is part of the shared rules, selected explicitly
+    # with validator=None. A custom suite policy is applied exactly as supplied,
+    # even when the policy object is falsey.
+    disagreement = "ASSERTION: terminal retirement outcome disagrees with the single disposal invocation"
+    for policy in (custom, FalseyCustom()):
+        findings = evaluate_evidence(
+            original, retirement_evidence=snapshot, cleanup_evidence={}, standard=True, validator=policy
+        )
+        assert disagreement in findings
+        assert marker in findings
 
 
 @pytest.mark.parametrize("cleanup_history", ["status-only", "contradicting-result"])
@@ -6084,7 +6125,6 @@ def test_partial_cleanup_history_only_fails_on_supplied_contradictions(cleanup_h
         original,
         retirement_evidence={},
         cleanup_evidence={"retire": [frame]},
-        validator=validate_evidence,
         standard=True,
     )
     if cleanup_history == "status-only":

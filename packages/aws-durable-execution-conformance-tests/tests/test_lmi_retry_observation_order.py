@@ -18,9 +18,10 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Scenario,
     ScenarioContext,
     ScenarioResult,
-    run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import same_json, validate_evidence
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
 
 
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
@@ -126,7 +127,7 @@ def _run(adapter: RetryObservationAdapter) -> tuple[ScenarioResult, ResourceSche
     )
     scheduler = ResourceScheduler()
     (result,) = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [case],
             [profile],
             adapter,

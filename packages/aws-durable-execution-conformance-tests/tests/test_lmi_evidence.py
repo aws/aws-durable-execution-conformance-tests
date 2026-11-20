@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
+from collections.abc import Sequence
 from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Literal
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioResult, run_scenarios
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    EvidenceValidator,
     _Evidence,
     same_json,
     validate_common_evidence,
@@ -17,6 +20,39 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence, evaluate_evidence
+
+
+async def run_and_adjudicate(
+    scenarios: Sequence[Scenario],
+    profiles: Sequence[Profile],
+    adapter: Any,
+    *,
+    validator: EvidenceValidator | None = None,
+    **options: Any,
+) -> list[ScenarioResult]:
+    """Collect with the coordinator, then apply the offline verdict to each capture.
+
+    The coordinator reports only collection outcomes. Tests that assert a
+    verdict use the same evaluator as the CLI; ``validator=None`` selects the
+    shared standard rules.
+    """
+    outcomes = await run_scenarios(scenarios, profiles, adapter, **options)
+    standard = {case.case_id: case.coverage_profile == "standard" for case in scenarios}
+    for result in outcomes:
+        if result.evidence:
+            result.status, result.errors, result.evidence = adjudicate_evidence(
+                result.status,
+                result.errors,
+                result.evidence,
+                retirement_evidence=result.retirement_evidence,
+                cleanup_evidence=result.cleanup_evidence,
+                observation_evidence=result.observation_evidence,
+                attempts=result.attempts,
+                validator=validator,
+                standard=standard[result.case_id],
+                trusted_observations=result.trusted_observations,
+            )
+    return outcomes
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:
@@ -3059,7 +3095,6 @@ def test_offline_checks_retained_terminal_settlement_against_observation_window(
         frozen,
         retirement_evidence=independent,
         cleanup_evidence={"release": [retained]},
-        validator=validate_evidence,
         standard=True,
     )
 
@@ -3078,7 +3113,6 @@ def test_offline_deadline_budget_targets_the_controlled_task() -> None:
         frozen,
         retirement_evidence=independent,
         cleanup_evidence={},
-        validator=validate_evidence,
         standard=True,
     )
     assert not any(
@@ -3097,7 +3131,6 @@ def test_offline_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str
         frozen,
         retirement_evidence=independent,
         cleanup_evidence={},
-        validator=validate_evidence,
         standard=True,
     )
     assert any(f"needs exactly one {kind} event" in finding for finding in findings)
@@ -3109,9 +3142,7 @@ def test_offline_overlap_excludes_retries_in_frozen_window(start: int, fails: bo
     independent = deepcopy(frozen)
     victim = frozen["attempts"][0]
     independent["attempts"].append({**victim, "requestId": "extra", "attempt": 2, "startedAtMs": start})
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
-    )
+    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
     assert any("original successful execution without retry" in item for item in findings) is fails
 
 
@@ -3123,9 +3154,7 @@ def test_offline_lifecycle_grace_uses_frozen_observation_window(requirement: int
     independent = deepcopy(frozen)
     independent["observationEndedAtMs"] = 201
     next(row for row in independent["events"] if row["kind"] == boundary_kind)["atMs"] = fixed_at
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
-    )
+    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
     assert any("cleanup observation window lacks the declared grace after" in item for item in findings)
 
 
@@ -3134,9 +3163,7 @@ def test_offline_rejects_multiple_disposal_root_completions_in_one_frame() -> No
     independent = deepcopy(frozen)
     root = next(row for row in independent["events"] if row["kind"] == "root_completed")
     independent["events"].append({**root, "atMs": 36})
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=independent, cleanup_evidence={}, validator=validate_evidence, standard=True
-    )
+    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
     assert any("needs exactly one root_completed event" in item for item in findings)
 
 
@@ -3165,7 +3192,6 @@ def test_offline_invalid_retirement_completion_is_incomplete(invalid: Any) -> No
         frozen,
         retirement_evidence=retirement,
         cleanup_evidence={},
-        validator=validate_evidence,
         standard=True,
     )
     assert status == "INCOMPLETE_EVIDENCE", findings
@@ -3182,7 +3208,6 @@ def test_offline_retains_trustworthy_behavior_failure_after_cleanup_error(truste
         frozen,
         retirement_evidence={},
         cleanup_evidence={},
-        validator=validate_evidence,
         standard=True,
         trusted_observations=trusted,
     )

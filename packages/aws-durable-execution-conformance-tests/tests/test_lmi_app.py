@@ -1090,3 +1090,37 @@ def test_collected_replay_reports_wrong_victim_outcome_as_failed():
     result = collected_evidence_results(plan, [capture])[0]
     assert result["status"] == "FAILED", result["errors"]
     assert "ASSERTION: normal-failure requires the selected victim outcome FAILED" in result["errors"]
+
+
+def test_collected_replay_applies_shared_retirement_allowance_by_default():
+    from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
+
+    retirement = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
+    value, snapshot = retirement["_lifecycle_7_retirement_retry"]()
+    plan = manifest()
+    plan["runtime"] = value["runtime"]
+    case = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")
+    plan["scenarios"] = [case]
+    case.update(case_id=value["caseId"], roles=list(value["selectedRequests"]))
+    plan["profiles"][1].update(
+        resource_id=value["profile"]["functionArn"],
+        configuration_id=value["profile"]["configurationDigest"],
+        artifact_id=value["artifact"]["sdk"],
+    )
+    retry = next(row for row in snapshot["attempts"] if row["requestId"] == "service-retry")
+    journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
+    journal.append(
+        {key: retry[key] for key in ("requestId", "executionArn", "role", "attempt")} | {"discoveredAtMs": 207}
+    )
+    capture = {
+        **{key: case[key] for key in ("case_id", "requirement_id", "profile_id")},
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": value,
+        "retirement_evidence": snapshot,
+        "attempts": journal,
+    }
+    # The CLI selects the shared rules, so a service retry proven during
+    # retirement is accepted as the single disposal invocation's successor.
+    result = collected_evidence_results(plan, [capture])[0]
+    assert result["status"] == "PASSED", result["errors"]

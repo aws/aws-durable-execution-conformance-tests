@@ -756,7 +756,7 @@ def collected_evidence_results(
                     cleanup_evidence=cleanup,
                     observation_evidence=observations,
                     attempts=attempts,
-                    validator=suite.validator if suite else validate_evidence,
+                    validator=suite.validator if suite else None,
                     standard=manifest.get("coverageProfile", "standard") == "standard",
                 )
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:

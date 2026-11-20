@@ -28,7 +28,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
     SCHEMA_VERSION,
     TERMINAL_STATUSES,
-    EvidenceValidator,
     is_json_integer,
     normalize_retirement_events,
     retained_fault_releases,
@@ -1880,7 +1879,6 @@ async def run_scenarios(
     adapter: ScenarioAdapter,
     *,
     run_id: str,
-    validator: EvidenceValidator | None = None,
     scenario_concurrency: int = 8,
     budgets: Budgets | None = None,
     scheduler: ResourceScheduler | None = None,
@@ -1889,6 +1887,12 @@ async def run_scenarios(
     validate_attempt: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> list[ScenarioResult]:
     """Prepare each profile once, then run compatible cases concurrently.
+
+    The coordinator collects evidence and decides physical target reuse; it
+    never decides conformance. Results carry collection statuses, never
+    ``PASSED``. Verdicts for these captures come only from the offline
+    evaluator, through ``lmi.app.live_results`` or
+    ``lmi.app.collected_evidence_results``.
 
     Results preserve pre-release failures. Normal final collection can only add
     the retirement record. Failed cases and cleanup discoveries retain a separate
@@ -2646,25 +2650,4 @@ async def run_scenarios(
         draining.result()
         if cancellation is not None:
             raise cancellation
-
-    if validator is not None:
-        from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence
-
-        for result in outcomes:
-            if result.evidence:
-                capture_status = result.status
-                result.status, result.errors, projected = adjudicate_evidence(
-                    capture_status,
-                    result.errors,
-                    result.evidence,
-                    retirement_evidence=result.retirement_evidence,
-                    cleanup_evidence=result.cleanup_evidence,
-                    observation_evidence=result.observation_evidence,
-                    attempts=result.attempts,
-                    validator=validator,
-                    standard=contexts[result.case_id].scenario.coverage_profile == "standard",
-                    trusted_observations=result.trusted_observations,
-                )
-                result.evidence = projected
-                emit(result)
     return outcomes
