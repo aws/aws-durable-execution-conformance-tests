@@ -6061,3 +6061,60 @@ def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
         standard=True,
     )
     assert errors == []
+
+
+@pytest.mark.parametrize("cleanup_history", ["status-only", "contradicting-result"])
+def test_partial_cleanup_history_only_fails_on_supplied_contradictions(cleanup_history: str) -> None:
+    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
+
+    original = _standard_retirement_snapshot("evidence")
+    # Executions that settle inside the observation window are rechecked
+    # against their fixture expectations in every cleanup snapshot.
+    for row in original["retirement"]["resources"]:
+        if row["kind"] == "execution":
+            row["settledAtMs"] = original["observationEndedAtMs"] - 10
+    assert validate_evidence(original) == []
+    frame = deepcopy(original)
+    frame["histories"] = [
+        {"executionArn": history["executionArn"], "status": history["status"]} for history in frame["histories"]
+    ]
+    if cleanup_history == "contradicting-result":
+        frame["histories"][0]["result"] = {"marker": "unexpected"}
+    errors = evaluate_evidence(
+        original,
+        retirement_evidence={},
+        cleanup_evidence={"retire": [frame]},
+        validator=validate_evidence,
+        standard=True,
+    )
+    if cleanup_history == "status-only":
+        assert errors == []
+    else:
+        arn = frame["histories"][0]["executionArn"]
+        assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in errors
+
+
+@pytest.mark.parametrize("frozen_status", ["SUCCEEDED", "RUNNING"])
+@pytest.mark.parametrize("cleanup_result", ["omitted", "expected", "unexpected"])
+def test_in_window_terminal_history_must_supply_declared_fields(frozen_status: str, cleanup_result: str) -> None:
+    arn = "arn:execution:victim"
+    declared = {"marker": "victim"}
+    original = {
+        "expectedHistories": {arn: {"allowedStatuses": ["RUNNING", "SUCCEEDED"], "result": declared}},
+        "observationEndedAtMs": 200,
+        # A nonterminal frozen view can match the declared result without
+        # proving the result of the terminal execution.
+        "histories": [{"executionArn": arn, "status": frozen_status, "result": declared}],
+    }
+    row: dict[str, Any] = {"executionArn": arn, "status": "SUCCEEDED"}
+    if cleanup_result != "omitted":
+        row["result"] = declared if cleanup_result == "expected" else {"marker": "unexpected"}
+    snapshot = {
+        "histories": [row],
+        "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
+    }
+    findings = _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
+    contradiction = f"ASSERTION: service history {arn}.result differs from the fixture expectation"
+    missing = f"INCOMPLETE: terminal service history {arn} lacks declared result"
+    assert (contradiction in findings) is (cleanup_result == "unexpected")
+    assert (missing in findings) is (cleanup_result == "omitted" and frozen_status == "RUNNING")

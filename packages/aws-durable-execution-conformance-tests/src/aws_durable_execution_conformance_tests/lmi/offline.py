@@ -625,6 +625,13 @@ def _cleanup_behavior_errors(
         expectations = original.get("expectedHistories")
         window = timestamp(original.get("observationEndedAtMs"))
         if isinstance(expectations, Mapping) and window is not None:
+            frozen_histories = {
+                history["executionArn"]: history
+                for history in records(original.get("histories"))
+                if isinstance(history.get("executionArn"), str)
+            }
+            # Fields supplied by terminal observations of each settled execution.
+            terminal_fields: dict[str, set[str]] = {}
             for source in admission_sources:
                 retirement = source.get("retirement")
                 if not isinstance(retirement, Mapping):
@@ -652,12 +659,30 @@ def _cleanup_behavior_errors(
                         continue
                     history = histories.get(arn, {})
                     if history.get("status") == outcome:
-                        findings.extend(_history_expectation_mismatches(arn, history, expectation))
+                        # A cleanup row may be partial: only its supplied fields
+                        # can contradict the expectation. Declared fields must
+                        # still come from some terminal observation below.
+                        supplied = {
+                            key: item
+                            for key, item in expectation.items()
+                            if key in ("status", "allowedStatuses") or key in history
+                        }
+                        findings.extend(_history_expectation_mismatches(arn, history, supplied))
+                        if arn not in terminal_fields:
+                            frozen = frozen_histories.get(arn, {})
+                            terminal_fields[arn] = set(frozen) if frozen.get("status") == outcome else set()
+                        terminal_fields[arn].update(history)
                     else:
                         status_expectation = {
                             key: expectation[key] for key in ("status", "allowedStatuses") if key in expectation
                         }
                         findings.extend(_history_expectation_mismatches(arn, {"status": outcome}, status_expectation))
+            for arn, observed in terminal_fields.items():
+                missing = sorted(
+                    key for key in expectations[arn] if key not in ("status", "allowedStatuses") and key not in observed
+                )
+                if missing:
+                    findings.append(f"INCOMPLETE: terminal service history {arn} lacks declared {', '.join(missing)}")
         request_frames = [records(source.get("sdkRequests")) for source in admission_sources]
         for source in admission_sources:
             for event in records(source.get("events")):
