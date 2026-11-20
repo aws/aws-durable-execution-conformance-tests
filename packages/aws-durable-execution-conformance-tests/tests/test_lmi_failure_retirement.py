@@ -5729,6 +5729,43 @@ def test_in_place_retirement_must_audit_service_only_deferred_request():
     assert any("independent retirement evidence" in error for error in first.errors)
 
 
+@pytest.mark.parametrize("deferred", [None, {}, [None], [{"requestId": "", "executionArn": "owned"}]])
+def test_malformed_deferred_requests_keep_the_target_fenced(deferred: Any) -> None:
+    class MalformedDeferralAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["collection"]["deferredServiceRequests"] = deferred
+            return observed
+
+    adapter = MalformedDeferralAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status != "PASSED"
+    assert any("Deferred service request reconciliation" in error for error in first.errors), first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert adapter.finished == [False]
+
+
+def test_unreleased_case_lease_keeps_the_target_fenced(monkeypatch: pytest.MonkeyPatch) -> None:
+    import aws_durable_execution_conformance_tests.lmi.coordinator as coordinator
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("audit crashed before lease release")
+
+    monkeypatch.setattr(coordinator, "_ownership_claims", fail)
+    adapter = FailureAdapter(phase="assertion")
+    scheduler = ResourceScheduler()
+    with pytest.raises(RuntimeError, match="audit crashed"):
+        asyncio.run(
+            run_scenarios(
+                [_case("failed")], [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler
+            )
+        )
+    reason = scheduler.quarantine_reason(PROFILE.resource_id)
+    assert reason and "was not released" in reason
+    assert adapter.finished == [False]
+
+
 def test_no_work_missing_fixture_permits_later_case_on_same_target():
     class MissingThenSupported(FailureAdapter):
         async def start(self, context: ScenarioContext) -> None:

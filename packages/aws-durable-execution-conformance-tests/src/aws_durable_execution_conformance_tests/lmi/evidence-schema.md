@@ -266,11 +266,23 @@ enforces the same correspondence; a settlement entry alone cannot account for
 an unobserved invocation or execution.
 `retirement.resources` matches every created resource exactly once, preserving
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
-be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,
-or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle ownership.
-An execution's settlement must be at or after its service history's `startedAtMs`
-when supplied. Native admission is a separate boundary and does not substitute
-for missing service-start metadata.
+be `QUIESCENT` or `UNDISPATCHED`; executions must have terminal `SUCCEEDED`, `FAILED`,
+`TIMED_OUT`, or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle
+ownership. An execution's settlement must be at or after its service history's
+`startedAtMs` when supplied. Native admission is a separate boundary and does
+not substitute for missing service-start metadata.
+
+An invocation the service rejected before any handler ran may settle as
+`UNDISPATCHED`, in physical retirement only. `executionArn` is the owned
+execution whose history holds the request's only `InvocationCompleted` event.
+`sourceEventId` is that event's `EventId`. `serviceErrorType` is its
+`Error.Payload.ErrorType` and must exactly match the validator's allowlist.
+`startedAtMs` and `settledAtMs` are its normalized `StartTimestamp` and
+`EndTimestamp`, with `settledAtMs <= retiredAtMs`. `evidenceUri` is the
+retained raw history, listed in `collection.evidenceUris`. The request has no
+attempt, event, SDK request or completion. Behavior validation reports every
+`UNDISPATCHED` invocation as INCOMPLETE; it never satisfies a role, attempt or
+deferred-request obligation.
 Durable callbacks use `kind: callback` and require an observed `SUCCEEDED`,
 `FAILED`, or `TIMED_OUT` outcome; their `evidenceUri` retains the service completion
 record. Case-owned control objects use `kind: control` and require `DELETED`,
@@ -361,6 +373,14 @@ outcome. Only invocation, execution, callback, and control resource kinds have
 completion contracts in this audit; an unknown retained resource kind cannot
 permit target reuse. Successful retirement does not clear failed behavior
 assertions, and unresolved completion keeps the target quarantined.
+
+A proven `UNDISPATCHED` invocation is exempt from the entry/exit/sequence
+completion contract above: the service's own rejection record, not a wrapper
+stream, is its proof. The audit still requires its `executionArn`,
+`serviceErrorType`, `sourceEventId`, `startedAtMs`, and `settledAtMs` to be
+internally consistent and that no event, SDK request, `observedDuringRequestId`,
+or retirement completion names the request. This settles physical retirement
+only; behavior validation always reports it INCOMPLETE.
 
 
 An independent retirement snapshot may mark `retirement.mode` as

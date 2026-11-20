@@ -1338,7 +1338,7 @@ def _retirement_ownership_errors(
         errors.append("Retirement runtime differs from the original observations")
     errors.extend(retirement_artifact_errors(original, final))
     errors.extend(active_pre_cutoff_errors(original, final))
-    errors.extend(deferred_retirement_errors(original, final))
+    errors.extend(deferred_retirement_errors(original, final, undispatched=True))
     original_attempts = original.get("attempts", [])
     observed = final.get("attempts", [])
     if not isinstance(original_attempts, list) or not isinstance(observed, list):
@@ -1862,7 +1862,7 @@ def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Map
         if isinstance(item, Mapping) and isinstance(item.get("id"), str)
     }
     terminal_outcomes = {
-        "invocation": ("QUIESCENT",),
+        "invocation": ("QUIESCENT", "UNDISPATCHED"),
         "execution": TERMINAL_STATUSES,
         "callback": ("SUCCEEDED", "FAILED", "TIMED_OUT"),
         "control": ("DELETED",),
@@ -2536,23 +2536,29 @@ async def run_scenarios(
                         snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
-                journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
-                if journaled_late:
-                    deferred = deferred_service_requests(evidence)
-                    deferred.update(
-                        {
-                            item["requestId"]: item["executionArn"]
-                            for item in context.attempts
-                            if item.get("requestId") in journaled_late
-                        }
+                # Adapter evidence is untrusted. A malformed deferral must fail
+                # retirement here; raising would skip the non-quiescent release.
+                try:
+                    journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
+                    if journaled_late:
+                        deferred = deferred_service_requests(evidence)
+                        deferred.update(
+                            {
+                                item["requestId"]: item["executionArn"]
+                                for item in context.attempts
+                                if item.get("requestId") in journaled_late
+                            }
+                        )
+                        evidence.setdefault("collection", {})["deferredServiceRequests"] = [
+                            {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
+                        ]
+                    full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
+                        isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
+                        for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
                     )
-                    evidence.setdefault("collection", {})["deferredServiceRequests"] = [
-                        {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
-                    ]
-                full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
-                    isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
-                    for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
-                )
+                except Exception as exc:
+                    cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
+                    full_runtime_audit_required = True
                 supplied_retirement = context.retirement_evidence
                 if not isinstance(supplied_retirement, Mapping):
                     cleanup_errors.append("Independent retirement snapshot must be an object")
@@ -2698,6 +2704,15 @@ async def run_scenarios(
             return
         profile = profile_map[profile_id]
         context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
+        # Quiescence must be positive: a case that ended without releasing its
+        # lease never completed its retirement audit, so keep the fence.
+        stranded = sorted(
+            owner for owner in leases._resources[profile.resource_id].owners if owner.startswith(f"{run_id}:")
+        )
+        if stranded:
+            await leases.quarantine(
+                profile.resource_id, f"Case ownership was not released after retirement: {', '.join(stranded)}"
+            )
         quiet = leases.quarantine_reason(profile.resource_id) is None
         task = asyncio.current_task()
         assert task is not None
