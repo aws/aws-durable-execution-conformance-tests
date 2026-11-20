@@ -1438,6 +1438,9 @@ def _insert_tied_late_activity(snapshot: dict[str, Any], owner: dict[str, Any], 
 
 
 _CLEANUP_LATE_ACTIVITY = "ASSERTION: cleanup late activity continued after the frozen victim task exit"
+_UNORDERED_CLEANUP_TIE = (
+    "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
+)
 
 
 @pytest.mark.parametrize("path", ["normal", "independent"])
@@ -1529,8 +1532,35 @@ def test_cleanup_tie_must_be_ordered_by_the_final_verdict(
 
     findings = _cleanup_behavior_errors(value, snapshot, standard=True, known_snapshots=[frame], final=final)
 
-    message = "INCOMPLETE: cleanup late activity tied with the frozen victim task exit needs distinct sequences"
-    assert (message in findings) is (final and unordered), findings
+    assert (_UNORDERED_CLEANUP_TIE in findings) is (final and unordered), findings
+    assert _CLEANUP_LATE_ACTIVITY not in findings
+
+
+@pytest.mark.parametrize("final", [False, True])
+def test_cleanup_tie_needs_as_many_ordered_copies_as_one_snapshot_reports(final: bool) -> None:
+    value, owner = _tied_late_activity_fixture()
+    frame = deepcopy(value)
+    _insert_tied_late_activity(frame, owner, late_first=True)
+    _resequence(frame)
+    # A second, unsequenced copy of the same identity stays unordered in every snapshot.
+    frame["events"].append({**owner, "kind": "late_activity", "atMs": 65, "observedDuringRequestId": "request-warm"})
+    snapshot = deepcopy(value)
+    _insert_tied_late_activity(snapshot, owner, late_first=True)
+    _resequence(snapshot)
+
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, known_snapshots=[frame], final=final)
+
+    assert (_UNORDERED_CLEANUP_TIE in findings) is final, findings
+
+
+def test_frozen_evidence_orders_a_tie_cleanup_reports_without_sequences() -> None:
+    value, _ = _tied_late_activity_fixture(frozen_tie=True)
+    snapshot = deepcopy(value)
+    next(item for item in snapshot["events"] if item["kind"] == "late_activity").pop("sequence")
+
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+
+    assert _UNORDERED_CLEANUP_TIE not in findings, findings
     assert _CLEANUP_LATE_ACTIVITY not in findings
 
 
