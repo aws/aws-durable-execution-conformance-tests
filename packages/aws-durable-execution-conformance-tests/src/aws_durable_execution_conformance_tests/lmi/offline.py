@@ -25,6 +25,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
     _has_matching_sdk_request,
     _history_expectation_mismatches,
+    cleanup_late_activity_errors,
     cleanup_replay_count_errors,
     cleanup_replay_history_errors,
     cleanup_replay_projection_errors,
@@ -1512,31 +1513,11 @@ def _cleanup_behavior_errors(
                 )
             )
         else:
-            victim_id = role("victim").get("requestId")
-            exited = boundary("victim", "task_exit")
-            for source in sources:
-                for event in records(source.get("events")):
-                    if event.get("kind") != "late_activity":
-                        continue
-                    request_id = event.get("requestId")
-                    execution_arn = bound_execution(request_id)
-                    if execution_arn is None:
-                        continue
-                    if event.get("ownerRequestId") != request_id or event.get("executionArn") != execution_arn:
-                        if final:
-                            findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
-                        continue
-                    during = event.get("observedDuringRequestId")
-                    if during is not None and bound_execution(during) is None:
-                        continue
-                    observed_at = timestamp(event.get("atMs"))
-                    if (
-                        request_id == victim_id
-                        and observed_at is not None
-                        and exited is not None
-                        and observed_at > exited
-                    ):
-                        findings.append("ASSERTION: cleanup late activity continued after the frozen victim task exit")
+            findings.extend(
+                cleanup_late_activity_errors(
+                    original, sources, boundary_record("victim", "task_exit"), bound_execution, final=final
+                )
+            )
     return findings
 
 

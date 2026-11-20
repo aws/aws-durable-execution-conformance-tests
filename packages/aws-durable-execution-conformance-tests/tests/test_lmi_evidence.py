@@ -1253,6 +1253,72 @@ def test_warm_reuse_requires_native_completion_before_warm_admission(
         assert errors == [], errors
 
 
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize(("exit_sequence", "late_sequence"), [(10, 11), (11.0, 10)])
+def test_warm_reuse_orders_late_activity_and_task_exit_at_the_same_timestamp(
+    phase: Literal["observations", "final"], exit_sequence: int | float, late_sequence: int
+) -> None:
+    value = warm_evidence()
+    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
+    late = next(item for item in value["events"] if item["kind"] == "late_activity")
+    exited.update(atMs=60, sequence=exit_sequence)
+    late["sequence"] = late_sequence
+
+    errors = validate_evidence(value, phase=phase)
+
+    if exit_sequence == 10:
+        assert errors == ["ASSERTION: late activity continued after the recorded task exit"]
+    else:
+        assert errors == [], errors
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields", "error"),
+    [
+        ("late_activity", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("task_exit", {}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("task_exit", {"sequence": 10.0}, "same-timestamp late_activity and task_exit need distinct sequences"),
+        ("late_activity", {"sequence": True}, "event.sequence must be a non-negative integer"),
+        ("task_exit", {"sequence": None}, "event.sequence must be a non-negative integer"),
+    ],
+)
+def test_warm_reuse_requires_unambiguous_sequences_for_same_timestamp_events(
+    kind: str, fields: dict[str, Any], error: str
+) -> None:
+    value = warm_evidence()
+    for event in value["events"]:
+        if event["kind"] in ("late_activity", "task_exit"):
+            event.update(atMs=60, **(fields if event["kind"] == kind else {"sequence": 10}))
+
+    assert validate_evidence(value) == [f"INCOMPLETE: {error}"]
+
+
+@pytest.mark.parametrize("exit_at", [59, 61])
+@pytest.mark.parametrize("with_sequences", [False, True], ids=["no-sequences", "conflicting-sequences"])
+def test_warm_reuse_prefers_distinct_timestamps(exit_at: int, with_sequences: bool) -> None:
+    value = warm_evidence()
+    exited = next(item for item in value["events"] if item["kind"] == "task_exit")
+    late = next(item for item in value["events"] if item["kind"] == "late_activity")
+    exited["atMs"] = exit_at
+    if with_sequences:
+        exited["sequence"], late["sequence"] = (11, 10) if exit_at == 59 else (10, 11)
+
+    errors = validate_evidence(value)
+
+    if exit_at == 59:
+        assert errors == ["ASSERTION: late activity continued after the recorded task exit"]
+    else:
+        assert errors == []
+
+
+@pytest.mark.parametrize("kind", ["late_activity", "task_exit"])
+def test_warm_reuse_reports_missing_events_without_a_tie_error(kind: str) -> None:
+    value = warm_evidence()
+    value["events"] = [item for item in value["events"] if item["kind"] != kind]
+
+    assert validate_evidence(value) == [f"INCOMPLETE: request request-victim needs exactly one {kind} event"]
+
+
 def test_case_owned_cleanup_and_retirement_completeness() -> None:
     value = evidence()
     value["resourcesCreated"] = [{"id": "callback-1", "ownerCaseId": "case-1"}]
