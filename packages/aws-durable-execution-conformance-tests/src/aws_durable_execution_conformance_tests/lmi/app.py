@@ -21,6 +21,9 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from aws_durable_execution_conformance_tests.lmi.artifacts import (
+    sdk_plan_with_artifact_directory,
+)
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
@@ -414,6 +417,11 @@ def _identity_errors(
             errors.append(f"INCOMPLETE: evidence profile.{key} does not match the deployed profile")
     if artifact.get("sdk") != profile["artifact_id"]:
         errors.append("INCOMPLETE: evidence SDK artifact does not match the deployed revision")
+    sdk = manifest.get("sdk")
+    deployment = sdk.get("deployment") if isinstance(sdk, Mapping) else None
+    revision = deployment.get("conformanceRevision") if isinstance(deployment, Mapping) else None
+    if revision is not None and artifact.get("conformance") != revision:
+        errors.append("INCOMPLETE: evidence conformance revision does not match the admitted plan")
     if profile.get("recovery_policy") is not None and observed.get("recoveryPolicy") != profile["recovery_policy"]:
         errors.append("INCOMPLETE: observed recovery policy does not match the declared profile")
     return errors
@@ -439,6 +447,21 @@ def evidence_results(
                 evidence = _read_json(base / scenario["evidence_file"])
                 if not isinstance(evidence, dict):
                     raise ValueError("evidence must be an object")
+                attempts = evidence.get("attempts")
+                collection = evidence.get("collection")
+                deferred = isinstance(collection, Mapping) and bool(collection.get("deferredServiceRequests"))
+                active = isinstance(attempts, list) and any(
+                    isinstance(attempt, Mapping) and attempt.get("activeAtObservationEnd") is True
+                    for attempt in attempts
+                )
+                if (active or deferred) and not isinstance(evidence.get("retirementSnapshot"), Mapping):
+                    result.update(
+                        evidence=evidence,
+                        status="INCOMPLETE_EVIDENCE",
+                        errors=["INCOMPLETE: active-at-cutoff evidence requires an independent retirement audit"],
+                    )
+                    results.append(result)
+                    continue
                 errors = _identity_errors(manifest, scenario, evidence, suite=suite) + list(
                     (suite.validator if suite else validate)(evidence)
                 )
@@ -872,9 +895,11 @@ def run(argv: list[str] | None = None) -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
-        if args.adapter is None:
-            with (args.output / "manifest.json").open("x") as output:
-                output.write(_dump_json(manifest) + "\n")
+        sdk = manifest.get("sdk")
+        if args.adapter and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
+            manifest = sdk_plan_with_artifact_directory(args.output, manifest)
+        with (args.output / "manifest.json").open("x") as output:
+            output.write(_dump_json(manifest) + "\n")
         results = (
             asyncio.run(live_results(manifest, args.adapter, audit_dir=args.output))
             if args.adapter is not None
