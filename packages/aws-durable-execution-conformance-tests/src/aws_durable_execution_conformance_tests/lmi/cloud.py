@@ -468,6 +468,27 @@ class Cloud:
             message="No service invocation timeout evidence for " + request,
         )
 
+    def recovery_completion(self, item):
+        """Wait for the original recovery invocation's own completion record."""
+        if not item["native_requests"]:
+            raise CollectionError("No original native request for the selected recovery invocation")
+        request = item["native_requests"][0]
+
+        def matching_event(events):
+            for event in events:
+                details = event.get("InvocationCompletedDetails")
+                if isinstance(details, dict) and details.get("RequestId") == request:
+                    return event
+            return None
+
+        cached = matching_event(self.raw_histories.get(item["arn"], []))
+        if cached is not None:
+            return cached
+        return self.poll(
+            lambda: matching_event(self.history(item)),
+            message="No service invocation completion evidence for recovery request " + request,
+        )
+
     def collect(self, *, full_run=True):
         self.check_active()
         if self.case_context is not None and full_run:

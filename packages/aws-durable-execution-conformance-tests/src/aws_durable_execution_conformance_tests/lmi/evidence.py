@@ -276,8 +276,17 @@ class _Evidence:
             if request.get("outcome") not in ("DISPATCHED", "REJECTED"):
                 self.error("sdkRequest.outcome must be DISPATCHED or REJECTED")
         for fault in self.records(value.get("faultsCreated"), "faultsCreated"):
-            if "releasedAtMs" in fault:
-                self.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
+            for field in ("releasedAtMs", "releaseRequestedAtMs", "releaseAcknowledgedAtMs"):
+                if field in fault:
+                    self.number(fault[field], f"faultsCreated.{field}")
+            requested = fault.get("releaseRequestedAtMs")
+            acknowledged = fault.get("releaseAcknowledgedAtMs")
+            if (
+                isinstance(requested, (int, float))
+                and isinstance(acknowledged, (int, float))
+                and requested > acknowledged
+            ):
+                self.error("fault release acknowledgment precedes its request")
         self.histories(check_expectations=validate_behavior)
         collection_errors = value.get("collectionErrors", [])
         if not isinstance(collection_errors, list):
@@ -568,6 +577,7 @@ class _Evidence:
         peers = [attempt for role, attempt in self.selected.items() if role.startswith("peer")]
         timeout = self.event(victim, "platform_timeout").get("atMs", 0)
         recovered = self.event(recovery, "worker_recovered").get("atMs", 0)
+        completed = recovery.get("endedAtMs", 0)
         self.observation_grace(recovered)
         if recovery.get("environmentId") != victim.get("environmentId"):
             self.error("replacement environment cannot establish worker recovery", "PLACEMENT")
@@ -588,6 +598,21 @@ class _Evidence:
             self.error("recovery must be an independent request, not a service retry", "PLACEMENT")
         if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
             self.error("recovery preceded the selected victim's timeout", "ASSERTION")
+        wrappers = [
+            event
+            for event in self.events
+            if event.get("requestId") == recovery.get("requestId")
+            and event.get("kind") in ("wrapper_return", "wrapper_raise")
+        ]
+        if recovery.get("outcome") == "SUCCEEDED" and any(
+            event.get("kind") == "wrapper_raise" or event.get("outcome", "SUCCEEDED") != "SUCCEEDED"
+            for event in wrappers
+        ):
+            self.error("selected recovery wrapper contradicts successful completion", "ASSERTION")
+        if any(event.get("atMs", 0) > completed for event in wrappers):
+            self.error("selected recovery completion precedes its wrapper return", "ASSERTION")
+        if recovered > completed:
+            self.error("worker recovery marker follows the selected request completion", "ASSERTION")
         # Ordering alone does not bound the measurement: requirement 4 declares
         # recoveryMs, so the observed recovery must fit inside it.
         recovery_budget = self.number(
@@ -608,9 +633,11 @@ class _Evidence:
             ):
                 self.error("Python recovery preceded the victim's native invocation completion", "PLACEMENT")
         for peer in peers:
-            if peer.get("environmentId") != victim.get("environmentId") or not peer.get(
-                "startedAtMs", 0
-            ) < timeout < recovered <= peer.get("endedAtMs", 0):
+            if (
+                peer.get("environmentId") != victim.get("environmentId")
+                or not peer.get("startedAtMs", 0) < timeout < recovered
+                or max(recovered, completed) > peer.get("endedAtMs", 0)
+            ):
                 self.error("established peer capacity was not held through recovery", "PLACEMENT")
             progress = [
                 event.get("atMs", 0)
@@ -621,9 +648,32 @@ class _Evidence:
                 timeout < time <= recovered for time in progress
             ):
                 self.error("healthy peer lacks independent progress across the timeout", "ASSERTION")
-        for fault in self.records(self.value.get("faultsCreated"), "faultsCreated"):
-            if isinstance(fault.get("releasedAtMs"), (int, float)) and fault["releasedAtMs"] <= recovered:
+        gate = self.event(victim, "work_in_flight").get("gateId")
+        faults = self.records(self.value.get("faultsCreated"), "faultsCreated")
+        victim_faults = [fault for fault in faults if fault.get("id") == gate]
+        if not isinstance(gate, str) or not gate.strip() or not victim_faults:
+            self.error("the selected victim's in-flight gate must identify an inventoried fault")
+        elif len(victim_faults) != 1 or victim_faults[0].get("ownerCaseId") != self.value.get("caseId"):
+            self.error("the selected victim's in-flight gate must identify an owned fault", "ASSERTION")
+        exited = self.event(victim, "task_exit").get("atMs", 0)
+        held_until = max(completed, recovered, exited)
+        for fault in faults:
+            if fault.get("id") == gate:
+                if any(
+                    field in fault and fault[field] <= held_until
+                    for field in ("releasedAtMs", "releaseAcknowledgedAtMs")
+                ):
+                    self.error("fault release preceded successful recovery completion", "ASSERTION")
+                if "releaseRequestedAtMs" in fault and fault["releaseRequestedAtMs"] <= held_until:
+                    self.error("fault release was requested before the held interval was established", "ASSERTION")
+            elif "releasedAtMs" in fault and fault["releasedAtMs"] <= recovered:
                 self.error("fault release cannot satisfy worker recovery", "ASSERTION")
+        for event in self.events:
+            if event.get("kind") != "fault_released":
+                continue
+            release_gate = self.string(event.get("gateId"), "fault_released.gateId")
+            if release_gate and release_gate == gate and event.get("atMs", 0) <= held_until:
+                self.error("fault release preceded successful recovery completion", "ASSERTION")
 
     def replay(self) -> None:
         if not self.require_roles("victim", "resume"):
@@ -800,6 +850,26 @@ class _Evidence:
                 if item.get("ownerCaseId") != self.value.get("caseId"):
                     self.error("cleanup attempted to change another case's resources", "ASSERTION")
             if settled_key == "faults":
+                retired_at = retirement.get("retiredAtMs")
+                provider_times: dict[str, dict[str, int | float]] = {}
+                for location, inventory in ((created_key, created), ("retirement.faults", settled)):
+                    for fault in inventory:
+                        fault_id = fault.get("id")
+                        for field in ("releaseRequestedAtMs", "releaseAcknowledgedAtMs"):
+                            if field not in fault:
+                                continue
+                            timestamp = fault[field]
+                            self.number(timestamp, f"{location}.{field}")
+                            if type(timestamp) not in (int, float):
+                                continue
+                            if isinstance(retired_at, (int, float)) and timestamp > retired_at:
+                                self.error("observed fault release occurred after retirement ended")
+                            if isinstance(fault_id, str) and fault_id:
+                                times = provider_times.setdefault(fault_id, {})
+                                times[field] = min(timestamp, times.get(field, timestamp))
+                for gate_times in provider_times.values():
+                    if gate_times.get("releaseRequestedAtMs", 0) > gate_times.get("releaseAcknowledgedAtMs", math.inf):
+                        self.error("fault release acknowledgment precedes its request")
                 for fault in created:
                     if (
                         "releasedAtMs" in fault
@@ -872,7 +942,24 @@ class _Evidence:
                                 and event.get("requestId") == recovery.get("requestId")
                             )
                         ]
-                        if asserted and time <= max(asserted):
+                        victim_gate = (
+                            recovery
+                            and self.value.get("requirementId") == "lmi-lifecycle-4"
+                            and any(
+                                event.get("kind") == "work_in_flight"
+                                and event.get("requestId") == victim.get("requestId")
+                                and event.get("gateId") == item.get("id")
+                                for event in self.events
+                            )
+                        )
+                        release_fields: tuple[str, ...] = ("releasedAtMs",)
+                        if victim_gate:
+                            asserted.append(recovery.get("endedAtMs", 0))
+                            release_fields += ("releaseRequestedAtMs", "releaseAcknowledgedAtMs")
+                        if asserted and any(
+                            type(item.get(field)) in (int, float) and item[field] <= max(asserted)
+                            for field in release_fields
+                        ):
                             self.error("fault release cannot retroactively establish cleanup or recovery", "ASSERTION")
 
 

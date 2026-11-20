@@ -1706,7 +1706,7 @@ def _cleanup_behavior_errors(
         if type(value) not in (int, float) or value < 0:
             return None
         try:
-            return float(value) if math.isfinite(value) else None
+            return value if math.isfinite(value) else None
         except OverflowError:
             return None
 
@@ -1716,23 +1716,91 @@ def _cleanup_behavior_errors(
     events = records(original.get("events"))
     admission_sources = (original, *known_snapshots, snapshot)
     findings.extend(_cleanup_record_errors(admission_sources, snapshot if final else None))
-    releases: list[float] = []
-    # Absence can be completed later; an explicitly malformed release time is
-    # invalid evidence even if a later snapshot replaces or omits that field.
+    releases: list[tuple[object, float]] = []
+    provider_times: dict[str, dict[str, float]] = {}
+    provider_fields = ("releaseRequestedAtMs", "releaseAcknowledgedAtMs")
+    recovery_cleanup = standard and original.get("requirementId") == "lmi-lifecycle-4"
+    final_retirement = snapshot.get("retirement")
+    retirement = final_retirement if isinstance(final_retirement, Mapping) else {}
+    retired_at = timestamp(retirement.get("retiredAtMs")) if final else None
+    settlements = records(retirement.get("faults"))
+    created_owners = {
+        fault["id"]: fault.get("ownerCaseId")
+        for fault in records(snapshot.get("faultsCreated"))
+        if isinstance(fault.get("id"), str) and fault["id"].strip()
+    }
+    owned_faults = {
+        fault["id"]: fault["ownerCaseId"]
+        for fault in settlements
+        if isinstance(fault.get("id"), str)
+        and isinstance(fault.get("ownerCaseId"), str)
+        and fault["ownerCaseId"].strip()
+        and created_owners.get(fault["id"]) == fault["ownerCaseId"]
+    }
+    # A later complete row must not erase any timestamp learned from an earlier
+    # partial snapshot. Keep the earliest provider request and acknowledgment.
     for source in admission_sources:
         fault_collections = [("faultsCreated", source.get("faultsCreated"))]
-        retirement = source.get("retirement")
-        if isinstance(retirement, Mapping):
-            fault_collections.append(("retirement.faults", retirement.get("faults")))
+        source_retirement = source.get("retirement")
+        if isinstance(source_retirement, Mapping):
+            fault_collections.append(("retirement.faults", source_retirement.get("faults")))
         for location, collection in fault_collections:
             for fault in records(collection):
-                if "releasedAtMs" not in fault:
-                    continue
-                released = timestamp(fault["releasedAtMs"])
-                if released is None:
-                    findings.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
-                else:
-                    releases.append(released)
+                fault_id = fault.get("id")
+                observed_times: dict[str, float] = {}
+                for time_field in ("releasedAtMs", *provider_fields) if recovery_cleanup else ("releasedAtMs",):
+                    if time_field not in fault:
+                        continue
+                    released = timestamp(fault[time_field])
+                    if released is None:
+                        findings.append(
+                            f"INCOMPLETE: cleanup {location}.{time_field} must be a finite non-negative number"
+                        )
+                        continue
+                    observed_times[time_field] = released
+                    if time_field in provider_fields and retired_at is not None and released > retired_at:
+                        label = "request" if time_field == provider_fields[0] else "acknowledgment"
+                        findings.append(f"INCOMPLETE: cleanup fault release {label} follows retirement")
+                if recovery_cleanup and final and location == "retirement.faults" and observed_times:
+                    if "id" not in fault:
+                        candidates = {
+                            settled["id"]
+                            for settled in settlements
+                            if isinstance(settled.get("id"), str)
+                            and settled["id"] in owned_faults
+                            and all(
+                                same_json(value, settled.get(time_field))
+                                for time_field, value in observed_times.items()
+                            )
+                            and (
+                                "ownerCaseId" not in fault
+                                or same_json(fault["ownerCaseId"], settled.get("ownerCaseId"))
+                            )
+                        }
+                        if len(candidates) == 1:
+                            fault_id = candidates.pop()
+                    if (
+                        not isinstance(fault_id, str)
+                        or fault_id not in owned_faults
+                        or ("ownerCaseId" in fault and not same_json(fault["ownerCaseId"], owned_faults[fault_id]))
+                    ):
+                        findings.append("INCOMPLETE: cleanup timed fault settlement lacks a resolved owned fault")
+                if "releasedAtMs" in observed_times:
+                    releases.append((fault_id, observed_times["releasedAtMs"]))
+                requested, acknowledged = (observed_times.get(time_field) for time_field in provider_fields)
+                if requested is not None and acknowledged is not None and requested > acknowledged:
+                    findings.append("INCOMPLETE: cleanup fault release request follows acknowledgment")
+                if recovery_cleanup and isinstance(fault_id, str) and fault_id.strip():
+                    earliest = provider_times.setdefault(fault_id, {})
+                    for time_field in provider_fields:
+                        if time_field in observed_times:
+                            earliest[time_field] = min(
+                                earliest.get(time_field, observed_times[time_field]), observed_times[time_field]
+                            )
+    for earliest in provider_times.values():
+        requested, acknowledged = (earliest.get(time_field) for time_field in provider_fields)
+        if requested is not None and acknowledged is not None and requested > acknowledged:
+            findings.append("INCOMPLETE: cleanup fault release request follows acknowledgment")
     known_requests = {
         attempt["requestId"]
         for source in admission_sources
@@ -1810,7 +1878,11 @@ def _cleanup_behavior_errors(
         observed = []
         for source in admission_sources:
             for event in records(source.get("events")):
-                if request_id is None or event.get("requestId") != request_id or event.get("kind") != kind:
+                if (
+                    request_id is None
+                    or event.get("requestId", event.get("ownerRequestId")) != request_id
+                    or event.get("kind") != kind
+                ):
                     continue
                 if any(
                     key in event and not same_json(event[key], expected)
@@ -1898,7 +1970,7 @@ def _cleanup_behavior_errors(
                             and not same_json(attempt["replacesWorkerId"], role("victim").get("workerId"))
                         ):
                             findings.append("PLACEMENT: cleanup recovery replacement changed the frozen failed worker")
-            recovery_start, _ = known_interval("recovery")
+            recovery_start, recovery_end = known_interval("recovery")
             recovery_budget = timestamp(fixture_budgets.get("recoveryMs"))
             for event in observed_events("recovery", "worker_recovered"):
                 recovered = timestamp(event.get("atMs"))
@@ -1914,12 +1986,14 @@ def _cleanup_behavior_errors(
                         and not (timed_out <= recovered <= timed_out + recovery_budget)
                     ):
                         findings.append("ASSERTION: cleanup worker recovery exceeds the frozen recovery measurement")
-                if final:
-                    for peer in selected:
-                        if isinstance(peer, str) and peer.startswith("peer"):
-                            _, peer_end = known_interval(peer)
-                            if peer_end is not None and recovered > peer_end:
-                                findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
+                if final and recovery_end is not None and recovered > recovery_end:
+                    findings.append("ASSERTION: cleanup worker recovery marker follows the selected request completion")
+            if final and recovery_end is not None:
+                for peer in selected:
+                    if isinstance(peer, str) and peer.startswith("peer"):
+                        _, peer_end = known_interval(peer)
+                        if peer_end is not None and recovery_end > peer_end:
+                            findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
     if requirement in ("lmi-lifecycle-3", "lmi-lifecycle-4"):
         limits = [boundary("victim", "task_exit")]
         if requirement == "lmi-lifecycle-4":
@@ -1927,7 +2001,92 @@ def _cleanup_behavior_errors(
         known_limits = [time for time in limits if time is not None]
         # A later release acknowledgment cannot erase an earlier release from
         # either observation records or a provisional/final retirement record.
-        if releases and known_limits and min(releases) <= max(known_limits):
+        too_early = bool(releases and known_limits) and min(time for _, time in releases) <= max(known_limits)
+        if requirement == "lmi-lifecycle-4":
+            victim_request = role("victim").get("requestId")
+            gates = [
+                event.get("gateId")
+                for event in events
+                if victim_request is not None
+                and event.get("requestId") == victim_request
+                and event.get("kind") == "work_in_flight"
+            ]
+            if len(gates) == 1 and isinstance(gates[0], str) and gates[0].strip():
+                gate = gates[0]
+                if any(
+                    "gateId" in event and event["gateId"] != gate
+                    for event in observed_events("victim", "work_in_flight")
+                ):
+                    findings.append("ASSERTION: cleanup work_in_flight changed the selected victim fault gate")
+                victim_releases = [time for fault_id, time in releases if fault_id == gate]
+                victim_releases.extend(provider_times.get(gate, {}).values())
+                complete_receipts: list[list[Mapping[str, Any]]] = []
+                partial_receipts: list[list[Mapping[str, Any]]] = []
+                for source in admission_sources:
+                    complete: list[Mapping[str, Any]] = []
+                    partial: list[Mapping[str, Any]] = []
+                    for receipt in records(source.get("events")):
+                        if receipt.get("kind") != "fault_released":
+                            continue
+                        receipt_gate = receipt.get("gateId")
+                        released = timestamp(receipt.get("atMs"))
+                        if not isinstance(receipt_gate, str) or not receipt_gate.strip():
+                            if "gateId" in receipt or "atMs" in receipt:
+                                findings.append("INCOMPLETE: cleanup fault_released event must identify its gate")
+                            else:
+                                partial.append(receipt)
+                        elif released is not None:
+                            complete.append(receipt)
+                            if receipt_gate == gate:
+                                victim_releases.append(released)
+                        elif "atMs" not in receipt:
+                            partial.append(receipt)
+                    if complete:
+                        complete_receipts.append(complete)
+                    if partial:
+                        partial_receipts.append(partial)
+
+                def receipts_match(partial: Sequence[Mapping[str, Any]], complete: Sequence[Mapping[str, Any]]) -> bool:
+                    # Snapshots can renumber normalized sequences. Match each
+                    # retained occurrence once, using ledger identity when present.
+                    remaining = iter(complete)
+                    return all(
+                        any(
+                            all(
+                                key not in fragment or same_json(fragment[key], receipt.get(key))
+                                for key in ("requestId", "ownerRequestId", "executionArn", "gateId", "sourceSequence")
+                            )
+                            for receipt in remaining
+                        )
+                        for fragment in partial
+                    )
+
+                if final and any(
+                    not any(receipts_match(partial, complete) for complete in complete_receipts)
+                    for partial in partial_receipts
+                ):
+                    findings.append("INCOMPLETE: cleanup fault_released event lacks a complete receipt")
+                _, recovery_end = known_interval("recovery")
+                if recovery_end is not None:
+                    known_limits.append(recovery_end)
+                if role("recovery").get("outcome") == "SUCCEEDED":
+                    wrappers = [
+                        *observed_events("recovery", "wrapper_return"),
+                        *observed_events("recovery", "wrapper_raise"),
+                    ]
+                    for event in wrappers:
+                        if event.get("kind") == "wrapper_raise" or (
+                            "outcome" in event and event["outcome"] != "SUCCEEDED"
+                        ):
+                            findings.append("ASSERTION: cleanup recovery wrapper contradicts successful completion")
+                            continue
+                        returned = timestamp(event.get("atMs"))
+                        if returned is not None:
+                            known_limits.append(returned)
+                            if final and recovery_end is not None and returned > recovery_end:
+                                findings.append("ASSERTION: cleanup recovery wrapper return follows native completion")
+                too_early |= bool(victim_releases and known_limits) and min(victim_releases) <= max(known_limits)
+        if too_early:
             findings.append("ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery")
     if requirement == "lmi-lifecycle-6" and (
         changed_time("victim", "endedAtMs") or changed_time("warm", "startedAtMs")
@@ -2739,10 +2898,18 @@ async def run_scenarios(
                         final_errors = _ownership_errors(context, evidence) + list(validator(evidence, phase="final"))
                         new_errors = [error for error in final_errors if error not in errors]
                         errors.extend(new_errors)
-                        # New final-phase failures concern retirement. Keep
-                        # ownership until these checks finish; a boolean from
-                        # the adapter cannot grant an unsafe exclusive window.
-                        if new_errors:
+                        # A proven early release refutes recovery, but does not
+                        # invalidate an otherwise complete retirement audit.
+                        held_fault_failure = (
+                            case.requirement_id == "lmi-lifecycle-4"
+                            and case.coverage_profile == "standard"
+                            and set(new_errors)
+                            == {"ASSERTION: fault release cannot retroactively establish cleanup or recovery"}
+                            and "ASSERTION: cleanup evidence reports fault release before the asserted cleanup or recovery"
+                            in cleanup_behavior_errors
+                            and (physical_retirement_verified or not validate_retirement_evidence(evidence))
+                        )
+                        if new_errors and not held_fault_failure:
                             cleanup_errors.append("Final retirement evidence did not establish quiescence")
                     except Exception as exc:
                         cleanup_errors.append(f"Final evidence validation: {type(exc).__name__}: {exc}")

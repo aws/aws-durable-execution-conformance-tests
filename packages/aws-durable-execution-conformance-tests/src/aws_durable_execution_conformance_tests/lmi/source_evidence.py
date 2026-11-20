@@ -274,10 +274,20 @@ class CaseSources:
             observed_start = min([raw["time"] * 1000, *(event["atMs"] for event in owned)])
             started_at = observed_start
             timeout = None
+            native_cohort_end = None
+            native_recovery_failed = False
+            has_native_completion = False
+            role = self.cloud.request_roles[request]
+            selected_cohort = (
+                self.context.scenario.requirement_id == "lmi-lifecycle-4" and journal[request]["attempt"] == 1
+            )
+            selected_recovery = selected_cohort and role == "recovery"
+            use_native_end = selected_recovery or (selected_cohort and role.startswith("peer"))
             for service_event in self.cloud.raw_histories.get(raw["execution"], []):
                 details = service_event.get("InvocationCompletedDetails", {})
                 if details.get("RequestId") != request:
                     continue
+                has_native_completion = True
                 # Fixture setup occurs after native admission. Only this
                 # request's platform start establishes its full timeout window;
                 # the durable execution start may belong to an earlier replay.
@@ -291,7 +301,8 @@ class CaseSources:
                     )
                 else:
                     started_at = native_start
-                if is_platform_timeout(details):
+                timed_out = is_platform_timeout(details)
+                if timed_out or use_native_end:
                     # The native boundary is the invocation's own end. The
                     # history event is written afterwards, so its timestamp
                     # would move the boundary past the work it bounds.
@@ -304,6 +315,10 @@ class CaseSources:
                             f"Native request {request} has an invalid or missing InvocationCompletedDetails.EndTimestamp"
                         )
                         continue
+                    if not timed_out:
+                        native_recovery_failed = selected_recovery and details.get("Error") is not None
+                        native_cohort_end = native_end
+                        continue
                     timeout = {
                         "kind": "platform_timeout",
                         "requestId": request,
@@ -315,7 +330,6 @@ class CaseSources:
                     }
             if timeout is not None:
                 events.append(timeout)
-            role = self.cloud.request_roles[request]
             attempt: dict[str, Any] = {
                 "requestId": request,
                 "executionArn": raw["execution"],
@@ -331,7 +345,13 @@ class CaseSources:
             }
             if boundaries:
                 attempt["outcome"] = boundaries[-1]["outcome"]
+                if selected_recovery and attempt["outcome"] == "SUCCEEDED" and not has_native_completion:
+                    errors.append(f"Native recovery request {request} is missing a matching service completion")
                 attempt["endedAtMs"] = boundaries[-1]["atMs"]
+                if native_cohort_end is not None:
+                    if native_recovery_failed:
+                        attempt["outcome"] = "FAILED"
+                    attempt["endedAtMs"] = native_cohort_end
             if timeout is not None:
                 attempt.update(outcome="TIMED_OUT", endedAtMs=timeout["atMs"])
             if deadline:
@@ -659,23 +679,34 @@ def build_evidence(
         receipts = [
             event["atMs"] for event in events if event.get("gateId") == gate and event.get("kind") == "fault_released"
         ]
+        recovery = context.scenario.requirement_id == "lmi-lifecycle-4"
+        release_gates = {gate, "release-all"} if recovery else {gate}
         releases = [
             record
             for record in cloud.control_records
-            if record["gate"] == gate
-            and record["action"] == "release"
-            and record.get("state", "ACKNOWLEDGED") == "ACKNOWLEDGED"
+            if record["gate"] in release_gates and record["action"] == "release"
         ]
+        acknowledged = [record for record in releases if record.get("state", "ACKNOWLEDGED") == "ACKNOWLEDGED"]
+        if recovery and releases:
+            # Either control can release the gate even if its response is lost.
+            intents = [record["started"] for record in releases if "started" in record]
+            if len(intents) != len(releases):
+                errors.append(f"Fault {gate} release is missing a request timestamp")
+            if intents:
+                fault["releaseRequestedAtMs"] = min(intents) * 1000
         if receipts:
             fault["releasedAtMs"] = min(receipts)
-        if releases:
-            release = releases[0]
-            requested = release.get("started", release["time"]) * 1000
-            if not receipts or requested <= min(receipts):
-                fault.update(
-                    releaseRequestedAtMs=requested,
-                    releaseAcknowledgedAtMs=release["time"] * 1000,
-                )
+        if acknowledged:
+            release = min(acknowledged, key=lambda record: record["time"]) if recovery else acknowledged[0]
+            if recovery:
+                fault["releaseAcknowledgedAtMs"] = release["time"] * 1000
+            else:
+                requested = release.get("started", release["time"]) * 1000
+                if not receipts or requested <= min(receipts):
+                    fault.update(
+                        releaseRequestedAtMs=requested,
+                        releaseAcknowledgedAtMs=release["time"] * 1000,
+                    )
             fault.setdefault("releasedAtMs", release["time"] * 1000)
         faults.append(fault)
     evidence["faultsCreated"] = faults

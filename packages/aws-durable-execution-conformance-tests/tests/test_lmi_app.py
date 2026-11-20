@@ -48,6 +48,7 @@ def manifest():
                 "native_concurrency": n,
                 "artifact_id": "sdk-commit",
                 "configuration_id": f"config-{n}",
+                **({"recovery_policy": "reuse-worker"} if n == 2 else {}),
             }
             for n in (1, 2)
         ],
@@ -279,6 +280,7 @@ def test_retained_evidence_must_cover_every_declared_cohort_role(tmp_path):
             "functionArn": profile["resource_id"],
             "configurationDigest": profile["configuration_id"],
             "nativeConcurrency": profile["native_concurrency"],
+            "recoveryPolicy": profile["recovery_policy"],
         },
         "artifact": {"sdk": profile["artifact_id"]},
         "selectedRequests": {"victim": "request-1", "peer": "request-2"},
@@ -509,6 +511,92 @@ def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
         configuration_id=value["profile"]["configurationDigest"],
     )
     return plan, value
+
+
+@pytest.mark.parametrize("policy", [None, "unknown"])
+def test_peer_recovery_requires_a_declared_recovery_policy(tmp_path, policy):
+    plan, value = timed_plan(4)
+    profile = plan["profiles"][1]
+    if policy is None:
+        profile.pop("recovery_policy")
+    else:
+        profile["recovery_policy"] = policy
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match=r"profile\.recovery_policy"):
+        load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_import:
+        with pytest.raises(ValueError, match=r"profile\.recovery_policy"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        adapter_import.import_module.assert_not_called()
+
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE"
+    assert "profile.recovery_policy" in result["errors"][0]
+
+
+def test_unimplemented_peer_recovery_does_not_require_a_recovery_policy(tmp_path):
+    plan, _ = timed_plan(4)
+    plan["profiles"][1].pop("recovery_policy")
+    case = plan["scenarios"][0]
+    case.pop("evidence_file")
+    case["not_implemented"] = "Missing SDK recovery fixture"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    admitted = load_manifest(path)
+    result = evidence_results(admitted, tmp_path)[0]
+    assert result["status"] == "NOT_IMPLEMENTED"
+    assert result["errors"] == ["Missing SDK recovery fixture"]
+
+
+@pytest.mark.parametrize(
+    ("observed_policy", "expected_status"),
+    [(None, "PASSED"), ("reuse-worker", "PASSED"), ("replace-worker", "FAILED")],
+)
+def test_deadline_evidence_recovery_policy_is_optional_but_must_match_if_present(
+    tmp_path, observed_policy, expected_status
+):
+    plan, value = timed_plan(3)
+    if observed_policy is None:
+        value["profile"].pop("recoveryPolicy")
+    else:
+        value["profile"]["recoveryPolicy"] = observed_policy
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == expected_status, result
+    if expected_status == "FAILED":
+        assert result["errors"] == ["INCOMPLETE: observed recovery policy does not match the declared profile"]
+
+
+def test_deadline_case_rejects_invalid_declared_recovery_policy_even_without_observed_policy(tmp_path):
+    plan, value = timed_plan(3)
+    plan["profiles"][1]["recovery_policy"] = "unknown"
+    value["profile"].pop("recoveryPolicy")
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+
+    with pytest.raises(ValueError, match=r"profile\.recovery_policy"):
+        load_manifest(path)
+    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_import:
+        with pytest.raises(ValueError, match=r"profile\.recovery_policy"):
+            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path))
+        adapter_import.import_module.assert_not_called()
+    result = evidence_results(plan, tmp_path)[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE"
+    assert "profile.recovery_policy" in result["errors"][0]
+
+
+def test_peer_recovery_evidence_must_match_declared_recovery_policy(tmp_path):
+    plan, value = timed_plan(4)
+    plan["profiles"][1]["recovery_policy"] = "replace-worker"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(plan))
+    (tmp_path / "evidence.json").write_text(json.dumps(value))
+    result = evidence_results(load_manifest(path), tmp_path)[0]
+    assert result["status"] == "FAILED"
+    assert result["errors"] == ["INCOMPLETE: observed recovery policy does not match the declared profile"]
 
 
 @pytest.mark.parametrize("requirement", [3, 4])

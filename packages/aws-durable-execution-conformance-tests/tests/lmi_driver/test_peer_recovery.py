@@ -115,6 +115,9 @@ class RecoveryCloud(ScriptCloud):
     def collect(self, **options):
         self.actions.append(("collect",))
 
+    def recovery_completion(self, item):
+        self.actions.append(("recovery-completion", item["marker"]))
+
     def delete_controls(self):
         self.actions.append(("delete-controls",))
 
@@ -157,7 +160,11 @@ def test_peer_has_recovery_headroom_and_fault_is_armed_after_cohort_placement(
     driver.collect()
     driver.quiescent = Mock(return_value=True)
     driver.retire()
-    assert cloud.actions.index(("collect",)) < cloud.actions.index(("settle",))
+    assert (
+        cloud.actions.index(("collect",))
+        < cloud.actions.index(("recovery-completion", "recovery"))
+        < cloud.actions.index(("settle",))
+    )
 
 
 def test_late_io_and_a_peer_retry_cannot_replace_the_expired_original(monkeypatch):

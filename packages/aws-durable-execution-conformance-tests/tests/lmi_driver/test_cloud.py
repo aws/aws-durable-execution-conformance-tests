@@ -167,6 +167,23 @@ def test_requires_request_specific_service_timeout(driver, message):
             driver.platform_timeout({}, "request")
 
 
+def test_recovery_completion_polls_for_original_native_request(driver):
+    original = {"InvocationCompletedDetails": {"RequestId": "original"}}
+    retry = {"InvocationCompletedDetails": {"RequestId": "retry"}}
+    logical_success = {"EventType": "ExecutionSucceeded"}
+    item = {"arn": "arn", "native_requests": ["original", "retry"]}
+    driver.raw_histories["arn"] = [logical_success]
+    driver.history = Mock(side_effect=[[logical_success, retry], [logical_success, retry, original]])
+    driver.wait = Mock()
+    assert driver.recovery_completion(item) == original
+    assert driver.history.call_count == 2
+
+    driver.raw_histories["arn"].append(original)
+    driver.history.reset_mock()
+    assert driver.recovery_completion(item) == original
+    driver.history.assert_not_called()
+
+
 def test_summary_never_claims_unexecuted_or_skipped_cloud_success(tmp_path):
     assert "did not run" in summarize(tmp_path)
     (tmp_path / "manifest.json").write_text(

@@ -287,6 +287,9 @@ class ScenarioDriver:
         self.cloud.wait(self.seconds("observationGraceMs", 1))
         self.cloud.collect(full_run=False)
         self.cloud.observation_ended_at = time.time()
+        if self.scenario == "peer-recovery":
+            # Delayed history publication does not extend the ledger watermark.
+            self.cloud.recovery_completion(self.items["recovery"])
 
     def quiescent(self) -> bool:
         events = self.cloud.refresh(validate_controls=False)

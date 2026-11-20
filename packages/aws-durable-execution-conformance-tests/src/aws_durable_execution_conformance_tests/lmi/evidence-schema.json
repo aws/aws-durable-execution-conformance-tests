@@ -546,6 +546,49 @@
       },
       "then": {
         "properties": {
+          "profile": {
+            "required": [
+              "recoveryPolicy"
+            ]
+          },
+          "faultsCreated": {
+            "minItems": 1
+          },
+          "retirement": {
+            "properties": {
+              "faults": {
+                "minItems": 1
+              }
+            }
+          },
+          "events": {
+            "items": {
+              "if": {
+                "required": ["kind"],
+                "properties": {
+                  "kind": { "const": "fault_released" }
+                }
+              },
+              "then": {
+                "required": ["gateId"],
+                "properties": {
+                  "gateId": { "type": "string", "pattern": "\\S" }
+                }
+              }
+            },
+            "contains": {
+              "required": ["kind", "gateId"],
+              "properties": {
+                "kind": {
+                  "const": "work_in_flight"
+                },
+                "gateId": {
+                  "type": "string",
+                  "pattern": "\\S"
+                }
+              }
+            }
+          },
           "budgets": {
             "required": [
               "recoveryMs"
@@ -868,6 +911,14 @@
         "ownerCaseId": {
           "type": "string",
           "minLength": 1
+        },
+        "releaseRequestedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "releaseAcknowledgedAtMs": {
+          "type": "number",
+          "minimum": 0
         },
         "releasedAtMs": {
           "type": "number",

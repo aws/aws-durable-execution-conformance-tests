@@ -1349,7 +1349,8 @@ def test_cleanup_discovered_admission_violations_fail_behavior_but_allow_audited
         ("deadline_evidence", 36, False),
         ("recovery_evidence", 44, True),
         ("recovery_evidence", 45, True),
-        ("recovery_evidence", 46, False),
+        ("recovery_evidence", 60, True),
+        ("recovery_evidence", 61, False),
     ],
 )
 def test_retained_retirement_fault_releases_refute_measurement_even_after_overwrite(
@@ -1712,7 +1713,7 @@ def test_cleanup_native_completion_and_fault_facts_can_refute_frozen_standard_me
             snapshot["faultsCreated"][0]["releasedAtMs"] = {
                 "fault-before-exit": 34,
                 "fault-before-recovery": 44,
-                "fault-after-recovery": 46,
+                "fault-after-recovery": 61,
             }[change]
         elif change == "warm-start-before-wrapper":
             attempts["warm"]["startedAtMs"] = 39
@@ -1727,6 +1728,269 @@ def test_cleanup_native_completion_and_fault_facts_can_refute_frozen_standard_me
     result = _run_standard_cleanup_discovery(value, mutate, phase="retire", path=path)
     assert result.status == ("FAILED" if rejected else "PASSED"), result.errors
     assert result.evidence["attempts"] == original_attempts
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("source", ["receipt", "request", "acknowledgment", "event"])
+@pytest.mark.parametrize("release", [50, 60, 61])
+def test_cleanup_discovers_fault_release_before_recovery_completion(path: str, source: str, release: int) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        fault = snapshot["faultsCreated"][0]
+        if source == "receipt":
+            fault["releasedAtMs"] = release
+        elif source == "request":
+            fault.update(releaseRequestedAtMs=release, releaseAcknowledgedAtMs=70)
+        elif source == "acknowledgment":
+            fault["releaseAcknowledgedAtMs"] = release
+        else:
+            victim = next(item for item in snapshot["attempts"] if item["role"] == "victim")
+            snapshot["events"].append(
+                {
+                    "kind": "fault_released",
+                    "requestId": victim["requestId"],
+                    "ownerRequestId": victim["requestId"],
+                    "executionArn": victim["executionArn"],
+                    "atMs": release,
+                    "gateId": fault["id"],
+                }
+            )
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path=path)
+    assert result.status == ("FAILED" if release <= 60 else "PASSED"), result.errors
+    if release <= 60:
+        assert any("cleanup evidence reports fault release" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("path", ["normal", "independent"])
+@pytest.mark.parametrize("fault_count", [1, 2])
+def test_final_early_recovery_fault_release_preserves_verified_retirement(path: str, fault_count: int) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    value["retirement"]["faults"][0]["releasedAtMs"] = 60
+    if fault_count == 2:
+        other = {"id": "other-fault", "ownerCaseId": value["caseId"]}
+        value["faultsCreated"].append(other)
+        value["retirement"]["faults"].append({**other, "releasedAtMs": 44, "mode": "normal"})
+    result = _run_standard_cleanup_discovery(value, lambda _: None, phase="retirement", path=path)
+    assert result.status == "FAILED", result.errors
+    assert not any("did not establish quiescence" in error for error in result.errors), result.errors
+
+
+def test_cleanup_fault_release_acknowledgment_must_precede_final_retirement() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["faultsCreated"][0]["releaseAcknowledgedAtMs"] = 230
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="release", path="independent", quiescent=False, retirement_valid=False
+    )
+    assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+    assert any("fault release acknowledgment follows retirement" in error for error in result.errors), result.errors
+
+
+def test_cleanup_work_in_flight_cannot_change_selected_victim_fault_gate() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        next(event for event in snapshot["events"] if event["kind"] == "work_in_flight")["gateId"] = "other-gate"
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="release", path="independent")
+    assert result.status == "FAILED", result.errors
+    assert any("changed the selected victim fault gate" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize("receipt", ["victim-gateless", "peer-gateless", "resolved", "unresolved"])
+def test_cleanup_fault_release_event_requires_a_complete_receipt(receipt: str) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        existing = next((event for event in snapshot["events"] if event["kind"] == "fault_released"), None)
+        if existing:
+            if receipt == "resolved":
+                existing["atMs"] = 70
+            else:
+                snapshot["events"].remove(existing)
+            return
+        owner_role = "peer" if receipt == "peer-gateless" else "victim"
+        owner = next(item for item in snapshot["attempts"] if item["role"] == owner_role)
+        event = {
+            "kind": "fault_released",
+            "requestId": owner["requestId"],
+            "ownerRequestId": owner["requestId"],
+            "executionArn": owner["executionArn"],
+        }
+        if receipt.endswith("gateless"):
+            event["atMs"] = 50
+        else:
+            event["gateId"] = snapshot["faultsCreated"][0]["id"]
+        snapshot["events"].append(event)
+
+    result = _run_standard_cleanup_discovery(
+        value, mutate, phase="both", path="independent", quiescent=receipt == "resolved"
+    )
+    assert result.status == ("PASSED" if receipt == "resolved" else "INFRASTRUCTURE_ERROR"), result.errors
+    if receipt.endswith("gateless"):
+        assert any("fault_released event must identify its gate" in error for error in result.errors), result.errors
+    if receipt == "unresolved":
+        assert any("fault_released event lacks a complete receipt" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize(
+    "inventory,field,provided,diagnostic",
+    [
+        ("faultsCreated", "releaseRequestedAtMs", False, "finite non-negative number"),
+        ("retirement", "releaseAcknowledgedAtMs", "70", "finite non-negative number"),
+        ("retirement", "releaseRequestedAtMs", 230, "request follows retirement"),
+        ("retirement", "releaseRequestedAtMs", 80, "request follows acknowledgment"),
+    ],
+)
+def test_cleanup_checks_provider_release_metadata(inventory: str, field: str, provided: Any, diagnostic: str) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    fault = {"id": "other-fault", "ownerCaseId": value["caseId"], "releaseAcknowledgedAtMs": 70}
+    fault[field] = provided
+    snapshot = deepcopy(value)
+    if inventory == "retirement":
+        snapshot["retirement"]["faults"].append(fault)
+    else:
+        snapshot["faultsCreated"].append(fault)
+    errors = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any(diagnostic in error for error in errors), errors
+
+
+def test_cleanup_detects_early_provider_request_in_fault_settlement() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    snapshot = deepcopy(value)
+    snapshot["retirement"]["faults"][0].update(releaseRequestedAtMs=50, releaseAcknowledgedAtMs=70)
+    errors = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("cleanup evidence reports fault release" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("id_resolved", [False, True])
+def test_cleanup_requires_timed_fault_settlement_to_resolve_to_owned_fault(id_resolved: bool) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    snapshot = deepcopy(value)
+    snapshot["retirement"]["faults"][0]["releaseRequestedAtMs"] = 50 if id_resolved else 70
+    partial = {"retirement": {"faults": [{"releaseRequestedAtMs": 50}]}}
+    errors = _cleanup_behavior_errors(value, snapshot, known_snapshots=[partial], standard=True, final=True)
+    diagnostic = (
+        "cleanup evidence reports fault release"
+        if id_resolved
+        else "timed fault settlement lacks a resolved owned fault"
+    )
+    assert any(diagnostic in error for error in errors), errors
+
+
+def test_cleanup_checks_provider_timing_without_frozen_victim_gate() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    snapshot = deepcopy(value)
+    next(event for event in value["events"] if event["kind"] == "work_in_flight").pop("gateId")
+    snapshot["retirement"]["faults"][0]["releaseRequestedAtMs"] = 230
+    errors = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    assert any("fault release request follows retirement" in error for error in errors), errors
+
+
+def test_cleanup_orders_provider_times_across_fault_inventories() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    snapshot = deepcopy(value)
+    snapshot["retirement"]["faults"][0]["releaseAcknowledgedAtMs"] = 70
+    partial = {"faultsCreated": [{**value["faultsCreated"][0], "releaseRequestedAtMs": 90}]}
+    errors = _cleanup_behavior_errors(value, snapshot, known_snapshots=[partial], standard=True, final=True)
+    assert any("fault release request follows acknowledgment" in error for error in errors), errors
+
+
+def test_cleanup_resolves_victim_gate_observation_bound_by_owner() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    partial = deepcopy(next(event for event in value["events"] if event["kind"] == "work_in_flight"))
+    partial.pop("requestId")
+    partial["gateId"] = "changed-gate"
+    errors = _cleanup_behavior_errors(value, {"events": [partial]}, standard=True)
+    assert any("changed the selected victim fault gate" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "partial_source,complete_source,partial_count,accepted",
+    [(7, 7, 1, True), (7, 8, 1, False), (None, None, 2, False)],
+)
+def test_cleanup_matches_distinct_receipts_by_source_sequence(
+    partial_source: int | None, complete_source: int | None, partial_count: int, accepted: bool
+) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    snapshot = deepcopy(value)
+    victim = next(item for item in value["attempts"] if item["role"] == "victim")
+    base_event = {
+        "kind": "fault_released",
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "gateId": value["faultsCreated"][0]["id"],
+    }
+    part = {**base_event, "sourceSequence": partial_source} if partial_source is not None else base_event
+    complete = {**base_event, "sourceSequence": complete_source} if complete_source is not None else base_event
+    snapshot["events"].append({**complete, "atMs": 70, "sequence": 34})
+    partial = {"events": [{**part, "sequence": index} for index in range(partial_count)]}
+    errors = _cleanup_behavior_errors(value, snapshot, known_snapshots=[partial], standard=True, final=True)
+    assert any("fault_released event lacks a complete receipt" in error for error in errors) is not accepted, errors
+
+
+def test_final_early_fault_release_does_not_excuse_invalid_retirement() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    value["retirement"]["faults"][0].update(releasedAtMs=60, mode="invalid")
+    result = _run_standard_cleanup_discovery(
+        value, lambda _: None, phase="retirement", path="independent", quiescent=False, retirement_valid=False
+    )
+    assert result.status == "FAILED", result.errors
+    assert any("did not establish quiescence" in error for error in result.errors), result.errors
+
+
+@pytest.mark.parametrize(
+    "wrapper_shape", [{}, {"outcome": "SUCCEEDED"}, {"outcome": "PENDING"}, {"kind": "wrapper_raise"}]
+)
+def test_cleanup_reconciles_recovery_wrapper_with_completion(wrapper_shape: dict[str, str]) -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    recovery_id = value["selectedRequests"]["recovery"]
+    wrapper = next(
+        item for item in value["events"] if item["requestId"] == recovery_id and item["kind"] == "wrapper_return"
+    )
+    snapshot = {
+        "events": [{**wrapper, "atMs": 70, **wrapper_shape}],
+        "faultsCreated": [{**value["faultsCreated"][0], "releasedAtMs": 65}],
+    }
+    errors = _cleanup_behavior_errors(value, snapshot, standard=True)
+    diagnostic = (
+        "cleanup recovery wrapper contradicts successful completion"
+        if wrapper_shape.get("kind") == "wrapper_raise" or wrapper_shape.get("outcome") == "PENDING"
+        else "cleanup evidence reports fault release"
+    )
+    assert any(diagnostic in error for error in errors), errors
+
+
+def test_cleanup_release_timing_preserves_large_integer_precision() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    value.pop("retirement")
+    recovery = next(attempt for attempt in value["attempts"] if attempt["role"] == "recovery")
+    recovery["endedAtMs"] = 2**53
+    snapshot = {"faultsCreated": [{**value["faultsCreated"][0], "releasedAtMs": 2**53 + 1}]}
+    assert _cleanup_behavior_errors(value, snapshot, standard=True) == []
+
+
+def test_cleanup_fault_release_uses_completion_learned_after_the_release_receipt() -> None:
+    value = _standard_retirement_snapshot("recovery_evidence", "python")
+    calls = 0
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            snapshot["faultsCreated"][0]["releasedAtMs"] = 61
+        else:
+            recovery = next(item for item in snapshot["attempts"] if item["role"] == "recovery")
+            recovery["endedAtMs"] = 62
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="both", path="independent")
+    assert result.status == "FAILED", result.errors
+    assert any("cleanup evidence reports fault release" in error for error in result.errors), result.errors
 
 
 @pytest.mark.parametrize("change", ["dispatch", "probe", "early-fault", "warm-overlap", "recovery-before-timeout"])

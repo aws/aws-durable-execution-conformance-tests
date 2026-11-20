@@ -1,4 +1,6 @@
 import copy
+from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -63,7 +65,7 @@ def test_different_environment_and_sequential_invocations_cannot_pass():
 
 def sources(raw, **cloud_fields):
     from types import SimpleNamespace
-    from typing import Any, cast
+    from typing import cast
 
     from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
 
@@ -205,3 +207,126 @@ def test_service_recorded_request_without_a_ledger_stream_is_incomplete():
     _, _, errors = case_sources.attempts(events)
     missing = [error for error in errors if "no lifecycle ledger stream" in error]
     assert len(missing) == 1 and "r1" in missing[0] and "TooManyRequestsException" in missing[0], errors
+
+
+@pytest.mark.parametrize(
+    ("details", "ended_at", "outcome", "expected_error"),
+    [
+        ({"EndTimestamp": 0.065}, 65, "SUCCEEDED", None),
+        ({"EndTimestamp": 0.059}, 59, "SUCCEEDED", None),
+        (None, 60, "SUCCEEDED", "missing a matching service completion"),
+        ({"EndTimestamp": None}, 60, "SUCCEEDED", "EndTimestamp"),
+        ({"EndTimestamp": 0.065, "Error": {"ErrorType": "Runtime.ExitError"}}, 65, "FAILED", None),
+    ],
+)
+def test_selected_recovery_uses_matching_native_completion(details, ended_at, outcome, expected_error):
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {
+                "RequestId": "different-request",
+                "StartTimestamp": 0.002,
+                "EndTimestamp": 0.100,
+            },
+        }
+    ]
+    if details is not None:
+        history.append(
+            {
+                "EventType": "InvocationCompleted",
+                "EventTimestamp": 0.080,
+                "InvocationCompletedDetails": {"RequestId": "r1", "StartTimestamp": 0.040, **details},
+            }
+        )
+    ctx, case_sources = sources(
+        [raw_record("WRAPPER_ENTER", 1, time=0.050)],
+        invocations=[{"marker": "m", "arn": "exec", "payload": {"scenario": "recovery"}}],
+        request_roles={"r1": "recovery"},
+        raw_histories={"exec": history},
+    )
+    ctx.scenario = replace(
+        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
+    )
+    ctx.record_attempt("r1", role="recovery", requestId="r1")
+    attempts, selected, errors = case_sources.attempts(
+        [{"kind": "wrapper_return", "requestId": "r1", "atMs": 60, "outcome": "SUCCEEDED"}]
+    )
+    assert selected == {"recovery": "r1"}
+    assert attempts[0]["endedAtMs"] == ended_at
+    assert attempts[0]["outcome"] == outcome
+    recovery_errors = [error for error in errors if "request r1" in error]
+    if expected_error:
+        assert len(recovery_errors) == 1 and expected_error in recovery_errors[0]
+    else:
+        assert recovery_errors == []
+
+
+@pytest.mark.parametrize("native_end", [None, 0.055])
+def test_selected_peer_uses_native_completion_when_available(native_end):
+    details = {"RequestId": "r1", "StartTimestamp": 0.040, "EndTimestamp": native_end}
+    history = [{"EventType": "InvocationCompleted", "InvocationCompletedDetails": details}] if native_end else []
+    ctx, case_sources = sources(
+        [raw_record("WRAPPER_ENTER", 1, time=0.050)],
+        invocations=[{"marker": "m", "arn": "exec", "payload": {"scenario": "barrier"}}],
+        request_roles={"r1": "peer"},
+        raw_histories={"exec": history},
+    )
+    ctx.scenario = replace(
+        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
+    )
+    ctx.record_attempt("r1", role="peer", requestId="r1")
+    attempts, selected, errors = case_sources.attempts(
+        [{"kind": "wrapper_return", "requestId": "r1", "atMs": 70, "outcome": "SUCCEEDED"}]
+    )
+    assert selected == {"peer": "r1"}
+    assert attempts[0]["endedAtMs"] == (55 if native_end else 70)
+    assert errors == []
+
+
+@pytest.mark.parametrize("release_gate", ["victim-gate", "release-all"])
+@pytest.mark.parametrize("state", ["PENDING", "ACKNOWLEDGED", "missing-intent"])
+def test_recovery_fault_retains_first_release_intent_after_retry(tmp_path, release_gate, state):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from .support import build_evidence
+    from .test_shared_partial_evidence import context
+
+    ctx = context()
+    ctx.scenario = replace(
+        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
+    )
+    records: list[dict[str, Any]] = [{"action": "hold", "gate": "victim-gate"}]
+    if state == "missing-intent":
+        records.append({"action": "release", "gate": release_gate, "time": 0.060, "state": "ACKNOWLEDGED"})
+    else:
+        records.append({"action": "release", "gate": release_gate, "started": 0.050, "state": "PENDING"})
+        if state == "ACKNOWLEDGED":
+            records.append({"action": "release", "gate": release_gate, "started": 0.070, "time": 0.080, "state": state})
+    cloud = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        control_prefix="runs/run/cases/case/control/",
+        observation_ended_at=1,
+        source_uris=set(),
+        control_records=records,
+        invocations=[{"role": "victim", "payload": {"gate": "victim-gate"}}],
+        _save=lambda *args: None,
+        artifacts_dir=tmp_path,
+    )
+    sources = SimpleNamespace(
+        observations=lambda: ([], []), histories=lambda: ([], {}, []), attempts=lambda _: ([], {}, [])
+    )
+    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
+        evidence = build_evidence(ctx, cloud)
+    fault = evidence["faultsCreated"][0]
+    if state == "missing-intent":
+        assert "releaseRequestedAtMs" not in fault
+        assert "Fault victim-gate release is missing a request timestamp" in evidence["collectionErrors"]
+        assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 60
+    else:
+        assert fault["releaseRequestedAtMs"] == 50
+        if state == "ACKNOWLEDGED":
+            assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 80
+        else:
+            assert "releasedAtMs" not in fault
+            assert "releaseAcknowledgedAtMs" not in fault
