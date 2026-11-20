@@ -380,3 +380,47 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             assert any("started after the cutoff" in error for error in validate_evidence(offline))
             assert any("started after the cutoff" in error for error in validate_common_evidence(offline))
         assert result.evidence["selectedRequests"] == {"victim": "native"}
+
+
+def test_deferred_undispatched_rejection_never_satisfies_the_deferred_obligation(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+    from aws_durable_execution_conformance_tests.lmi.evidence import deferred_retirement_errors
+
+    from .support import build_evidence as normalize
+    from .test_source_seals import cloud_source, rejected_completion
+
+    ctx, cloud = cloud_source(tmp_path)
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
+    cloud.invocations[0].update(role="victim", resume_roles=())
+    cloud.raw_histories["execution"].append(rejected_completion("rejected", 4, 1.1, 1.3))
+    cloud.source_uris.add((tmp_path / "histories/marker.json").resolve().as_uri())
+
+    frozen = normalize(ctx, cloud)
+    assert frozen["collection"]["deferredServiceRequests"] == [{"requestId": "rejected", "executionArn": "execution"}]
+
+    final = normalize(ctx, cloud, phase="final")
+    settlement = next(item for item in final["retirement"]["resources"] if item["id"] == "rejected")
+    assert settlement["outcome"] == "UNDISPATCHED"
+    assert settlement["startedAtMs"] == 1100
+
+    # Physical retirement settles it, and the deferred obligation and the
+    # coordinator's full ownership audit accept that settlement.
+    assert deferred_retirement_errors(frozen, final, undispatched=True) == []
+    assert _retirement_ownership_errors(ctx, frozen, final) == []
+
+    # Requirement 1 still holds: behavior never accepts the settlement for the
+    # deferred obligation, and the final document reports it incomplete.
+    assert deferred_retirement_errors(frozen, final) == ["Retirement omitted deferred service request rejected"]
+    assert any(
+        "service rejected native request rejected before its handler ran" in error for error in validate_evidence(final)
+    )
+
+    # A settlement that cannot prove it started after the cutoff fails the
+    # physical deferred check, exactly like a late service retry would.
+    not_after_cutoff = deepcopy(final)
+    tampered = next(item for item in not_after_cutoff["retirement"]["resources"] if item["id"] == "rejected")
+    tampered["startedAtMs"] = frozen["observationEndedAtMs"]
+    assert any(
+        "did not prove deferred service request rejected started after the cutoff" in error
+        for error in deferred_retirement_errors(frozen, not_after_cutoff, undispatched=True)
+    )

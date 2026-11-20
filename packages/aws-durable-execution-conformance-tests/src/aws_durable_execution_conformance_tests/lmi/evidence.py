@@ -24,6 +24,7 @@ from typing import Any, Literal, Protocol, TypeGuard
 from urllib.parse import urlsplit
 
 from aws_durable_execution_conformance_tests.lmi.artifacts import case_key, invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.observations import UNDISPATCHED_ERROR_TYPES
 
 SCHEMA_VERSION = 1
 REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
@@ -157,15 +158,25 @@ def same_checkpoint_result(left: Mapping[str, Any], right: Mapping[str, Any]) ->
     return same_json(left["result"], right["result"])
 
 
-def same_checkpoint(left: Any, right: Any) -> bool:
+_SUSPENSION_OPERATION_TYPES = frozenset({"WAIT", "CALLBACK"})
+
+
+def same_checkpoint(left: Any, right: Any, *, include_timing: bool = False) -> bool:
+    """Compare checkpoint identity, result and failure.
+
+    A wait or callback's service completion time is not part of its
+    checkpoint: SDK snapshots cannot carry it, so only same-source comparisons
+    include it. Every other field, including step timing, must match.
+    """
     if not isinstance(left, Mapping) or not isinstance(right, Mapping):
         return False
-    if same_checkpoint_result(left, right):
-        return same_json(
-            {key: value for key, value in left.items() if key != "result"},
-            {key: value for key, value in right.items() if key != "result"},
-        )
-    return same_json(left, right)
+    ignored = {"result"} if same_checkpoint_result(left, right) else set()
+    if not include_timing and left.get("type") in _SUSPENSION_OPERATION_TYPES:
+        ignored.add("endedAtMs")
+    return same_json(
+        {key: value for key, value in left.items() if key not in ignored},
+        {key: value for key, value in right.items() if key not in ignored},
+    )
 
 
 def same_checkpoint_set(left: Mapping[Any, Any], right: Mapping[Any, Any]) -> bool:
@@ -1197,7 +1208,9 @@ class _Evidence:
         if (
             not isinstance(recorded, list)
             or len(recorded) != len(after)
-            or not all(same_checkpoint(left, right) for left, right in zip(recorded, after, strict=True))
+            or not all(
+                same_checkpoint(left, right, include_timing=True) for left, right in zip(recorded, after, strict=True)
+            )
         ):
             self.error("replay.after differs from the collected service history", "ASSERTION")
         statuses = {operation.get("status") for operation in before}
@@ -1488,8 +1501,62 @@ class _Evidence:
         if unmatched:
             self.error("retirement-only completion has no unique observed work start")
 
+    def undispatched_settlements(self, retirement: Mapping[str, Any], end: float) -> set[str]:
+        """Resources proven undispatched: no attempt, no reference anywhere, a consistent proof.
+
+        This never satisfies a role, attempt or deferred-request obligation on its
+        own; callers only use it to exempt physical retirement from the seal
+        requirement for a request the service proves never reached a handler.
+        """
+        resources = self.records(retirement.get("resources"), "retirement.resources")
+        rows = [
+            item for item in resources if item.get("kind") == "invocation" and item.get("outcome") == "UNDISPATCHED"
+        ]
+        source_counts = Counter((item.get("executionArn"), item.get("sourceEventId")) for item in rows)
+        execution_arns = {item.get("executionArn") for item in self.attempts.values()}
+        collection = self.value.get("collection")
+        evidence_uris = collection.get("evidenceUris") if isinstance(collection, Mapping) else None
+        completions = self.records(retirement.get("completions", []), "retirement.completions")
+        referenced: set[Any] = set()
+        for record in (*self.events, *(self.value.get("sdkRequests") or []), *completions):
+            if not isinstance(record, Mapping):
+                continue
+            referenced.update(
+                record[key] for key in ("requestId", "ownerRequestId", "observedDuringRequestId") if key in record
+            )
+        proven: set[str] = set()
+        for item in rows:
+            request_id = item.get("id")
+            execution_arn, source_event_id = item.get("executionArn"), item.get("sourceEventId")
+            started, settled = item.get("startedAtMs"), item.get("settledAtMs")
+            if (
+                isinstance(request_id, str)
+                and request_id not in self.attempts
+                and request_id not in referenced
+                and execution_arn in execution_arns
+                and item.get("serviceErrorType") in UNDISPATCHED_ERROR_TYPES
+                and type(source_event_id) is int
+                and source_event_id >= 1
+                and source_counts[(execution_arn, source_event_id)] == 1
+                and isinstance(started, (int, float))
+                and not isinstance(started, bool)
+                and isinstance(settled, (int, float))
+                and not isinstance(settled, bool)
+                and 0 <= started <= settled <= end
+                and isinstance(evidence_uris, list)
+                and item.get("evidenceUri") in evidence_uris
+            ):
+                proven.add(request_id)
+            else:
+                self.error(f"undispatched invocation {item.get('id')} lacks a consistent service rejection proof")
+        return proven
+
     def retirement(
-        self, *, audit_observed_work: bool = True, retired_requests: Mapping[str, set[str]] | None = None
+        self,
+        *,
+        audit_observed_work: bool = True,
+        retired_requests: Mapping[str, set[str]] | None = None,
+        physical: bool = False,
     ) -> None:
         retirement = self.mapping(self.value.get("retirement"), "retirement")
         end = self.number(retirement.get("retiredAtMs"), "retirement.retiredAtMs")
@@ -1505,6 +1572,8 @@ class _Evidence:
         }
         required = {("invocation", item["requestId"]) for item in self.attempts.values()}
         required.update(("execution", item["executionArn"]) for item in self.attempts.values())
+        proven = self.undispatched_settlements(retirement, end)
+        required.update(("invocation", request) for request in proven)
         if required != identities:
             self.error("resourcesCreated must match observations for every launched invocation and execution")
         for created_key, settled_key, time_key in (
@@ -1592,7 +1661,16 @@ class _Evidence:
                             if field in operation
                         ):
                             self.error("execution settled before its recorded service operation")
-                    if kind == "invocation" and item.get("outcome") != "QUIESCENT":
+                    if kind == "invocation" and item.get("id") in proven:
+                        if not physical:
+                            # A retry must never stand in for the original: physical
+                            # retirement may release the fence, but behavior
+                            # validation always reports this request incomplete.
+                            self.error(
+                                f"service rejected native request {item['id']} before its handler ran "
+                                f"({item['serviceErrorType']}); its invocation evidence is incomplete"
+                            )
+                    elif kind == "invocation" and item.get("outcome") != "QUIESCENT":
                         self.error("invocation quiescence is not established")
                     if kind == "invocation" and time < self.last_activity(item.get("id")):
                         self.error("invocation settled before its recorded activity")
@@ -1670,7 +1748,9 @@ def deferred_service_requests(evidence: Mapping[str, Any]) -> dict[str, str]:
     return requests
 
 
-def deferred_retirement_errors(original: Mapping[str, Any], final: Mapping[str, Any]) -> list[str]:
+def deferred_retirement_errors(
+    original: Mapping[str, Any], final: Mapping[str, Any], *, undispatched: bool = False
+) -> list[str]:
     obligations = deferred_service_requests(original)
     if not obligations:
         return []
@@ -1682,6 +1762,21 @@ def deferred_retirement_errors(original: Mapping[str, Any], final: Mapping[str, 
         for attempt in attempts
         if isinstance(attempt, Mapping) and isinstance(attempt.get("requestId"), str)
     }
+    if undispatched:
+        retirement = final.get("retirement")
+        resources = retirement.get("resources") if isinstance(retirement, Mapping) else None
+        if isinstance(resources, list):
+            for item in resources:
+                if (
+                    isinstance(item, Mapping)
+                    and item.get("kind") == "invocation"
+                    and item.get("outcome") == "UNDISPATCHED"
+                    and isinstance(item.get("id"), str)
+                    and item["id"] not in indexed
+                ):
+                    # Physical retirement only; proven undispatched still never
+                    # satisfies a deferred obligation for behavior purposes.
+                    indexed[item["id"]] = item
     cutoff = original.get("observationEndedAtMs")
     errors = []
     for request, arn in obligations.items():
@@ -3701,7 +3796,7 @@ def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
     )
     try:
         validator.common(validate_behavior=False)
-        validator.retirement()
+        validator.retirement(physical=True)
         if not validator.errors:
             _validate_sdk_dispatches(validator, normalize_retirement_events(validator.events, validator.errors))
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
@@ -3733,7 +3828,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
             return _validate_controls_only(validator)
         validator.common(validate_behavior=False, allow_no_launches=allow_no_launches)
         validator.events = normalize_retirement_events(validator.events, validator.errors)
-        validator.retirement(audit_observed_work=False)
+        validator.retirement(audit_observed_work=False, physical=True)
         if validator.errors:
             return validator.errors
         retirement = evidence["retirement"]

@@ -14,6 +14,12 @@ from .errors import CollectionError, PlacementError
 # platform ends an invocation at its timeout, as observed in real LMI runs.
 PLATFORM_TIMEOUT_ERROR_TYPES = frozenset({"Sandbox.Timedout"})
 
+# The error type the service reports in InvocationCompletedDetails when it
+# rejects an invocation for capacity before any handler runs. Confirmed from
+# retained InvocationCompleted records in aws/aws-durable-execution-sdk-python
+# LMI runs 43973096696, 43978687067 and 44191933207.
+UNDISPATCHED_ERROR_TYPES = frozenset({"TooManyRequestsException"})
+
 
 def timestamp_ms(value: Any) -> float:
     if isinstance(value, datetime):
@@ -243,6 +249,25 @@ def service_error_type(details):
 def is_platform_timeout(details):
     """Classify by error type: messages and stack traces can mention timeouts."""
     return service_error_type(details) in PLATFORM_TIMEOUT_ERROR_TYPES
+
+
+def is_undispatched_rejection(details):
+    """Classify a platform rejection that proves a request never reached a handler.
+
+    Platform rejections carry no stack trace, while handler-raised errors
+    normally do; a handler that ran and raised a throttling exception must not
+    qualify. So this requires the exact real payload shape (only ErrorType and
+    ErrorMessage, both strings, and an untruncated error) and never matches on
+    message text, ErrorData or a stack trace.
+    """
+    error = details.get("Error") if isinstance(details, Mapping) else None
+    if not isinstance(error, Mapping) or error.get("Truncated", False) is not False:
+        return False
+    payload = error.get("Payload")
+    if not isinstance(payload, Mapping) or set(payload) != {"ErrorType", "ErrorMessage"}:
+        return False
+    error_type, message = payload.get("ErrorType"), payload.get("ErrorMessage")
+    return isinstance(error_type, str) and isinstance(message, str) and error_type in UNDISPATCHED_ERROR_TYPES
 
 
 def select(events, phase, marker=None):

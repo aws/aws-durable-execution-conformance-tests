@@ -60,6 +60,96 @@ def test_retirement_resource_completion_contract(
 
 
 @pytest.mark.parametrize(
+    ("extra", "is_valid"),
+    [
+        (
+            {
+                "executionArn": "arn:execution:additional",
+                "serviceErrorType": "TooManyRequestsException",
+                "sourceEventId": 4,
+                "startedAtMs": 100,
+            },
+            True,
+        ),
+        ({}, False),
+        (
+            {"executionArn": "arn:execution:additional", "serviceErrorType": "TooManyRequestsException"},
+            False,
+        ),
+        ({"executionArn": "arn:execution:additional", "sourceEventId": 4, "startedAtMs": 100}, False),
+        ({"serviceErrorType": "TooManyRequestsException", "sourceEventId": 4, "startedAtMs": 100}, False),
+        (
+            {
+                "executionArn": "",
+                "serviceErrorType": "TooManyRequestsException",
+                "sourceEventId": 4,
+                "startedAtMs": 100,
+            },
+            False,
+        ),
+        (
+            {
+                "executionArn": "arn:execution:additional",
+                "serviceErrorType": "TooManyRequestsException",
+                "sourceEventId": 0,
+                "startedAtMs": 100,
+            },
+            False,
+        ),
+        (
+            {
+                "executionArn": "arn:execution:additional",
+                "serviceErrorType": "TooManyRequestsException",
+                "sourceEventId": 4,
+                "startedAtMs": -1,
+            },
+            False,
+        ),
+    ],
+)
+def test_undispatched_invocation_resource_requires_its_proof_fields(
+    schema_validator: Draft202012Validator,
+    evidence_factories: dict[str, Any],
+    extra: dict[str, Any],
+    is_valid: bool,
+) -> None:
+    value = evidence_factories["evidence"]()
+    resource = {"id": "additional-invocation", "kind": "invocation", "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {
+            **resource,
+            **extra,
+            "settledAtMs": 210,
+            "evidenceUri": "s3://evidence/resource.json",
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    assert schema_validator.is_valid(value) is is_valid
+
+
+def test_undispatched_outcome_is_not_accepted_for_an_execution_resource(
+    schema_validator: Draft202012Validator, evidence_factories: dict[str, Any]
+) -> None:
+    value = evidence_factories["evidence"]()
+    resource = {"id": "additional-execution", "kind": "execution", "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": "arn:execution:additional",
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 4,
+            "startedAtMs": 100,
+            "settledAtMs": 210,
+            "evidenceUri": "s3://evidence/resource.json",
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    assert not schema_validator.is_valid(value)
+
+
+@pytest.mark.parametrize(
     ("kind", "outcome", "reason"),
     [
         ("invocation", "SUCCEEDED", "invocation quiescence is not established"),

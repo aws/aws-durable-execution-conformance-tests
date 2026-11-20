@@ -97,6 +97,22 @@ journal remain subject to the normal ownership checks. A request killed before i
 seal can be written leaves the evidence incomplete and keeps the target
 fenced even if Lambda reports native completion.
 
+The only exception to the seal rule above is physical retirement of a request
+the service proves it rejected before any handler ran: an allowlisted
+`InvocationCompletedDetails.Error`, on an owned execution, with no ledger row
+of any phase and no binding to a launch. Such a request settles as
+`UNDISPATCHED` with its proof fields and is exempt only from the seal
+requirement; behavior validation still reports it incomplete, so a retry can
+never stand in for the original.
+
+That exception depends on a binding requirement for the fixture wrapper: it
+must durably publish `WRAPPER_ENTER` before any SDK or handler code runs, and
+it must fail the invocation without running the handler if that publication
+fails. "No ledger row at all" is what distinguishes a pre-dispatch platform
+rejection from a handler that ran and let the same exception type escape; a
+wrapper that can run handler code before (or despite a failure of) publishing
+`WRAPPER_ENTER` breaks that distinction and makes the exception unsafe.
+
 The deadline and peer-recovery scenarios freeze behavior at the measurement
 cutoff. The driver records the victim's execution status and may stop that
 execution after the cutoff to close its service history. It leaves fault

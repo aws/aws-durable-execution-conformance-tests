@@ -119,6 +119,26 @@ def test_wait_success_uses_the_service_models_empty_result():
     assert histories[0]["operations"][0]["result"] is None
 
 
+@pytest.mark.parametrize(
+    "event_type,details",
+    [("WaitSucceeded", {}), ("CallbackSucceeded", {"Result": {"Payload": '"marker"', "Truncated": False}})],
+)
+def test_suspension_operation_keeps_its_service_completion_time(event_type, details):
+    from datetime import UTC, datetime
+
+    observed, _ = history_sources(event_type, details, {"status": "SUCCEEDED"})
+    observed.cloud.raw_histories["exec"][0]["EventTimestamp"] = datetime.fromtimestamp(0.045, tz=UTC)
+    histories, _, errors = observed.histories()
+    assert errors == []
+    assert histories[0]["operations"][0]["endedAtMs"] == pytest.approx(45)
+
+
+def test_suspension_operation_without_a_service_time_has_no_completion_time():
+    observed, _ = history_sources("WaitSucceeded", {}, {"status": "SUCCEEDED"})
+    histories, _, _ = observed.histories()
+    assert "endedAtMs" not in histories[0]["operations"][0]
+
+
 @pytest.mark.parametrize("error_source", ["operation", "execution"])
 def test_truncated_service_error_cannot_establish_replay_equality(error_source):
     error = {"Payload": {"ErrorType": "ServiceError", "ErrorMessage": "retained prefix"}, "Truncated": False}
