@@ -148,9 +148,12 @@ including those outside the scenario-owned task's assertion stream.
 
 ## Reusable GitHub Actions workflow
 
-Use `.github/workflows/lmi-lifecycle.yml` from this repository. Pin both `uses`
-and `conformance-ref` to the same full commit SHA. The workflow checks out the
-calling SDK repository and this repository at `.conformance`.
+Use `.github/workflows/lmi-lifecycle.yml` from this repository, pinned in `uses`
+to a full commit SHA. The workflow checks out the calling SDK repository and,
+at `.conformance`, this repository at the commit of the reusable workflow itself
+(`job.workflow_sha`), exposed as `CONFORMANCE_REVISION`. The optional
+`conformance-ref` input must equal that commit when set. A mismatch fails the
+harness job, so the cloud job is skipped.
 
 ```yaml
 jobs:
@@ -160,7 +163,6 @@ jobs:
       id-token: write
     uses: aws/aws-durable-execution-conformance-tests/.github/workflows/lmi-lifecycle.yml@<full-commit-sha>
     with:
-      conformance-ref: <full-commit-sha>
       sdk-script: .github/scripts/lmi-ci.sh
       runtime-label: JavaScript
       lambda-runtime: nodejs24.x
@@ -182,14 +184,21 @@ nonzero on failure. `setup` runs independently in the harness and cloud jobs.
 | `setup` | Install the SDK toolchain and shared core package from `.conformance`; verify the pin |
 | `harness` | Run binding tests and local SDK integration tests; write test diagnostics |
 | `build` | Build the tested SDK fixture ZIP and build manifest |
-| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration |
+| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration; write `manifest.json` to `$LMI_ARTIFACT_DIRECTORY` by passing that directory as `DeploymentManager`'s `artifacts`, or the step fails |
 | `run` | Execute all seven shared requirements and retain strict JSON/JUnit reports |
 | `collect` | Collect available runtime records and service history after success or failure |
 | `cleanup` | Release this run's controls and request stops for its identified executions |
 | `summary` | Print the retained report summary to stdout |
 
-`artifact-directory` defaults to `lmi_tests/artifacts`; it is exposed as
-`LMI_ARTIFACT_DIRECTORY`. For direct CLI use, give each run a separate artifact
+`artifact-directory` defaults to `lmi_tests/artifacts`, also when the caller passes
+an empty value; it is exposed as `LMI_ARTIFACT_DIRECTORY`. Use a plain workspace
+path without glob characters, because the upload treats it as a pattern. The
+workflow uploads only that directory and skips hidden files and directories, so
+keep the `run` stage's case output, including its reports and
+`collected-evidence.json`, in a visible path inside it. Leave the SDK journal root
+(`sdk.artifacts_dir`) at its default `source/` under each coverage-profile output
+directory, such as `standard/`, or another visible path inside that directory, so the journals are uploaded and cleanup can
+locate them in a downloaded copy. For direct CLI use, give each run a separate artifact
 directory and pass that same directory to build, deploy, run, collect, and cleanup.
 Deployment archives existing output only after it holds the target fences.
 Writers and cleanup use a nonblocking POSIX lock alongside each journal.
@@ -197,10 +206,27 @@ Automatic recovery of an uncertain write requires the original artifact root,
 lock inode, and Linux boot identity. Keep the lock files with the journals.
 The shared workflow owns setup of driver Python,
 OIDC credentials and refreshes, account verification, deployment/test budgets,
-always-run collection/cleanup, artifact upload and the job summary. Cloud work
-runs for trusted pushes, same-repository PRs and manual dispatch. Fork PRs and
-Dependabot events use the hosted unprivileged harness. Trusted jobs require the
-repository's `codebuild-github-actions-runner-<run_id>-<run_attempt>` runner integration.
+always-run collection/cleanup, artifact upload and the job summary. The workflow
+configures the test-role session only after `setup` and `build`. Those stages still
+run in the cloud job, which can request the OIDC token, so they must run trusted
+code only. Cleanup has 30 minutes, because it also
+reconciles an interrupted deployment update. A `deploy` stage that succeeds without
+writing `$LMI_ARTIFACT_DIRECTORY/manifest.json` fails the job. Collection and cleanup
+run only when that manifest exists, and the cloud job fails if that directory is
+empty when diagnostics are uploaded. Cloud work runs for trusted
+`push`, `schedule` and `workflow_dispatch` events and same-repository
+`pull_request` events. Fork PRs, Dependabot actors or PR authors, pushes to
+`dependabot/` branches (even by a maintainer) and every other event use only the
+hosted unprivileged harness, and the cloud job is skipped.
+Trusted jobs require the repository's
+`codebuild-github-actions-runner-<run_id>-<run_attempt>` runner integration. The
+cloud job needs that CodeBuild project to use EC2 compute, with a build timeout of
+at least the job's 155 minutes. Lambda compute stops a build after 15 minutes, and
+a runner that stops early skips collection and cleanup and leaves fences in place.
+
+Every invocation in one caller run shares `LMI_SHARED_RUN_ID`. The deployment
+bucket is scoped by region and stack name, so give each invocation in a run its
+own `stack-name`; invocations sharing a stack would also share run evidence.
 
 GitHub Actions concurrency serializes automation within the calling repository. The fixed
 `lmi-e2e-shared-capacity-provider` group covers deployment through cleanup and
@@ -208,23 +234,52 @@ uses `cancel-in-progress: false`. Concurrency groups are scoped to a calling
 repository; SDK repositories must use separately provisioned test capacity if
 they run at the same time. Direct CLI runs are not serialized with Actions.
 
-The driver also acquires a persistent retirement fence for each qualified
-Lambda target before deployment updates it and before case admission. Its object is
+The driver also acquires persistent retirement fences on each qualified Lambda
+target, twice per run. Deployment holds one while it updates the stack and
+releases it once the update settles. Profile preparation (`prepare(profile)`, once
+per target) then acquires a new one, verifies the deployed configuration before
+admitting any case, and holds it through that target's cases. Its journal is
+`<case output>/<coverage profile>/source/configuration/<first 20 hex characters of
+the SHA-256 of the full qualified function ARN>-fence.json`; those 20 characters
+begin the hash in the fence object's key below. Direct CLI runs can acquire
+the target between the two; within a calling repository, the workflow concurrency
+group serializes jobs across that gap. Each fence object is
 `s3://<deployment bucket>/quarantine/<sha256 of full qualified function ARN>.json`
 and records the owner `token`, `resourceId`, `runId`, `commit` and the owning run's
 `evidencePrefix` (`runs/<runId>/`). The orchestration/deployment role needs `s3:GetObject`,
 `s3:PutObject` and `s3:DeleteObject` on the deployment bucket's `quarantine/*`
-prefix; fixture runtime roles do not need fence access. Only the owning run clears
+prefix, plus `s3:ListBucket` on the bucket. Without it, S3 reports a missing fence
+as `AccessDenied` rather than `NoSuchKey`, and acquisition fails. Fixture runtime
+roles do not need fence access. Only the owning run clears
 its fence, after it proves quiescence or that the case was never admitted. Failed
 retirement, or an interruption whose outcome cleanup cannot prove from this run's
 journals, leaves the fence in place. Later preparation and deployment reject the fenced
 target and report its exact S3 URI, even if its service executions are terminal.
 
-There is no recovery CLI for a retained fence. Before manually removing a
-fence, inspect its retained evidence prefix and reconcile all prior invocations,
-tasks, I/O, checkpoints, polls and callbacks. Confirm that no runtime work remains
-and that the target artifact/configuration is correct. A terminal Lambda execution
-status alone does not prove retirement. Within a run, the coordinator still
+There is no recovery CLI for a retained fence. Reconcile it promptly: the
+deployment bucket expires `runs/` objects after one day, function logs and durable
+execution history are also kept for one day, and the workflow's diagnostics
+artifact for seven days. Before manually removing any fence, confirm that the
+owning controller and its workers can no longer resume, for example because its
+job has ended and its runner is gone. A controller paused between cases can look
+idle. Then inspect the fence's retained evidence prefix and reconcile all prior invocations, tasks, I/O, checkpoints, polls
+and callbacks. Confirm that no runtime work remains and that the target
+artifact/configuration is correct. If the fenced run left a `deployment-update.json`
+journal, check its phase. A `PREPARED` journal never submitted an update. A
+`SETTLED` journal has a resolved update. To release its remaining fences, run the
+caller's `cleanup` stage against the downloaded artifact directory with the
+original `LMI_SHARED_RUN_ID`; re-running the workflow uses a new run ID and cannot.
+If any fence state in that journal is still `ACQUIRING`, treat the check as
+inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
+have reached `UPDATE_COMPLETE`, `UPDATE_ROLLBACK_COMPLETE` or a verified no-op;
+`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, the
+stack's latest status alone is not enough, because it can belong to an older
+request. Keep the fence unless the stack events show that no update is in progress
+and every update started after the fence's S3 `LastModified` time reached
+`UPDATE_COMPLETE` or `UPDATE_ROLLBACK_COMPLETE`, or other independent evidence
+shows that this run never submitted one. Delete the fence only with
+a conditional request on the ETag you inspected, and keep it if any check is
+inconclusive. A terminal Lambda execution status alone does not prove retirement. Within a run, the coordinator still
 verifies case ownership, capacity, cancellation and retirement before reusing a
 target.
 
