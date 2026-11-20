@@ -57,8 +57,10 @@ def test_all_runtimes_supply_their_own_artifact_and_configuration(tmp_path, name
         artifact_id="sha256:tested-artifact",
         conformance_revision="revision",
         configuration_identity=partial(configuration_identity, runtime=runtime),
+        recovery_policy="replace-worker",
     )
     assert plan["runtime"] == name
+    assert {profile["recovery_policy"] for profile in plan["profiles"]} == {"replace-worker"}
     assert {case["requirement_id"] for case in plan["scenarios"]} == {f"lmi-lifecycle-{i}" for i in range(1, 8)}
     assert all(profile["artifact_id"] == "sha256:tested-artifact" for profile in plan["profiles"])
     assert configuration_identity(manifest, "c1", runtime) != configuration_identity(
@@ -107,13 +109,16 @@ def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):
         retired_at=None,
         observation_ended_at=2,
         source_uris=set(),
+        events={},
+        raw_histories={},
+        terminal_histories=set(),
         control_records=[{"action": "hold", "gate": "fault"}, {"action": "hold", "gate": "peer"}],
         invocations=[{"role": "victim", "payload": {"scenario": "javaTimeoutFixture", "gate": "fault"}}],
         _save=lambda *args: None,
         artifacts_dir=tmp_path,
     )
     sources = SimpleNamespace(
-        observations=lambda: ([], []), histories=lambda: ([], {}, []), attempts=lambda _: ([], {}, [])
+        observations=lambda **_: ([], []), histories=lambda **_: ([], {}, []), attempts=lambda _, **kwargs: ([], {}, [])
     )
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
         evidence = build_evidence(context(), cloud)
@@ -134,6 +139,9 @@ def test_emergency_fault_release_preserves_the_earliest_release_timestamp(tmp_pa
         retired_at=3 if phase == "final" else None,
         observation_ended_at=2,
         source_uris=set(),
+        events={},
+        raw_histories={},
+        terminal_histories=set(),
         control_records=[
             {"action": "hold", "gate": "fault"},
             {"action": "release", "gate": "fault", "started": 2, "time": 2.1},
@@ -143,7 +151,7 @@ def test_emergency_fault_release_preserves_the_earliest_release_timestamp(tmp_pa
         artifacts_dir=tmp_path,
     )
     sources = SimpleNamespace(
-        observations=lambda: (
+        observations=lambda **_: (
             [
                 {
                     "kind": "fault_released",
@@ -156,8 +164,8 @@ def test_emergency_fault_release_preserves_the_earliest_release_timestamp(tmp_pa
             ],
             [],
         ),
-        histories=lambda: ([], {}, []),
-        attempts=lambda _: ([], {}, []),
+        histories=lambda **_: ([], {}, []),
+        attempts=lambda _, **kwargs: ([], {}, []),
     )
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
         evidence = build_evidence(context(), cloud, phase=phase)

@@ -67,6 +67,9 @@ distribution.
 
 ## Running Conformance
 
+For live runs or offline validation of Lambda Managed Instances evidence, see the
+[LMI lifecycle runner and evidence contract](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/evidence-schema.md#live-lifecycle-runner).
+
 The runner accepts a SAM template whose functions map to requirement IDs with
 `TestingMetadata.TestDescription`:
 

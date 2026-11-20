@@ -13,3 +13,11 @@ class PlacementError(RuntimeError):
 
 class CollectionError(RuntimeError):
     """Evidence is missing/unavailable; distinct from an SDK regression assertion."""
+
+
+class TransientCollectionError(CollectionError):
+    """Retryable source failure while collecting a bounded snapshot."""
+
+
+class CollectionBudgetExpired(TimeoutError):
+    """The optional observation worker ran out of the collection phase budget."""

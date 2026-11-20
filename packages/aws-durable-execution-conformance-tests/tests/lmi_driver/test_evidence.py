@@ -1,6 +1,4 @@
 import copy
-from dataclasses import replace
-from typing import Any
 
 import pytest
 
@@ -65,7 +63,7 @@ def test_different_environment_and_sequential_invocations_cannot_pass():
 
 def sources(raw, **cloud_fields):
     from types import SimpleNamespace
-    from typing import cast
+    from typing import Any, cast
 
     from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
 
@@ -125,8 +123,9 @@ def test_replacement_worker_correlation_is_preserved():
         {"kind": "worker_recovered", "requestId": "r1", "atMs": 10, "replacesWorkerId": "retired-worker"},
         {"kind": "wrapper_return", "requestId": "r1", "atMs": 20, "outcome": "SUCCEEDED"},
     ]
-    attempts, _, errors = case_sources.attempts(events)
+    attempts, _, errors = case_sources.attempts(events, pending=[])
     assert errors == []
+    assert "outcome" not in attempts[0]
     assert attempts[0]["replacesWorkerId"] == "retired-worker"
     assert attempts[0]["workerId"] == "p"
 
@@ -209,124 +208,216 @@ def test_service_recorded_request_without_a_ledger_stream_is_incomplete():
     assert len(missing) == 1 and "r1" in missing[0] and "TooManyRequestsException" in missing[0], errors
 
 
+def test_crossed_hook_identity_is_retained_as_a_source_error():
+    _, case_sources = sources(
+        [
+            raw_record(
+                "CONFORMANCE",
+                1,
+                observation={
+                    "kind": "checkpoint_call",
+                    "callId": "checkpoint",
+                    "requestId": "r2",
+                    "ownerRequestId": "r2",
+                    "executionArn": "elsewhere",
+                },
+            ),
+        ]
+    )
+    events, errors = case_sources.observations()
+    assert [event["kind"] for event in events] == ["observation_error"]
+    assert events[0]["requestId"] == events[0]["ownerRequestId"] == "r1"
+    assert errors == ["Hook observation disagrees with ledger ownership: requestId, ownerRequestId, executionArn"]
+
+
+@pytest.mark.parametrize("sequence", [0, -1, 10**40])
+def test_source_sequence_is_checked_without_allocating_the_missing_range(sequence):
+    _, case_sources = sources([raw_record("WRAPPER_ENTER", sequence)])
+    _, errors = case_sources.observations()
+    assert errors == [
+        "Raw evidence has no native request identity or source sequence"
+        if sequence < 1
+        else "Raw source publication is incomplete for r1"
+    ]
+
+
+@pytest.mark.parametrize("fields", [{}, {"observation": None}, {"observation": []}])
+def test_conformance_row_without_observation_is_a_source_error(fields):
+    _, case_sources = sources([raw_record("CONFORMANCE", 1, **fields)])
+    events, errors = case_sources.observations()
+    assert events == []
+    assert errors == ["Raw CONFORMANCE record for r1 at sequence 1 lacks an observation object"]
+
+
 @pytest.mark.parametrize(
-    ("details", "ended_at", "outcome", "expected_error"),
+    "bad",
     [
-        ({"EndTimestamp": 0.065}, 65, "SUCCEEDED", None),
-        ({"EndTimestamp": 0.059}, 59, "SUCCEEDED", None),
-        (None, 60, "SUCCEEDED", "missing a matching service completion"),
-        ({"EndTimestamp": None}, 60, "SUCCEEDED", "EndTimestamp"),
-        ({"EndTimestamp": 0.065, "Error": {"ErrorType": "Runtime.ExitError"}}, 65, "FAILED", None),
+        {},
+        {"kind": "wrapper_return"},
+        {"kind": [], "atMs": 5},
+        {"kind": "task_exit", "taskId": "task", "atMs": float("inf")},
     ],
 )
-def test_selected_recovery_uses_matching_native_completion(details, ended_at, outcome, expected_error):
-    history: list[dict[str, Any]] = [
+def test_bad_observation_does_not_discard_other_evidence(bad):
+    _, case_sources = sources(
+        [
+            raw_record("CONFORMANCE", 1.0, observation=bad),
+            raw_record(
+                "CONFORMANCE",
+                2.0,
+                observation={"kind": "task_start", "taskId": "task", "atMs": 2, "captureSequence": 2.0},
+            ),
+        ]
+    )
+    events, errors = case_sources.observations()
+    assert [event["kind"] for event in events] == ["task_start"]
+    assert type(events[0]["sourceSequence"]) is int
+    assert type(events[0]["captureSequence"]) is int
+    assert errors == ["Raw CONFORMANCE record for r1 at sequence 1 has invalid kind or atMs"]
+
+
+@pytest.mark.parametrize("raw_effects", [True, False])
+def test_replay_counts_same_named_bodies_by_operation_identity(raw_effects):
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
+
+    bodies = [
+        {**retry_body("r1", 1, 95), "operation": "success", "operationId": "completed"},
+        *(retry_body("r2", attempt, 100 + attempt) for attempt in (1, 2, 3)),
+        *(
+            {**retry_body("r2", 1, 106 + index), "operation": "item", "operationId": f"item-{index}"}
+            for index in (1, 2)
+        ),
+        {**retry_body("r2", 1, 109), "operation": "left", "operationId": "parallel-left"},
+    ]
+    events = [
+        {"kind": "invocation_start", "requestId": "r1", "executionArn": "exec"},
         {
-            "EventType": "InvocationCompleted",
-            "InvocationCompletedDetails": {
-                "RequestId": "different-request",
-                "StartTimestamp": 0.002,
-                "EndTimestamp": 0.100,
-            },
+            "kind": "invocation_start",
+            "requestId": "r2",
+            "operations": [
+                {
+                    "operationId": "completed",
+                    "operationType": "STEP",
+                    "status": "SUCCEEDED",
+                    "name": "success",
+                    "serializedResult": "null",
+                },
+                {
+                    "operationId": "wait",
+                    "operationType": "WAIT",
+                    "status": "SUCCEEDED",
+                    "name": "pause",
+                },
+            ],
+        },
+        *bodies,
+    ]
+    raw = (
+        [
+            raw_record(
+                "BODY", sequence, request=body["requestId"], operation=body["operation"], attempt=body["attempt"]
+            )
+            for sequence, body in enumerate(bodies, 1)
+        ]
+        if raw_effects
+        else []
+    )
+    histories = [
+        {
+            "executionArn": "exec",
+            "operations": [
+                {"id": "completed", "name": "success"},
+                {"id": "retry-op", "name": "retry"},
+                {"id": "item-1", "name": "item"},
+                {"id": "item-2", "name": "item"},
+                {"id": "parallel-left", "name": "left"},
+            ],
         }
     ]
-    if details is not None:
-        history.append(
-            {
-                "EventType": "InvocationCompleted",
-                "EventTimestamp": 0.080,
-                "InvocationCompletedDetails": {"RequestId": "r1", "StartTimestamp": 0.040, **details},
-            }
-        )
-    ctx, case_sources = sources(
-        [raw_record("WRAPPER_ENTER", 1, time=0.050)],
-        invocations=[{"marker": "m", "arn": "exec", "payload": {"scenario": "recovery"}}],
-        request_roles={"r1": "recovery"},
-        raw_histories={"exec": history},
+    errors: list[str] = []
+    replay = replay_evidence(
+        events,
+        histories,
+        {"victim": "r1", "resume": "r2"},
+        raw=raw,
+        expected_effects={"success": 1, "retry": 3, "item": 1, "left": 1},
+        errors=errors,
     )
-    ctx.scenario = replace(
-        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
-    )
-    ctx.record_attempt("r1", role="recovery", requestId="r1")
-    attempts, selected, errors = case_sources.attempts(
-        [{"kind": "wrapper_return", "requestId": "r1", "atMs": 60, "outcome": "SUCCEEDED"}]
-    )
-    assert selected == {"recovery": "r1"}
-    assert attempts[0]["endedAtMs"] == ended_at
-    assert attempts[0]["outcome"] == outcome
-    recovery_errors = [error for error in errors if "request r1" in error]
-    if expected_error:
-        assert len(recovery_errors) == 1 and expected_error in recovery_errors[0]
-    else:
-        assert recovery_errors == []
-
-
-@pytest.mark.parametrize("native_end", [None, 0.055])
-def test_selected_peer_uses_native_completion_when_available(native_end):
-    details = {"RequestId": "r1", "StartTimestamp": 0.040, "EndTimestamp": native_end}
-    history = [{"EventType": "InvocationCompleted", "InvocationCompletedDetails": details}] if native_end else []
-    ctx, case_sources = sources(
-        [raw_record("WRAPPER_ENTER", 1, time=0.050)],
-        invocations=[{"marker": "m", "arn": "exec", "payload": {"scenario": "barrier"}}],
-        request_roles={"r1": "peer"},
-        raw_histories={"exec": history},
-    )
-    ctx.scenario = replace(
-        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
-    )
-    ctx.record_attempt("r1", role="peer", requestId="r1")
-    attempts, selected, errors = case_sources.attempts(
-        [{"kind": "wrapper_return", "requestId": "r1", "atMs": 70, "outcome": "SUCCEEDED"}]
-    )
-    assert selected == {"peer": "r1"}
-    assert attempts[0]["endedAtMs"] == (55 if native_end else 70)
     assert errors == []
+    assert replay["sideEffects"] == [
+        {"operationId": "completed", "count": 1, "expectedCount": 1},
+        {"operationId": "retry-op", "count": 3, "expectedCount": 3},
+        {"operationId": "item-1", "count": 1, "expectedCount": 1},
+        {"operationId": "item-2", "count": 1, "expectedCount": 1},
+        {"operationId": "parallel-left", "count": 1, "expectedCount": 1},
+        {"operationId": "wait", "count": 0, "expectedCount": 0},
+    ]
+    partial = replay_evidence(events, [], {"victim": "r1", "resume": "r2"}, raw=raw, partial=True)
+    assert "sideEffects" not in partial
+    assert "outcome" not in partial["retry"]["attempts"][0]
 
 
-@pytest.mark.parametrize("release_gate", ["victim-gate", "release-all"])
-@pytest.mark.parametrize("state", ["PENDING", "ACKNOWLEDGED", "missing-intent"])
-def test_recovery_fault_retains_first_release_intent_after_retry(tmp_path, release_gate, state):
-    from types import SimpleNamespace
-    from unittest.mock import patch
+def test_replay_keeps_missing_expectations_and_conflicting_source_counts_incomplete():
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
 
-    from .support import build_evidence
-    from .test_shared_partial_evidence import context
-
-    ctx = context()
-    ctx.scenario = replace(
-        ctx.scenario, requirement_id="lmi-lifecycle-4", scenario="peer-recovery", roles=("victim", "peer", "recovery")
+    events = [
+        {"kind": "invocation_start", "requestId": "r1", "executionArn": "exec"},
+        retry_body("r2", 1, 100),
+        {**retry_body("r2", 1, 101), "operationId": "second-retry"},
+    ]
+    errors: list[str] = []
+    evidence = replay_evidence(
+        events,
+        [
+            {
+                "executionArn": "exec",
+                "operations": [{"id": identity, "name": "retry"} for identity in ("retry-op", "second-retry")],
+            }
+        ],
+        {"victim": "r1", "resume": "r2"},
+        raw=[raw_record("BODY", 1, request="r2", operation="retry", attempt=1)],
+        expected_effects={"success": 1, "retry": 2},
+        errors=errors,
     )
-    records: list[dict[str, Any]] = [{"action": "hold", "gate": "victim-gate"}]
-    if state == "missing-intent":
-        records.append({"action": "release", "gate": release_gate, "time": 0.060, "state": "ACKNOWLEDGED"})
-    else:
-        records.append({"action": "release", "gate": release_gate, "started": 0.050, "state": "PENDING"})
-        if state == "ACKNOWLEDGED":
-            records.append({"action": "release", "gate": release_gate, "started": 0.070, "time": 0.080, "state": state})
-    cloud = SimpleNamespace(
-        manifest={"invocationTimeout": 60, "bucket": "private"},
-        control_prefix="runs/run/cases/case/control/",
-        observation_ended_at=1,
-        source_uris=set(),
-        control_records=records,
-        invocations=[{"role": "victim", "payload": {"gate": "victim-gate"}}],
-        _save=lambda *args: None,
-        artifacts_dir=tmp_path,
+    assert errors == [
+        "Raw replay side effects do not match fixture body observations by request, operation and attempt",
+    ]
+    assert evidence["missingExpectedEffects"] == ["retry", "success"]
+
+
+def test_missing_effect_on_one_same_named_step_is_a_count_mismatch():
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
+
+    events = [
+        {"kind": "invocation_start", "requestId": "r1", "executionArn": "exec"},
+        {**retry_body("r1", 1.0, 100), "operation": "item", "operationId": "item-1"},
+    ]
+    histories = [
+        {
+            "executionArn": "exec",
+            "operations": [{"id": "item-1", "name": "item"}, {"id": "item-2", "name": "item"}],
+        }
+    ]
+    errors: list[str] = []
+    evidence = replay_evidence(
+        events,
+        histories,
+        {"victim": "r1"},
+        raw=[raw_record("BODY", 1e0, operation="item", attempt=1e0)],
+        expected_effects={"item": 1},
+        errors=errors,
     )
-    sources = SimpleNamespace(
-        observations=lambda: ([], []), histories=lambda: ([], {}, []), attempts=lambda _: ([], {}, [])
-    )
-    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
-        evidence = build_evidence(ctx, cloud)
-    fault = evidence["faultsCreated"][0]
-    if state == "missing-intent":
-        assert "releaseRequestedAtMs" not in fault
-        assert "Fault victim-gate release is missing a request timestamp" in evidence["collectionErrors"]
-        assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 60
-    else:
-        assert fault["releaseRequestedAtMs"] == 50
-        if state == "ACKNOWLEDGED":
-            assert fault["releasedAtMs"] == fault["releaseAcknowledgedAtMs"] == 80
-        else:
-            assert "releasedAtMs" not in fault
-            assert "releaseAcknowledgedAtMs" not in fault
+    assert evidence["sideEffects"] == [
+        {"operationId": "item-1", "count": 1, "expectedCount": 1},
+        {"operationId": "item-2", "count": 0, "expectedCount": 1},
+    ]
+    assert evidence["operationExecutions"][0]["attemptId"] == "r1:1"
+    assert not errors
+
+
+def test_unsealed_gap_is_pending_during_collection():
+    _, case_sources = sources([raw_record("WRAPPER_ENTER", 1), raw_record("BODY", 3)])
+    pending: list[str] = []
+    _, errors = case_sources.observations(pending=pending)
+    assert errors == []
+    assert pending == ["Raw source publication is incomplete for r1"]

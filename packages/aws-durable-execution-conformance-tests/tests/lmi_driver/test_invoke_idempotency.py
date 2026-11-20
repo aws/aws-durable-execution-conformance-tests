@@ -114,7 +114,10 @@ def test_cloud_execution_names_are_stable_and_scoped_to_the_logical_launch(tmp_p
             elif changed == "marker":
                 marker = "different-marker"
         api = Mock()
-        api.invoke.return_value = {"StatusCode": 202, "DurableExecutionArn": FUNCTION + "/durable-execution/name/id"}
+        api.invoke.side_effect = lambda **kwargs: {
+            "StatusCode": 202,
+            "DurableExecutionArn": f"{FUNCTION}/durable-execution/{kwargs['DurableExecutionName']}/id",
+        }
         cloud = Cloud(
             manifest,
             "c1",

@@ -82,7 +82,7 @@ class RecoveryCloud(ScriptCloud):
             if value:
                 return value
             if self.now >= deadline:
-                raise AssertionError(options.get("message", "poll timed out"))
+                raise options.get("category", AssertionError)(options.get("message", "poll timed out"))
             self.now = min(deadline, self.now + 0.5)
 
     def release(self, gate):
@@ -114,9 +114,6 @@ class RecoveryCloud(ScriptCloud):
 
     def collect(self, **options):
         self.actions.append(("collect",))
-
-    def recovery_completion(self, item):
-        self.actions.append(("recovery-completion", item["marker"]))
 
     def delete_controls(self):
         self.actions.append(("delete-controls",))
@@ -157,14 +154,14 @@ def test_peer_has_recovery_headroom_and_fault_is_armed_after_cohort_placement(
     assert ("finish", "peer", "SUCCEEDED") in cloud.actions
     assert not any(action[0] == "terminal" for action in cloud.actions)
     assert ("release", driver.gate("fault")) not in cloud.actions
+    cloud.stop_victim_after_cutoff = Mock()
+    monkeypatch.setattr(driver, "_observations_ready", lambda: cloud.collect(full_run=False) or True)
     driver.collect()
-    driver.quiescent = Mock(return_value=True)
+    cloud.stop_victim_after_cutoff.assert_called_once_with(victim)
+    assert ("release", driver.gate("fault")) not in cloud.actions
+    driver._retirement_ready = Mock(side_effect=lambda: cloud.collect(full_run=False) or True)
     driver.retire()
-    assert (
-        cloud.actions.index(("collect",))
-        < cloud.actions.index(("recovery-completion", "recovery"))
-        < cloud.actions.index(("settle",))
-    )
+    assert cloud.actions.index(("collect",)) < cloud.actions.index(("settle",))
 
 
 def test_late_io_and_a_peer_retry_cannot_replace_the_expired_original(monkeypatch):
@@ -213,3 +210,71 @@ def test_expired_victim_does_not_start_a_peer_or_arm_the_fault(monkeypatch):
         driver.place()
     assert [item["marker"] for item in cloud.invocations] == ["victim"]
     assert ("release", driver.gate("prepare")) not in cloud.actions
+
+
+@pytest.mark.parametrize(
+    ("policy", "recovery_worker", "passes"),
+    [
+        ("reuse-worker", "original-worker", True),
+        ("reuse-worker", "replacement-worker", False),
+        ("replace-worker", "original-worker", False),
+        ("replace-worker", "replacement-worker", True),
+    ],
+)
+def test_javascript_recovery_overlap_respects_replacement_policy(monkeypatch, policy, recovery_worker, passes):
+    from typing import cast
+
+    from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
+    from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver as Driver
+
+    profile = Profile("c2", "function", 2, 2, "sdk", "configuration", policy)
+    ctx = ScenarioContext(
+        "run",
+        Scenario(
+            "case",
+            "lmi-lifecycle-4",
+            "c2",
+            "peer-recovery",
+            roles=("victim", "peer", "recovery"),
+        ),
+        profile,
+    )
+    wall = SimpleNamespace(time=lambda: 5)
+    monkeypatch.setattr(shared_scenarios, "time", wall)
+    events = []
+    for role, worker, start in (("peer", "original-worker", 1), ("recovery", recovery_worker, 2)):
+        actor = {
+            "marker": role,
+            "request": role,
+            "execution": f"execution:{role}",
+            "environment": "env",
+            "process": f"process:{worker}",
+            "worker": worker,
+            "time": start,
+            "deadline": 10,
+            "sequence": 1,
+            "gate": role,
+        }
+        events.extend(
+            [
+                {**actor, "phase": "WRAPPER_ENTER"},
+                {**actor, "phase": "BLOCKED", "sequence": 2},
+                {**actor, "phase": "ALIVE", "time": 4, "sequence": 3},
+            ]
+        )
+
+    def poll(predicate, **kwargs):
+        result = predicate()
+        if result is None:
+            raise PlacementError(kwargs["message"])
+        return result
+
+    cloud = SimpleNamespace(refresh=lambda: events, poll=poll, manifest={})
+    driver = Driver(ctx, cast(Cloud, cloud), runtime="javascript", fixtures={})
+    driver.boundary = {"worker": "original-worker"}
+    driver.items.update(peer={"marker": "peer"}, recovery={"marker": "recovery"})
+    if passes:
+        assert driver.wait_overlap(("peer", "recovery"), "env")
+    else:
+        with pytest.raises(PlacementError):
+            driver.wait_overlap(("peer", "recovery"), "env")
