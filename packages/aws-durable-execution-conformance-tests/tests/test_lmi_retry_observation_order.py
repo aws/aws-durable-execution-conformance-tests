@@ -375,7 +375,11 @@ def test_in_place_identity_occurrence_increases_survive_later_deduplication(phas
     if inventory == "retry":
         assert any("duplicate retry attemptId" in error for error in result.errors), result.errors
         assert any("distinct observed attempts" in error for error in validate_evidence(result.evidence))
-    assert scheduler.quarantine_reason(value["profile"]["functionArn"])
+    if inventory == "sideEffects":
+        assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
+    # Side-effect counters are behavior evidence with no physical owner, so a
+    # duplicate fails the case without blocking reuse of a retired target.
+    assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (inventory != "sideEffects")
 
 
 @pytest.mark.parametrize(
