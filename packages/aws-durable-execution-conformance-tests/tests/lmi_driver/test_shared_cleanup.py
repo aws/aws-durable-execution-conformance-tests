@@ -8,6 +8,7 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from aws_durable_execution_conformance_tests.lmi import runner as shared
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
@@ -47,6 +48,7 @@ def test_case_identity_is_checked_before_control_release(monkeypatch, tmp_path, 
         json.dumps(
             {
                 "payload": {"run": "run", "caseId": "case"},
+                "durableExecutionName": "name",
                 "arn": "arn:foreign" if foreign else owned,
             }
         )
@@ -54,7 +56,7 @@ def test_case_identity_is_checked_before_control_release(monkeypatch, tmp_path, 
     storage, service = Mock(), Mock()
     prefix = f"runs/run/cases/{identity}/control/"
     storage.get_paginator.return_value.paginate.return_value = [{"Contents": [{"Key": prefix + "release-all"}]}]
-    storage.get_object.side_effect = lambda **kwargs: {"Body": io.BytesIO(b"hold")}
+    storage.get_object.side_effect = lambda **kwargs: {"Body": io.BytesIO(b"hold"), "ETag": '"hold"'}
     service.get_durable_execution.return_value = {"Status": "RUNNING"}
     monkeypatch.setattr(shared, "client", lambda name, region: storage if name == "s3" else service)
     assert shared.cleanup(deployment, tmp_path) == int(foreign)
@@ -64,7 +66,9 @@ def test_case_identity_is_checked_before_control_release(monkeypatch, tmp_path, 
         storage.put_object.assert_not_called()
         service.stop_durable_execution.assert_not_called()
     else:
-        storage.put_object.assert_called_once_with(Bucket="private", Key=prefix + "release-all", Body=b"release")
+        storage.put_object.assert_called_once_with(
+            Bucket="private", Key=prefix + "release-all", Body=b"release", IfMatch='"hold"'
+        )
         service.stop_durable_execution.assert_called_once_with(DurableExecutionArn=owned)
     assert all(call.kwargs["Key"].startswith(prefix) for call in storage.get_object.call_args_list)
 
@@ -104,6 +108,7 @@ def test_one_identified_execution_does_not_hide_another_unreconciled_invoke(monk
         "run": "run",
         "bucket": "private",
         "region": "us-west-2",
+        "driverTimeout": 0,
         "functions": {"c1": target},
     }
     case = {"case_id": "case", "profile_id": "c1"}
@@ -123,8 +128,12 @@ def test_one_identified_execution_does_not_hide_another_unreconciled_invoke(monk
     intents.mkdir(parents=True)
     known, missing = intents / "known.json", intents / "missing.json"
     payload = {"run": "run", "caseId": "case"}
-    known.write_text(json.dumps({"payload": {**payload, "marker": "known"}, "arn": execution}))
-    missing.write_text(json.dumps({"payload": {**payload, "marker": "missing"}, "arn": None}))
+    known.write_text(
+        json.dumps({"payload": {**payload, "marker": "known"}, "durableExecutionName": "name", "arn": execution})
+    )
+    missing.write_text(
+        json.dumps({"payload": {**payload, "marker": "missing"}, "durableExecutionName": "missing", "arn": None})
+    )
     original_glob = Path.glob
     monkeypatch.setattr(
         Path,
@@ -133,8 +142,340 @@ def test_one_identified_execution_does_not_hide_another_unreconciled_invoke(monk
     )
     storage, service = Mock(), Mock()
     storage.get_paginator.return_value.paginate.return_value = []
+    service.list_durable_executions_by_function.return_value = {"DurableExecutions": []}
     service.get_durable_execution.return_value = {"Status": "SUCCEEDED"}
     monkeypatch.setattr(shared, "client", lambda name, region: storage if name == "s3" else service)
     assert shared.cleanup(deployment, tmp_path) == 1
     errors = json.loads((tmp_path / "cleanup.json").read_text())["errors"]
     assert errors == ["Unreconciled Invoke: case/missing"]
+
+
+def test_cleanup_rejects_a_crossed_arn_on_the_same_target(tmp_path):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {"run": "run", "bucket": "private", "region": "us-west-2", "functions": {"c1": target}}
+    output = tmp_path / "standard"
+    output.mkdir()
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    intents = output / "source/cases" / shared.case_key("case") / "invocations"
+    intents.mkdir(parents=True)
+    payload = {"run": "run", "caseId": "case", "marker": "marker"}
+    (intents / "intent.json").write_text(json.dumps({"payload": payload, "durableExecutionName": "name"}))
+    storage, service = Mock(), Mock()
+    event = {**payload, "phase": "WRAPPER_ENTER", "execution": target + "/durable-execution/other/id"}
+    storage.get_paginator.return_value.paginate.side_effect = [
+        [],
+        [{"Contents": [{"Key": "runs/run/events/marker/0000.json"}]}],
+    ]
+    storage.get_object.return_value = {"Body": io.BytesIO(json.dumps(event).encode())}
+    assert (
+        shared.cleanup(deployment, tmp_path, client_factory=lambda name, _: storage if name == "s3" else service) == 1
+    )
+    service.stop_durable_execution.assert_not_called()
+
+
+def test_cleanup_releases_verified_control_even_when_ledger_read_fails(tmp_path):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {"run": "run", "bucket": "private", "region": "us-west-2", "functions": {"c1": target}}
+    output = tmp_path / "standard"
+    output.mkdir()
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    owner = shared.case_key("case")
+    intents = output / "source/cases" / owner / "invocations"
+    intents.mkdir(parents=True)
+    payload = {"run": "run", "caseId": "case", "marker": "fixture"}
+    (intents / "intent.json").write_text(json.dumps({"payload": payload, "durableExecutionName": "fixture"}))
+    storage, service = Mock(), Mock()
+    key = f"runs/run/cases/{owner}/control/release-all"
+    storage.get_paginator.return_value.paginate.side_effect = [
+        [{"Contents": [{"Key": key}]}],
+        ClientError({"Error": {"Code": "SlowDown"}}, "ListObjectsV2"),
+    ]
+    storage.get_object.return_value = {"Body": io.BytesIO(b"hold"), "ETag": '"hold"'}
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda name, _: storage if name == "s3" else service)
+    storage.put_object.assert_called_once_with(Bucket="private", Key=key, Body=b"release", IfMatch='"hold"')
+    service.stop_durable_execution.assert_not_called()
+
+
+def test_default_cleanup_uses_saved_relative_case_output(tmp_path):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {
+        "run": "run",
+        "bucket": "private",
+        "region": "us-west-2",
+        "functions": {"c1": target},
+        "deploymentArtifactDirectory": str(tmp_path),
+    }
+    output = tmp_path / "custom" / "standard"
+    output.mkdir(parents=True)
+    (tmp_path / "case-output.json").write_text(json.dumps({"runId": "run", "directory": "custom"}))
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    storage = Mock()
+    key = f"runs/run/cases/{shared.case_key('case')}/control/release-all"
+    storage.get_paginator.return_value.paginate.return_value = [{"Contents": [{"Key": key}]}]
+    storage.get_object.return_value = {"Body": io.BytesIO(b"hold"), "ETag": '"hold"'}
+    factory = Mock(return_value=storage)
+    assert shared.cleanup(deployment, client_factory=factory) == 0
+    storage.put_object.assert_called_once_with(Bucket="private", Key=key, Body=b"release", IfMatch='"hold"')
+    assert json.loads((output.parent / "cleanup.json").read_text())["status"] == "CLEANUP_REQUESTED"
+    assert shared.cleanup(deployment, tmp_path / "explicit", client_factory=factory) == 0
+    assert json.loads((tmp_path / "explicit" / "cleanup.json").read_text())["status"] == "NO_CASES"
+
+
+@pytest.mark.parametrize("hold_race", [None, "conflict", "lost-response"])
+@pytest.mark.parametrize("custom_source", [False, True])
+def test_cleanup_protects_pending_control_absent_from_listing(tmp_path, hold_race, custom_source):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {"run": "run", "bucket": "private", "region": "us-west-2", "functions": {"c1": target}}
+    coverage = tmp_path / "standard"
+    source = tmp_path / "custom-source" if custom_source else coverage / "source"
+    case_dir = source / "cases" / shared.case_key("case")
+    case_dir.mkdir(parents=True)
+    coverage.mkdir(exist_ok=True)
+    (coverage / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                **({"sdk": {"artifacts_dir": str(source)}} if custom_source else {}),
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    (case_dir / "control-records.json").write_text(
+        json.dumps(
+            [
+                {"gate": "unseen", "action": "hold", "state": "PENDING"},
+            ]
+        )
+    )
+    storage = Mock()
+    storage.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+    missing = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    storage.get_object.side_effect = (
+        [missing, {"Body": io.BytesIO(b"hold"), "ETag": '"held"'}] if hold_race else missing
+    )
+    if hold_race:
+        failure = (
+            ReadTimeoutError(endpoint_url="test")
+            if hold_race == "lost-response"
+            else ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
+        )
+        storage.put_object.side_effect = [failure, {}]
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda *_: storage) == 0
+    key = f"runs/run/cases/{shared.case_key('case')}/control/unseen"
+    assert storage.put_object.call_args_list[0].kwargs == {
+        "Bucket": "private",
+        "Key": key,
+        "Body": b"release",
+        "IfNoneMatch": "*",
+    }
+    if hold_race:
+        assert storage.put_object.call_args_list[1].kwargs == {
+            "Bucket": "private",
+            "Key": key,
+            "Body": b"release",
+            "IfMatch": '"held"',
+        }
+    assert storage.put_object.call_count == (2 if hold_race else 1)
+    storage.delete_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "state,single_attempt,released",
+    [
+        ("ACQUIRING", False, False),
+        ("ACQUIRING", True, True),
+        ("NOT_ADMITTED", False, True),
+        ("RETIRED", False, True),
+        ("ACQUIRED", True, False),
+    ],
+)
+def test_offline_profile_recovery_honors_custom_root_and_receipt(tmp_path, state, single_attempt, released):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {
+        "run": "run",
+        "commit": "commit",
+        "bucket": "private",
+        "region": "us-west-2",
+        "functions": {"c1": target},
+    }
+    coverage = tmp_path / "standard"
+    source = tmp_path / "custom-profile-source"
+    journals = source / "configuration"
+    journals.mkdir(parents=True)
+    coverage.mkdir()
+    (coverage / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "sdk": {"artifacts_dir": str(source)},
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [],
+            }
+        )
+    )
+    journal = journals / f"{shared.case_key(target)}-fence.json"
+    record = {
+        "resourceId": target,
+        "token": "owned",
+        "run": "run",
+        "commit": "commit",
+        "singleAttempt": single_attempt,
+        "state": state,
+    }
+    with shared.owner_lock(journal) as owner:
+        journal.write_text(json.dumps({**record, "owner": owner}))
+    storage = Mock()
+    storage.get_object.side_effect = lambda **_: {
+        "Body": io.BytesIO(json.dumps({**record, "runId": "run"}).encode()),
+        "ETag": '"own"',
+    }
+    expected_error = state == "ACQUIRING" and not single_attempt
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda *_: storage) == int(expected_error)
+    assert journal.exists() is not released
+    assert storage.delete_object.call_count == int(released)
+
+
+def test_run_persists_relative_binding_source_as_absolute(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    working_directory = tmp_path / "original-cwd"
+    working_directory.mkdir()
+    monkeypatch.chdir(working_directory)
+    binding_source = working_directory / "journals"
+    output = tmp_path / "run-output"
+
+    def factory(*_):
+        return {"runId": "run", "sdk": {"deployment": {"conformanceRevision": "commit"}, "artifacts_dir": "journals"}}
+
+    def stop_before_runtime(path):
+        assert json.loads(path.read_text())["sdk"]["artifacts_dir"] == str(binding_source)
+        assert binding_source.is_dir()
+        raise RuntimeError("stop before runtime")
+
+    monkeypatch.setattr(app, "load_manifest", stop_before_runtime)
+    with pytest.raises(RuntimeError, match="stop before runtime"):
+        shared.run({"run": "run"}, output, manifest_factory=factory, adapter_name="fixture")
+    monkeypatch.chdir(tmp_path)
+    plan = json.loads((output / "standard/manifest.json").read_text())
+    assert shared.sdk_artifact_directory(output / "standard", plan) == binding_source
+
+
+def test_cleanup_uses_relocated_direct_cli_manifest(tmp_path):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    arn = target + "/durable-execution/name/id"
+    deployment = {"run": "run", "bucket": "private", "region": "us-west-2", "functions": {"c1": target}}
+    root = tmp_path / "download"
+    source = root / "copied-source"
+    journal = source / "cases" / shared.case_key("case") / "invocations" / "marker.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "payload": {"run": "run", "caseId": "case", "marker": "marker"},
+                "function": target,
+                "arn": arn,
+                "durableExecutionName": "name",
+            }
+        )
+    )
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "sdk": {"artifacts_dir": "/old/workspace/source", "artifacts_dir_relative": "copied-source"},
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    storage, service = Mock(), Mock()
+    storage.get_paginator.return_value.paginate.return_value = []
+    service.get_durable_execution.return_value = {"Status": "RUNNING"}
+    assert shared.cleanup(deployment, root, client_factory=lambda name, _: storage if name == "s3" else service) == 0
+    service.stop_durable_execution.assert_called_once_with(DurableExecutionArn=arn)
+
+
+def test_rebased_active_deployment_discovers_default_case_output(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.deployment import load_cleanup_manifest
+
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    arn = target + "/durable-execution/name/id"
+    deployment = {
+        "run": "run",
+        "bucket": "private",
+        "region": "us-west-2",
+        "functions": {"c1": target},
+        "deploymentArtifactDirectory": "/old/workspace",
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(deployment))
+    run_root = tmp_path / "shared"
+    source = run_root / "source"
+    journal = source / "cases" / shared.case_key("case") / "invocations" / "mark.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "payload": {"run": "run", "caseId": "case", "marker": "mark"},
+                "function": target,
+                "arn": arn,
+                "durableExecutionName": "name",
+            }
+        )
+    )
+    (run_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "sdk": {"artifacts_dir_relative": "source"},
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [{"case_id": "case", "profile_id": "c1"}],
+            }
+        )
+    )
+    storage, service = Mock(), Mock()
+    storage.get_paginator.return_value.paginate.return_value = []
+    service.get_durable_execution.return_value = {"Status": "RUNNING"}
+    actual = load_cleanup_manifest(tmp_path, "run")
+    assert actual["deploymentArtifactDirectory"] == str(tmp_path)
+    assert shared.cleanup(actual, client_factory=lambda name, _: storage if name == "s3" else service) == 0
+    service.stop_durable_execution.assert_called_once_with(DurableExecutionArn=arn)
+
+
+def test_unavailable_recorded_output_is_failed_without_creating_destination(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    destination = tmp_path / "unmounted" / "run"
+    (artifacts / "case-output.json").write_text(json.dumps({"runId": "run", "directory": str(destination)}))
+    deployment = {"run": "run", "deploymentArtifactDirectory": str(artifacts)}
+    factory = Mock(side_effect=AssertionError("No cloud calls are needed"))
+    assert shared.cleanup(deployment, client_factory=factory) == 1
+    saved = artifacts / "cleanup" / shared.case_key("run") / "cleanup.json"
+    assert json.loads(saved.read_text())["status"] == "FAILED"
+    assert str(destination) in saved.read_text()
+    assert not destination.exists()
+    factory.assert_not_called()

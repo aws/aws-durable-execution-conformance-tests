@@ -3,20 +3,43 @@
 import json
 from pathlib import Path
 
+from .artifacts import case_key, case_output_directory, saved_case_plans
 
-def summarize(directory):
+
+def summarize(directory, *, expected_run: str | None = None):
     directory = Path(directory)
     manifest = directory / "manifest.json"
     config = json.loads(manifest.read_text()) if manifest.exists() else None
     lines = ["Shared LMI lifecycle conformance."]
+    if expected_run is not None and (config is None or config.get("run") != expected_run):
+        lines.append("Deployment identity does not match the requested run. Current cloud acceptance is unavailable.")
+        receipt = directory / "cleanup" / case_key(expected_run) / "cleanup.json"
+        cleanup = json.loads(receipt.read_text()) if receipt.is_file() else {}
+        if cleanup.get("runId") == expected_run and cleanup.get("status") == "NO_CASES":
+            lines.append("No scenario work was recorded for cleanup.")
+        else:
+            lines.append("Run cleanup not confirmed; persistent resources are retained.")
+        return "\n".join(lines)
     if config:
         lines.append(
             f"Commit `{config['commit']}`; {config['runtime']}; native concurrency {list(config['concurrencies'].values())}."
         )
-    shared = directory / "shared"
-    path = shared / "standard/report.json"
-    report = json.loads(path.read_text()) if path.exists() else None
-    if report and config is None:
+    shared = case_output_directory(directory, config["run"]) if config else directory / "shared"
+    wrong_plan = False
+    report_root = shared / "standard"
+    if config:
+        try:
+            plans = saved_case_plans(shared, config["run"])
+        except ValueError:
+            wrong_plan = True
+        else:
+            if plans:
+                report_root = plans[0][0]
+    path = report_root / "report.json"
+    report = json.loads(path.read_text()) if not wrong_plan and path.is_file() else None
+    if wrong_plan:
+        lines.append("Case manifest does not match the requested run. Current cloud acceptance is unavailable.")
+    elif report and config is None:
         lines.append("Deployment identity is missing; current cloud acceptance is unavailable.")
     elif report and config and report.get("run", {}).get("name") != config["run"]:
         lines.append("Report belongs to another run; current cloud acceptance is unavailable.")

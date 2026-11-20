@@ -28,6 +28,7 @@ def verification(tmp_path):
         "concurrencies": dict(CONCURRENCIES),
     }
     lam = Mock()
+    lam.put_object.return_value = {"ResponseMetadata": {"RetryAttempts": 0}}
     lam.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
     verify_profile = Mock()
 

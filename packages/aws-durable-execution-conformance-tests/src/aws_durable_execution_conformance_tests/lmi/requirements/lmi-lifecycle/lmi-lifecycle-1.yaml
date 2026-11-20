@@ -6,7 +6,8 @@ scheduling: shared
 minimumNativeConcurrency: 2
 contract: Establish overlapping distinct original requests in the runtime sharing boundary before releasing
   the bounded barrier. Check results, failures, service histories, SDK requests and invocation-owned state
-  against independently captured request ownership. A replacement environment or retry is not evidence
+  against independently captured request ownership. Each selected invocation must checkpoint the fixture's
+  expected result in a successful STEP named record-marker. A replacement environment or retry is not evidence
   for the selected cohort.
 limits: Budgets are agreed test configuration, not product SLAs. Hard termination of arbitrary non-cooperative
   user I/O is outside this contract. Collection and retirement must be complete; an unavailable fixture

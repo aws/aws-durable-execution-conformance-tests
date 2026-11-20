@@ -9,21 +9,62 @@ in the case artifact directory and S3 ledger.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from decimal import Decimal
+from typing import Any, TypeGuard
 
+from aws_durable_execution_conformance_tests.lmi.artifacts import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioContext
-from aws_durable_execution_conformance_tests.lmi.observations import is_platform_timeout, service_error_type
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    CUTOFF_ACTIVE_STATUSES,
+    _decimal_identity,
+    _decode_json_wire,
+    _json_result_fingerprint,
+    is_json_integer,
+    same_checkpoint,
+)
+from aws_durable_execution_conformance_tests.lmi.observations import (
+    active_retry_interval,
+    is_platform_timeout,
+    requests_after_cutoff,
+    service_error_type,
+    service_native_intervals,
+    suspension_resumptions,
+)
+from aws_durable_execution_conformance_tests.lmi.observations import (
+    timestamp_ms as _milliseconds,
+)
+from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
 
-TERMINAL = {"SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"}
-_ACTIVE_FAULTS = {"deadline-during-step", "peer-recovery"}
+SOURCE_PROTOCOL_VERSION = 2
+_TERMINAL_EVENTS = {
+    "SUCCEEDED": "ExecutionSucceeded",
+    "FAILED": "ExecutionFailed",
+    "TIMED_OUT": "ExecutionTimedOut",
+    "STOPPED": "ExecutionStopped",
+}
+DEADLINE_REQUIREMENTS = {"deadline-during-step": "lmi-lifecycle-3", "peer-recovery": "lmi-lifecycle-4"}
+_ACTIVE_FAULTS = set(DEADLINE_REQUIREMENTS)
+_STANDARD_REPLAY_EFFECTS = {"success": 1, "failure": 1, "retry": 2}
+_WORK_IDENTITIES = {
+    "task_start": "taskId",
+    "task_exit": "taskId",
+    "observed_task_start": "taskId",
+    "observed_task_exit": "taskId",
+    "io_start": "taskId",
+    "io_exit": "taskId",
+    "checkpoint_call": "callId",
+    "checkpoint_exit": "callId",
+    "poll_call": "callId",
+    "poll_exit": "callId",
+}
 _OPERATION_TYPES = {
     "Step": "STEP",
     "Wait": "WAIT",
@@ -33,14 +74,27 @@ _OPERATION_TYPES = {
 }
 
 
-def _milliseconds(value: Any) -> float:
-    if isinstance(value, datetime):
-        return value.timestamp() * 1000
-    if isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
-    if type(value) in (int, float):
-        return float(value) * 1000
-    raise ValueError("Service evidence is missing its actual timestamp")
+def _valid_timestamp(value: Any) -> TypeGuard[int | float]:
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
+
+
+def _display_json(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        sign, coefficient, exponent = _decimal_identity(value)
+        if exponent >= 0 and len(coefficient) + exponent <= 4096:
+            return int(value)
+        approximate = float(value)
+        if math.isfinite(approximate):
+            return approximate
+        return f"{'-' if sign else ''}{coefficient}e{exponent}"
+    if isinstance(value, list):
+        return [_display_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _display_json(item) for key, item in value.items()}
+    return value
 
 
 def _decoded(value: Any) -> Any:
@@ -50,8 +104,8 @@ def _decoded(value: Any) -> Any:
         value = value["Payload"]
     if isinstance(value, str):
         try:
-            return json.loads(value)
-        except json.JSONDecodeError:
+            return _display_json(_decode_json_wire(value))
+        except ValueError:
             # Callback payloads may be plain UTF-8, rather than JSON results.
             return value
     return value
@@ -72,6 +126,49 @@ def _error(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _serialized_encoding(payload: str) -> str:
+    try:
+        _decode_json_wire(payload)
+    except ValueError:
+        return "raw"
+    return "json"
+
+
+def _service_event_time(event: Mapping[str, Any]) -> float | None:
+    try:
+        occurred = _milliseconds(event.get("EventTimestamp"))
+    except ValueError, OverflowError:
+        return None
+    return occurred if _valid_timestamp(occurred) else None
+
+
+def _retain_service_payload(
+    target: dict[str, Any],
+    key: str,
+    payload: Any,
+    owner: str,
+    errors: list[str],
+    *,
+    retain_encoding: bool = False,
+) -> None:
+    try:
+        if isinstance(payload, Mapping) and payload.get("Truncated") is True:
+            raise ValueError("Truncated service data cannot establish checkpoint equality")
+        value = _error(payload) if key == "error" else _decoded(payload)
+    except ValueError as error:
+        errors.append(f"{owner}: {error}")
+        return
+    if key == "error" and value is None:
+        errors.append(f"{owner} has no structured service error")
+    else:
+        target[key] = value
+        wire = payload.get("Payload") if isinstance(payload, Mapping) else payload
+        if retain_encoding and key == "result" and isinstance(wire, str):
+            target["resultEncoding"] = _serialized_encoding(wire)
+            if target["resultEncoding"] == "json":
+                target["resultFingerprint"] = _json_result_fingerprint(wire)
+
+
 def _resources(value: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if "threads" in value:
@@ -83,6 +180,359 @@ def _resources(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _invocation_completions(history: Sequence[Mapping[str, Any]]) -> Iterator[Mapping[str, Any]]:
+    for event in history:
+        if event.get("EventType") == "InvocationCompleted" or "InvocationCompletedDetails" in event:
+            details = event.get("InvocationCompletedDetails")
+            yield details if isinstance(details, Mapping) else {}
+
+
+def observation_exclusions(
+    context: ScenarioContext, cloud: Cloud, ledger: Sequence[Mapping[str, Any]], cutoff_ms: float | None
+) -> set[str]:
+    excluded = requests_after_cutoff(context.attempts, cutoff_ms)
+    if cutoff_ms is None:
+        return excluded
+    published: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in ledger:
+        if isinstance(request := row.get("request"), str):
+            published[request].append(row)
+    for launch in cloud.invocations:
+        arn = launch.get("arn")
+        established = {
+            entry["role"]
+            for entry in context.attempts
+            if entry.get("executionArn") == arn
+            and entry.get("requestId") in launch.get("native_requests", ())
+            and entry.get("attempt") == 1
+        }
+        if not arn or not {launch.get("role"), *launch.get("resume_roles", ())} <= established:
+            continue
+        for request, (start, _) in service_native_intervals(cloud.raw_histories.get(arn, [])).items():
+            if start <= cutoff_ms or request in launch.get("native_requests", ()):
+                continue
+            rows = published[request]
+            if all(
+                row.get("phase") != "WRAPPER_ENTER"
+                and row.get("marker") == launch.get("marker")
+                and row.get("execution") == arn
+                and row.get("run") == context.run_id
+                and row.get("caseId") == context.scenario.case_id
+                and row.get("commit") == cloud.manifest.get("commit")
+                and _valid_timestamp(row.get("time"))
+                and row["time"] * 1000 > cutoff_ms
+                and (
+                    row.get("phase") != "CONFORMANCE"
+                    or (
+                        isinstance(observation := row.get("observation"), Mapping)
+                        and _valid_timestamp(observation.get("atMs"))
+                        and observation["atMs"] > cutoff_ms
+                    )
+                )
+                for row in rows
+            ):
+                excluded.add(request)
+    return excluded
+
+
+def ledger_seal_status(
+    records: Sequence[Mapping[str, Any]],
+    histories: Mapping[str, Sequence[Mapping[str, Any]]],
+    launches: Sequence[Mapping[str, Any]],
+    excluded: set[str],
+) -> tuple[set[str], set[str], list[str]]:
+    """Return known requests, missing seals/boundaries and invalid identities or seals."""
+    streams = defaultdict(list)
+    errors = []
+    for record in records:
+        request = record.get("request")
+        if not isinstance(request, str) or not request.strip():
+            errors.append("A lifecycle ledger record has no native request identity")
+        elif request not in excluded:
+            streams[request].append(record)
+
+    completion_owners = {}
+    for service_arn, history in histories.items():
+        for details in _invocation_completions(history):
+            request = details.get("RequestId")
+            if not isinstance(request, str) or not request.strip():
+                errors.append(f"Service invocation completion for {service_arn} has no request ID")
+            elif request not in excluded:
+                if request in completion_owners:
+                    errors.append(f"Native request {request} has multiple service invocation completions")
+                completion_owners[request] = service_arn
+
+    by_marker = {item.get("marker"): item for item in launches}
+    known = set(streams) | set(completion_owners)
+    missing = set()
+    for request in sorted(known):
+        stream = streams[request]
+        wrappers = [record for record in stream if record.get("phase") == "WRAPPER_ENTER"]
+        seals = [record for record in stream if record.get("phase") == "SEALED"]
+        if len(wrappers) > 1 or len(seals) > 1:
+            errors.append(f"Native request {request} has duplicate wrapper entries or ledger seals")
+            continue
+        if not seals:
+            missing.add(request)
+            continue
+        if not wrappers:
+            errors.append(f"Native request {request} has a ledger seal but no wrapper entry")
+            continue
+        wrapper = wrappers[0]
+        marker = wrapper.get("marker")
+        arn = wrapper.get("execution")
+        launch = by_marker.get(marker) if isinstance(marker, str) and marker else None
+        if (
+            launch is None
+            or not isinstance(arn, str)
+            or not arn
+            or launch.get("arn") != arn
+            or request not in launch.get("native_requests", ())
+            or completion_owners.get(request, arn) != arn
+            or any(
+                record.get(field) != wrapper.get(field)
+                for record in stream
+                for field in ("run", "commit", "caseId", "marker", "execution")
+            )
+        ):
+            errors.append(f"Native request {request} has inconsistent ledger, launch or service ownership")
+            continue
+        seal = seals[0]
+        ordinals = [
+            int(sequence) for record in stream if is_json_integer(sequence := record.get("sequence")) and sequence >= 1
+        ]
+        if (
+            not is_json_integer(seal.get("sourceProtocol"))
+            or seal["sourceProtocol"] != SOURCE_PROTOCOL_VERSION
+            or "observation" in seal
+            or len(ordinals) != len(stream)
+            or len(set(ordinals)) != len(ordinals)
+            or max(ordinals) != len(ordinals)
+            or seal["sequence"] != len(ordinals)
+        ):
+            errors.append(f"Native request {request} has an invalid or nonterminal ledger seal")
+            continue
+        high = seal.get("throughCapture")
+        captures = [
+            observation.get("captureSequence")
+            if isinstance(observation := record.get("observation"), Mapping)
+            else None
+            for record in stream
+            if record.get("phase") == "CONFORMANCE"
+        ]
+        if (
+            not is_json_integer(high)
+            or high < 0
+            or len(captures) != high
+            or any(not is_json_integer(capture) or not 1 <= capture <= high for capture in captures)
+            or len(set(captures)) != high
+        ):
+            errors.append(f"Native request {request} has an incomplete capture sequence at its ledger seal")
+    return known, missing, errors
+
+
+def _terminal_end(history: Sequence[Mapping[str, Any]], result: Mapping[str, Any]) -> float | None:
+    end = result.get("EndTimestamp")
+    if end is None:
+        status = result.get("Status")
+        kind = _TERMINAL_EVENTS.get(status) if isinstance(status, str) else None
+        terminals = [event for event in history if kind is not None and event.get("EventType") == kind]
+        end = terminals[0].get("EventTimestamp") if len(terminals) == 1 else None
+    try:
+        value = _milliseconds(end)
+    except ValueError, OverflowError:
+        return None
+    return value if _valid_timestamp(value) else None
+
+
+def deadline_cutoff_results(context: ScenarioContext, cloud: Cloud) -> Mapping[str, Mapping[str, Any]]:
+    if DEADLINE_REQUIREMENTS.get(context.scenario.scenario) != context.scenario.requirement_id:
+        return {}
+    witnesses = getattr(cloud, "cutoff_results", {})
+    return {
+        item["arn"]: witnesses[item["arn"]]
+        for item in cloud.invocations
+        if item.get("role") == "victim" and item.get("arn") in witnesses
+    }
+
+
+def _active_status_at_cutoff(
+    history: Sequence[Mapping[str, Any]], cutoff_ms: float, witness_status: str | None, witnessed_at: Any = None
+) -> str | None:
+    """Project pause transitions and require a matching episode for a paused witness."""
+    transitions = []
+    pauses: list[tuple[float, float]] = []
+    for event in history:
+        kind = event.get("EventType")
+        if kind not in ("ExecutionPaused", "ExecutionResumed"):
+            continue
+        at = _service_event_time(event)
+        if at is None:
+            return None
+        if kind == "ExecutionPaused":
+            details = event.get("ExecutionPausedDetails")
+            requested = details.get("PauseRequestTimestamp") if isinstance(details, Mapping) else None
+            try:
+                request_ms = _milliseconds(requested)
+            except ValueError, OverflowError:
+                return None
+            if not _valid_timestamp(request_ms) or request_ms > at:
+                return None
+            pauses.append((request_ms, at))
+            if request_ms <= cutoff_ms < at:
+                # A request is accepted before processing; no pause state is proven in that gap.
+                return None
+        transitions.append((at, "PAUSED" if kind == "ExecutionPaused" else "RUNNING"))
+    if witness_status in ("PAUSING", "PAUSED"):
+        if not _valid_timestamp(witnessed_at):
+            return None
+        observed_transitions = sorted(
+            ((at, state) for at, state in transitions if at <= witnessed_at),
+            key=lambda item: item[0],
+        )
+        last_state = observed_transitions[-1][1] if observed_transitions else "RUNNING"
+        if witness_status == "PAUSING":
+            matches = [pause for pause in pauses if pause[0] <= witnessed_at < pause[1]]
+            if len(matches) != 1 or last_state != "RUNNING":
+                return None
+        elif last_state != "PAUSED":
+            return None
+    state = "RUNNING"
+    for at, status in sorted(transitions, key=lambda item: item[0]):
+        if at <= cutoff_ms:
+            state = status
+    return state
+
+
+def _terminal_history_covers(
+    history: Sequence[Mapping[str, Any]],
+    result: Mapping[str, Any],
+    requests: set[str],
+    cutoff_ms: float,
+    cutoff_result: Mapping[str, Any] | None,
+) -> bool:
+    status = result.get("Status")
+    terminal_kind = _TERMINAL_EVENTS.get(status) if isinstance(status, str) else None
+    if terminal_kind is None or not history or history[0].get("EventType") != "ExecutionStarted":
+        return False
+    if any(
+        type(event.get("EventId")) is not int or event["EventId"] != number for number, event in enumerate(history, 1)
+    ):
+        return False
+    terminal = [event for event in history if event.get("EventType") in _TERMINAL_EVENTS.values()]
+    if len(terminal) != 1 or terminal[0]["EventType"] != terminal_kind:
+        return False
+    end = _terminal_end(history, result)
+    if end is None:
+        return False
+    if cutoff_result is None:
+        if end > cutoff_ms:
+            return False
+    else:
+        witnessed = cutoff_result.get("Status")
+        if cutoff_result.get("collectionError") or not (
+            (
+                witnessed in CUTOFF_ACTIVE_STATUSES
+                and end > cutoff_ms
+                and _active_status_at_cutoff(history, cutoff_ms, witnessed, cutoff_result.get("observedAtMs"))
+                is not None
+            )
+            or witnessed == status
+        ):
+            return False
+    completed = [details.get("RequestId") for details in _invocation_completions(history)]
+    if any(not isinstance(request, str) or not request.strip() for request in completed):
+        return False
+    return len(set(completed)) == len(completed) and requests <= set(completed)
+
+
+def terminal_history_pending(
+    cloud: Cloud,
+    ledger: Sequence[Mapping[str, Any]],
+    cutoff_ms: float,
+    excluded: set[str],
+    cutoff_results: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[str]:
+    if not cloud.invocations:
+        return ["No admitted execution history was collected"]
+    pending = []
+    for invocation in cloud.invocations:
+        arn = invocation.get("arn")
+        requests = set(invocation.get("native_requests", []))
+        requests.update(
+            record["request"]
+            for record in ledger
+            if record.get("execution") == arn and isinstance(record.get("request"), str)
+        )
+        requests.difference_update(excluded)
+        witness = cutoff_results.get(arn) if cutoff_results is not None else None
+        if witness is not None and witness.get("collectionError"):
+            pending.append(f"Could not establish the post-cutoff observation stop for {arn}")
+        elif arn not in cloud.terminal_histories or not _terminal_history_covers(
+            cloud.raw_histories.get(arn, []),
+            cloud.execution_results.get(arn, {}),
+            requests,
+            cutoff_ms,
+            witness,
+        ):
+            pending.append(
+                f"Terminal service history does not cover the collection window for {arn or 'an unresolved launch'}"
+            )
+    return pending
+
+
+def retirement_activity_after_cutoff(cloud: Cloud, cutoff_ms: float) -> bool:
+    for record in cloud.events.values():
+        observation = record.get("observation")
+        if record.get("phase") != "CONFORMANCE" or not isinstance(observation, Mapping):
+            continue
+        at_ms = observation.get("atMs")
+        if _valid_timestamp(at_ms) and at_ms > cutoff_ms:
+            return True
+    for history in cloud.raw_histories.values():
+        for details in _invocation_completions(history):
+            try:
+                if _milliseconds(details.get("EndTimestamp")) > cutoff_ms:
+                    return True
+            except ValueError, OverflowError:
+                continue
+    return False
+
+
+def _invalid_work_identity(event: Mapping[str, Any]) -> str | None:
+    kind = event.get("kind")
+    key = _WORK_IDENTITIES.get(kind) if isinstance(kind, str) else None
+    if key is not None and (not isinstance(value := event.get(key), str) or not value.strip()):
+        return key
+    return None
+
+
+def owned_observation(raw: Mapping[str, Any], observation: Mapping[str, Any]) -> dict[str, Any]:
+    identity = {
+        "requestId": raw.get("request"),
+        "ownerRequestId": raw.get("request"),
+        "executionArn": raw.get("execution"),
+    }
+    crossed = [key for key, value in identity.items() if key in observation and observation[key] != value]
+    invalid_id = _invalid_work_identity(observation)
+    if invalid_id is not None:
+        message = (
+            f"Raw CONFORMANCE record for {raw.get('request')} at sequence "
+            f"{raw.get('sequence')} has invalid {invalid_id}"
+        )
+    elif crossed:
+        message = f"Hook observation disagrees with ledger ownership: {', '.join(crossed)}"
+    else:
+        return {**observation, **identity}
+    published_at = raw.get("time")
+    return {
+        **identity,
+        "kind": "observation_error",
+        "atMs": published_at * 1000 if _valid_timestamp(published_at) else 0,
+        "message": message,
+    }
+
+
 @dataclass(frozen=True)
 class CaseSources:
     context: ScenarioContext
@@ -92,13 +542,16 @@ class CaseSources:
     worker_identity: Callable[[Mapping[str, Any]], str]
 
     @classmethod
-    def capture(cls, context: ScenarioContext, cloud: Cloud, **policies) -> CaseSources:
-        return cls(context, cloud, tuple(cloud.events.values()), **policies)
+    def capture(
+        cls, context: ScenarioContext, cloud: Cloud, *, raw: tuple[Mapping[str, Any], ...], **policies
+    ) -> CaseSources:
+        return cls(context, cloud, raw, **policies)
 
-    def observations(self) -> tuple[list[dict[str, Any]], list[str]]:
+    def observations(self, *, pending: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
         events: list[dict[str, Any]] = []
         errors: list[str] = []
         by_request: dict[str, list[int]] = defaultdict(list)
+        sealed_requests: set[str] = set()
         for raw in self.raw:
             request = raw.get("request")
             if (
@@ -108,10 +561,14 @@ class CaseSources:
             ):
                 errors.append("Raw evidence does not belong to the admitted run/artifact/case")
                 continue
-            if not isinstance(request, str) or type(raw.get("sequence")) is not int:
+            sequence = raw.get("sequence")
+            if not isinstance(request, str) or not is_json_integer(sequence) or sequence < 1:
                 errors.append("Raw evidence has no native request identity or source sequence")
                 continue
-            by_request[request].append(raw["sequence"])
+            sequence = int(sequence)
+            by_request[request].append(sequence)
+            if raw.get("phase") == "SEALED":
+                sealed_requests.add(request)
             # Collection reads the ledger with control validation disabled, and
             # only CONFORMANCE records become observations. A raw control
             # failure first seen here would otherwise leave complete evidence
@@ -120,19 +577,41 @@ class CaseSources:
                 errors.append(
                     f"Raw control failure for {raw.get('gate', 'unnamed control')}: {raw.get('error', 'unreported')}"
                 )
-            observation = raw.get("observation")
-            if raw.get("phase") != "CONFORMANCE" or not isinstance(observation, Mapping):
+            if raw.get("phase") != "CONFORMANCE":
                 continue
-            event = {
-                "requestId": request,
-                "ownerRequestId": request,
-                "executionArn": raw["execution"],
-                **observation,
-                "sourceSequence": raw["sequence"],
-                "observedAtMs": raw["time"] * 1000,
-            }
+            observation = raw.get("observation")
+            if not isinstance(observation, Mapping):
+                errors.append(
+                    f"Raw CONFORMANCE record for {request} at sequence {sequence} lacks an observation object"
+                )
+                continue
+            event = owned_observation(raw, observation)
+            kind = event.get("kind")
+            if not isinstance(kind, str) or not kind.strip() or not _valid_timestamp(event.get("atMs")):
+                errors.append(f"Raw CONFORMANCE record for {request} at sequence {sequence} has invalid kind or atMs")
+                continue
+            publication_time = raw.get("time")
+            if not _valid_timestamp(publication_time):
+                errors.append(
+                    f"Raw CONFORMANCE record for {request} at sequence {sequence} has invalid publication time"
+                )
+                continue
+            event.update(sourceSequence=sequence, observedAtMs=publication_time * 1000)
+            if "captureSequence" in event:
+                capture = event["captureSequence"]
+                if is_json_integer(capture) and capture > 0:
+                    event["captureSequence"] = int(capture)
+                else:
+                    errors.append(
+                        f"Raw CONFORMANCE record for {request} at sequence {sequence} has invalid capture sequence"
+                    )
+                    del event["captureSequence"]
             if "resources" in event:
-                event["resources"] = _resources(event["resources"])
+                try:
+                    event["resources"] = _resources(event["resources"])
+                except KeyError, TypeError:
+                    errors.append(f"Raw CONFORMANCE record for {request} at sequence {sequence} has invalid resources")
+                    del event["resources"]
             if event.get("kind") == "wrapper_raise" and event.get("outcome") == "THREW":
                 event["sourceOutcome"] = "THREW"
                 event["outcome"] = "FAILED"  # Actual exception, not an inferred platform timeout.
@@ -143,11 +622,16 @@ class CaseSources:
                 errors.append(str(event.get("message", event.get("error", event["kind"]))))
             events.append(event)
         for request, sequences in by_request.items():
-            if len(set(sequences)) != len(sequences) or sorted(sequences) != list(range(1, max(sequences) + 1)):
-                errors.append(f"Raw source publication is incomplete for {request}")
+            if len(set(sequences)) != len(sequences):
+                errors.append(f"Raw source publication contains duplicate sequence numbers for {request}")
+            elif min(sequences) != 1 or max(sequences) != len(sequences):
+                destination = errors if pending is None or request in sealed_requests else pending
+                destination.append(f"Raw source publication is incomplete for {request}")
         return events, errors
 
-    def histories(self) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    def histories(
+        self, *, pending: list[str] | None = None, cutoff_ms: float | None = None, waking_ids: set[str] | None = None
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
         """Normalize service history from service events alone.
 
         SDK checkpoint observations are the other side of the replay
@@ -162,7 +646,9 @@ class CaseSources:
         for item in self.cloud.invocations:
             arn = item.get("arn")
             if not arn or arn not in self.cloud.raw_histories or arn not in self.cloud.execution_results:
-                errors.append("An admitted execution is missing actual service history or state")
+                (errors if pending is None else pending).append(
+                    "An admitted execution is missing actual service history or state"
+                )
                 continue
             operations: dict[str, dict[str, Any]] = {}
             for raw in self.cloud.raw_histories[arn]:
@@ -174,6 +660,19 @@ class CaseSources:
                 identity = raw.get("Id")
                 if kind is None or not isinstance(identity, str):
                     continue
+                if cutoff_ms is not None:
+                    occurred = _service_event_time(raw)
+                    if occurred is None:
+                        (pending if pending is not None else errors).append(
+                            f"Service operation {identity} has no proven event time in the observation window"
+                        )
+                        continue
+                    if occurred > cutoff_ms or (
+                        waking_ids is not None
+                        and occurred == cutoff_ms
+                        and (identity not in waking_ids or not event_type.endswith("Succeeded"))
+                    ):
+                        continue
                 operation = operations.setdefault(
                     identity,
                     {
@@ -191,27 +690,68 @@ class CaseSources:
                 details = raw.get(event_type + "Details", {})
                 if event_type.endswith("Succeeded"):
                     operation["status"] = "SUCCEEDED"
+                    operation.pop("error", None)
                     # SDK snapshots are the other side of the replay comparison,
                     # so they cannot supply missing independent service output.
-                    if "Result" in details:
-                        operation["result"] = _decoded(details["Result"])
+                    stored = details.get("Result")
+                    if "Result" in details and (
+                        not isinstance(stored, Mapping) or "Payload" in stored or stored.get("Truncated") is True
+                    ):
+                        _retain_service_payload(
+                            operation,
+                            "result",
+                            stored,
+                            f"Operation {identity}",
+                            errors,
+                            retain_encoding=self.context.scenario.scenario == "suspension-retry",
+                        )
                     elif kind == "WAIT":
                         # WaitSucceeded has no Result field in the service model.
                         operation["result"] = None
-                    else:
-                        errors.append(f"Service history is missing the result for operation {identity}")
+                elif event_type == "StepFailed" and "NextAttemptDelaySeconds" in details.get("RetryDetails", {}):
+                    operation["status"] = "STARTED"
                 elif event_type.endswith("Failed"):
                     operation["status"] = "FAILED"
-                    error = _error(details.get("Error"))
-                    if error is None:
+                    if details.get("Error") is None:
                         errors.append(f"Service history is missing the error for operation {identity}")
                     else:
-                        operation["error"] = error
-                elif event_type.endswith("TimedOut"):
-                    operation["status"] = "TIMED_OUT"
-                elif event_type.endswith("Stopped"):
-                    operation["status"] = "STOPPED"
+                        _retain_service_payload(operation, "error", details["Error"], f"Operation {identity}", errors)
+                elif event_type.endswith(("TimedOut", "Stopped", "Cancelled")):
+                    operation["status"] = next(
+                        status
+                        for suffix, status in (
+                            ("TimedOut", "TIMED_OUT"),
+                            ("Stopped", "STOPPED"),
+                            ("Cancelled", "CANCELLED"),
+                        )
+                        if event_type.endswith(suffix)
+                    )
             result = self.cloud.execution_results[arn]
+            ended = _terminal_end(self.cloud.raw_histories[arn], result)
+            cutoff_result = deadline_cutoff_results(self.context, self.cloud).get(arn)
+            witness_status = cutoff_result.get("Status") if cutoff_result is not None else None
+            status_at_read = result.get("Status")
+            if cutoff_ms is not None and (
+                status_at_read in CUTOFF_ACTIVE_STATUSES
+                or (
+                    status_at_read in _TERMINAL_EVENTS
+                    and (
+                        (ended is not None and ended > cutoff_ms)
+                        or (cutoff_result is not None and (ended is None or witness_status in CUTOFF_ACTIVE_STATUSES))
+                    )
+                )
+            ):
+                result = {key: value for key, value in result.items() if key not in ("Status", "Result", "Error")}
+                result["Status"] = _active_status_at_cutoff(
+                    self.cloud.raw_histories[arn],
+                    cutoff_ms,
+                    witness_status or status_at_read,
+                    cutoff_result.get("observedAtMs") if cutoff_result is not None else None,
+                )
+                if result["Status"] is None:
+                    (pending if pending is not None else errors).append(
+                        f"Service history does not establish the pause state at the observation cutoff for {arn}"
+                    )
             started = result.get("StartTimestamp")
             if started is None:
                 started = next(
@@ -230,23 +770,53 @@ class CaseSources:
             }
             if started is not None:
                 history["startedAtMs"] = _milliseconds(started)
+            expectation = dict(self.expected_outcome(item, self.context.scenario.scenario))
             if "Result" in result:
-                history["result"] = _decoded(result["Result"])
-            if "Error" in result:
-                history["error"] = _error(result["Error"])
+                _retain_service_payload(history, "result", result["Result"], f"Execution {arn}", errors)
+                raw = result["Result"]
+                wire = raw.get("Payload") if isinstance(raw, Mapping) else raw
+                if "result" in history and isinstance(wire, str) and _serialized_encoding(wire) == "json":
+                    history["resultFingerprint"] = _json_result_fingerprint(wire)
+            if result.get("Error") is not None:
+                _retain_service_payload(history, "error", result["Error"], f"Execution {arn}", errors)
             histories.append(history)
-            expected[arn] = dict(self.expected_outcome(item, self.context.scenario.scenario))
+            expected[arn] = expectation
         return histories, expected, errors
 
-    def attempts(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
+    def attempts(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        pending: list[str] | None = None,
+        cutoff_ms: float | None = None,
+        excluded: set[str] | None = None,
+        sealed: set[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
         attempts: list[dict[str, Any]] = []
         selected: dict[str, str] = {}
         errors: list[str] = []
         journal = {item.get("requestId"): item for item in self.context.attempts}
+        victim = next(
+            (entry for entry in journal.values() if entry.get("role") == "victim" and entry.get("attempt") == 1),
+            {},
+        )
         raw_by_request: dict[str, Mapping[str, Any]] = {}
         for raw in self.raw:
-            if raw.get("phase") == "WRAPPER_ENTER":
-                raw_by_request[raw["request"]] = raw
+            if raw.get("phase") != "WRAPPER_ENTER":
+                continue
+            request = raw.get("request")
+            if (
+                not isinstance(request, str)
+                or not request.strip()
+                or not all(
+                    isinstance(raw.get(key), str) and raw[key]
+                    for key in ("marker", "execution", "environment", "process")
+                )
+                or not _valid_timestamp(raw.get("time"))
+            ):
+                errors.append(f"Invalid WRAPPER_ENTER identity or time at sequence {raw.get('sequence')}")
+                continue
+            raw_by_request[request] = raw
         # The ledger alone cannot reveal a native request that never
         # published. Without this, a retry whose original left no stream is
         # bound as the original, and the original goes unaudited.
@@ -255,11 +825,17 @@ class CaseSources:
             for service_event in self.cloud.raw_histories.get(arn, []) if arn else []:
                 details = service_event.get("InvocationCompletedDetails")
                 native = details.get("RequestId") if isinstance(details, Mapping) else None
-                if isinstance(native, str) and native not in raw_by_request:
+                if (
+                    isinstance(native, str)
+                    and native not in raw_by_request
+                    and (excluded is None or native not in excluded)
+                ):
                     unpublished[native] = service_error_type(details)
         for native, error_type in unpublished.items():
             reported = f" ({error_type})" if error_type else ""
-            errors.append(f"Service-recorded native request {native}{reported} has no lifecycle ledger stream")
+            (errors if pending is None else pending).append(
+                f"Service-recorded native request {native}{reported} has no lifecycle ledger stream"
+            )
         for request, raw in raw_by_request.items():
             item = next(
                 (item for item in self.cloud.invocations if item["marker"] == raw["marker"]),
@@ -273,17 +849,22 @@ class CaseSources:
             deadline = [event for event in owned if event.get("kind") == "runtime_deadline"]
             observed_start = min([raw["time"] * 1000, *(event["atMs"] for event in owned)])
             started_at = observed_start
+            start_source = "fixture"
             timeout = None
-            for service_event in self.cloud.raw_histories.get(raw["execution"], []):
+            native_failed = False
+            native_end = None
+            active = False
+            history = self.cloud.raw_histories.get(raw["execution"], [])
+            for service_event in history:
                 details = service_event.get("InvocationCompletedDetails", {})
-                if details.get("RequestId") != request:
+                if not isinstance(details, Mapping) or details.get("RequestId") != request:
                     continue
                 # Fixture setup occurs after native admission. Only this
                 # request's platform start establishes its full timeout window;
                 # the durable execution start may belong to an earlier replay.
                 try:
                     native_start = _milliseconds(details.get("StartTimestamp"))
-                except (ValueError, OverflowError):
+                except ValueError, OverflowError:
                     native_start = None
                 if native_start is None or not math.isfinite(native_start) or not 0 <= native_start <= observed_start:
                     errors.append(
@@ -291,19 +872,37 @@ class CaseSources:
                     )
                 else:
                     started_at = native_start
+                    start_source = "platform"
+                # The service writes the history event after the native invocation exits.
+                try:
+                    native_end = _milliseconds(details.get("EndTimestamp"))
+                except ValueError, OverflowError:
+                    native_end = None
+                if native_end is None or not math.isfinite(native_end) or native_end < started_at:
+                    errors.append(
+                        f"Native request {request} has an invalid or missing InvocationCompletedDetails.EndTimestamp"
+                    )
+                    native_end = None
+                    continue
+                if cutoff_ms is not None and native_end > cutoff_ms:
+                    proof = journal[request]
+                    active = (
+                        sealed is not None
+                        and request in sealed
+                        and started_at == proof.get("nativeStartedAtMs")
+                        and native_end == proof.get("nativeEndedAtMs")
+                        and service_native_intervals(history).get(request) == (started_at, native_end)
+                        and active_retry_interval(proof, cutoff_ms, victim.get("executionArn"))
+                    )
+                    native_end = None
+                    continue
+                native_error = details.get("Error")
+                if native_error is not None:
+                    if isinstance(native_error, Mapping):
+                        native_failed = True
+                    else:
+                        errors.append(f"Native request {request} has invalid InvocationCompletedDetails.Error")
                 if is_platform_timeout(details):
-                    # The native boundary is the invocation's own end. The
-                    # history event is written afterwards, so its timestamp
-                    # would move the boundary past the work it bounds.
-                    try:
-                        native_end = _milliseconds(details.get("EndTimestamp"))
-                    except (ValueError, OverflowError):
-                        native_end = None
-                    if native_end is None or not math.isfinite(native_end) or native_end < started_at:
-                        errors.append(
-                            f"Native request {request} has an invalid or missing InvocationCompletedDetails.EndTimestamp"
-                        )
-                        continue
                     timeout = {
                         "kind": "platform_timeout",
                         "requestId": request,
@@ -328,14 +927,26 @@ class CaseSources:
                 "marker": raw["marker"],
                 "fixture": item.get("payload", {}).get("scenario"),
                 "startedAtMs": started_at,
+                "startedAtMsSource": start_source,
             }
-            if boundaries:
-                attempt["outcome"] = boundaries[-1]["outcome"]
-                attempt["endedAtMs"] = boundaries[-1]["atMs"]
+            if boundaries and native_end is not None:
+                wrapper_outcome = boundaries[-1].get("outcome")
+                if isinstance(wrapper_outcome, str):
+                    attempt.update(outcome=wrapper_outcome, endedAtMs=native_end)
+                else:
+                    errors.append(f"Native request {request} has no valid wrapper outcome")
+            if native_failed and native_end is not None:
+                attempt.update(outcome="FAILED", endedAtMs=native_end)
             if timeout is not None:
                 attempt.update(outcome="TIMED_OUT", endedAtMs=timeout["atMs"])
+            if "endedAtMs" in attempt:
+                attempt["endedAtMsSource"] = "platform"
             if deadline:
-                attempt["deadlineAtMs"] = deadline[0]["deadlineAtMs"]
+                deadline_at = deadline[0].get("deadlineAtMs")
+                if _valid_timestamp(deadline_at):
+                    attempt["deadlineAtMs"] = deadline_at
+                else:
+                    errors.append(f"Native request {request} has no valid runtime deadline")
             # A replace-worker runtime reports which worker capacity it took
             # over. Without it the shared validator rejects every conforming
             # replacement recovery, since worker_identity only names the
@@ -347,8 +958,12 @@ class CaseSources:
             ]
             if replaced:
                 attempt["replacesWorkerId"] = replaced[0]
-            if "outcome" not in attempt:
-                errors.append(f"Native request {request} has no observed completion boundary")
+            if active:
+                attempt["activeAtObservationEnd"] = True
+            if "outcome" not in attempt and not active:
+                (errors if pending is None else pending).append(
+                    f"Native request {request} has no observed completion boundary"
+                )
             if journal[request]["attempt"] == 1:
                 selected[role] = request
             attempts.append(attempt)
@@ -371,6 +986,8 @@ def _causal_order(events: list[dict[str, Any]]) -> None:
 
 def _quiescent(request: str, events: list[dict[str, Any]]) -> bool:
     local = [event for event in events if event.get("requestId") == request]
+    if any(_invalid_work_identity(event) for event in local):
+        return False
     if not any(event.get("kind") in {"wrapper_return", "wrapper_raise"} for event in local):
         return False
     if not any(event.get("kind") == "task_exit" and event.get("taskId") == "root" for event in local):
@@ -388,37 +1005,84 @@ def _quiescent(request: str, events: list[dict[str, Any]]) -> bool:
     return not any(event.get("kind") in {"observation_error", "control_error"} for event in local)
 
 
-def replay_evidence(
-    events: list[dict[str, Any]], histories: list[dict[str, Any]], selected: Mapping[str, str]
-) -> dict[str, Any]:
-    """Compare actual invocation-start checkpoints with final service history."""
-    first_resume = next(
-        (
-            event
-            for event in events
-            if event.get("kind") == "invocation_start" and event.get("requestId") == selected.get("resume")
-        ),
-        {},
-    )
-    before = []
-    for saved in first_resume.get("operations", []):
-        if saved.get("operationType") == "EXECUTION" or saved.get("status") not in {
-            "SUCCEEDED",
-            "FAILED",
-        }:
+ReplayEffectPolicy = Callable[[Sequence[Mapping[str, Any]]], tuple[Mapping[str, int], Collection[str]]]
+
+
+def _replay_effect_policy(
+    policy: ReplayEffectPolicy,
+    bodies: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, int], Collection[str]]:
+    counts, missing = policy(tuple(copy.deepcopy(body) for body in bodies))
+    if (
+        not isinstance(counts, Mapping)
+        or any(
+            not isinstance(key, str) or not key.strip() or type(value) is not int or value < 0
+            for key, value in counts.items()
+        )
+        or not isinstance(missing, Collection)
+        or isinstance(missing, (str, bytes, Mapping))
+        or any(not isinstance(label, str) or not label.strip() for label in missing)
+    ):
+        raise ValueError("Replay effect policy returned malformed expectations")
+    return counts, missing
+
+
+def _replay_effects(
+    raw: Sequence[Mapping[str, Any]],
+    execution: str | None,
+    bodies: list[dict[str, Any]],
+    names: Mapping[str, str | None],
+    expected: Mapping[str, int],
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    # Hook observations carry durable operation IDs. Raw fixture BODY rows, if
+    # published, additionally witness effect totals but do not identify a child
+    # operation when multiple branches use the same local name.
+    observed = Counter(body["operationId"] for body in bodies)
+    raw_counts: Counter[tuple[str, str, int]] = Counter()
+    for record in raw:
+        if not execution or record.get("execution") != execution or record.get("phase") != "BODY":
             continue
-        operation = {
-            "id": saved["operationId"],
-            "name": saved.get("name"),
-            "type": saved["operationType"],
-            "parentId": saved.get("parentId"),
-            "status": saved["status"],
+        request, name, attempt = (record.get(key) for key in ("request", "operation", "attempt"))
+        if not isinstance(request, str) or not isinstance(name, str) or not is_json_integer(attempt) or attempt < 1:
+            errors.append("Raw replay side effect is missing a valid request, operation name or attempt")
+            continue
+        raw_counts[request, name, int(attempt)] += 1
+    hook_counts = Counter((body["requestId"], body.get("operation"), body["attempt"]) for body in bodies)
+    if raw_counts and raw_counts != hook_counts:
+        errors.append(
+            "Raw replay side effects do not match fixture body observations by request, operation and attempt"
+        )
+    return [
+        {
+            "operationId": identity,
+            "count": observed[identity],
+            "expectedCount": expected.get(name, 0) if name is not None else 0,
         }
-        if saved["status"] == "SUCCEEDED":
-            operation["result"] = _decoded(saved.get("serializedResult"))
-        else:
-            operation["error"] = saved.get("error")
-        before.append(operation)
+        for identity, name in names.items()
+    ]
+
+
+def replay_evidence(
+    events: list[dict[str, Any]],
+    histories: list[dict[str, Any]],
+    selected: Mapping[str, str],
+    *,
+    raw: Sequence[Mapping[str, Any]] = (),
+    expected_effects: Mapping[str, int] | None = None,
+    effect_policy: ReplayEffectPolicy | None = None,
+    expected_before: list[dict[str, Any]] | None = None,
+    errors: list[str] | None = None,
+    partial: bool = False,
+) -> dict[str, Any]:
+    """Compare actual invocation-start checkpoints with independent service history."""
+    resume_id = selected.get("resume")
+    starts = [
+        event
+        for event in events
+        if resume_id is not None and event.get("kind") == "invocation_start" and event.get("requestId") == resume_id
+    ]
+    first_resume = starts[0] if len(starts) == 1 else {}
     victim = next((e for e in events if e.get("requestId") == selected.get("victim")), {})
     # Copy the collected history: sharing the list object would make the
     # validator's replay.after/history comparison an identity check that no
@@ -429,14 +1093,77 @@ def replay_evidence(
             [],
         )
     )
+    encoded_operations = {item["id"]: item for item in after if "resultEncoding" in item}
+    diagnostics = errors if errors is not None else []
+    if len(starts) > 1:
+        diagnostics.append(f"Replay request {resume_id} has multiple invocation-start snapshots")
+    before = []
+    checkpoints = first_resume.get("operations", [])
+    resume_id = first_resume.get("requestId")
+    if not isinstance(checkpoints, list):
+        diagnostics.append(f"Replay request {resume_id} has a malformed operations snapshot")
+        checkpoints = []
+    for index, saved in enumerate(checkpoints):
+        if (
+            not isinstance(saved, Mapping)
+            or any(
+                not isinstance(saved.get(key), str) or not saved[key].strip()
+                for key in ("operationId", "operationType", "status")
+            )
+            or any(saved.get(key) is not None and not isinstance(saved[key], str) for key in ("name", "parentId"))
+        ):
+            diagnostics.append(f"Replay request {resume_id} has a malformed checkpoint at index {index}")
+            continue
+        operation_type = saved["operationType"]
+        status = saved["status"]
+        if operation_type == "EXECUTION" or status not in ("SUCCEEDED", "FAILED"):
+            continue
+        operation = {
+            "id": saved["operationId"],
+            "name": saved.get("name"),
+            "type": operation_type,
+            "parentId": saved.get("parentId"),
+            "status": status,
+        }
+        if status == "SUCCEEDED":
+            if (serialized := saved.get("serializedResult")) is not None:
+                try:
+                    operation["result"] = _decoded(serialized)
+                    if operation["id"] in encoded_operations and isinstance(serialized, str):
+                        operation["resultEncoding"] = _serialized_encoding(serialized)
+                        if (
+                            operation["resultEncoding"] == "json"
+                            and "resultFingerprint" in encoded_operations[operation["id"]]
+                        ):
+                            operation["resultFingerprint"] = _json_result_fingerprint(serialized)
+                except ValueError as error:
+                    diagnostics.append(f"Replay request {resume_id} checkpoint {index}: {error}")
+            elif operation_type == "WAIT":
+                operation["result"] = None
+        elif saved.get("error") is not None:
+            operation["error"] = saved["error"]
+        before.append(operation)
     # `events` keeps raw collection order, which for a batch first read together
     # follows the S3 request-key listing rather than execution chronology. Order
     # the user-code records causally so a retry's stored failure cannot appear
     # after its later success and reject a conforming SDK.
-    bodies = sorted(
-        (e for e in events if e.get("kind") == "body"),
-        key=lambda e: (e.get("atMs", 0), e.get("sequence", 0)),
-    )
+    bodies = []
+    for event in events:
+        if event.get("kind") != "body":
+            continue
+        identity, attempt = event.get("operationId"), event.get("attempt")
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or not isinstance(event.get("operation"), str)
+            or not isinstance(event.get("requestId"), str)
+            or not is_json_integer(attempt)
+            or attempt < 1
+        ):
+            diagnostics.append("Replay body observation has an invalid request, operation identity or attempt")
+            continue
+        bodies.append({**event, "attempt": int(attempt)})
+    bodies.sort(key=lambda event: (event.get("atMs", 0), event.get("sequence", 0)))
     executions = [
         {
             "requestId": e["requestId"],
@@ -445,9 +1172,10 @@ def replay_evidence(
         }
         for e in bodies
     ]
-    retry = [e for e in bodies if e.get("operation") == "retry"]
-    attempts = []
-    for body in retry:
+    retries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for body in bodies:
+        if body.get("operation") != "retry":
+            continue
         ending = next(
             (
                 e
@@ -459,31 +1187,83 @@ def replay_evidence(
             ),
             {},
         )
-        attempts.append(
+        retries[body["operationId"]].append(
             {
                 "attemptId": f"{body['requestId']}:{body['attempt']}",
                 "requestId": body["requestId"],
-                "outcome": ending.get("outcome"),
+                **({"outcome": ending["outcome"]} if "outcome" in ending else {}),
             }
         )
-    return {
-        "before": before,
-        "after": after,
-        "operationExecutions": executions,
-        "retry": {
-            "operationId": retry[0]["operationId"] if retry else "",
-            "attempts": attempts,
-        },
-        "sideEffects": [
+    completed_before_resume = {item["id"] for item in before}
+    completed_with_result = {item["id"] for item in after if item.get("status") == "SUCCEEDED" and "result" in item}
+    selected_retry = next(
+        (
+            identity
+            for identity, attempts in retries.items()
+            if identity not in completed_before_resume
+            and identity in completed_with_result
+            and len(attempts) >= 2
+            and attempts[0].get("outcome") == "FAILED"
+            and attempts[-1].get("outcome") == "SUCCEEDED"
+        ),
+        next(iter(retries), None),
+    )
+    attempts = retries[selected_retry] if selected_retry is not None else []
+    result: dict[str, Any] = {"before": before, "after": after, "operationExecutions": executions}
+    if expected_before is not None:
+        result["expectedBefore"] = expected_before
+    if selected_retry is not None:
+        result["retry"] = {"operationId": selected_retry, "attempts": attempts}
+    if not partial or effect_policy is not None:
+        expected = _STANDARD_REPLAY_EFFECTS if expected_effects is None else expected_effects
+        names = {body["operationId"]: None for body in bodies}
+        names.update({operation["id"]: operation.get("name") for operation in before})
+        names.update(
             {
-                "operationId": body["operationId"],
-                "count": sum(e["operationId"] == body["operationId"] for e in bodies),
-                "expectedCount": 2 if body.get("operation") == "retry" else 1,
+                operation["id"]: operation.get("name")
+                for operation in after
+                if operation["id"] in names or operation.get("name") in expected
             }
-            for index, body in enumerate(bodies)
-            if body["operationId"] not in {e["operationId"] for e in bodies[:index]}
-        ],
-    }
+        )
+        if partial and effect_policy is not None:
+            for body in bodies:
+                if names[body["operationId"]] is None:
+                    names[body["operationId"]] = body["operation"]
+        if not partial:
+            service_operations = {row["id"]: row.get("name") for row in after}
+            for body in bodies:
+                if service_operations.get(body["operationId"]) != body["operation"]:
+                    diagnostics.append(f"Replay body {body['operationId']} lacks a matching service operation")
+        policy_counts: Mapping[str, int] = {}
+        policy_missing: Collection[str] = ()
+        if effect_policy is not None:
+            try:
+                policy_counts, policy_missing = _replay_effect_policy(effect_policy, bodies)
+            except Exception as error:
+                diagnostics.append(f"Replay effect policy: {error}")
+        if not partial:
+            missing = {name for name, count in expected.items() if count > 0 and name not in names.values()}
+            missing.update(policy_missing)
+            if len(attempts) < 2:
+                missing.add("retry")
+            if missing:
+                result["missingExpectedEffects"] = sorted(missing)
+        effects = _replay_effects(
+            () if partial else raw, victim.get("executionArn"), bodies, names, expected, diagnostics
+        )
+        observed_ids = {body["operationId"] for body in bodies}
+        excess = []
+        for row in effects:
+            identity = row["operationId"]
+            if identity in observed_ids and identity in policy_counts:
+                row["expectedCount"] = min(row["expectedCount"], policy_counts[identity])
+                if row["count"] > row["expectedCount"]:
+                    excess.append(row)
+        if not partial:
+            result["sideEffects"] = effects
+        elif excess:
+            result["sideEffects"] = excess
+    return result
 
 
 def assertion_events(events, scenario, selected):
@@ -514,13 +1294,104 @@ def assertion_events(events, scenario, selected):
     return result
 
 
-def retirement_snapshot(evidence):
-    """Restore every observed task for the common independent retirement audit."""
-    snapshot = deepcopy(evidence)
-    for event in snapshot.get("events", []):
-        if event.get("kind") in {"observed_task_start", "observed_task_exit"}:
-            event["kind"] = event["sourceKind"]
-    return snapshot
+def _undispatched_launches(context: ScenarioContext, cloud: Cloud) -> list[dict[str, Any]] | None:
+    records = []
+    rejected_markers = set()
+    for path in sorted((cloud.artifacts_dir / "invocations").glob("*.json")):
+        record = json.loads(path.read_text())
+        payload = record.get("payload", {})
+        marker, function = payload.get("marker"), record.get("function")
+        execution_name = record.get("durableExecutionName")
+        if (
+            payload.get("run") != context.run_id
+            or payload.get("caseId") != context.scenario.case_id
+            or not isinstance(marker, str)
+            or not marker.strip()
+            or path.name != f"{marker}.json"
+            or function != context.profile.resource_id
+            or not isinstance(execution_name, str)
+            or not execution_name.strip()
+        ):
+            return None
+        state = record.get("dispatchState")
+        identity = {
+            "marker": marker,
+            "functionArn": function,
+            "durableExecutionName": execution_name,
+            "dispatchState": state,
+        }
+        if state == "PREPARED" and not any(key in record for key in ("arn", "executionArn", "requestId")):
+            records.append(identity)
+        elif invoke_rejection_proven(record):
+            rejection = {**identity, "rejectionCode": record["rejectionCode"], "retryAttempts": record["retryAttempts"]}
+            observed = next((attempt for attempt in context.attempts if attempt.get("attemptId") == marker), None)
+            if observed is None or any(observed.get(key) != value for key, value in rejection.items()):
+                return None
+            rejected_markers.add(marker)
+            records.append(rejection)
+        else:
+            return None
+    if len(rejected_markers) != len(context.attempts) or any(
+        not invoke_rejection_proven(attempt) or attempt.get("attemptId") not in rejected_markers
+        for attempt in context.attempts
+    ):
+        return None
+    return records
+
+
+def _replay_history_before_resume(
+    sources: CaseSources,
+    attempts: list[dict[str, Any]],
+    selected: Mapping[str, str],
+    errors: list[str],
+    waking_ids: set[str] | None = None,
+) -> list[dict[str, Any]] | None:
+    resume_id = selected.get("resume")
+    if resume_id is None:
+        return None
+    resume = next((entry for entry in attempts if entry.get("requestId") == resume_id), {})
+    arn = resume.get("executionArn")
+    native = sources.cloud.raw_histories.get(arn, []) if isinstance(arn, str) else []
+    interval = service_native_intervals(native).get(resume_id) if resume_id is not None else None
+    if not isinstance(arn, str) or interval is None or interval[0] != resume.get("startedAtMs"):
+        errors.append("Replay history has no service-confirmed native resume start")
+        return None
+    native_start = interval[0]
+    for event in native:
+        kind = event.get("EventType")
+        if not isinstance(kind, str) or not kind.startswith(tuple(_OPERATION_TYPES)):
+            continue
+        try:
+            occurred = _milliseconds(event.get("EventTimestamp"))
+        except ValueError, OverflowError:
+            occurred = -1
+        if not _valid_timestamp(occurred):
+            errors.append("Replay service history has an operation with no valid event time")
+            return None
+    histories, _, projection_errors = sources.histories(
+        cutoff_ms=native_start,
+        waking_ids=waking_ids if waking_ids is not None else set(),
+    )
+    errors.extend(projection_errors)
+    return [
+        operation
+        for history in histories
+        if history["executionArn"] == arn
+        for operation in history["operations"]
+        if operation["status"] in ("SUCCEEDED", "FAILED")
+    ]
+
+
+def _public_suspension_histories(
+    cloud: Cloud, ledger: Sequence[Mapping[str, Any]], victim_arn: str | None
+) -> dict[str, set[str]]:
+    if victim_arn is None:
+        return {}
+    mode = getattr(cloud, "suspension_mode", "callback")
+    history = [dict(event) for event in cloud.raw_histories.get(victim_arn, [])]
+    if mode == "callback":
+        inherit_wait_for_callback_event_names(history)
+    return suspension_resumptions([row for row in ledger if row.get("execution") == victim_arn], history, mode)
 
 
 def build_evidence(
@@ -531,26 +1402,114 @@ def build_evidence(
     expected_outcome: Callable[[Mapping[str, Any], str], Mapping[str, Any]],
     worker_identity: Callable[[Mapping[str, Any]], str],
     phase: str = "observations",
+    expected_replay_effects: Mapping[str, int] | None = None,
+    replay_effect_policy: ReplayEffectPolicy | None = None,
 ) -> dict[str, Any]:
-    sources = CaseSources.capture(context, cloud, expected_outcome=expected_outcome, worker_identity=worker_identity)
-    events, errors = sources.observations()
-    histories, expected, history_errors = sources.histories()
-    attempts, selected, attempt_errors = sources.attempts(events)
+    final = phase == "final"
+    partial = phase in ("partial", "retirement-partial")
+    cutoff = cloud.observation_ended_at
+    ended = (cutoff or 0) * 1000
+    frozen = phase in ("observations", "partial") and cutoff is not None
+    service = cloud.raw_histories
+    all_ledger = tuple(cloud.events.values())
+    excluded = observation_exclusions(context, cloud, all_ledger, ended if frozen else None)
+    deferred_arns = {
+        request: arn
+        for arn, history in service.items()
+        for request in service_native_intervals(history)
+        if request in excluded
+    }
+    deferred_arns.update(
+        {
+            request: arn
+            for entry in context.attempts
+            if isinstance(request := entry.get("requestId"), str)
+            and request in excluded
+            and isinstance(arn := entry.get("executionArn"), str)
+        }
+    )
+    deferred = [{"requestId": request, "executionArn": arn} for request, arn in sorted(deferred_arns.items())]
+    ledger = tuple(
+        record
+        for record in all_ledger
+        if not isinstance(request := record.get("request"), str) or request not in excluded
+    )
+    no_runtime = (
+        not cloud.invocations
+        and not all_ledger
+        and not service
+        and all(invoke_rejection_proven(attempt) for attempt in context.attempts)
+    )
+    control_only = None
+    if (
+        final
+        and no_runtime
+        and any(record["action"] == "hold" and record.get("state") != "REJECTED" for record in cloud.control_records)
+    ):
+        control_only = _undispatched_launches(context, cloud)
+    sources = CaseSources.capture(
+        context, cloud, raw=ledger, expected_outcome=expected_outcome, worker_identity=worker_identity
+    )
+    pending: list[str] = []
+    all_events, errors = sources.observations(pending=None if final else pending)
+    events = [event for event in all_events if event["atMs"] <= ended] if frozen else all_events
+    history_pending: list[str] = []
+    known, missing, seal_errors = ledger_seal_status(ledger, service, cloud.invocations, excluded)
+    errors.extend(seal_errors)
+    sealed = (
+        known - missing
+        if frozen
+        and DEADLINE_REQUIREMENTS.get(context.scenario.scenario) == context.scenario.requirement_id
+        and not seal_errors
+        else None
+    )
+    if final:
+        histories, expected, history_errors = sources.histories()
+        attempts, selected, attempt_errors = sources.attempts(events)
+    else:
+        histories, expected, history_errors = sources.histories(
+            pending=history_pending, cutoff_ms=ended if frozen else None
+        )
+        attempts, selected, attempt_errors = sources.attempts(
+            events, pending=pending, cutoff_ms=ended if frozen else None, excluded=excluded, sealed=sealed
+        )
     errors.extend(history_errors + attempt_errors)
     _causal_order(events)
-    # The final snapshot describes actual retirement collection, independently
-    # of a failed phase's earlier (possibly incomplete) observation window.
-    ended = ((cloud.retired_at if phase == "final" else cloud.observation_ended_at) or 0) * 1000
-    complete = bool(attempts) and all(_quiescent(item["requestId"], events) for item in attempts)
-    if not complete:
-        errors.append("Actual wrapper/task publication has not established a complete observation window")
-    latest = max((event["atMs"] for event in events), default=0)
-    if ended < latest:
-        errors.append("Collection predates a retained observation")
-    watermarks = {name: ended for name in ("lifecycle", "sdkRequests", "history")} if not errors else {}
+
+    if missing:
+        pending.append("Missing ledger seals or wrapper entries for native requests: " + ", ".join(sorted(missing)))
+    if (
+        not attempts
+        or not known
+        or not all(
+            item.get("activeAtObservationEnd") is True or _quiescent(item["requestId"], events) for item in attempts
+        )
+    ):
+        pending.append("Actual wrapper/task publication has not established a complete observation window")
+    if cutoff is None:
+        pending.append("No source collection cutoff was recorded")
+        history_pending.append("No service history cutoff was recorded")
+    latest = max([0, *(event["atMs"] for event in events), *(item.get("endedAtMs", 0) for item in attempts)])
+    if final and ended < latest:
+        errors.append("Retirement collection predates a retained observation")
+    if partial and not frozen:
+        ended = max(ended, latest)
+
+    cutoff_results = deadline_cutoff_results(context, cloud) if frozen else None
+    history_pending.extend(terminal_history_pending(cloud, ledger, ended, excluded, cutoff_results))
+
+    watermarks: dict[str, float] = {}
+    if final and control_only is None:
+        errors.extend(pending + history_pending)
+    if not partial and control_only is None and not errors:
+        if not pending:
+            watermarks.update(lifecycle=ended, sdkRequests=ended)
+        if not history_pending:
+            watermarks["history"] = ended
+    pending.extend(history_pending)
     artifact = {
         "sdk": context.profile.artifact_id,
-        "conformance": cloud.manifest.get("conformanceRevision", "unverified"),
+        "conformance": cloud.manifest.get("conformanceRevision") or "unverified",
     }
     profile = {
         "functionArn": context.profile.resource_id,
@@ -580,42 +1539,157 @@ def build_evidence(
         "collection": {
             "watermarks": watermarks,
             "evidenceUris": sorted(cloud.source_uris),
+            **({"deferredServiceRequests": deferred} if deferred else {}),
+            **({"pending": pending} if pending else {}),
         },
         "collectionErrors": errors,
     }
     evidence["budgets"] = dict(context.scenario.behavior_budgets)
-    if context.scenario.scenario == "suspension-retry":
-        evidence["replay"] = replay_evidence(events, histories, selected)
+    if context.scenario.scenario == "suspension-retry" and not no_runtime:
+        complete_replay = not partial and not pending
+        victim_arn = next(
+            (item["executionArn"] for item in attempts if item["requestId"] == selected.get("victim")), None
+        )
+        # Clouds built by live drivers record the selected suspension mode.
+        # Legacy offline fixture assemblies can still verify the first resume.
+        suspension_mode = getattr(cloud, "suspension_mode", None)
+        resumes = _public_suspension_histories(cloud, ledger, victim_arn) if complete_replay and suspension_mode else {}
+        resume_id = selected.get("resume")
+        projection_errors: list[str] = []
+        expected_before = (
+            _replay_history_before_resume(
+                sources,
+                attempts,
+                selected,
+                projection_errors,
+                waking_ids=resumes.get(resume_id) if resume_id is not None else None,
+            )
+            if complete_replay
+            else None
+        )
+        evidence["replay"] = replay_evidence(
+            events,
+            histories,
+            selected,
+            # Cross-check the complete raw/body streams during retirement if
+            # the frozen window omits later captures.
+            raw=ledger if len(events) == len(all_events) else (),
+            expected_effects=expected_replay_effects,
+            effect_policy=replay_effect_policy,
+            expected_before=expected_before,
+            errors=projection_errors,
+            partial=not complete_replay,
+        )
+        if complete_replay and suspension_mode == "wait":
+            evidence["replay"]["durableWaitObserved"] = bool(resumes)
+        if complete_replay and resume_id is not None:
+            matches = not suspension_mode or bool(resumes)
+            for attempt in attempts:
+                request = attempt["requestId"]
+                if request == selected.get("victim") or attempt.get("executionArn") != victim_arn:
+                    continue
+                starts = [
+                    event
+                    for event in events
+                    if event.get("requestId") == request and event.get("kind") == "invocation_start"
+                ]
+                if len(starts) != 1:
+                    matches = False
+                    continue
+                resumed = {**selected, "resume": request}
+                expected_checkpoints = _replay_history_before_resume(
+                    sources, attempts, resumed, projection_errors, waking_ids=resumes.get(request)
+                )
+                actual = replay_evidence(events, histories, resumed, errors=projection_errors, partial=True)["before"]
+                observed_ids = {row["id"]: row for row in actual}
+                expected_ids = {row["id"]: row for row in expected_checkpoints or []}
+                # The original first-resume and public-wakeup checks retain
+                # their exact-set policy. Intermediate resumes compare all
+                # supplied checkpoints and every observable root checkpoint.
+                required = (
+                    set(expected_ids)
+                    if request == resume_id or request in resumes
+                    else {identity for identity, row in expected_ids.items() if row.get("parentId") is None}
+                )
+                repeated_completed = any(
+                    event.get("kind") == "body"
+                    and event.get("requestId") == request
+                    and isinstance(event.get("operationId"), str)
+                    and event["operationId"] in expected_ids
+                    for event in events
+                )
+                matches &= (
+                    not repeated_completed
+                    and expected_checkpoints is not None
+                    and len(actual) == len(observed_ids)
+                    and required <= observed_ids.keys()
+                    and all(same_checkpoint(row, expected_ids.get(identity)) for identity, row in observed_ids.items())
+                )
+            if not projection_errors:
+                evidence["replay"]["suspensionCheckpointMatches"] = matches
+        if projection_errors:
+            evidence["replay"]["projectionErrors"] = projection_errors
     for event in events:
         if event.get("kind") in {"checkpoint_call", "poll_call"}:
+            # Legacy transport-boundary hooks only emit a call on dispatch.
+            outcome = event.get("outcome", "DISPATCHED")
+            if outcome not in ("DISPATCHED", "REJECTED"):
+                errors.append(f"SDK request {event.get('callId')} has an invalid outcome")
             evidence["sdkRequests"].append(
                 {
-                    **event,
+                    **{key: value for key, value in event.items() if key != "sequence"},
                     "method": "CheckpointDurableExecution"
                     if event["kind"] == "checkpoint_call"
                     else "GetDurableExecutionState",
-                    "outcome": "DISPATCHED",
+                    "outcome": outcome,
                 }
             )
+    verified_executions = {
+        arn: launch for launch in cloud.invocations if isinstance(arn := launch.get("arn"), str) and arn
+    }
+    request_ids = dict.fromkeys(item["requestId"] for item in attempts)
+    for record in ledger:
+        arn, request = record.get("execution"), record.get("request")
+        if (
+            isinstance(arn, str)
+            and arn in verified_executions
+            and isinstance(request, str)
+            and request.strip()
+            and record.get("marker") == verified_executions[arn]["marker"]
+            and record.get("run") == context.run_id
+            and record.get("caseId") == context.scenario.case_id
+            and record.get("commit") == cloud.manifest["commit"]
+        ):
+            request_ids[request] = None
+    for arn, launch in verified_executions.items():
+        if not frozen:
+            request_ids.update(dict.fromkeys(launch.get("native_requests", ())))
+        for event in service.get(arn, ()):
+            details = event.get("InvocationCompletedDetails")
+            if not isinstance(details, Mapping) or not isinstance(request := details.get("RequestId"), str):
+                continue
+            if frozen:
+                try:
+                    if _milliseconds(details.get("StartTimestamp")) > ended:
+                        continue
+                except ValueError, OverflowError:
+                    continue
+            request_ids[request] = None
     created = [
-        {
-            "kind": "invocation",
-            "id": item["requestId"],
-            "ownerCaseId": context.scenario.case_id,
-        }
-        for item in attempts
+        {"kind": "invocation", "id": request, "ownerCaseId": context.scenario.case_id} for request in request_ids
     ]
     created.extend(
-        {"kind": "execution", "id": arn, "ownerCaseId": context.scenario.case_id}
-        for arn in dict.fromkeys(item["executionArn"] for item in attempts)
+        {"kind": "execution", "id": arn, "ownerCaseId": context.scenario.case_id} for arn in verified_executions
     )
     # Service callback starts establish ownership even when callback dispatch
     # failed before the driver received a response. Operation IDs avoid exposing
     # callback tokens in the retained inventory.
     callbacks = {}
     callback_completions: dict[str, list[dict[str, Any]]] = {}
-    for arn in dict.fromkeys(item["executionArn"] for item in attempts):
-        for event in getattr(cloud, "raw_histories", {}).get(arn, []):
+    for arn in verified_executions:
+        for event in service.get(arn, []):
+            if frozen and ((occurred := _service_event_time(event)) is None or occurred > ended):
+                continue
             operation_id = event.get("Id")
             if not isinstance(operation_id, str):
                 continue
@@ -639,7 +1713,7 @@ def build_evidence(
             "ownerCaseId": context.scenario.case_id,
         }
         for record in cloud.control_records
-        if record["action"] == "hold"
+        if record["action"] == "hold" and record.get("state") != "REJECTED"
     }
     created.extend(controls.values())
     evidence["resourcesCreated"] = created
@@ -652,7 +1726,7 @@ def build_evidence(
         if item.get("role") == "victim" and context.scenario.scenario in _ACTIVE_FAULTS
     }
     faults = []
-    for gate in dict.fromkeys(record["gate"] for record in cloud.control_records if record["action"] == "hold"):
+    for gate in controls:
         if gate not in victim_faults:
             continue
         fault: dict[str, Any] = {"id": gate, "ownerCaseId": context.scenario.case_id}
@@ -692,6 +1766,11 @@ def build_evidence(
                 item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
             elif resource["kind"] == "execution":
                 item["outcome"] = cloud.execution_results.get(resource["id"], {}).get("Status", "UNKNOWN")
+                invocation = next((i for i in cloud.invocations if i.get("arn") == resource["id"]), None)
+                if invocation is not None:
+                    receipt = (cloud.artifacts_dir / f"executions/{invocation['marker']}.json").resolve().as_uri()
+                    if receipt in cloud.source_uris:
+                        item["evidenceUri"] = receipt
             elif resource["kind"] == "callback":
                 completion = callback_completions.get(resource["id"], [])
                 item["outcome"] = "UNKNOWN"
@@ -703,7 +1782,7 @@ def build_evidence(
                     }[completion[0]["EventType"]]
                     try:
                         item["settledAtMs"] = _milliseconds(completion[0].get("EventTimestamp"))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         item["outcome"] = "UNKNOWN"
                 invocation = next((i for i in cloud.invocations if i.get("arn") == resource["executionArn"]), None)
                 if invocation is not None:
@@ -724,6 +1803,7 @@ def build_evidence(
                 item["evidenceUri"] = (cloud.artifacts_dir / "control-records.json").resolve().as_uri()
             settled.append(item)
         evidence["retirement"] = {
+            **({"mode": "controls-only", "undispatchedLaunches": control_only} if control_only is not None else {}),
             "retiredAtMs": retired,
             "resources": settled,
             "faults": [
@@ -745,5 +1825,6 @@ def build_evidence(
         }
     if errors:
         evidence["collection"]["watermarks"] = {}
-    cloud._save(f"shared-{phase}-evidence.json", evidence)
+    if not partial:
+        cloud._save(f"shared-{phase}-evidence.json", evidence)
     return evidence
