@@ -717,7 +717,7 @@ class _Evidence:
                 self.error("deferred service request is outside the observed execution inventory")
         self.collection(observation_end)
         if validate_behavior:
-            self.no_late_dispatch()
+            self.no_late_dispatch(sdk_requests)
 
     def collection(self, observation_end: float | None = None) -> Mapping[str, Any]:
         value = self.value
@@ -854,7 +854,7 @@ class _Evidence:
             return None
         return sequences[0] > sequences[1]
 
-    def no_late_dispatch(self) -> None:
+    def no_late_dispatch(self, sdk_requests: Sequence[Mapping[str, Any]]) -> None:
         disposal = self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
         for request_id, attempt in self.attempts.items():
             closures = [
@@ -866,10 +866,11 @@ class _Evidence:
             ]
             closed = min((event["atMs"] for event in closures), default=None)
             ended = attempt.get("endedAtMs")
-            for request in self.value.get("sdkRequests", []):
+            if isinstance(ended, bool) or not isinstance(ended, (float, int)) or not math.isfinite(ended) or ended < 0:
+                ended = None  # common() reports a malformed recorded end; it cannot order a dispatch.
+            for request in sdk_requests:
                 if (
-                    not isinstance(request, Mapping)
-                    or request.get("requestId") != request_id
+                    request.get("requestId") != request_id
                     or request.get("outcome") != "DISPATCHED"
                     or not isinstance(at := request.get("atMs"), (float, int))
                 ):
@@ -878,7 +879,7 @@ class _Evidence:
                     late_boundaries = [boundary for boundary in closures if self.at_or_after(request, boundary)]
                     if late_boundaries:
                         self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
-                elif closed is None and isinstance(ended, (float, int)) and at > ended:
+                elif closed is None and ended is not None and at > ended:
                     self.error(
                         f"request {request_id} dispatched SDK work after its recorded end without closure evidence"
                     )

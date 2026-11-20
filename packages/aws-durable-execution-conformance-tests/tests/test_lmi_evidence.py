@@ -549,6 +549,31 @@ def test_dispatch_after_recorded_end_before_explicit_closure_is_allowed(
     assert validate(value, phase=phase) == []
 
 
+@pytest.mark.parametrize("ended", [False, -1])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_malformed_recorded_end_does_not_order_dispatch(validate: EvidenceValidator, ended: Any) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    value["events"].remove(
+        next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    )
+    peer["endedAtMs"] = ended
+
+    errors = validate(value)
+    assert "INCOMPLETE: attempt request-peer.endedAtMs must be a finite non-negative number" in errors, errors
+    assert not any("after its recorded end" in error for error in errors), errors
+
+
+def test_malformed_sdk_requests_keep_disposal_wrapper_diagnostics() -> None:
+    value = evidence(2)
+    value["events"].append(event(value["attempts"][0], "wrapper_raise", 41))
+    value["sdkRequests"] = None
+
+    errors = validate_evidence(value)
+    assert "INCOMPLETE: sdkRequests must be an array" in errors, errors
+    assert "INCOMPLETE: disposal needs exactly one wrapper exit for the selected victim" in errors, errors
+
+
 @pytest.mark.parametrize(("sequence", "late"), [(None, True), (9, False), (11, True)])
 def test_dispatch_at_closure_timestamp_uses_semantic_sequence(sequence: int | None, late: bool) -> None:
     value = evidence(2)
