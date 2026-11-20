@@ -55,6 +55,16 @@ def is_json_integer(value: Any) -> TypeGuard[int | float]:
     return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
+def is_json_timestamp(value: Any) -> TypeGuard[int | float]:
+    """Accept the finite non-negative numbers that structural checks accept, excluding booleans."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+        and value >= 0
+    )
+
+
 def same_json(left: Any, right: Any) -> bool:
     """Compare decoded checkpoint data without Python's bool/number equality.
 
@@ -725,7 +735,7 @@ class _Evidence:
                 self.error("deferred service request is outside the observed execution inventory")
         self.collection(observation_end)
         if validate_behavior:
-            self.no_late_dispatch()
+            self.no_late_dispatch(sdk_requests)
 
     def collection(self, observation_end: float | None = None) -> Mapping[str, Any]:
         value = self.value
@@ -866,9 +876,9 @@ class _Evidence:
             return None
         return sequences[0] > sequences[1]
 
-    def no_late_dispatch(self) -> None:
+    def no_late_dispatch(self, sdk_requests: Sequence[Mapping[str, Any]]) -> None:
         disposal = self.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
-        for request_id in self.attempts:
+        for request_id, attempt in self.attempts.items():
             closures = [
                 event
                 for event in self.events
@@ -876,9 +886,26 @@ class _Evidence:
                 and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
                 and isinstance(event.get("atMs"), (float, int))
             ]
-            if not closures:
+            closed = min((event["atMs"] for event in closures), default=None)
+            ended = attempt.get("endedAtMs")
+            for request in sdk_requests:
+                if (
+                    request.get("requestId") != request_id
+                    or request.get("outcome") != "DISPATCHED"
+                    or not isinstance(at := request.get("atMs"), (float, int))
+                ):
+                    continue
+                if closed is not None and at >= closed:
+                    late_boundaries = [boundary for boundary in closures if self.at_or_after(request, boundary)]
+                    if late_boundaries:
+                        self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
+                # common() reports malformed times; they cannot order a dispatch after the recorded end.
+                elif closed is None and is_json_timestamp(ended) and is_json_timestamp(at) and at > ended:
+                    self.error(
+                        f"request {request_id} dispatched SDK work after its recorded end without closure evidence"
+                    )
+            if closed is None:
                 continue
-            closed = min(event["atMs"] for event in closures)
             wrapper = None
             if disposal and request_id == self.selected.get("victim", {}).get("requestId"):
                 exits = [event for event in closures if event["kind"] != "admission_closed"]
@@ -886,17 +913,6 @@ class _Evidence:
                     wrapper = exits[0]
                 elif len(exits) > 1:
                     self.error("disposal needs exactly one wrapper exit for the selected victim")
-            for request in self.value.get("sdkRequests", []):
-                if (
-                    isinstance(request, Mapping)
-                    and request.get("requestId") == request_id
-                    and request.get("outcome") == "DISPATCHED"
-                    and isinstance(request.get("atMs"), (float, int))
-                    and request["atMs"] >= closed
-                ):
-                    late_boundaries = [boundary for boundary in closures if self.at_or_after(request, boundary)]
-                    if late_boundaries:
-                        self.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
             for event in self.events:
                 if (
                     event.get("requestId") == request_id
