@@ -353,7 +353,7 @@ A retry `body` event for the retried operation identifies a declared attempt by
 with retry order and precede or coincide with the recorded operation completion.
 Completed step bodies likewise cannot follow their recorded completion.
 
-The offline reader preserves precise fractional values in checkpoint payloads
+Adjudication preserves precise fractional values in checkpoint payloads
 and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
@@ -363,6 +363,36 @@ clock precision.
 Collection runs the cases on AWS and records what happened. Adjudication then
 derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
+
+Use a manifest, as described under
+[Standalone evidence files](#standalone-evidence-files), with an SDK-owned
+adapter to run cases and collect evidence. The adapter module must be importable
+in the runner's Python environment. Its factory receives the admitted manifest
+and returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
+and `finish` for each profile that an active case uses, and `start`, `place`,
+`execute`, `collect`, `release`, and `retire` for each case. When every case is
+`not_implemented`, the runner does not load the adapter.
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-collection
+```
+
+Choose an empty output directory, and use a separate one for every run. The
+runner journals attempts to `attempts.jsonl` before dispatch and publishes case
+outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
+may have multiple records for a case. The last record for the case contains its
+latest published attempts or outcome. A row with status `COLLECTED` awaits the
+verdict. After all targets are released or quarantined, the runner writes frozen
+observations and separate cleanup evidence to `collected-evidence.json`, reads
+the file back, and adjudicates it to produce the final report.
+
+A collection manifest may also set `scenarioConcurrency`, the most cases the run
+executes at once (default 8), and `budgets`, harness time limits in seconds:
+`provisioning` for each target's `prepare` (default 300), `lease` for waiting on
+target capacity (300), `placement` for `start` and `place` (120), `execution`
+(300), `collection` (120), `release` (30), and `retirement` for each case's
+`retire` and each target's `finish` (120). These bound the harness, not SDK
+cleanup or delivery.
 
 Collection holds each target through physical retirement of its own cases.
 It finishes profiles only after every case in the run has ended its retirement
@@ -382,13 +412,43 @@ run holds, fail fast or wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
-`PASSED`.
+`PASSED`. A collection run with `--adapter` and a later `--collected-evidence`
+run judge the coordinator's captures with the same adjudication. Standalone
+evidence files listed in the manifest are validated as described below.
 
-## Offline lifecycle runner
+## Adjudication
+
+A collection run with `--adapter` adjudicates its evidence as soon as it is
+collected. To adjudicate a saved bundle again, without loading an adapter, pass
+`--collected-evidence`. This is a tool for debugging, for investigating a
+reported verdict, and for developing rules. It is not a verification step:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
+```
+
+Adjudication trusts the bundle: it assumes that the coordinator wrote it and
+that it was not modified. Before recording `COLLECTED`, the coordinator bound
+every observation and retirement record to the launch journal and checked that
+the case's work settled. Adjudication judges behavior again with the current
+rules, but it keeps the recorded collection status and the facts only collection
+observed. Pass the collection's own `manifest.json`. Adjudication re-checks only
+the collection facts its verdict rules use: each case's identity against that
+manifest, ownership claims across cases, launch coverage, and the retirement
+proof behind the lifecycle 2/7 allowance. The frozen observations must include
+every client launch the journal records (`launchedAtMs`): cleanup can journal a
+new client launch after observations froze, and the coordinator still records
+`COLLECTED`, so adjudication reports that case incomplete. A service-initiated
+attempt (`discoveredAtMs`) may be absent. The lifecycle 2/7 allowance requires a
+retirement snapshot that passes `validate_retirement_evidence`. Adjudication
+does not verify collection integrity otherwise, so a hand-edited bundle can
+receive a wrong verdict.
+
+## Standalone evidence files
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
---output output` with an empty output directory. The runner reads existing
-evidence. Under strict coverage, failed, missing, uncovered, and
+--output output` with an empty output directory. The runner reads the evidence
+files the manifest lists. Under strict coverage, failed, missing, uncovered, and
 `not_implemented` cases all produce a nonzero exit status.
 
 An inventory with two default profiles and no evidence cases looks like this.
