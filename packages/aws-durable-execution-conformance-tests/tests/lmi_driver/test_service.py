@@ -1,5 +1,6 @@
 """The shared transport has no dependency on a language SDK's testing library."""
 
+import io
 import json
 from unittest.mock import Mock
 
@@ -52,6 +53,7 @@ def test_callback_search_retries_not_found_and_follows_pages(monkeypatch):
             "Events": [
                 {
                     "EventType": "CallbackStarted",
+                    "Id": "callback",
                     "Name": "completion",
                     "CallbackStartedDetails": {"CallbackId": "target"},
                 }
@@ -64,6 +66,15 @@ def test_callback_search_retries_not_found_and_follows_pages(monkeypatch):
     assert clock.now == 0.5
     runner.send_callback_success("target", b"marker")
     api.send_durable_execution_callback_success.assert_called_once_with(CallbackId="target", Result=b"marker")
+
+
+def test_send_callback_success_omits_absent_result():
+    api = Mock()
+    runner = DurableFunctionRunner("function", region="us-west-2", lambda_client=api)
+
+    runner.send_callback_success("target")
+
+    api.send_durable_execution_callback_success.assert_called_once_with(CallbackId="target")
 
 
 @pytest.mark.parametrize("operation", ["result", "callback"])
@@ -105,3 +116,136 @@ def test_unnamed_callback_inherits_its_context_name_across_pages(parent_first):
     runner = DurableFunctionRunner("function", region="us-west-2", lambda_client=api)
     assert runner.wait_for_callback("execution", "completion", timeout=5) == "target"
     assert api.get_durable_execution_history.call_count == 2
+
+
+@pytest.mark.parametrize("code", ["ResourceNotFoundException", "TooManyRequestsException", "ServiceUnavailable"])
+def test_result_poll_retries_transient_reads_until_terminal(monkeypatch, code):
+    api = Mock()
+    api.get_durable_execution.side_effect = [
+        ClientError({"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "GetDurableExecution"),
+        {"Status": "SUCCEEDED", "Result": "ok"},
+    ]
+    monkeypatch.setattr(service, "time", Clock())
+    runner = DurableFunctionRunner("qualified-function", region="us-west-2", lambda_client=api)
+    assert runner.wait_for_result("execution", timeout=1)["Result"] == "ok"
+    assert api.get_durable_execution.call_count == 2
+
+
+def test_cleanup_waits_for_pausing_then_stops_paused_execution(monkeypatch):
+    api = Mock()
+    api.get_durable_execution.side_effect = [{"Status": "PAUSING"}, {"Status": "PAUSED"}]
+    monkeypatch.setattr(service, "time", Clock())
+    assert service.request_execution_stops(api, ["execution"], timeout=3) == {}
+    api.stop_durable_execution.assert_called_once_with(DurableExecutionArn="execution")
+
+
+def test_callback_poll_retries_throttle_before_its_original_deadline(monkeypatch):
+    api = Mock()
+    api.get_durable_execution_history.side_effect = [
+        ClientError({"Error": {"Code": "TooManyRequestsException"}}, "GetDurableExecutionHistory"),
+        {
+            "Events": [
+                {
+                    "EventType": "CallbackStarted",
+                    "Id": "callback",
+                    "Name": "completion",
+                    "CallbackStartedDetails": {"CallbackId": "target"},
+                }
+            ]
+        },
+    ]
+    monkeypatch.setattr(service, "time", Clock())
+    assert (
+        DurableFunctionRunner("function", region="us-west-2", lambda_client=api).wait_for_callback(
+            "execution", "completion", timeout=1
+        )
+        == "target"
+    )
+
+
+def test_callback_waiter_skips_completed_id_on_a_later_page():
+    api = Mock()
+    api.get_durable_execution_history.side_effect = [
+        {
+            "Events": [
+                {
+                    "EventType": "CallbackStarted",
+                    "Id": "old",
+                    "Name": "completion",
+                    "CallbackStartedDetails": {"CallbackId": "expired"},
+                }
+            ],
+            "NextMarker": "next",
+        },
+        {
+            "Events": [
+                {"EventType": "CallbackTimedOut", "Id": "old"},
+                {
+                    "EventType": "CallbackStarted",
+                    "Id": "new",
+                    "Name": "completion",
+                    "CallbackStartedDetails": {"CallbackId": "outstanding"},
+                },
+            ]
+        },
+    ]
+    runner = DurableFunctionRunner("function", region="us-west-2", lambda_client=api)
+    assert runner.wait_for_callback("execution", "completion") == "outstanding"
+
+
+def test_release_reconciles_lost_result_without_unconditional_retry():
+    storage = Mock()
+    storage.get_object.side_effect = [
+        {"Body": io.BytesIO(b"hold"), "ETag": '"held"'},
+        {"Body": io.BytesIO(b"release"), "ETag": '"released"'},
+    ]
+    storage.put_object.side_effect = ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
+    service.release_control(storage, "bucket", "key")
+    storage.put_object.assert_called_once_with(Bucket="bucket", Key="key", Body=b"release", IfMatch='"held"')
+
+
+def test_single_attempt_client_disables_botocore_retries(monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr(service.boto3, "client", factory)
+    service.client("s3", "us-west-2", single_attempt=True)
+    assert factory.call_args.kwargs["config"].retries == {"total_max_attempts": 1}
+
+
+def test_lambda_history_decoder_preserves_pause_request_timestamp():
+    from botocore.parsers import create_parser
+    from botocore.session import Session
+
+    model = Session().get_service_model("lambda")
+    operation = model.operation_model("GetDurableExecutionHistory")
+    wire = {
+        "Events": [
+            {
+                "EventType": "ExecutionPaused",
+                "EventId": 1,
+                "ExecutionPausedDetails": {"PauseRequestTimestamp": 123},
+            }
+        ]
+    }
+    response = {"status_code": 200, "headers": {}, "body": json.dumps(wire).encode()}
+    parsed = create_parser(model.metadata["protocol"]).parse(response, operation.output_shape)
+    assert parsed["Events"][0]["ExecutionPausedDetails"]["PauseRequestTimestamp"].timestamp() == 123
+
+
+def test_stale_history_does_not_reopen_callback_seen_closed_before_failed_page(monkeypatch):
+    api = Mock()
+    old = {
+        "EventType": "CallbackStarted",
+        "Id": "old",
+        "Name": "completion",
+        "CallbackStartedDetails": {"CallbackId": "expired"},
+    }
+    new = {**old, "Id": "new", "CallbackStartedDetails": {"CallbackId": "available"}}
+    api.get_durable_execution_history.side_effect = [
+        {"Events": [old, {"EventType": "CallbackTimedOut", "Id": "old"}], "NextMarker": "later"},
+        ClientError({"Error": {"Code": "ThrottlingException"}}, "GetDurableExecutionHistory"),
+        {"Events": [old]},
+        {"Events": [new]},
+    ]
+    monkeypatch.setattr(service, "time", Clock())
+    runner = DurableFunctionRunner("function", region="us-west-2", lambda_client=api)
+    assert runner.wait_for_callback("execution", "completion") == "available"

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Native timing comes from the invocation, independently of fixture startup."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from runpy import run_path
@@ -186,3 +187,59 @@ def test_application_errors_mentioning_timeout_are_not_platform_timeouts(error):
     attempts, _, _ = sources.attempts(events)
     assert not any(event["kind"] == "platform_timeout" for event in events)
     assert attempts[0]["outcome"] == "FAILED"
+
+
+def test_ordinary_completion_uses_native_end_and_keeps_wrapper_event():
+    sources, events, _ = native_sources(
+        end=0.030,
+        error={"ErrorType": "ValueError"},
+        event_time=0.040,
+    )
+    wrapper = next(event for event in events if event["kind"] == "wrapper_return")
+    wrapper["atMs"] = 29
+    attempts, _, _ = sources.attempts(events)
+    assert attempts[0]["outcome"] == "FAILED"
+    assert attempts[0]["endedAtMs"] == 30
+    assert wrapper["atMs"] == 29
+
+
+@pytest.mark.parametrize("wrapper_outcome", ["SUCCEEDED", "PENDING"])
+def test_native_failure_overrides_only_the_failed_attempt(wrapper_outcome):
+    sources, events, value = native_sources(error={"Payload": {"ErrorType": "Runtime.ExitError"}})
+    raw = sources.raw[0]
+    sources.context.record_attempt("retry", role="victim", requestId="retry")
+    sources = replace(sources, raw=(*sources.raw, {**raw, "request": "retry", "time": 0.041}))
+    sources.cloud.request_roles["retry"] = "victim"
+    arn = value["attempts"][0]["executionArn"]
+    history = sources.cloud.raw_histories[arn]
+    history.pop(1)
+    history.append(
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "retry", "StartTimestamp": 0.04, "EndTimestamp": 0.06},
+        }
+    )
+    wrapper = next(event for event in events if event["kind"] == "wrapper_return")
+    wrapper.update(atMs=29, outcome=wrapper_outcome)
+    events.append({**wrapper, "requestId": "retry", "ownerRequestId": "retry", "outcome": "SUCCEEDED", "atMs": 59})
+    attempts, _, errors = sources.attempts(events)
+    assert errors == []
+    assert [(attempt["outcome"], attempt["endedAtMs"]) for attempt in attempts] == [("FAILED", 30), ("SUCCEEDED", 60)]
+    assert wrapper["outcome"] == wrapper_outcome
+
+
+def test_partial_wrapper_failure_enriches_to_native_timeout_without_rewriting_wrapper():
+    sources, events, value = native_sources()
+    request = value["attempts"][0]["requestId"]
+    arn = value["attempts"][0]["executionArn"]
+    service_completion = sources.cloud.raw_histories[arn].pop()
+    wrapper = next(event for event in events if event["kind"] == "wrapper_return")
+    wrapper.update(outcome="FAILED", atMs=40)
+    attempts, _, _ = sources.attempts(events, pending=[])
+    partial = next(item for item in attempts if item["requestId"] == request)
+    assert "endedAtMs" not in partial and "outcome" not in partial
+    sources.cloud.raw_histories[arn].append(service_completion)
+    attempts, _, _ = sources.attempts(events)
+    final = next(item for item in attempts if item["requestId"] == request)
+    assert final["endedAtMs"] == 30 and final["outcome"] == "TIMED_OUT"
+    assert wrapper["atMs"] == 40 and wrapper["outcome"] == "FAILED"
