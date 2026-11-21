@@ -685,7 +685,7 @@ def collected_evidence_results(
     suite: SuiteDefinition | None = None,
 ) -> list[dict[str, Any]]:
     """Adjudicate captured cases without an adapter or an acquired target."""
-    from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence, frozen_journal_errors
+    from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence
 
     if not isinstance(collected, list):
         raise ValueError("collected evidence must be an array of case results")
@@ -744,8 +744,6 @@ def collected_evidence_results(
                     raise ValueError("recorded attempts must be an array of objects")
                 collection_errors = [finding for finding in findings if finding.startswith("INCOMPLETE:")]
                 behavior_findings = [finding for finding in findings if not finding.startswith("INCOMPLETE:")]
-                if result["status"] == "COLLECTED":
-                    collection_errors.extend(frozen_journal_errors(evidence, attempts, retirement))
                 result["status"], result["errors"], _ = adjudicate_evidence(
                     result["status"],
                     list(dict.fromkeys([*result["errors"], *collection_errors])),

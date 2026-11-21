@@ -396,11 +396,17 @@ Re-evaluate a live evidence bundle without loading an adapter:
 durable-execution-conformance lmi-lifecycle --manifest lmi-live/manifest.json --collected-evidence lmi-live/collected-evidence.json --output lmi-offline
 ```
 
-Replay binds the frozen observations to the launch journal. A service-initiated
-attempt journaled after observations froze can be missing from them only if
-the bundle's retirement snapshot passes `validate_retirement_evidence` and records
-the same request, role, ordinal and execution. Every request that the retirement
-snapshot records must also be journaled. Otherwise the case is incomplete.
+Replay trusts the bundle: it assumes that the coordinator wrote it and that it
+was not modified. Before recording `COLLECTED`, the coordinator bound every
+observation and retirement record to the launch journal and checked that the
+case's work settled. Replay judges behavior again with the current rules, but it
+keeps the recorded collection status and facts only the live run observed.
+Replay applies one journal rule itself: the frozen observations must include
+every client launch the journal records (`launchedAtMs`). Cleanup can journal a
+new client launch after observations froze, and the coordinator still records
+`COLLECTED`; replay reports that case incomplete. A service-initiated attempt
+(`discoveredAtMs`) may be absent. Replay does not verify collection integrity
+otherwise, so a hand-edited bundle can receive a wrong verdict.
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
 --output output` with an empty output directory. The runner reads existing

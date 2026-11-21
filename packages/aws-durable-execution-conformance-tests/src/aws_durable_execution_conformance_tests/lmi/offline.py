@@ -14,7 +14,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
     is_json_integer,
     normalize_retirement_events,
-    same_json,
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
@@ -333,69 +332,6 @@ def evaluate_evidence(
         standard=standard,
     )
     return findings
-
-
-def frozen_journal_errors(
-    evidence: Mapping[str, Any],
-    journal: Sequence[Mapping[str, Any]],
-    retirement_evidence: Mapping[str, Any] | None = None,
-) -> list[str]:
-    """Bind frozen requests to the journal.
-
-    A service-initiated request discovered after observations froze may be
-    absent from them only when an independent retirement snapshot that passes
-    ``validate_retirement_evidence`` records the same request, role, ordinal and
-    execution, proving that its work settled. Conversely, every request that the
-    retirement snapshot records must be journaled, so retirement cannot account
-    for service work the collection never recorded.
-    """
-    attempts = evidence.get("attempts")
-    if not isinstance(attempts, list) or not all(isinstance(row, Mapping) for row in attempts):
-        return ["INCOMPLETE: observed attempts are missing or malformed"]
-    recorded: dict[str, Mapping[str, Any]] = {}
-    observed: set[str] = set()
-    for row in journal:
-        request = row.get("requestId")
-        if not isinstance(request, str) or not request.strip() or request in recorded:
-            return ["INCOMPLETE: journaled requests must have unique native identities"]
-        recorded[request] = row
-    for row in attempts:
-        request = row.get("requestId")
-        if not isinstance(request, str) or request in observed or request not in recorded:
-            return ["INCOMPLETE: observed requests do not match journaled attempts"]
-        observed.add(request)
-        launch = recorded[request]
-        if (
-            not is_json_integer(launch.get("attempt"))
-            or not is_json_integer(row.get("attempt"))
-            or launch["attempt"] != row["attempt"]
-            or launch.get("role") != row.get("role")
-            or ("executionArn" in launch and launch["executionArn"] != row.get("executionArn"))
-        ):
-            return [f"INCOMPLETE: observed identity does not match journaled request {request}"]
-    if not observed or any(
-        request not in observed and "discoveredAtMs" not in row for request, row in recorded.items()
-    ):
-        return ["INCOMPLETE: frozen observations do not cover all client-journaled launches"]
-    later = [request for request in recorded if request not in observed]
-    snapshot = retirement_evidence if isinstance(retirement_evidence, Mapping) else {}
-    if later:
-        if not snapshot or validate_retirement_evidence(snapshot):
-            return [f"INCOMPLETE: service-discovered request {later[0]} lacks validated retirement proof"]
-        settled = {attempt.get("requestId"): attempt for attempt in snapshot["attempts"]}
-        for request in later:
-            launch, retired = recorded[request], settled.get(request)
-            # JSON comparison keeps booleans distinct from ordinals.
-            if retired is None or any(
-                not same_json(launch.get(key), retired.get(key)) for key in ("role", "attempt", "executionArn")
-            ):
-                return [f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof"]
-    retired_attempts = snapshot.get("attempts")
-    for row in retired_attempts if isinstance(retired_attempts, list) else ():
-        request = row.get("requestId") if isinstance(row, Mapping) else None
-        if isinstance(request, str) and request not in recorded:
-            return [f"INCOMPLETE: retirement request {request} is not journaled"]
-    return []
 
 
 def adjudicate_evidence(

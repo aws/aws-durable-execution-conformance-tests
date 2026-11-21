@@ -6054,6 +6054,102 @@ def _lifecycle_7_retirement_retry() -> tuple[dict[str, Any], dict[str, Any]]:
     return original, snapshot
 
 
+@pytest.mark.parametrize("variant", ["journaled", "snapshot-omits-retry", "unjournaled", "other-ordinal"])
+def test_service_retry_discovered_during_retirement_must_match_the_journal(variant: str) -> None:
+    # Replay trusts COLLECTED captures, so the coordinator alone must bind a
+    # service retry found during retirement to both the journal and the snapshot.
+    from aws_durable_execution_conformance_tests.lmi.coordinator import run_scenarios
+
+    original, snapshot = _lifecycle_7_retirement_retry()
+    retry = next(row for row in snapshot["attempts"] if row["requestId"] == "service-retry")
+    if variant == "snapshot-omits-retry":
+        # Drop every trace of the retry so that the snapshot stays internally
+        # valid and only its binding to the journal can reject it.
+        snapshot["attempts"].remove(retry)
+        snapshot["events"] = [row for row in snapshot["events"] if row.get("requestId") != "service-retry"]
+        snapshot["resourcesCreated"] = [row for row in snapshot["resourcesCreated"] if row["id"] != "service-retry"]
+        snapshot["retirement"]["resources"] = [
+            row for row in snapshot["retirement"]["resources"] if row["id"] != "service-retry"
+        ]
+        _resequence(snapshot)
+        assert validate_retirement_evidence(snapshot) == []
+    elif variant == "other-ordinal":
+        retry["attempt"] = 3
+    deployment = original["profile"]
+    profile = Profile(
+        "standard",
+        deployment["functionArn"],
+        deployment["nativeConcurrency"],
+        deployment["nativeConcurrency"],
+        original["artifact"]["sdk"],
+        deployment["configurationDigest"],
+    )
+    case = Scenario(
+        original["caseId"],
+        original["requirementId"],
+        profile.profile_id,
+        "fixture",
+        roles=tuple(original["selectedRequests"]),
+        exclusive=True,
+        behavior_budgets=original.get("budgets", {}),
+    )
+
+    class Adapter:
+        async def prepare(self, profile: Profile) -> None:
+            pass
+
+        async def finish(self, profile: Profile, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: ScenarioContext) -> None:
+            for attempt in original["attempts"]:
+                context.record_attempt(
+                    attempt["requestId"],
+                    role=attempt["role"],
+                    requestId=attempt["requestId"],
+                    executionArn=attempt["executionArn"],
+                )
+
+        async def place(self, context: ScenarioContext) -> None:
+            pass
+
+        async def execute(self, context: ScenarioContext) -> None:
+            pass
+
+        async def collect(self, context: ScenarioContext) -> Mapping[str, Any]:
+            observed = deepcopy(original)
+            observed.pop("retirement")
+            return observed
+
+        async def release(self, context: ScenarioContext) -> None:
+            pass
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if variant != "unjournaled":
+                context.record_service_attempt(
+                    "service-retry",
+                    original_request_id=original["selectedRequests"]["victim"],
+                    execution_arn=retry["executionArn"],
+                    role="victim",
+                )
+            context.retirement_evidence = deepcopy(snapshot)
+            context.evidence["retirement"] = deepcopy(snapshot["retirement"])
+            return True
+
+    result = asyncio.run(run_scenarios([case], [profile], Adapter(), run_id=original["runId"]))[0]
+    if variant == "journaled":
+        assert result.status == "COLLECTED", result.errors
+        assert [row["requestId"] for row in result.attempts][-1] == "service-retry"
+    else:
+        assert result.status == "INFRASTRUCTURE_ERROR", result.errors
+        expected = (
+            "role or ordinal substitutes journaled launch service-retry"
+            if variant == "other-ordinal"
+            else "Collected attempts do not match all original journaled launches"
+        )
+        assert any(expected in error for error in result.errors), result.errors
+
+
 def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
     from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
     from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
