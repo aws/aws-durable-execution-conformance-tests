@@ -21,15 +21,41 @@ from aws_durable_execution_conformance_tests.lmi.rules import warm_reuse as _war
 from aws_durable_execution_conformance_tests.lmi.rules.common import (
     _has_matching_sdk_request as _has_matching_sdk_request,
 )
-from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
+from aws_durable_execution_conformance_tests.lmi.rules.common import (
+    _history_expectation_mismatches as _history_expectation_mismatches,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.common import (
+    _valid_history_status_allowance as _valid_history_status_allowance,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.common import (
+    normalize_retirement_events,
+    original_admission_conflicts,
+    permits_disposal_operation_probe,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.engine import _validate_observations as _validate_observations
 from aws_durable_execution_conformance_tests.lmi.rules.engine import validate_common_evidence, validate_evidence
-from aws_durable_execution_conformance_tests.lmi.rules.retirement import validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.overlap import has_overlap_marker_dispatch
+from aws_durable_execution_conformance_tests.lmi.rules.recovery import peer_progress_spans_timeout
+from aws_durable_execution_conformance_tests.lmi.rules.replay import (
+    completed_replay_step_witness,
+    completed_suspension_checkpoint,
+    replay_checkpoint_timing,
+    retry_body_identity,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import (
+    _validate_sdk_dispatches as _validate_sdk_dispatches,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import (
+    retained_fault_releases,
+    validate_observed_retirement,
+    validate_retirement_evidence,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.values import _CALL_METHODS as _CALL_METHODS
 from aws_durable_execution_conformance_tests.lmi.rules.values import _WORK_INTERVALS as _WORK_INTERVALS
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     COMPLETED_OPERATION_STATUSES,
     HISTORY_STATUSES,
+    RECOVERY_POLICIES,
     REQUIREMENT_IDS,
     RUNTIMES,
     SCHEMA_VERSION,
@@ -43,16 +69,27 @@ from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 __all__ = [
     "COMPLETED_OPERATION_STATUSES",
     "HISTORY_STATUSES",
+    "RECOVERY_POLICIES",
     "REQUIREMENT_IDS",
     "RUNTIMES",
     "SCHEMA_VERSION",
     "TERMINAL_STATUSES",
     "EvidenceValidator",
+    "completed_replay_step_witness",
+    "completed_suspension_checkpoint",
+    "has_overlap_marker_dispatch",
     "is_json_integer",
     "normalize_retirement_events",
+    "original_admission_conflicts",
+    "peer_progress_spans_timeout",
+    "permits_disposal_operation_probe",
+    "replay_checkpoint_timing",
+    "retained_fault_releases",
+    "retry_body_identity",
     "same_json",
     "validate_common_evidence",
     "validate_evidence",
+    "validate_observed_retirement",
     "validate_retirement_evidence",
 ]
 

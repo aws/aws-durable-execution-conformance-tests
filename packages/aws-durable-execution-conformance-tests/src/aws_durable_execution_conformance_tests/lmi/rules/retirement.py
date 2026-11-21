@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
 from aws_durable_execution_conformance_tests.lmi.rules.common import (
@@ -22,6 +22,9 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     is_json_integer,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def last_activity(view: CaseView, request_id: Any) -> float:
@@ -71,7 +74,13 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
             candidates = [
                 item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
             ]
-            rejected = start_kind in _CALL_METHODS and start.get("outcome") == "REJECTED"
+            rejected = (
+                start_kind in _CALL_METHODS
+                and start.get("outcome") == "REJECTED"
+                and _has_matching_sdk_request(
+                    start, _CALL_METHODS[start_kind], "REJECTED", view.value.get("sdkRequests", [])
+                )
+            )
             if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
                 view.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
             elif candidates:
@@ -86,7 +95,9 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
         view.error("retirement-only completion has no unique observed work start")
 
 
-def retirement(view: CaseView, *, audit_observed_work: bool = True) -> None:
+def retirement(
+    view: CaseView, *, audit_observed_work: bool = True, retired_requests: Mapping[str, set[str]] | None = None
+) -> None:
     retirement = view.mapping(view.value.get("retirement"), "retirement")
     end = view.number(retirement.get("retiredAtMs"), "retirement.retiredAtMs")
     if end < view.value.get("observationEndedAtMs", 0):
@@ -162,7 +173,14 @@ def retirement(view: CaseView, *, audit_observed_work: bool = True) -> None:
                         view.standard_behavior
                         and view.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
                         and view.selected.get("victim", {}).get("executionArn") == item.get("id")
-                        and sum(attempt.get("executionArn") == item.get("id") for attempt in view.attempts.values())
+                        and len(
+                            {
+                                request
+                                for request, attempt in view.attempts.items()
+                                if attempt.get("executionArn") == item.get("id")
+                            }
+                            | (retired_requests or {}).get(item["id"], set())
+                        )
                         == 1
                         and item.get("outcome")
                         != ("SUCCEEDED" if view.value["requirementId"] == "lmi-lifecycle-2" else "FAILED")
@@ -211,7 +229,81 @@ def retirement(view: CaseView, *, audit_observed_work: bool = True) -> None:
                         view.error("fault release cannot retroactively establish cleanup or recovery", "ASSERTION")
 
 
-def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
+def retained_fault_releases(
+    sources: Sequence[Mapping[str, Any]], retired_at: Any
+) -> tuple[list[int | float], list[str]]:
+    """Check observed release receipts even if later snapshots replace them."""
+
+    def timestamp(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0:
+            return value
+        return None
+
+    end = timestamp(retired_at)
+    releases: list[int | float] = []
+    errors: list[str] = []
+    for source in sources:
+        retirement = source.get("retirement")
+        for location, records in (
+            ("faultsCreated", source.get("faultsCreated")),
+            ("retirement.faults", retirement.get("faults") if isinstance(retirement, Mapping) else None),
+        ):
+            for fault in records if isinstance(records, list) else ():
+                if not isinstance(fault, Mapping) or "releasedAtMs" not in fault:
+                    continue
+                released = timestamp(fault["releasedAtMs"])
+                if released is None:
+                    errors.append(f"INCOMPLETE: cleanup {location}.releasedAtMs must be a finite non-negative number")
+                else:
+                    releases.append(released)
+                    if end is not None and released > end:
+                        errors.append("INCOMPLETE: observed fault release occurred after retirement ended")
+    return releases, list(dict.fromkeys(errors))
+
+
+def _validate_sdk_dispatches(validator: CaseView, events: Sequence[Mapping[str, Any]]) -> None:
+    call_kinds = {method: kind for kind, method in _CALL_METHODS.items()}
+    dispatches: set[tuple[str, str, str]] = set()
+    for request in validator.value["sdkRequests"]:
+        if request.get("outcome") != "DISPATCHED":
+            continue
+        kind = call_kinds.get(request.get("method"))
+        if kind is None:
+            validator.error("retirement has no completion contract for dispatched SDK method")
+            continue
+        call_id = validator.string(request.get("callId"), "dispatched SDK request.callId")
+        key = (request["requestId"], kind, call_id)
+        if key in dispatches or not any(
+            event.get("requestId") == key[0]
+            and event.get("kind") == kind
+            and event.get("callId") == call_id
+            and event.get("outcome", "DISPATCHED") == "DISPATCHED"
+            and event.get("atMs") == request.get("atMs")
+            for event in events
+        ):
+            validator.error(f"retirement cannot correlate dispatched SDK request with its unique {kind}")
+        dispatches.add(key)
+
+
+def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
+    """Verify settlement against the captured case and its retirement record."""
+    requirement = evidence.get("requirementId")
+    validator = CaseView(
+        evidence, requirement_ids=(requirement,) if isinstance(requirement, str) else (), standard_behavior=False
+    )
+    try:
+        common_rules.common(validator, validate_behavior=False)
+        retirement(validator)
+        if not validator.errors:
+            _validate_sdk_dispatches(validator, normalize_retirement_events(validator.events, validator.errors))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+        validator.error(f"malformed retirement evidence: {error}")
+    return validator.errors
+
+
+def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launches: bool = False) -> list[str]:
     """Audit a separate post-cleanup snapshot without accepting its behavior.
 
     Failed cases may lack mandatory scenario roles, but every actual launch must
@@ -228,7 +320,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
     )
     try:
         validator.string(requirement, "requirementId")
-        common_rules.common(validator, validate_behavior=False)
+        common_rules.common(validator, validate_behavior=False, allow_no_launches=allow_no_launches)
         validator.events = normalize_retirement_events(validator.events, validator.errors)
         retirement(validator, audit_observed_work=False)
         if validator.errors:
@@ -242,27 +334,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
                 validator.error("retirement service history still permits execution resume")
             if records[arn].get("outcome") != history["status"]:
                 validator.error("retirement execution outcome differs from actual service history")
-        call_kinds = {method: kind for kind, method in _CALL_METHODS.items()}
-        dispatches: set[tuple[str, str, str]] = set()
-        for request in evidence["sdkRequests"]:
-            if request.get("outcome") != "DISPATCHED":
-                continue
-            kind = call_kinds.get(request.get("method"))
-            if kind is None:
-                validator.error("retirement has no completion contract for dispatched SDK method")
-                continue
-            call_id = validator.string(request.get("callId"), "dispatched SDK request.callId")
-            key = (request["requestId"], kind, call_id)
-            if key in dispatches or not any(
-                event.get("requestId") == key[0]
-                and event.get("kind") == kind
-                and event.get("callId") == call_id
-                and event.get("outcome", "DISPATCHED") == "DISPATCHED"
-                and event.get("atMs") == request.get("atMs")
-                for event in validator.events
-            ):
-                validator.error(f"retirement cannot correlate dispatched SDK request with its unique {kind}")
-            dispatches.add(key)
+        _validate_sdk_dispatches(validator, validator.events)
         for request_id in validator.attempts:
             local = [event for event in validator.events if event["requestId"] == request_id]
             sequences = [event.get("sequence") for event in local]
@@ -320,3 +392,12 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
         validator.error(f"malformed independent retirement evidence: {error}")
     return validator.errors
+
+
+def collect_fault_releases(view: ReconcileView) -> list[int | float]:
+    """Record fault-release errors and return every known release time."""
+    final_retirement = view.snapshot.get("retirement")
+    final_end = final_retirement.get("retiredAtMs") if isinstance(final_retirement, Mapping) else None
+    releases, release_errors = retained_fault_releases((*view.observation_snapshots, *view.sources), final_end)
+    view.findings.extend(release_errors)
+    return releases

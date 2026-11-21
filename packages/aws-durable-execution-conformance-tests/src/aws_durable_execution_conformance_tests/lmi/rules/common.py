@@ -5,19 +5,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
+from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors, _native_intervals
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     _CALL_METHODS,
     HISTORY_STATUSES,
+    RECOVERY_POLICIES,
     RUNTIMES,
     SCHEMA_VERSION,
+    TERMINAL_STATUSES,
     is_json_integer,
+    mappings,
     same_json,
+    timestamp,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def optional_shapes(view: CaseView) -> None:
@@ -28,10 +36,7 @@ def optional_shapes(view: CaseView) -> None:
         view.string(view.value["coverageProfile"], "coverageProfile")
         if view.standard_behavior and view.value["coverageProfile"] != "standard":
             view.error("coverageProfile must be standard for shared lifecycle evidence")
-    if "recoveryPolicy" in view.profile and view.profile["recoveryPolicy"] not in (
-        "reuse-worker",
-        "replace-worker",
-    ):
+    if "recoveryPolicy" in view.profile and view.profile["recoveryPolicy"] not in RECOVERY_POLICIES:
         view.error("profile.recoveryPolicy must be reuse-worker or replace-worker")
     if "budgets" in view.value:
         budgets = view.mapping(view.value["budgets"], "budgets")
@@ -66,7 +71,7 @@ def optional_shapes(view: CaseView) -> None:
                     view.error(f"replay.sideEffects.{field} must be a non-negative integer")
 
 
-def common(view: CaseView, *, validate_behavior: bool = True) -> None:
+def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches: bool = False) -> None:
     value = view.value
     if not is_json_integer(value.get("schemaVersion")) or value.get("schemaVersion") != SCHEMA_VERSION:
         view.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
@@ -93,7 +98,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
         optional_shapes(view)
     observation_end = view.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
     attempt_ordinals: set[tuple[str, int]] = set()
-    for attempt in view.records(value.get("attempts"), "attempts", nonempty=True):
+    for attempt in view.records(value.get("attempts"), "attempts", nonempty=not allow_no_launches):
         request_id = view.string(attempt.get("requestId"), "attempt.requestId")
         if request_id in view.attempts:
             view.error(f"duplicate requestId {request_id}")
@@ -168,7 +173,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
         ):
             view.error(f"tied native admissions cannot establish the original {role} invocation")
         view.selected[role] = attempt
-    view.events = view.records(value.get("events"), "events", nonempty=True)
+    view.events = view.records(value.get("events"), "events", nonempty=not allow_no_launches)
     for event in view.events:
         kind = view.string(event.get("kind"), "event.kind")
         owned_record(view, event, "event", observation_end)
@@ -206,7 +211,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
     for fault in view.records(value.get("faultsCreated"), "faultsCreated"):
         if "releasedAtMs" in fault:
             view.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
-    histories(view, check_expectations=validate_behavior)
+    histories(view, check_expectations=validate_behavior, allow_no_launches=allow_no_launches)
     collection_errors = value.get("collectionErrors", [])
     if not isinstance(collection_errors, list):
         view.error("collectionErrors must be an array of non-empty strings")
@@ -254,10 +259,10 @@ def owned_record(view: CaseView, record: Mapping[str, Any], kind: str, end: floa
                 view.error(f"{kind} lies outside its observedDuringRequestId interval", "ASSERTION")
 
 
-def histories(view: CaseView, *, check_expectations: bool = True) -> None:
+def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launches: bool = False) -> None:
     expected = view.mapping(view.value.get("expectedHistories"), "expectedHistories") if check_expectations else {}
     actual: dict[str, Mapping[str, Any]] = {}
-    for history in view.records(view.value.get("histories"), "histories", nonempty=True):
+    for history in view.records(view.value.get("histories"), "histories", nonempty=not allow_no_launches):
         arn = view.string(history.get("executionArn"), "history.executionArn")
         if arn in actual:
             view.error(f"duplicate service history {arn}")
@@ -295,26 +300,17 @@ def histories(view: CaseView, *, check_expectations: bool = True) -> None:
                 view.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
             if "allowedStatuses" in expectation:
                 allowed = expectation["allowedStatuses"]
-                if (
-                    not isinstance(allowed, list)
-                    or not allowed
-                    or any(not isinstance(status, str) or status not in HISTORY_STATUSES for status in allowed)
-                    or len(set(allowed)) != len(allowed)
-                ):
+                if not _valid_history_status_allowance(allowed):
                     view.error(
                         f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
                     )
                 else:
                     allow_running = "RUNNING" in allowed
-                    if history.get("status") not in allowed:
-                        view.error(f"service history {arn}.status is outside the declared allowedStatuses", "ASSERTION")
             elif expectation.get("status") not in HISTORY_STATUSES:
                 view.error(f"expectedHistories.{arn}.status must be a recognized execution status")
             if not allow_running and "result" not in expectation and "error" not in expectation:
                 view.error(f"history {arn} needs an independently declared expected result/error")
-            for key, item in expectation.items():
-                if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
-                    view.error(f"service history {arn}.{key} differs from the fixture expectation", "ASSERTION")
+            view.errors.extend(_history_expectation_mismatches(arn, history, expectation))
     arns = {attempt.get("executionArn") for attempt in view.attempts.values()}
     if set(actual) != arns or (check_expectations and set(expected) != arns):
         view.error("histories and expectedHistories must cover every launched execution exactly")
@@ -363,21 +359,15 @@ def no_late_dispatch(view: CaseView) -> None:
                     # Check every tied closure even if an earlier one already closed admission.
                     # Short-circuiting here would hide malformed evidence based on its array order.
                     following = [boundary for boundary in closures if view.at_or_after(event, boundary)]
-                    if (
-                        probe == "operation"
-                        and outcome == "ACCEPTED"
-                        and wrapper in following
-                        and not any(
-                            boundary is not wrapper
-                            and (
-                                boundary["atMs"] < wrapper["atMs"]
-                                or (
-                                    boundary["atMs"] == wrapper["atMs"]
-                                    and view.at_or_after(boundary, wrapper, require_sequence=True) is False
-                                )
-                            )
-                            for boundary in following
-                        )
+                    if permits_disposal_operation_probe(
+                        event,
+                        wrapper,
+                        following,
+                        lambda first, second: (
+                            None
+                            if (order := view.at_or_after(first, second, require_sequence=True)) is None
+                            else not order
+                        ),
                     ):
                         continue
                     if not following:
@@ -386,18 +376,17 @@ def no_late_dispatch(view: CaseView) -> None:
                     view.error(f"closed invocation admitted a {probe} probe", "ASSERTION")
 
 
-def _has_matching_sdk_request(
-    event: Mapping[str, Any], method: str, outcome: str, requests: Sequence[Mapping[str, Any]]
-) -> bool:
+def _has_matching_sdk_request(event: Mapping[str, Any], method: str, outcome: str, requests: Any) -> bool:
     call_id = event.get("callId")
     return (
         isinstance(call_id, str)
         and bool(call_id.strip())
         and sum(
-            request.get("method") == method
+            isinstance(request, Mapping)
+            and request.get("method") == method
             and request.get("outcome") == outcome
             and all(request.get(key) == event.get(key) for key in ("requestId", "callId", "atMs"))
-            for request in requests
+            for request in (requests if isinstance(requests, (list, tuple)) else ())
         )
         == 1
     )
@@ -417,3 +406,308 @@ def normalize_retirement_events(events: Sequence[Mapping[str, Any]], errors: lis
                 event = {**event, "kind": aliases[kind]}
         normalized.append(event)
     return normalized
+
+
+def permits_disposal_operation_probe(
+    probe: Mapping[str, Any],
+    wrapper: Mapping[str, Any],
+    following: Sequence[Mapping[str, Any]],
+    precedes: Callable[[Mapping[str, Any], Mapping[str, Any]], bool | None],
+) -> bool:
+    return (
+        probe.get("probe") == "operation"
+        and probe.get("outcome") == "ACCEPTED"
+        and wrapper in following
+        and not any(boundary is not wrapper and precedes(boundary, wrapper) is True for boundary in following)
+    )
+
+
+def original_admission_conflicts(
+    selected: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]
+) -> tuple[bool, bool]:
+    """Report an earlier or tied native admission to the selected execution."""
+    request, execution, start = selected.get("requestId"), selected.get("executionArn"), selected.get("startedAtMs")
+    if not isinstance(request, str) or not isinstance(execution, str) or type(start) not in (int, float):
+        return False, False
+    other_starts = [
+        attempt["startedAtMs"]
+        for attempt in attempts
+        if attempt.get("requestId") != request
+        and attempt.get("executionArn") == execution
+        and type(attempt.get("startedAtMs")) in (int, float)
+    ]
+    return any(other < start for other in other_starts), start in other_starts
+
+
+def _valid_history_status_allowance(allowed: Any) -> TypeGuard[list[str]]:
+    return (
+        isinstance(allowed, list)
+        and bool(allowed)
+        and all(isinstance(status, str) and status in HISTORY_STATUSES for status in allowed)
+        and len(set(allowed)) == len(allowed)
+    )
+
+
+def _history_expectation_mismatches(arn: str, history: Mapping[str, Any], expectation: Mapping[str, Any]) -> list[str]:
+    errors = []
+    allowed = expectation.get("allowedStatuses")
+    if _valid_history_status_allowance(allowed) and history.get("status") not in allowed:
+        errors.append(f"ASSERTION: service history {arn}.status is outside the declared allowedStatuses")
+    for key, item in expectation.items():
+        if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
+            errors.append(f"ASSERTION: service history {arn}.{key} differs from the fixture expectation")
+    return errors
+
+
+def reconcile_records(view: ReconcileView) -> None:
+    """Reconcile every raw record's native owner across the frozen and cleanup snapshots."""
+    view.findings.extend(_cleanup_record_errors(view.sources, view.snapshot))
+
+
+def reconcile_history_expectations(view: ReconcileView) -> None:
+    """Compare settled service histories with the declared expectations."""
+    expectations = view.original.get("expectedHistories")
+    window = view.window_end
+    if isinstance(expectations, Mapping) and window is not None:
+        # Terminal outcomes of executions that settled inside the observation window.
+        settled_outcomes: dict[str, set[str]] = {}
+        for source in view.sources:
+            retirement = source.get("retirement")
+            if not isinstance(retirement, Mapping):
+                continue
+            histories = {
+                history["executionArn"]: history
+                for history in mappings(source.get("histories"))
+                if isinstance(history.get("executionArn"), str)
+            }
+            for row in mappings(retirement.get("resources")):
+                arn = row.get("id")
+                outcome = row.get("outcome")
+                settled = timestamp(row.get("settledAtMs"))
+                if (
+                    row.get("kind") != "execution"
+                    or not isinstance(arn, str)
+                    or not isinstance(outcome, str)
+                    or outcome not in TERMINAL_STATUSES
+                    or settled is None
+                    or settled > window
+                ):
+                    continue
+                expectation = expectations.get(arn)
+                if not isinstance(expectation, Mapping):
+                    continue
+                settled_outcomes.setdefault(arn, set()).add(outcome)
+                if histories.get(arn, {}).get("status") != outcome:
+                    status_expectation = {
+                        key: expectation[key] for key in ("status", "allowedStatuses") if key in expectation
+                    }
+                    view.findings.extend(_history_expectation_mismatches(arn, {"status": outcome}, status_expectation))
+        # Declared fields must come from some terminal history observation of
+        # each settled execution, in any snapshot, the frozen one included. A
+        # snapshot may supply the history without the settlement, or the reverse.
+        # Every row that supplies fields is compared with the expectation.
+        for arn, outcomes in settled_outcomes.items():
+            expectation = expectations[arn]
+            observed: set[str] = set()
+            for source in view.sources:
+                for history in mappings(source.get("histories")):
+                    status = history.get("status")
+                    if history.get("executionArn") == arn and isinstance(status, str) and status in outcomes:
+                        # A cleanup row may be partial: only its supplied fields
+                        # can contradict the expectation.
+                        supplied = {
+                            key: item
+                            for key, item in expectation.items()
+                            if key in ("status", "allowedStatuses") or key in history
+                        }
+                        view.findings.extend(_history_expectation_mismatches(arn, history, supplied))
+                        observed.update(history)
+            missing = sorted(
+                key for key in expectation if key not in ("status", "allowedStatuses") and key not in observed
+            )
+            if missing:
+                view.findings.append(f"INCOMPLETE: terminal service history {arn} lacks declared {', '.join(missing)}")
+
+
+def reconcile_sdk_calls(view: ReconcileView) -> None:
+    """Require one matching SDK request for every observed SDK call."""
+    request_frames = [mappings(source.get("sdkRequests")) for source in view.sources]
+    for source in view.sources:
+        for event in mappings(source.get("events")):
+            kind = event.get("kind")
+            method = _CALL_METHODS.get(kind) if isinstance(kind, str) else None
+            if method is None:
+                continue
+            outcome = event.get("outcome", "DISPATCHED")
+            if outcome not in ("DISPATCHED", "REJECTED"):
+                view.findings.append("INCOMPLETE: cleanup SDK call outcome must be DISPATCHED or REJECTED")
+            elif any(
+                sum(
+                    request.get("method") == method
+                    and request.get("outcome") == outcome
+                    and all(request.get(key) == event.get(key) for key in ("requestId", "callId", "atMs"))
+                    for request in requests
+                )
+                > 1
+                for requests in request_frames
+            ) or not any(_has_matching_sdk_request(event, method, outcome, requests) for requests in request_frames):
+                finding = "ASSERTION: cleanup observed SDK call lacks a unique matching SDK request"
+                if finding not in view.findings:
+                    view.findings.append(finding)
+
+
+def reconcile_admission_closures(view: ReconcileView) -> None:
+    """Reject SDK work or probes admitted after a known admission closure."""
+    known_requests = {
+        attempt["requestId"]
+        for source in view.sources
+        for attempt in mappings(source.get("attempts"))
+        if isinstance(attempt.get("requestId"), str)
+    }
+    closures: dict[str, list[Mapping[str, Any]]] = {}
+    # A later observation can reveal an earlier closure. Preserve every known
+    # boundary and recheck old activity as well as newly discovered requests.
+    for event in (event for source in view.sources for event in mappings(source.get("events"))):
+        request_id, time = event.get("requestId"), timestamp(event.get("atMs"))
+        if (
+            isinstance(request_id, str)
+            and request_id in known_requests
+            and time is not None
+            and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
+        ):
+            closures.setdefault(request_id, []).append(event)
+    selected_victim = view.original.get("selectedRequests", {})
+    disposal_victim = (
+        selected_victim.get("victim")
+        if view.standard
+        and isinstance(selected_victim, Mapping)
+        and view.original.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
+        else None
+    )
+    for collection in ("sdkRequests", "events"):
+        for record in (record for source in view.sources for record in mappings(source.get(collection))):
+            if collection == "events" and record.get("kind") != "admission_probe":
+                continue
+            if collection == "sdkRequests" and record.get("outcome") != "DISPATCHED":
+                continue
+            request_id, time = record.get("requestId"), timestamp(record.get("atMs"))
+            boundaries = closures.get(request_id, ()) if isinstance(request_id, str) else ()
+            if time is None:
+                continue
+            following = [boundary for boundary in boundaries if view.at_or_after(record, boundary)]
+            if not following:
+                continue
+            if collection == "events" and request_id == disposal_victim:
+                exits = {
+                    (boundary.get("kind"), boundary.get("atMs")): boundary
+                    for boundary in boundaries
+                    if boundary.get("kind") != "admission_closed"
+                }
+                wrapper = next(iter(exits.values())) if len(exits) == 1 else None
+                if wrapper is not None and wrapper.get("kind") == "wrapper_return":
+                    # Repeated snapshots can hold the very same wrapper exit.
+                    canonical = [
+                        wrapper
+                        if boundary.get("kind") == "wrapper_return" and boundary["atMs"] == wrapper["atMs"]
+                        else boundary
+                        for boundary in following
+                    ]
+                    if permits_disposal_operation_probe(
+                        record,
+                        wrapper,
+                        canonical,
+                        lambda first, second: (
+                            None
+                            if (order := view.at_or_after(first, second, require_sequence=True)) is None
+                            else not order
+                        ),
+                    ):
+                        continue
+            if collection == "sdkRequests" and record.get("outcome") == "DISPATCHED":
+                finding = f"ASSERTION: request {request_id} dispatched SDK work after admission closed"
+            elif (
+                collection == "events"
+                and record.get("probe") in ("operation", "checkpoint")
+                and record.get("outcome") != "REJECTED"
+            ):
+                finding = f"ASSERTION: request {request_id} admitted a {record['probe']} probe after admission closed"
+            else:
+                continue
+            if finding not in view.findings:
+                view.findings.append(finding)
+
+
+def reconcile_admission_order(view: ReconcileView) -> dict[str, Mapping[str, Any]]:
+    """Check attempt ordinals and original invocations against corrected native admissions."""
+    corrected: dict[str, Mapping[str, Any]] = dict(view.attempts)
+    for source in view.sources:
+        for attempt in mappings(source.get("attempts")):
+            request, start = attempt.get("requestId"), timestamp(attempt.get("startedAtMs"))
+            if not isinstance(request, str) or start is None:
+                continue
+            previous = corrected.get(request, {})
+            prior = timestamp(previous.get("startedAtMs"))
+            corrected[request] = {
+                **previous,
+                **attempt,
+                "startedAtMs": min(prior, start) if prior is not None else start,
+            }
+    for request, bounds in _native_intervals(view.sources).items():
+        if request in corrected and "startedAtMs" in bounds:
+            corrected[request] = {**corrected[request], "startedAtMs": bounds["startedAtMs"][0]}
+    admissions: dict[str, list[tuple[int | float, int]]] = {}
+    for attempt in corrected.values():
+        role_name, start, ordinal = (
+            attempt.get("role"),
+            timestamp(attempt.get("startedAtMs")),
+            attempt.get("attempt"),
+        )
+        if isinstance(role_name, str) and start is not None and is_json_integer(ordinal):
+            admissions.setdefault(role_name, []).append((start, int(ordinal)))
+    for role_name, order in admissions.items():
+        if any(left[0] < right[0] and left[1] > right[1] for left, right in pairwise(sorted(order))):
+            view.findings.append(f"PLACEMENT: cleanup attempt ordinals contradict admission order for {role_name}")
+    for role_name, request in view.selected.items():
+        check_original = (
+            role_name == "victim"
+            if view.requirement == "lmi-lifecycle-5"
+            else role_name != "resume" and (role_name != "recovery" or view.requirement == "lmi-lifecycle-4")
+        )
+        reject_tie = (view.requirement == "lmi-lifecycle-5" and role_name == "victim") or (
+            view.requirement == "lmi-lifecycle-4"
+            and (role_name in ("victim", "recovery") or (isinstance(role_name, str) and role_name.startswith("peer")))
+        )
+        if not check_original or not isinstance(request, str):
+            continue
+        original_attempt = corrected.get(request, {})
+        earlier, tied = original_admission_conflicts(original_attempt, list(corrected.values()))
+        if earlier:
+            view.findings.append(f"PLACEMENT: cleanup selected {role_name} is not the original invocation")
+        if reject_tie and tied:
+            view.findings.append(
+                f"PLACEMENT: cleanup tied native admissions cannot establish the original {role_name} invocation"
+            )
+    return corrected
+
+
+def reconcile_unique_events(view: ReconcileView) -> None:
+    """Require the scenario's unique victim event to stay unique in every snapshot."""
+    unique_kinds = {
+        "lmi-lifecycle-2": "root_completed",
+        "lmi-lifecycle-7": "root_completed",
+        "lmi-lifecycle-3": "platform_timeout",
+        "lmi-lifecycle-4": "platform_timeout",
+        "lmi-lifecycle-5": "pending",
+    }
+    unique_kind = unique_kinds.get(view.requirement) if isinstance(view.requirement, str) else None
+    if unique_kind is not None:
+        request = view.role("victim").get("requestId")
+        if isinstance(request, str) and any(
+            sum(
+                row.get("requestId") == request and row.get("kind") == unique_kind
+                for row in mappings(source.get("events"))
+            )
+            > 1
+            for source in view.sources
+        ):
+            view.findings.append(f"INCOMPLETE: request {request} needs exactly one {unique_kind} event")
