@@ -303,7 +303,7 @@ def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
     return validator.errors
 
 
-def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
+def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launches: bool = False) -> list[str]:
     """Audit a separate post-cleanup snapshot without accepting its behavior.
 
     Failed cases may lack mandatory scenario roles, but every actual launch must
@@ -320,7 +320,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any]) -> list[str]:
     )
     try:
         validator.string(requirement, "requirementId")
-        common_rules.common(validator, validate_behavior=False)
+        common_rules.common(validator, validate_behavior=False, allow_no_launches=allow_no_launches)
         validator.events = normalize_retirement_events(validator.events, validator.errors)
         retirement(validator, audit_observed_work=False)
         if validator.errors:

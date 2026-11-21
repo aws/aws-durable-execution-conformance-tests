@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
+from collections.abc import Sequence
 from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Literal
@@ -10,7 +11,9 @@ from typing import Any, Literal
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence, evaluate_evidence
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioResult, run_scenarios
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    EvidenceValidator,
     _Evidence,
     same_json,
     validate_common_evidence,
@@ -18,6 +21,39 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_observed_retirement,
     validate_retirement_evidence,
 )
+
+
+async def run_and_adjudicate(
+    scenarios: Sequence[Scenario],
+    profiles: Sequence[Profile],
+    adapter: Any,
+    *,
+    validator: EvidenceValidator | None = None,
+    **options: Any,
+) -> list[ScenarioResult]:
+    """Collect with the coordinator, then adjudicate each capture.
+
+    The coordinator reports only collection outcomes. Tests that assert a
+    verdict adjudicate each capture with ``lmi.adjudication.adjudicate_evidence``;
+    ``validator=None`` selects the shared standard rules.
+    """
+    outcomes = await run_scenarios(scenarios, profiles, adapter, **options)
+    standard = {case.case_id: case.coverage_profile == "standard" for case in scenarios}
+    for result in outcomes:
+        if result.evidence:
+            result.status, result.errors, result.evidence = adjudicate_evidence(
+                result.status,
+                result.errors,
+                result.evidence,
+                retirement_evidence=result.retirement_evidence,
+                cleanup_evidence=result.cleanup_evidence,
+                observation_evidence=result.observation_evidence,
+                attempts=result.attempts,
+                validator=validator,
+                standard=standard[result.case_id],
+                trusted_observations=result.trusted_observations,
+            )
+    return outcomes
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:

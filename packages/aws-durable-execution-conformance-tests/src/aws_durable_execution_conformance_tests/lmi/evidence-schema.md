@@ -43,6 +43,8 @@ There is no additional cohort identifier; roles bind its original invocations.
 coordinator must bind this map to its launch journal, before interpreting results.
 A later service retry cannot replace a selected original request. Every launched
 attempt remains in `attempts`, including failed placement and unrelated retries.
+Adapters call `record_attempt` before dispatch and `record_service_attempt` when
+discovering a service-initiated attempt against an already journaled execution.
 Each attempt records:
 
 - `requestId`, `executionArn`, `environmentId`, `workerId`, `processId`, `role`;
@@ -355,6 +357,32 @@ The offline reader preserves precise fractional values in checkpoint payloads
 and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
+
+## Collection
+
+Collection runs the cases on AWS and records what happened. Adjudication then
+derives the verdict from that record alone. Collection never decides
+conformance; adjudication never contacts AWS.
+
+Collection holds each target through physical retirement of its own cases.
+It finishes profiles only after every case in the run has ended its retirement
+attempt and registered its ownership claims, so a conflicting claim quarantines
+the affected targets before any release. Quiescence then decides which targets
+an adapter may unlock. If any case phase in the
+run was interrupted, no profile is reported quiescent, because the interrupted
+task could have claimed, or could still claim, any target. A failed or
+interrupted preparation or `finish` quarantines its own target. Each run uses
+its own scheduler. Because profiles finish together, an adapter's `prepare` must
+not wait on a lock that another profile's `finish` releases, in this run or a
+concurrent one: such a wait can reach the provisioning deadline and leave the
+waiting target quarantined. Acquire a lock that several of this run's targets
+share once for the run. Release it after the last `finish` only if every target
+sharing it finished with `quiescent=True`; otherwise keep it. For a lock another
+run holds, fail fast or wait well under the provisioning budget.
+
+The coordinator only collects evidence and decides whether a target can be
+reused. Its `run_scenarios` API returns collection statuses and never reports
+`PASSED`.
 
 ## Offline lifecycle runner
 
