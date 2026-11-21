@@ -397,7 +397,7 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
 def collect_fault_releases(view: ReconcileView) -> list[int | float]:
     """Record fault-release errors and return every known release time."""
     final_retirement = view.snapshot.get("retirement")
-    final_end = final_retirement.get("retiredAtMs") if view.final and isinstance(final_retirement, Mapping) else None
+    final_end = final_retirement.get("retiredAtMs") if isinstance(final_retirement, Mapping) else None
     releases, release_errors = retained_fault_releases((*view.observation_snapshots, *view.sources), final_end)
     view.findings.extend(release_errors)
     return releases

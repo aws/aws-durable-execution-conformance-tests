@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.adjudication import _cleanup_behavior_errors
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Budgets,
     Profile,
@@ -30,7 +31,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_evidence,
     validate_retirement_evidence,
 )
-from aws_durable_execution_conformance_tests.lmi.offline import _cleanup_behavior_errors
 
 run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
 
@@ -1139,7 +1139,7 @@ def test_cleanup_singleton_timing_allows_completed_native_intervals(kind: str) -
         mutate(provisional)
         assert any(
             "barrier lies outside the established native overlap" in error
-            for error in _cleanup_behavior_errors(value, provisional, standard=True, final=True)
+            for error in _cleanup_behavior_errors(value, provisional, standard=True)
         )
         calls = 0
 
@@ -1207,17 +1207,14 @@ def test_cleanup_replay_binding_can_arrive_in_later_retirement_evidence() -> Non
             "evidenceUri": "memory://retirement",
         }
     )
-    assert _cleanup_behavior_errors(value, discovered, standard=True) == []
-    assert _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered], final=True) == []
-    unresolved = _cleanup_behavior_errors(value, {}, standard=True, known_snapshots=[discovered], final=True)
+    assert _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered]) == []
+    unresolved = _cleanup_behavior_errors(value, {}, standard=True, known_snapshots=[discovered])
     assert any(error.startswith("INCOMPLETE:") and "native request" in error for error in unresolved), unresolved
     entry["operationId"] = "done"
-    completed = _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered], final=True)
+    completed = _cleanup_behavior_errors(value, binding, standard=True, known_snapshots=[discovered])
     assert any("completed user code" in error for error in completed), completed
     contradictory = {"attempts": [{"requestId": "discovered-native", "executionArn": "arn:execution:peer"}]}
-    conflicts = _cleanup_behavior_errors(
-        value, contradictory, standard=True, known_snapshots=[discovered, binding], final=True
-    )
+    conflicts = _cleanup_behavior_errors(value, contradictory, standard=True, known_snapshots=[discovered, binding])
     assert any(error.startswith("INCOMPLETE:") and "conflicting execution binding" in error for error in conflicts)
 
 
@@ -2975,7 +2972,7 @@ def test_interrupted_phase_cannot_use_a_cleanup_snapshot_to_bypass_quarantine(ca
     asyncio.run(exercise())
 
 
-def test_client_launch_discovered_after_collection_fails_offline_after_safe_retirement() -> None:
+def test_client_launch_discovered_after_collection_fails_adjudication_after_safe_retirement() -> None:
     class LateRequestAdapter(FailureAdapter):
         def observations(self, context: ScenarioContext) -> dict[str, Any]:
             observed = super().observations(context)
@@ -5473,7 +5470,7 @@ def test_cleanup_reconciles_service_checkpoint_completion_times(operation_id: st
         for operation in operations:
             if operation["id"] == operation_id:
                 operation["endedAtMs"] = end
-    assert any(diagnostic in error for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True))
+    assert any(diagnostic in error for error in _cleanup_behavior_errors(value, snapshot, standard=True))
 
 
 def test_cleanup_overlap_rejects_additional_record_marker() -> None:
@@ -5483,8 +5480,7 @@ def test_cleanup_overlap_rejects_additional_record_marker() -> None:
     marker = next(row for row in history["operations"] if row["name"] == "record-marker")
     history["operations"].append({**marker, "id": "second-marker"})
     assert any(
-        "more than one record-marker" in error
-        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+        "more than one record-marker" in error for error in _cleanup_behavior_errors(value, snapshot, standard=True)
     )
 
 
@@ -5497,7 +5493,7 @@ def test_cleanup_retry_endpoints_are_checked_across_partial_orders() -> None:
     snapshot["replay"]["operationExecutions"].append({**last, "operationId": "retry"})
     assert any(
         "do not start with failure and end with success" in error
-        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True)
     )
 
 
@@ -5527,7 +5523,7 @@ def test_cleanup_retry_uses_canonical_numeric_body_identity(changed_time: bool) 
     if changed_time:
         next(row for row in snapshot["events"] if row.get("attempt") == 2)["atMs"] = 60
     _resequence(snapshot)
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("retry body changed its observed timestamp" in error for error in findings) is changed_time
     if not changed_time:
         assert findings == []
@@ -5539,7 +5535,7 @@ def test_cleanup_deadline_rejects_earlier_admission_closure() -> None:
     next(row for row in snapshot["events"] if row["kind"] == "admission_closed")["atMs"] = 29
     assert any(
         "admission closed before the observed platform timeout" in error
-        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True)
     )
 
 
@@ -5551,7 +5547,7 @@ def test_cleanup_reconciles_original_invocation_and_ordinal_order() -> None:
     )
     snapshot = deepcopy(value)
     snapshot["attempts"][-1]["startedAtMs"] = 9
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("ordinals contradict admission order" in error for error in findings)
     assert any("selected victim is not the original invocation" in error for error in findings)
 
@@ -5572,7 +5568,7 @@ def test_cleanup_rechecks_tied_original_admissions(role_name: str) -> None:
     )
     snapshot = deepcopy(value)
     snapshot["attempts"][-1].update(startedAtMs=selected["startedAtMs"], startedAtMsSource="platform")
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any(f"tied native admissions cannot establish the original {role_name}" in error for error in findings)
 
 
@@ -5580,7 +5576,7 @@ def test_cleanup_rechecks_peer_progress_against_corrected_recovery() -> None:
     value = _standard_retirement_snapshot("recovery_evidence")
     snapshot = deepcopy(value)
     next(row for row in snapshot["events"] if row["kind"] == "worker_recovered")["atMs"] = 43
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("healthy peer lacks progress across the timeout and recovery" in error for error in findings)
 
 
@@ -5609,7 +5605,7 @@ def test_cleanup_retry_checks_transitive_body_order_across_fragments() -> None:
     snapshot["replay"]["operationExecutions"].append({**last, "operationId": "retry"})
     snapshot["events"].append({**owner, "kind": "body", "operationId": "retry", "attemptId": "last", "atMs": 55})
     _resequence(snapshot)
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("retry attempt order contradicts timed user-code entries" in error for error in findings)
 
 
@@ -5620,7 +5616,7 @@ def test_cleanup_retry_cannot_certify_ambiguous_endpoints() -> None:
     unplaced = {"attemptId": "unplaced", "requestId": "request-resume", "outcome": "FAILED"}
     snapshot["replay"]["retry"]["attempts"] = [first, unplaced]
     snapshot["replay"]["operationExecutions"].append({**unplaced, "operationId": "retry"})
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("retry order does not establish unique first and last attempts" in error for error in findings)
 
 
@@ -5629,7 +5625,7 @@ def test_cleanup_rejects_completed_replay_bodies_after_observed_pending() -> Non
     snapshot = deepcopy(value)
     next(event for event in snapshot["events"] if event["kind"] == "pending")["atMs"] = 20
     _resequence(snapshot)
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("reports repeated completed user code for done" in error for error in findings)
     assert any("reports repeated completed user code for failed" in error for error in findings)
 
@@ -5716,7 +5712,7 @@ def test_cleanup_recovery_rechecks_declared_observation_grace() -> None:
     value["budgets"]["observationGraceMs"] = 55
     snapshot = deepcopy(value)
     next(row for row in snapshot["events"] if row["kind"] == "worker_recovered")["atMs"] = 46
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("observation window lacks the declared grace after recovery" in error for error in findings)
 
 
@@ -5726,7 +5722,7 @@ def test_cleanup_rejects_malformed_interior_retry_outcome() -> None:
     malformed = {"attemptId": "malformed", "requestId": "request-resume", "outcome": False}
     snapshot["replay"]["retry"]["attempts"].insert(1, malformed)
     snapshot["replay"]["operationExecutions"].append({**malformed, "operationId": "retry"})
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("attempt malformed outcome must be a non-empty string" in error for error in findings)
 
 
@@ -5735,7 +5731,7 @@ def test_cleanup_rechecks_marker_dispatch_at_corrected_overlap_boundary() -> Non
     snapshot = deepcopy(value)
     victim = next(row for row in snapshot["attempts"] if row["role"] == "victim")
     victim.update(endedAtMs=26, endedAtMsSource="platform")
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("overlap peer lacks a marker checkpoint dispatch inside native overlap" in error for error in findings)
     assert not any("barrier lies outside" in error for error in findings)
 
@@ -5745,7 +5741,7 @@ def test_cleanup_deadline_rechecks_grace_after_corrected_timeout() -> None:
     value["budgets"]["observationGraceMs"] = 170
     snapshot = deepcopy(value)
     next(row for row in snapshot["events"] if row["kind"] == "platform_timeout")["atMs"] = 30.5
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("observation window lacks the declared grace after timeout" in error for error in findings)
 
 
@@ -5754,7 +5750,7 @@ def test_cleanup_recovery_admission_is_checked_against_corrected_timeout() -> No
     next(row for row in value["attempts"] if row["role"] == "recovery")["startedAtMs"] = 30.25
     snapshot = deepcopy(value)
     next(row for row in snapshot["events"] if row["kind"] == "platform_timeout")["atMs"] = 30.5
-    findings = _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("places recovery before the victim timeout" in error for error in findings)
 
 
@@ -5837,7 +5833,7 @@ def test_completed_service_operation_requires_in_window_replay_after_entry() -> 
     history["operations"][-1]["endedAtMs"] = value["observationEndedAtMs"] + 1
     assert not any(
         "replay.after omits a completed service operation" in error
-        for error in _cleanup_behavior_errors(value, snapshot, standard=True, final=True)
+        for error in _cleanup_behavior_errors(value, snapshot, standard=True)
     )
 
 
@@ -5978,7 +5974,7 @@ def test_event_order_comparison_ignores_inherited_sequences() -> None:
     assert not _event_frames_order_changed(partial, final)
 
 
-def test_cleanup_defers_same_time_poll_until_semantic_order_is_known() -> None:
+def test_cleanup_orders_same_time_poll_by_later_semantic_sequence() -> None:
     value = _standard_retirement_snapshot("warm_evidence")
     returned = next(event for event in value["events"] if event["kind"] == "wrapper_return")
     provisional = deepcopy(value)
@@ -5996,15 +5992,14 @@ def test_cleanup_defers_same_time_poll_until_semantic_order_is_known() -> None:
     poll["sequence"] = 0
     closed["sequence"] = 1
     diagnostic = "dispatched SDK work after admission closed"
-    assert not any(diagnostic in error for error in _cleanup_behavior_errors(value, provisional, standard=True))
     assert not any(
         diagnostic in error
-        for error in _cleanup_behavior_errors(value, final, standard=True, known_snapshots=[provisional], final=True)
+        for error in _cleanup_behavior_errors(value, final, standard=True, known_snapshots=[provisional])
     )
     poll["sequence"] = 2
     assert any(
         diagnostic in error
-        for error in _cleanup_behavior_errors(value, final, standard=True, known_snapshots=[provisional], final=True)
+        for error in _cleanup_behavior_errors(value, final, standard=True, known_snapshots=[provisional])
     )
 
 
@@ -6015,7 +6010,7 @@ def test_cleanup_recovery_rejects_two_recoveries_in_one_snapshot() -> None:
     snapshot["events"].append({**recovery, "atMs": recovery["atMs"] + 0.5})
     assert any(
         "needs exactly one worker_recovered" in failure
-        for failure in _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
+        for failure in _cleanup_behavior_errors(original, snapshot, standard=True)
     )
 
 
@@ -6056,7 +6051,7 @@ def _lifecycle_7_retirement_retry() -> tuple[dict[str, Any], dict[str, Any]]:
 
 @pytest.mark.parametrize("variant", ["journaled", "snapshot-omits-retry", "unjournaled", "other-ordinal"])
 def test_service_retry_discovered_during_retirement_must_match_the_journal(variant: str) -> None:
-    # Replay trusts COLLECTED captures, so the coordinator alone must bind a
+    # Adjudication trusts COLLECTED captures, so the coordinator alone must bind a
     # service retry found during retirement to both the journal and the snapshot.
     from aws_durable_execution_conformance_tests.lmi.coordinator import run_scenarios
 
@@ -6150,9 +6145,9 @@ def test_service_retry_discovered_during_retirement_must_match_the_journal(varia
         assert any(expected in error for error in result.errors), result.errors
 
 
-def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
+def test_adjudication_disposal_uses_verified_retirement_attempt_count() -> None:
+    from aws_durable_execution_conformance_tests.lmi.adjudication import evaluate_evidence
     from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
-    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
 
     original, snapshot = _lifecycle_7_retirement_retry()
     assert validate_retirement_evidence(snapshot) == []
@@ -6202,7 +6197,7 @@ def test_offline_disposal_uses_verified_retirement_attempt_count() -> None:
 
 @pytest.mark.parametrize("cleanup_history", ["status-only", "contradicting-result"])
 def test_partial_cleanup_history_only_fails_on_supplied_contradictions(cleanup_history: str) -> None:
-    from aws_durable_execution_conformance_tests.lmi.offline import evaluate_evidence
+    from aws_durable_execution_conformance_tests.lmi.adjudication import evaluate_evidence
 
     original = _standard_retirement_snapshot("evidence")
     # Executions that settle inside the observation window are rechecked
@@ -6250,7 +6245,7 @@ def test_in_window_terminal_history_must_supply_declared_fields(frozen_status: s
         "histories": [] if cleanup_result == "no-row" else [row],
         "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
     }
-    findings = _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(original, snapshot, standard=True)
     contradiction = f"ASSERTION: service history {arn}.result differs from the fixture expectation"
     missing = f"INCOMPLETE: terminal service history {arn} lacks declared result"
     assert (contradiction in findings) is (cleanup_result == "unexpected")
@@ -6279,7 +6274,7 @@ def test_terminal_history_may_arrive_without_its_settlement(final_result: str) -
         "histories": [row],
         "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 210}]},
     }
-    findings = _cleanup_behavior_errors(original, final, standard=True, known_snapshots=[retained], final=True)
+    findings = _cleanup_behavior_errors(original, final, standard=True, known_snapshots=[retained])
     missing = f"INCOMPLETE: terminal service history {arn} lacks declared result"
     contradiction = f"ASSERTION: service history {arn}.result differs from the fixture expectation"
     assert (missing in findings) is (final_result == "omitted")
@@ -6303,5 +6298,5 @@ def test_every_terminal_history_row_that_supplies_fields_is_compared() -> None:
         ],
         "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
     }
-    findings = _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
+    findings = _cleanup_behavior_errors(original, snapshot, standard=True)
     assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in findings

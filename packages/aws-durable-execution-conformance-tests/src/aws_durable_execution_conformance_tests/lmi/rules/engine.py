@@ -69,7 +69,7 @@ def retire(
     """Audit case-owned retirement after ``establish``; return the findings it adds.
 
     ``final_evidence`` is the established evidence, or a copy of it whose
-    ``retirement`` record alone was replaced, as the offline evaluator's
+    ``retirement`` record alone was replaced, as adjudication's
     projection does. The established indexes stay valid because no envelope or
     scenario rule reads ``retirement``.
     """

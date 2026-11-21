@@ -541,7 +541,7 @@ def _native_intervals(
     return native
 
 
-def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot: Mapping[str, Any] | None) -> list[str]:
+def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot: Mapping[str, Any]) -> list[str]:
     """Reconcile every raw record's native owner, even for opaque event kinds."""
     findings: list[str] = []
 
@@ -577,7 +577,7 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
             if identifier(execution_arn):
                 known.add(execution_arn)
     known_executions = {execution for observed in bindings.values() for execution in observed}
-    retirement = final_snapshot.get("retirement") if final_snapshot is not None else None
+    retirement = final_snapshot.get("retirement")
     settlements = {
         (item.get("kind"), item.get("id")): item
         for item in records(retirement.get("resources") if isinstance(retirement, Mapping) else None)
@@ -620,8 +620,6 @@ def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot:
                         and not identifier(record[key])
                     ):
                         findings.append(f"INCOMPLETE: cleanup {collection}.{key} must identify its native owner")
-                if final_snapshot is None:
-                    continue
 
                 referenced_requests: set[str] = set()
                 for key in ("requestId", "ownerRequestId", "observedDuringRequestId"):

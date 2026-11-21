@@ -83,6 +83,8 @@ class Scenario:
     service_role_transitions: frozenset[tuple[str, str]] = field(default_factory=frozenset, kw_only=True)
 
     def __post_init__(self) -> None:
+        # Callers may pass any sequence; adapters receive an immutable tuple.
+        object.__setattr__(self, "roles", tuple(self.roles))
         if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario)):
             raise ValueError("Scenario identities must be nonempty")
         if not self.roles or len(set(self.roles)) != len(self.roles) or not all(self.roles):
@@ -140,13 +142,9 @@ class _Waiter:
 class _Resource:
     capacity: int
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
-    recovery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     queue: deque[_Waiter] = field(default_factory=deque)
     owners: dict[str, _Waiter] = field(default_factory=dict)
-    residual: set[asyncio.Task[Any]] = field(default_factory=set)
-    profile_active: bool = False
     quarantine_reason: str | None = None
-    quarantine_version: int = 0
 
 
 @dataclass
@@ -189,8 +187,6 @@ class ResourceScheduler:
 
     def __init__(self) -> None:
         self._resources: dict[str, _Resource] = {}
-        self._run_locks: dict[str, asyncio.Lock] = {}
-        # Runs can share a scheduler, so each keeps its own work budget.
         self._limits: dict[str, int] = {}
         self._active: Counter[str] = Counter()
 
@@ -229,7 +225,6 @@ class ResourceScheduler:
         resource = self._resources[resource_id]
         async with resource.condition:
             resource.quarantine_reason = reason
-            resource.quarantine_version += 1
             resource.condition.notify_all()
 
     def _quarantine_claim_conflict(self, resource_id: str, reason: str) -> None:
@@ -237,7 +232,6 @@ class ResourceScheduler:
         # wake queued owners once the resource condition can be acquired.
         resource = self._resources[resource_id]
         resource.quarantine_reason = reason
-        resource.quarantine_version += 1
 
         async def wake() -> None:
             async with resource.condition:
@@ -315,7 +309,6 @@ class ResourceScheduler:
                 return
             if not quiescent:
                 resource.quarantine_reason = f"Unretired owner {lease.owner}"
-                resource.quarantine_version += 1
             released = resource.owners.pop(lease.owner)
             lease.released = True
             if released.budget is not None:
@@ -323,30 +316,6 @@ class ResourceScheduler:
             resource.condition.notify_all()
         if released.budget is not None:
             await self._wake_other_resources(lease.resource_id)
-
-    def track_residual(self, resource_id: str, tasks: Sequence[asyncio.Task[Any]]) -> None:
-        pending = self._resources[resource_id].residual
-        for task in tasks:
-            if not task.done():
-                pending.add(task)
-                task.add_done_callback(pending.discard)
-
-    async def _acquire_run(self, resource_id: str, *, timeout: float) -> asyncio.Lock:
-        lock = self._run_locks.setdefault(resource_id, asyncio.Lock())
-        async with asyncio.timeout(timeout):
-            await lock.acquire()
-        return lock
-
-    @asynccontextmanager
-    async def deployment(self, resource_id: str, owner: str, *, timeout: float = 300):
-        """Exclude runs and individual target owners while publishing an artifact."""
-        deadline = asyncio.get_running_loop().time() + timeout
-        lock = await self._acquire_run(resource_id, timeout=timeout)
-        try:
-            async with self._deployment_lease(resource_id, owner, timeout=deadline - asyncio.get_running_loop().time()):
-                yield
-        finally:
-            lock.release()
 
     @asynccontextmanager
     async def _deployment_lease(self, resource_id: str, owner: str, *, timeout: float):
@@ -357,41 +326,6 @@ class ResourceScheduler:
             completed = True
         finally:
             await lease.release(quiescent=completed)
-
-    async def recover(self, resource_id: str, verify: Callable[[], Awaitable[bool]], *, timeout: float = 120) -> None:
-        """Clear quarantine only after explicit, bounded external reconciliation.
-
-        No active owner is allowed. The verification must retire residual AWS
-        work and establish the deployed artifact before returning literal True.
-        Verification leaves admission quarantined without holding its condition,
-        so external I/O cannot block retirement or admission on other targets.
-        """
-        resource = self._resources[resource_id]
-        async with asyncio.timeout(timeout):
-            async with resource.recovery_lock:
-                async with resource.condition:
-                    if resource.owners or resource.profile_active:
-                        raise QuarantinedError("Cannot recover a resource while an owner is active")
-                    if any(not task.done() for task in resource.residual):
-                        raise QuarantinedError("Cannot recover while an interrupted adapter task is active")
-                    if resource.quarantine_reason is None:
-                        return
-                    version = resource.quarantine_version
-                verification = asyncio.ensure_future(verify())
-                try:
-                    await asyncio.shield(verification)
-                    if verification.result() is not True:
-                        raise QuarantinedError("Recovery could not prove quiescence")
-                finally:
-                    if not verification.done():
-                        verification.cancel()
-                        self.track_residual(resource_id, [verification])
-                        verification.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-                async with resource.condition:
-                    if resource.quarantine_version != version:
-                        raise QuarantinedError("Quarantine changed during recovery; verification must be repeated")
-                    resource.quarantine_reason = None
-                    resource.condition.notify_all()
 
 
 @dataclass
@@ -406,6 +340,7 @@ class ScenarioContext:
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
     _on_claim: Callable[[ScenarioContext], None] | None = field(default=None, repr=False, kw_only=True)
+    _claim_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, kw_only=True)
     _validate_attempt: Callable[[Mapping[str, Any]], None] | None = field(default=None, repr=False)
 
     @property
@@ -453,7 +388,20 @@ class ScenarioContext:
         adapter must supply it. Ordinals are assigned in launch order per role;
         an explicit ``attempt`` must equal that next ordinal.
         """
+        self._require_coordinator_loop()
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
+
+    def _require_coordinator_loop(self) -> None:
+        # Claims quarantine targets through the scheduler, which belongs to the
+        # coordinator's event loop. Refuse another thread before changing state.
+        if self._on_claim is None:
+            return
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is None or running is not self._claim_loop:
+            raise RuntimeError("Call ScenarioContext methods on the coordinator's event loop thread")
 
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
@@ -500,6 +448,7 @@ class ScenarioContext:
         execution. Replay's resume role is distinct from its original victim;
         service retries otherwise retain the original role.
         """
+        self._require_coordinator_loop()
         original = next((item for item in self._attempts if item.get("requestId") == original_request_id), None)
         if (
             original is None
@@ -520,6 +469,7 @@ class ScenarioContext:
         )
 
     def update_attempt(self, attempt_id: str, **diagnostics: Any) -> None:
+        self._require_coordinator_loop()
         diagnostics = copy.deepcopy(diagnostics)
         for attempt in self._attempts:
             if attempt["attemptId"] == attempt_id:
@@ -561,6 +511,11 @@ class ScenarioAdapter(Protocol):
 
     ``prepare`` must hold an external run/deployment lock if another process can
     use this persistent target. Retain that lock until every case has retired.
+    Profiles finish only after every case in the run, so ``prepare`` must not
+    wait on a lock that another profile's ``finish`` releases. Acquire a lock
+    that several of this run's targets share once for the run, releasing it in
+    the last ``finish``; fail fast, or wait well under the provisioning budget,
+    on a lock another run holds.
     ``place`` must positively identify the cohort and release only its barriers.
     ``collect`` returns observation evidence; ``release`` touches only this
     context's controls; ``retire`` writes final ``context.evidence['retirement']``
@@ -1220,15 +1175,15 @@ async def run_scenarios(
 
     The coordinator collects evidence and decides physical target reuse; it
     never decides conformance. Results carry collection statuses, never
-    ``PASSED``. Verdicts for these captures come only from the offline
-    evaluator, through ``lmi.app.live_results`` or
-    ``lmi.app.collected_evidence_results``.
+    ``PASSED``. Verdicts for these captures come only from adjudication, through
+    ``lmi.app.collect_and_adjudicate`` or ``lmi.app.adjudicate_collected_evidence``.
 
     Results preserve pre-release failures. Normal final collection can only add
     the retirement record. Failed cases and cleanup discoveries retain a separate
     audited retirement snapshot, so cleanup cannot rewrite their original behavior
     observations.
     Missing handlers, infrastructure failures and evidence gaps are never passes.
+    ``scheduler`` serves this run only; sharing one across runs is not supported.
     ``on_attempt`` is a synchronous durable journal sink called before transport
     dispatch. ``on_result`` receives case retirement and final profile-retirement
     updates, including cancelled cases; sinks should replace records by case ID.
@@ -1324,31 +1279,32 @@ async def run_scenarios(
             _on_attempt=on_attempt,
             _on_claim=record_attempt_claims,
             _validate_attempt=validate_attempt,
+            _claim_loop=asyncio.get_running_loop(),
         )
         for case in scenarios
     }
-    run_locks: dict[str, asyncio.Lock] = {}
     adapter_preparation_started: set[str] = set()
+    # A cancelled case-phase adapter task may have claimed any target, or still
+    # claim one later, even after it finished. A run with one reports no profile
+    # quiescent.
+    interrupted: list[list[asyncio.Task[Any]]] = []
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 
     async def prepare(profile: Profile) -> tuple[list[str], dict[str, dict[str, float]]]:
         context = ScenarioContext(
             run_id, Scenario("deployment", "deployment", profile.profile_id, "deployment"), profile
         )
+        # Preparation has no claiming context, and a timed-out preparation
+        # leaves its own deployment lease non-quiescent, so it is not tracked.
         residual: list[asyncio.Task[Any]] = []
 
         async def provision() -> None:
             adapter_preparation_started.add(profile.profile_id)
-            leases._resources[profile.resource_id].profile_active = True
             await adapter.prepare(profile)
 
         try:
-            run_locks[profile.profile_id] = await leases._acquire_run(profile.resource_id, timeout=limits.lease)
             async with leases._deployment_lease(profile.resource_id, f"{run_id}:deployment", timeout=limits.lease):
-                try:
-                    await _bounded(provision(), "provisioning", limits.provisioning, context, residual)
-                finally:
-                    leases.track_residual(profile.resource_id, residual)
+                await _bounded(provision(), "provisioning", limits.provisioning, context, residual)
             return [], context.timings
         except Exception as exc:
             return [f"provisioning: {type(exc).__name__}: {exc}"], context.timings
@@ -1362,6 +1318,8 @@ async def run_scenarios(
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
         admitted_identity = admission_identities[case.case_id]
+        residual: list[asyncio.Task[Any]] = []
+        interrupted.append(residual)
         evidence: dict[str, Any] = {}
         observation_baselines: list[dict[str, Any]] = []
         retirement_evidence: dict[str, Any] = {}
@@ -1372,7 +1330,6 @@ async def run_scenarios(
         context_retention_failed = False
         context_observations: dict[int, tuple[Any, dict[str, Any]]] = {}
         status = "COLLECTED"
-        residual: list[asyncio.Task[Any]] = []
         lease: Lease | None = None
         cancelled = False
 
@@ -1745,7 +1702,6 @@ async def run_scenarios(
                 # A timed-out adapter can continue sending requests despite
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
-                    leases.track_residual(lease.resource_id, residual)
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 normal_retirement = evidence
                 try:
@@ -1896,27 +1852,21 @@ async def run_scenarios(
             raise asyncio.CancelledError
         return result
 
-    tasks_by_profile: dict[str, list[asyncio.Task[ScenarioResult]]] = {}
-    tasks = []
-    for case in scenarios:
-        case_task = asyncio.create_task(run_case(case))
-        tasks_by_profile.setdefault(case.profile_id, []).append(case_task)
-        tasks.append(case_task)
+    tasks = [asyncio.create_task(run_case(case)) for case in scenarios]
     case_results = asyncio.gather(*tasks)
 
     finishing_profiles: set[asyncio.Task[Any]] = set()
 
-    async def finish_profile(profile_id: str, case_tasks: list[asyncio.Task[ScenarioResult]]) -> None:
-        await asyncio.gather(prepared[profile_id], *case_tasks, return_exceptions=True)
-        run_lock = run_locks.get(profile_id)
-        if run_lock is None:
-            return
+    async def finish_profile(profile_id: str) -> None:
+        # Any case can register a claim that conflicts with another profile's
+        # target. Decide quiescence only after every case, in every profile,
+        # has registered its claims.
+        await asyncio.gather(prepared[profile_id], *tasks, return_exceptions=True)
         if profile_id not in adapter_preparation_started:
-            run_lock.release()
             return
         profile = profile_map[profile_id]
         context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
-        quiet = leases.quarantine_reason(profile.resource_id) is None
+        quiet = leases.quarantine_reason(profile.resource_id) is None and not any(interrupted)
         task = asyncio.current_task()
         assert task is not None
         finishing_profiles.add(task)
@@ -1933,12 +1883,7 @@ async def run_scenarios(
                         result.status = "INFRASTRUCTURE_ERROR"
                     result.errors.append(f"Run ownership release failed: {type(exc).__name__}: {exc}")
         finally:
-            # The target's case resource remains quarantined independently;
-            # a later run can acquire this mutex but cannot deploy or admit.
             finishing_profiles.discard(task)
-            leases.track_residual(profile.resource_id, residual)
-            leases._resources[profile.resource_id].profile_active = False
-            run_lock.release()
             for result in completed.values():
                 if result.profile_id == profile_id:
                     result.timings.update(copy.deepcopy(context.timings))
@@ -1946,7 +1891,8 @@ async def run_scenarios(
 
     async def drain_and_finish() -> None:
         finished = asyncio.gather(
-            *(finish_profile(profile_id, case_tasks) for profile_id, case_tasks in tasks_by_profile.items())
+            # The admitted profiles, not the caller's sequence, which it may change.
+            *(finish_profile(profile_id) for profile_id in tuple(prepared))
         )
         cancellation: asyncio.CancelledError | None = None
         while not finished.done():

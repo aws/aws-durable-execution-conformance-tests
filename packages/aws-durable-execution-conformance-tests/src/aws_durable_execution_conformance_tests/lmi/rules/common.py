@@ -461,7 +461,7 @@ def _history_expectation_mismatches(arn: str, history: Mapping[str, Any], expect
 
 def reconcile_records(view: ReconcileView) -> None:
     """Reconcile every raw record's native owner across the frozen and cleanup snapshots."""
-    view.findings.extend(_cleanup_record_errors(view.sources, view.snapshot if view.final else None))
+    view.findings.extend(_cleanup_record_errors(view.sources, view.snapshot))
 
 
 def reconcile_history_expectations(view: ReconcileView) -> None:

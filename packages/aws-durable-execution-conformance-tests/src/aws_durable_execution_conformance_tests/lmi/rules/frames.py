@@ -11,8 +11,8 @@ observation proof the frozen frame lacks. The retirement frame is the source of
 settlement and quiescence proof. Observation frames are the raw snapshots taken
 before observations froze. Today ``validate_evidence`` and
 ``validate_common_evidence`` use one frozen frame, and
-``validate_retirement_evidence`` audits its snapshot directly. The offline
-evaluator's cleanup re-checks read the frozen evidence and later snapshots
+``validate_retirement_evidence`` audits its snapshot directly. Adjudication's
+cleanup re-checks read the frozen evidence and later snapshots
 through ``reconcile.ReconcileView``; each scenario module holds both its
 single-snapshot rules and its ``reconcile_*`` re-checks.
 """

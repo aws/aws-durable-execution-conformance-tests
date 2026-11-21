@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence, evaluate_evidence
 from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioResult, run_scenarios
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
@@ -19,7 +20,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_evidence,
     validate_retirement_evidence,
 )
-from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence, evaluate_evidence
 
 
 async def run_and_adjudicate(
@@ -30,7 +30,7 @@ async def run_and_adjudicate(
     validator: EvidenceValidator | None = None,
     **options: Any,
 ) -> list[ScenarioResult]:
-    """Collect with the coordinator, then apply the offline verdict to each capture.
+    """Collect with the coordinator, then adjudicate each capture.
 
     The coordinator reports only collection outcomes. Tests that assert a
     verdict use the same evaluator as the CLI; ``validator=None`` selects the
@@ -3079,7 +3079,7 @@ def test_retry_sequences_order_nonadjacent_bodies_on_the_same_request(last_seque
 
 
 @pytest.mark.parametrize("retained_at", [50, 201])
-def test_offline_checks_retained_terminal_settlement_against_observation_window(retained_at: int) -> None:
+def test_adjudication_checks_retained_terminal_settlement_against_observation_window(retained_at: int) -> None:
     frozen = deadline_evidence()
     arn = frozen["histories"][0]["executionArn"]
     frozen["histories"][0]["status"] = "RUNNING"
@@ -3102,7 +3102,7 @@ def test_offline_checks_retained_terminal_settlement_against_observation_window(
     assert (frozen, retained, independent) == (frozen_copy, retained_copy, independent_copy)
 
 
-def test_offline_deadline_budget_targets_the_controlled_task() -> None:
+def test_adjudication_deadline_budget_targets_the_controlled_task() -> None:
     frozen = deadline_evidence()
     victim = frozen["attempts"][0]
     independent = deepcopy(frozen)
@@ -3121,7 +3121,7 @@ def test_offline_deadline_budget_targets_the_controlled_task() -> None:
 
 
 @pytest.mark.parametrize(("factory", "kind"), [(deadline_evidence, "platform_timeout"), (replay_evidence, "pending")])
-def test_offline_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str) -> None:
+def test_adjudication_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str) -> None:
     frozen = factory()
     independent = deepcopy(frozen)
     duplicate = deepcopy(next(row for row in independent["events"] if row["kind"] == kind))
@@ -3137,7 +3137,7 @@ def test_offline_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str
 
 
 @pytest.mark.parametrize(("start", "fails"), [(199, True), (201, False)])
-def test_offline_overlap_excludes_retries_in_frozen_window(start: int, fails: bool) -> None:
+def test_adjudication_overlap_excludes_retries_in_frozen_window(start: int, fails: bool) -> None:
     frozen = evidence()
     independent = deepcopy(frozen)
     victim = frozen["attempts"][0]
@@ -3147,7 +3147,7 @@ def test_offline_overlap_excludes_retries_in_frozen_window(start: int, fails: bo
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
-def test_offline_lifecycle_grace_uses_frozen_observation_window(requirement: int) -> None:
+def test_adjudication_lifecycle_grace_uses_frozen_observation_window(requirement: int) -> None:
     frozen = deadline_evidence() if requirement == 3 else recovery_evidence()
     boundary_kind, fixed_at = ("platform_timeout", 30.5) if requirement == 3 else ("worker_recovered", 45.5)
     frozen["budgets"]["observationGraceMs"] = 170 if requirement == 3 else 155
@@ -3158,7 +3158,7 @@ def test_offline_lifecycle_grace_uses_frozen_observation_window(requirement: int
     assert any("cleanup observation window lacks the declared grace after" in item for item in findings)
 
 
-def test_offline_rejects_multiple_disposal_root_completions_in_one_frame() -> None:
+def test_adjudication_rejects_multiple_disposal_root_completions_in_one_frame() -> None:
     frozen = evidence(2)
     independent = deepcopy(frozen)
     root = next(row for row in independent["events"] if row["kind"] == "root_completed")
@@ -3168,7 +3168,7 @@ def test_offline_rejects_multiple_disposal_root_completions_in_one_frame() -> No
 
 
 @pytest.mark.parametrize("allowed", [[], ["UNKNOWN"], ["FAILED", "FAILED"], [[]]])
-def test_offline_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> None:
+def test_adjudication_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> None:
     frozen = evidence(2)
     arn = frozen["histories"][0]["executionArn"]
     frozen["expectedHistories"][arn].pop("status")
@@ -3182,7 +3182,7 @@ def test_offline_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> N
     "invalid",
     [None, 1, {"kind": "task_exit", "requestId": [], "taskId": []}],
 )
-def test_offline_invalid_retirement_completion_is_incomplete(invalid: Any) -> None:
+def test_adjudication_invalid_retirement_completion_is_incomplete(invalid: Any) -> None:
     frozen = evidence(2)
     retirement = deepcopy(frozen)
     retirement["retirement"]["completions"] = [invalid]
@@ -3199,7 +3199,7 @@ def test_offline_invalid_retirement_completion_is_incomplete(invalid: Any) -> No
 
 
 @pytest.mark.parametrize("trusted", [False, True])
-def test_offline_retains_trustworthy_behavior_failure_after_cleanup_error(trusted: bool) -> None:
+def test_adjudication_retains_trustworthy_behavior_failure_after_cleanup_error(trusted: bool) -> None:
     frozen = evidence(2)
     frozen["expectedHistories"][frozen["histories"][0]["executionArn"]]["result"] = "different"
     status, findings, _ = adjudicate_evidence(
@@ -3216,7 +3216,7 @@ def test_offline_retains_trustworthy_behavior_failure_after_cleanup_error(truste
     assert any(item.startswith("ASSERTION:") for item in findings)
 
 
-def test_offline_shared_rules_check_scenario_observations_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_adjudication_shared_rules_check_scenario_observations_once(monkeypatch: pytest.MonkeyPatch) -> None:
     from aws_durable_execution_conformance_tests.lmi.rules import engine
 
     checked: list[Any] = []
@@ -3239,7 +3239,7 @@ def test_offline_shared_rules_check_scenario_observations_once(monkeypatch: pyte
     assert projected["retirement"]["retiredAtMs"] == 221
 
 
-def test_offline_custom_validator_checks_observations_then_final() -> None:
+def test_adjudication_custom_validator_checks_observations_then_final() -> None:
     phases: list[str] = []
 
     def validator(evidence: Any, *, phase: Literal["observations", "final"] = "final") -> list[str]:

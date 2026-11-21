@@ -18,9 +18,9 @@ import pytest
 from aws_durable_execution_conformance_tests.lmi.app import (
     SuiteDefinition,
     build_report,
+    collect_and_adjudicate,
     coverage_inventory,
     evidence_results,
-    live_results,
     load_manifest,
 )
 from aws_durable_execution_conformance_tests.lmi.catalog import requirements
@@ -222,7 +222,7 @@ def test_caller_owned_budget_binding_preserves_json_types(
         ("roles", ["victim"], "required cohort roles"),
     ],
 )
-def test_local_live_suite_enforces_admission_before_adapter_import(
+def test_local_collection_suite_enforces_admission_before_adapter_import(
     tmp_path: Path, field: str, value: Any, reason: str
 ) -> None:
     plan, _ = plan_and_evidence()
@@ -233,12 +233,14 @@ def test_local_live_suite_enforces_admission_before_adapter_import(
         load_adapter = adapter_imports.import_module
         load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
         with pytest.raises(ValueError, match=reason):
-            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
+            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
         load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("mutate", [False, True])
-def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(tmp_path: Path, mutate: bool) -> None:
+def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_journal(
+    tmp_path: Path, mutate: bool
+) -> None:
     plan, value = plan_and_evidence()
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     fixtures["complete_sdk_dispatches"](value)
@@ -284,7 +286,9 @@ def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(
             suite,
             requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
         )
-        results = asyncio.run(live_results(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite))
+        results = asyncio.run(
+            collect_and_adjudicate(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite)
+        )
     assert plan == original
     if mutate:
         assert results[0]["status"] != "PASSED"

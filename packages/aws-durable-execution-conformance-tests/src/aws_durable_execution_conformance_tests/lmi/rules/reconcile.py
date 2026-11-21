@@ -31,14 +31,12 @@ class ReconcileView:
         standard: bool,
         known_snapshots: Sequence[Mapping[str, Any]] = (),
         observation_snapshots: Sequence[Mapping[str, Any]] = (),
-        final: bool = False,
     ) -> None:
         self.original = original
         self.snapshot = snapshot
         self.standard = standard
         self.known_snapshots = known_snapshots
         self.observation_snapshots = observation_snapshots
-        self.final = final
         self.findings: list[str] = []
         self.attempts = {
             item["requestId"]: item
@@ -164,11 +162,10 @@ class ReconcileView:
         if len(orders) == 1:
             return next(iter(orders))
         if not orders and timestamp_fallback:
-            return True if self.final else None
-        if self.final:
-            self.findings.append(
-                "INCOMPLETE: same-time observations need sequences in one snapshot to establish their order"
-            )
+            return True
+        self.findings.append(
+            "INCOMPLETE: same-time observations need sequences in one snapshot to establish their order"
+        )
         return None
 
     def role(self, role_name: str) -> Mapping[str, Any]:
@@ -236,10 +233,9 @@ class ReconcileView:
                         ("executionArn", owner.get("executionArn")),
                     )
                 ):
-                    if self.final:
-                        self.findings.append(f"INCOMPLETE: cleanup {kind} event has inconsistent native ownership")
+                    self.findings.append(f"INCOMPLETE: cleanup {kind} event has inconsistent native ownership")
                     continue
-                if "atMs" in event and timestamp(event["atMs"]) is None and self.final:
+                if "atMs" in event and timestamp(event["atMs"]) is None:
                     self.findings.append(f"INCOMPLETE: cleanup {kind} event has an invalid timestamp")
                 observed.append(event)
         return observed
@@ -256,19 +252,15 @@ class ReconcileView:
         )
 
     def bound_execution(self, request_id: Any) -> str | None:
-        # A new native request may only gain its execution binding during
-        # retirement. Do not turn that provisional absence into a failure.
+        # Each native request must bind to exactly one execution; the binding may
+        # arrive in a later or retirement snapshot.
         if not isinstance(request_id, str) or not request_id.strip():
-            if self.final:
-                self.findings.append("INCOMPLETE: cleanup replay/activity lacks an identified native request")
-            return None
-        if request_id not in self.attempts and not self.final:
+            self.findings.append("INCOMPLETE: cleanup replay/activity lacks an identified native request")
             return None
         bindings = self.executions_by_request.get(request_id, set())
         if len(bindings) != 1:
-            if self.final:
-                self.findings.append(
-                    f"INCOMPLETE: cleanup native request {request_id} has an unresolved or conflicting execution binding"
-                )
+            self.findings.append(
+                f"INCOMPLETE: cleanup native request {request_id} has an unresolved or conflicting execution binding"
+            )
             return None
         return next(iter(bindings))

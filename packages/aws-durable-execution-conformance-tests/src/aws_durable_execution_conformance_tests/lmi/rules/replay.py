@@ -421,8 +421,6 @@ def _cleanup_retry_errors(
     execution_arn: Any,
     bound_execution: Callable[[Any], str | None],
     after_or_at: Callable[[Mapping[str, Any], Mapping[str, Any]], bool | None],
-    *,
-    final: bool,
 ) -> list[str]:
     """Check retry claims without promoting partial fragments to whole runs."""
     findings: list[str] = []
@@ -460,22 +458,19 @@ def _cleanup_retry_errors(
             continue
         retry = replay["retry"]
         if not isinstance(retry, Mapping):
-            if final:
-                findings.append("ASSERTION: cleanup retry observations must be an object")
+            findings.append("ASSERTION: cleanup retry observations must be an object")
             continue
         same_operation = "operationId" not in retry or same_json(retry["operationId"], operation_id)
         if not same_operation:
             findings.append("ASSERTION: cleanup retry operationId changed the frozen retry operation")
         attempts = retry.get("attempts", [])
         if not isinstance(attempts, list):
-            if final:
-                findings.append("ASSERTION: cleanup retry attempts must be an array")
+            findings.append("ASSERTION: cleanup retry attempts must be an array")
             continue
         order = []
         for attempt in attempts:
             if not isinstance(attempt, Mapping):
-                if final:
-                    findings.append("ASSERTION: cleanup retry attempt must be an object")
+                findings.append("ASSERTION: cleanup retry attempt must be an object")
                 continue
             if "requestId" in attempt:
                 bound_execution(attempt["requestId"])
@@ -483,8 +478,7 @@ def _cleanup_retry_errors(
                 continue
             attempt_id = attempt.get("attemptId")
             if not isinstance(attempt_id, str) or not attempt_id.strip():
-                if final:
-                    findings.append("ASSERTION: cleanup retry attempt lacks a non-empty attemptId")
+                findings.append("ASSERTION: cleanup retry attempt lacks a non-empty attemptId")
                 continue
             order.append(attempt_id)
             known = facts.setdefault(attempt_id, {})
@@ -525,8 +519,6 @@ def _cleanup_retry_errors(
     if visited != len(facts):
         findings.append("ASSERTION: cleanup retry attempt order contradicts retained observations")
 
-    if not final:
-        return findings
     declared: dict[str, str] = {}
     for attempt_id, known in facts.items():
         candidates = entries.get(attempt_id, [])
@@ -641,7 +633,6 @@ def _cleanup_checkpoint_errors(
     sources: Sequence[Mapping[str, Any]],
     execution_arn: Any,
     *,
-    final: bool,
     observation_end: int | float | None = None,
 ) -> tuple[list[str], set[str]]:
     """Reconcile supplied checkpoint facts without replacing partial views."""
@@ -667,15 +658,13 @@ def _cleanup_checkpoint_errors(
                     continue
                 operations = replay[view]
                 if not isinstance(operations, list):
-                    if final:
-                        findings.append(f"ASSERTION: cleanup replay.{view} checkpoints must be an array")
+                    findings.append(f"ASSERTION: cleanup replay.{view} checkpoints must be an array")
                     continue
                 seen: set[str] = set()
                 for operation in operations:
                     operation_id = operation.get("id") if isinstance(operation, Mapping) else None
                     if not isinstance(operation_id, str) or not operation_id.strip():
-                        if final:
-                            findings.append(f"ASSERTION: cleanup replay.{view} checkpoint lacks an operation ID")
+                        findings.append(f"ASSERTION: cleanup replay.{view} checkpoint lacks an operation ID")
                         continue
                     if operation_id in seen:
                         findings.append(f"ASSERTION: cleanup replay.{view} repeats checkpoint {operation_id}")
@@ -743,39 +732,36 @@ def _cleanup_checkpoint_errors(
     retry = frozen_replay.get("retry")
     if isinstance(retry, Mapping) and isinstance(retry.get("operationId"), str) and retry["operationId"] in before_ids:
         findings.append("ASSERTION: cleanup replay.before checkpoint contains the frozen retry operation")
-    if final:
-        if observation_end is not None:
-            for operation_id, observed in observations.items():
-                completed_inside_window = [
-                    row
-                    for view, row in observed
-                    if view == "history"
-                    and row.get("status") in _OPERATION_TERMINAL_STATUSES
-                    and isinstance(ended := row.get("endedAtMs"), (int, float))
-                    and not isinstance(ended, bool)
-                    and 0 <= ended <= observation_end
-                ]
-                if not completed_inside_window:
-                    continue
-                checkpoint = frozen_after.get(operation_id)
-                if checkpoint is None:
-                    findings.append(
-                        f"INCOMPLETE: cleanup replay.after omits a completed service operation inside the observation window: {operation_id}"
-                    )
-                elif any(
-                    key in row and (key not in checkpoint or not same_json(checkpoint[key], row[key]))
-                    for row in completed_inside_window
-                    for key in ("status", "result", "error")
-                ):
-                    findings.append(
-                        f"ASSERTION: cleanup replay.after differs from a completed service operation inside the observation window: {operation_id}"
-                    )
-        for operation_id in before_ids - after_ids:
-            findings.append(
-                f"ASSERTION: cleanup before checkpoint {operation_id} lacks an after-checkpoint correlation"
-            )
-        for operation_id in after_ids - history_ids:
-            findings.append(f"ASSERTION: cleanup after checkpoint {operation_id} lacks a service-history correlation")
+    if observation_end is not None:
+        for operation_id, observed in observations.items():
+            completed_inside_window = [
+                row
+                for view, row in observed
+                if view == "history"
+                and row.get("status") in _OPERATION_TERMINAL_STATUSES
+                and isinstance(ended := row.get("endedAtMs"), (int, float))
+                and not isinstance(ended, bool)
+                and 0 <= ended <= observation_end
+            ]
+            if not completed_inside_window:
+                continue
+            checkpoint = frozen_after.get(operation_id)
+            if checkpoint is None:
+                findings.append(
+                    f"INCOMPLETE: cleanup replay.after omits a completed service operation inside the observation window: {operation_id}"
+                )
+            elif any(
+                key in row and (key not in checkpoint or not same_json(checkpoint[key], row[key]))
+                for row in completed_inside_window
+                for key in ("status", "result", "error")
+            ):
+                findings.append(
+                    f"ASSERTION: cleanup replay.after differs from a completed service operation inside the observation window: {operation_id}"
+                )
+    for operation_id in before_ids - after_ids:
+        findings.append(f"ASSERTION: cleanup before checkpoint {operation_id} lacks an after-checkpoint correlation")
+    for operation_id in after_ids - history_ids:
+        findings.append(f"ASSERTION: cleanup after checkpoint {operation_id} lacks a service-history correlation")
     return findings, before_ids
 
 
@@ -798,7 +784,6 @@ def reconcile_replay(view: ReconcileView) -> None:
         replay,
         view.sources,
         victim.get("executionArn"),
-        final=view.final,
         observation_end=view.window_end,
     )
     view.findings.extend(checkpoint_errors)
@@ -823,11 +808,10 @@ def reconcile_replay(view: ReconcileView) -> None:
                 expected_counts.setdefault(operation_id, expected)
             if isinstance(operation_id, str) and is_json_integer(actual := count.get("count")) and actual >= 0:
                 covered_counts.add(operation_id)
-    if view.final:
-        for missing in sorted(required_counts - (expected_counts.keys() & covered_counts)):
-            view.findings.append(
-                f"INCOMPLETE: cleanup replay completed operation lacks side-effect count coverage for {missing}"
-            )
+    for missing in sorted(required_counts - (expected_counts.keys() & covered_counts)):
+        view.findings.append(
+            f"INCOMPLETE: cleanup replay completed operation lacks side-effect count coverage for {missing}"
+        )
     returned = view.boundary("victim", "wrapper_return")
     resume_id = view.role("resume").get("requestId")
     checkpoint_ends = _observed_checkpoint_ends(view.sources, victim.get("executionArn"))
@@ -836,59 +820,52 @@ def reconcile_replay(view: ReconcileView) -> None:
         request: bounds["startedAtMs"][0] for request, bounds in native_intervals.items() if "startedAtMs" in bounds
     }
     resume_start = native_intervals.get(resume_id, {}).get("startedAtMs") if isinstance(resume_id, str) else None
-    if (
-        resume_start is not None
-        and (view.final or resume_start[1])
-        and returned is not None
-        and resume_start[0] <= returned
-    ):
+    if resume_start is not None and returned is not None and resume_start[0] <= returned:
         view.findings.append("ASSERTION: cleanup evidence places resume before the frozen PENDING wrapper return")
-    if view.final:
-        reconciled: dict[str, dict[str, Any]] = {}
-        for source in view.sources:
-            for attempt in mappings(source.get("attempts")):
-                request = attempt.get("requestId")
-                if (
-                    not isinstance(request, str)
-                    or request not in native_starts
-                    or view.executions_by_request.get(request, set()) != {victim.get("executionArn")}
-                ):
-                    continue
-                reconciled[request] = {
-                    **reconciled.get(request, {}),
-                    **attempt,
-                    "startedAtMs": native_starts[request],
-                }
-        previously_witnessed = completed_suspension_checkpoint(
-            [
-                attempt
-                for attempt in view.attempts.values()
-                if attempt.get("executionArn") == victim.get("executionArn")
-                and timestamp(attempt.get("startedAtMs")) is not None
-            ],
-            view.events,
-            mappings(view.original.get("sdkRequests")),
-            mappings(replay.get("after")),
-        )
-        reconciled_after = [
-            {**operation, "endedAtMs": max(times)}
-            if isinstance(operation_id := operation.get("id"), str)
-            and (times := checkpoint_ends.get(operation_id, set()))
-            else operation
-            for operation in mappings(replay.get("after"))
-        ]
-        if previously_witnessed and not completed_suspension_checkpoint(
-            list(reconciled.values()),
-            [event for source in view.sources for event in mappings(source.get("events"))],
-            [request for source in view.sources for request in mappings(source.get("sdkRequests"))],
-            reconciled_after,
-        ):
-            view.findings.append("ASSERTION: cleanup resume does not follow the observed wait or callback completion")
+    reconciled: dict[str, dict[str, Any]] = {}
+    for source in view.sources:
+        for attempt in mappings(source.get("attempts")):
+            request = attempt.get("requestId")
+            if (
+                not isinstance(request, str)
+                or request not in native_starts
+                or view.executions_by_request.get(request, set()) != {victim.get("executionArn")}
+            ):
+                continue
+            reconciled[request] = {
+                **reconciled.get(request, {}),
+                **attempt,
+                "startedAtMs": native_starts[request],
+            }
+    previously_witnessed = completed_suspension_checkpoint(
+        [
+            attempt
+            for attempt in view.attempts.values()
+            if attempt.get("executionArn") == victim.get("executionArn")
+            and timestamp(attempt.get("startedAtMs")) is not None
+        ],
+        view.events,
+        mappings(view.original.get("sdkRequests")),
+        mappings(replay.get("after")),
+    )
+    reconciled_after = [
+        {**operation, "endedAtMs": max(times)}
+        if isinstance(operation_id := operation.get("id"), str) and (times := checkpoint_ends.get(operation_id, set()))
+        else operation
+        for operation in mappings(replay.get("after"))
+    ]
+    if previously_witnessed and not completed_suspension_checkpoint(
+        list(reconciled.values()),
+        [event for source in view.sources for event in mappings(source.get("events"))],
+        [request for source in view.sources for request in mappings(source.get("sdkRequests"))],
+        reconciled_after,
+    ):
+        view.findings.append("ASSERTION: cleanup resume does not follow the observed wait or callback completion")
     observed_pending = [
         event for event in view.observed_events("victim", "pending") if timestamp(event.get("atMs")) is not None
     ]
     pending_times = {at for event in observed_pending if (at := timestamp(event.get("atMs"))) is not None}
-    if view.final and pending_times:
+    if pending_times:
         before_operations = []
         after_operations = []
         for source in view.sources:
@@ -991,39 +968,33 @@ def reconcile_replay(view: ReconcileView) -> None:
                 key in event and event[key] != expected
                 for key, expected in (("ownerRequestId", request_id), ("executionArn", execution_arn))
             ):
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup PENDING event has inconsistent native ownership")
+                view.findings.append("INCOMPLETE: cleanup PENDING event has inconsistent native ownership")
                 continue
             if "atMs" not in event:
                 continue  # A partial event may gain its timestamp during collection.
             pending_at = timestamp(event["atMs"])
             if pending_at is None:
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup PENDING event has an invalid timestamp")
+                view.findings.append("INCOMPLETE: cleanup PENDING event has an invalid timestamp")
             elif returned is not None and pending_at > returned:
                 view.findings.append("ASSERTION: cleanup PENDING event follows the frozen wrapper return")
         if "replay" not in source:
             continue
         observed_replay = source["replay"]
         if not isinstance(observed_replay, Mapping):
-            if view.final:
-                view.findings.append("INCOMPLETE: cleanup replay observations must be an object")
+            view.findings.append("INCOMPLETE: cleanup replay observations must be an object")
             continue
         entries = observed_replay.get("operationExecutions", [])
         if not isinstance(entries, list):
-            if view.final:
-                view.findings.append("INCOMPLETE: cleanup operation executions must be an array")
+            view.findings.append("INCOMPLETE: cleanup operation executions must be an array")
             entries = []
         for entry in entries:
             if not isinstance(entry, Mapping):
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup operation execution must be an object")
+                view.findings.append("INCOMPLETE: cleanup operation execution must be an object")
                 continue
             request_id, operation_id = entry.get("requestId"), entry.get("operationId")
             execution_arn = view.bound_execution(request_id)
             if not isinstance(operation_id, str) or not operation_id.strip():
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup operation execution lacks an operationId")
+                view.findings.append("INCOMPLETE: cleanup operation execution lacks an operationId")
                 continue
             if (
                 execution_arn is not None
@@ -1034,22 +1005,18 @@ def reconcile_replay(view: ReconcileView) -> None:
                 view.findings.append(
                     f"ASSERTION: cleanup evidence reports repeated completed user code for {operation_id}"
                 )
-        if view.final:
-            view.findings.extend(_side_effect_observation_errors(source))
+        view.findings.extend(_side_effect_observation_errors(source))
         counts = observed_replay.get("sideEffects", [])
         if not isinstance(counts, list):
-            if view.final:
-                view.findings.append("INCOMPLETE: cleanup side-effect observations must be an array")
+            view.findings.append("INCOMPLETE: cleanup side-effect observations must be an array")
             counts = []
         for count in counts:
             if not isinstance(count, Mapping):
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup side-effect observation must be an object")
+                view.findings.append("INCOMPLETE: cleanup side-effect observation must be an object")
                 continue
             operation_id = count.get("operationId")
             if not isinstance(operation_id, str) or not operation_id.strip():
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup side-effect observation lacks an operationId")
+                view.findings.append("INCOMPLETE: cleanup side-effect observation lacks an operationId")
                 continue
             expected = expected_counts.get(operation_id)
             if expected is None:
@@ -1069,6 +1036,5 @@ def reconcile_replay(view: ReconcileView) -> None:
             victim.get("executionArn"),
             view.bound_execution,
             lambda observation, boundary_event: view.at_or_after(observation, boundary_event, require_sequence=True),
-            final=view.final,
         )
     )

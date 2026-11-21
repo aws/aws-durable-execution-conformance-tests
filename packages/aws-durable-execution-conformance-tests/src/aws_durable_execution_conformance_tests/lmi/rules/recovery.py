@@ -121,19 +121,17 @@ def reconcile_recovery(view: ReconcileView, timeout_events: Sequence[Mapping[str
                     view.findings.append("PLACEMENT: cleanup recovery replacement changed the frozen failed worker")
     recovery_start, _ = view.known_interval("recovery")
     recovery_budget = timestamp(view.budgets.get("recoveryMs"))
-    if (
-        view.final
-        and recovery_start is not None
-        and any((at := timestamp(event.get("atMs"))) is not None and recovery_start < at for event in timeout_events)
+    if recovery_start is not None and any(
+        (at := timestamp(event.get("atMs"))) is not None and recovery_start < at for event in timeout_events
     ):
         view.findings.append("ASSERTION: cleanup evidence places recovery before the victim timeout")
     for event in view.observed_events("recovery", "worker_recovered"):
         recovered = timestamp(event.get("atMs"))
         if recovered is None:
             continue
-        if view.final and grace is not None and window_end is not None and window_end - recovered < grace:
+        if grace is not None and window_end is not None and window_end - recovered < grace:
             view.findings.append("INCOMPLETE: cleanup observation window lacks the declared grace after recovery")
-        if view.final and recovery_start is not None and recovered < recovery_start:
+        if recovery_start is not None and recovered < recovery_start:
             view.findings.append("ASSERTION: cleanup worker recovery precedes its native invocation")
         for timeout_event in timeout_events:
             timed_out = timestamp(timeout_event.get("atMs"))
@@ -143,23 +141,22 @@ def reconcile_recovery(view: ReconcileView, timeout_events: Sequence[Mapping[str
                 and not (timed_out <= recovered <= timed_out + recovery_budget)
             ):
                 view.findings.append("ASSERTION: cleanup worker recovery exceeds the frozen recovery measurement")
-        if view.final:
-            for peer in view.selected:
-                if isinstance(peer, str) and peer.startswith("peer"):
-                    _, peer_end = view.known_interval(peer)
-                    if peer_end is not None and recovered > peer_end:
-                        view.findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
-                    progress = [
-                        at
-                        for row in view.observed_events(peer, "peer_progress")
-                        if (at := timestamp(row.get("atMs"))) is not None
-                    ]
-                    for timeout_event in timeout_events:
-                        timed_out = timestamp(timeout_event.get("atMs"))
-                        if timed_out is not None and not peer_progress_spans_timeout(progress, timed_out, recovered):
-                            view.findings.append(
-                                "ASSERTION: cleanup healthy peer lacks progress across the timeout and recovery"
-                            )
+        for peer in view.selected:
+            if isinstance(peer, str) and peer.startswith("peer"):
+                _, peer_end = view.known_interval(peer)
+                if peer_end is not None and recovered > peer_end:
+                    view.findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
+                progress = [
+                    at
+                    for row in view.observed_events(peer, "peer_progress")
+                    if (at := timestamp(row.get("atMs"))) is not None
+                ]
+                for timeout_event in timeout_events:
+                    timed_out = timestamp(timeout_event.get("atMs"))
+                    if timed_out is not None and not peer_progress_spans_timeout(progress, timed_out, recovered):
+                        view.findings.append(
+                            "ASSERTION: cleanup healthy peer lacks progress across the timeout and recovery"
+                        )
 
 
 def reconcile_python_recovery(view: ReconcileView) -> None:

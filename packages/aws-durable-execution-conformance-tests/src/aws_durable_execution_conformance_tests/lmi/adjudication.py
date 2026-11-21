@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Offline adjudication of frozen LMI observations and later evidence."""
+"""Adjudication: the LMI lifecycle verdict, derived from collected evidence alone."""
 
 from __future__ import annotations
 
@@ -110,7 +110,6 @@ def _cleanup_behavior_errors(
     standard: bool,
     known_snapshots: Sequence[Mapping[str, Any]] = (),
     observation_snapshots: Sequence[Mapping[str, Any]] = (),
-    final: bool = False,
 ) -> list[str]:
     """Detect specific refutations without replacing frozen business evidence."""
     view = ReconcileView(
@@ -119,12 +118,10 @@ def _cleanup_behavior_errors(
         standard=standard,
         known_snapshots=known_snapshots,
         observation_snapshots=observation_snapshots,
-        final=final,
     )
     common_rules.reconcile_records(view)
-    if final:
-        common_rules.reconcile_history_expectations(view)
-        common_rules.reconcile_sdk_calls(view)
+    common_rules.reconcile_history_expectations(view)
+    common_rules.reconcile_sdk_calls(view)
     releases = retirement_rules.collect_fault_releases(view)
     common_rules.reconcile_admission_closures(view)
     if not standard or not view.has_selection:
@@ -133,11 +130,10 @@ def _cleanup_behavior_errors(
     if requirement in ("lmi-lifecycle-2", "lmi-lifecycle-7"):
         disposal_rules.reconcile_disposal(view)
     marker_ids: dict[str, set[str]] = {}
-    if final:
-        corrected = common_rules.reconcile_admission_order(view)
-        if requirement == "lmi-lifecycle-1":
-            marker_ids = overlap_rules.reconcile_overlap_identity(view, corrected)
-    if requirement in ("lmi-lifecycle-1", "lmi-lifecycle-4") and final:
+    corrected = common_rules.reconcile_admission_order(view)
+    if requirement == "lmi-lifecycle-1":
+        marker_ids = overlap_rules.reconcile_overlap_identity(view, corrected)
+    if requirement in ("lmi-lifecycle-1", "lmi-lifecycle-4"):
         overlap_rules.reconcile_barrier(view, marker_ids)
     common_rules.reconcile_unique_events(view)
     if requirement == "lmi-lifecycle-4":
@@ -168,7 +164,7 @@ def _evaluate_capture(
     observation_evidence: Sequence[Mapping[str, Any]] = (),
     attempts: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[list[str], list[str], dict[str, Any]]:
-    """Evaluate captured evidence without querying a live target or mutating the capture.
+    """Evaluate captured evidence without querying a target or mutating the capture.
 
     ``validator=None`` selects the shared standard rules, including the
     lifecycle 2/7 allowance for retries proven during retirement. A supplied
@@ -218,7 +214,6 @@ def _evaluate_capture(
                 standard=standard,
                 known_snapshots=frames,
                 observation_snapshots=observation_evidence,
-                final=True,
             )
         )
 
@@ -348,7 +343,7 @@ def adjudicate_evidence(
     trusted_observations: bool = False,
     observation_findings: Sequence[str] = (),
 ) -> tuple[str, list[str], dict[str, Any]]:
-    """Resolve a capture status with the offline verdict rules.
+    """Resolve a capture status with the adjudication rules.
 
     ``validator=None`` selects the shared standard rules. A supplied validator
     is a custom suite policy and is applied as given, without the shared

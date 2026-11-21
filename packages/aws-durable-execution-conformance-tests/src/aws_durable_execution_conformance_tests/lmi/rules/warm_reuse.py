@@ -63,8 +63,7 @@ def reconcile_late_activity(view: ReconcileView) -> None:
             if execution_arn is None:
                 continue
             if event.get("ownerRequestId") != request_id or event.get("executionArn") != execution_arn:
-                if view.final:
-                    view.findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
+                view.findings.append("INCOMPLETE: cleanup late activity has inconsistent native ownership")
                 continue
             during = event.get("observedDuringRequestId")
             if during is not None and view.bound_execution(during) is None:

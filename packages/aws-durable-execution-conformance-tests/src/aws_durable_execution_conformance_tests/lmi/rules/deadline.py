@@ -100,16 +100,14 @@ def reconcile_deadline(view: ReconcileView) -> list[Mapping[str, Any]]:
         if timed_out is None:
             continue
         if (
-            view.final
-            and view.requirement == "lmi-lifecycle-3"
+            view.requirement == "lmi-lifecycle-3"
             and grace is not None
             and window_end is not None
             and window_end - timed_out < grace
         ):
             view.findings.append("INCOMPLETE: cleanup observation window lacks the declared grace after timeout")
-        if view.final and (
-            (start is not None and configured_timeout is not None and timed_out < start + configured_timeout)
-            or (end is not None and timed_out > end)
+        if (start is not None and configured_timeout is not None and timed_out < start + configured_timeout) or (
+            end is not None and timed_out > end
         ):
             view.findings.append("ASSERTION: cleanup timeout falls outside the configured native deadline")
         if any(view.at_or_after(work, event, require_sequence=True) is True for work in work_observations) or any(

@@ -162,7 +162,7 @@ def test_retry_order_conflict_survives_corrected_collection(source: str) -> None
     )
     assert result.status != "PASSED", result.errors
     assert any("retry attempt order" in error for error in result.errors), result.errors
-    # Retry order is an offline verdict. Only the interrupted capture lacks
+    # Retry order is an adjudication verdict. Only the interrupted capture lacks
     # the physical retirement required to reuse the target.
     assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (source == "partial")
 
