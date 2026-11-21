@@ -5,9 +5,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
+
 from aws_durable_execution_conformance_tests.lmi.rules import deadline as deadline_rules
 from aws_durable_execution_conformance_tests.lmi.rules import overlap as overlap_rules
+from aws_durable_execution_conformance_tests.lmi.rules.common import original_admission_conflicts
+from aws_durable_execution_conformance_tests.lmi.rules.values import mappings, same_json, timestamp
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def recovery(view: CaseView) -> None:
@@ -33,20 +41,12 @@ def recovery(view: CaseView) -> None:
             view.error("replacement must identify the original failed worker capacity", "PLACEMENT")
     else:
         view.error("profile.recoveryPolicy must explicitly select reuse-worker or replace-worker")
-    if any(
-        attempt is not recovery
-        and attempt.get("executionArn") == recovery.get("executionArn")
-        and attempt["startedAtMs"] == recovery["startedAtMs"]
-        for attempt in view.attempts.values()
-    ):
+    earlier, tied = original_admission_conflicts(recovery, list(view.attempts.values()))
+    if tied:
         view.error("tied native admissions cannot establish the original recovery invocation")
     if recovery.get("outcome") != "SUCCEEDED":
         view.error("recovered capacity did not complete the selected recovery request", "ASSERTION")
-    if any(
-        recovery.get("executionArn") == attempt.get("executionArn")
-        and (attempt in (victim, *peers) or attempt["startedAtMs"] < recovery["startedAtMs"])
-        for attempt in view.attempts.values()
-    ):
+    if earlier or any(recovery.get("executionArn") == attempt.get("executionArn") for attempt in (victim, *peers)):
         view.error("recovery must be an independent request, not a service retry", "PLACEMENT")
     if recovery.get("startedAtMs", 0) < timeout or recovered < recovery.get("startedAtMs", 0):
         view.error("recovery preceded the selected victim's timeout", "ASSERTION")
@@ -80,8 +80,97 @@ def recovery(view: CaseView) -> None:
             for event in view.events
             if event.get("kind") == "peer_progress" and event.get("requestId") == peer.get("requestId")
         ]
-        if not any(time < timeout for time in progress) or not any(timeout < time <= recovered for time in progress):
+        if not peer_progress_spans_timeout(progress, timeout, recovered):
             view.error("healthy peer lacks independent progress across the timeout", "ASSERTION")
     for fault in view.records(view.value.get("faultsCreated"), "faultsCreated"):
         if isinstance(fault.get("releasedAtMs"), (int, float)) and fault["releasedAtMs"] <= recovered:
             view.error("fault release cannot satisfy worker recovery", "ASSERTION")
+
+
+def peer_progress_spans_timeout(progress: Sequence[int | float], timeout: int | float, recovered: int | float) -> bool:
+    return any(at < timeout for at in progress) and any(timeout < at <= recovered for at in progress)
+
+
+def reconcile_recovery_event(view: ReconcileView) -> None:
+    """Require the recovery request's worker_recovered event to stay unique."""
+    recovery = view.role("recovery").get("requestId")
+    if isinstance(recovery, str) and any(
+        sum(
+            row.get("requestId") == recovery and row.get("kind") == "worker_recovered"
+            for row in mappings(source.get("events"))
+        )
+        > 1
+        for source in view.sources
+    ):
+        view.findings.append(f"INCOMPLETE: request {recovery} needs exactly one worker_recovered event")
+
+
+def reconcile_recovery(view: ReconcileView, timeout_events: Sequence[Mapping[str, Any]]) -> None:
+    """Check later recovery observations against the victim timeouts and peer capacity."""
+    grace, window_end = timestamp(view.budgets.get("observationGraceMs")), view.window_end
+    if view.profile.get("recoveryPolicy") == "replace-worker":
+        recovery_id = view.role("recovery").get("requestId")
+        for source in view.sources:
+            for attempt in mappings(source.get("attempts")):
+                if (
+                    recovery_id is not None
+                    and attempt.get("requestId") == recovery_id
+                    and "replacesWorkerId" in attempt
+                    and not same_json(attempt["replacesWorkerId"], view.role("victim").get("workerId"))
+                ):
+                    view.findings.append("PLACEMENT: cleanup recovery replacement changed the frozen failed worker")
+    recovery_start, _ = view.known_interval("recovery")
+    recovery_budget = timestamp(view.budgets.get("recoveryMs"))
+    if recovery_start is not None and any(
+        (at := timestamp(event.get("atMs"))) is not None and recovery_start < at for event in timeout_events
+    ):
+        view.findings.append("ASSERTION: cleanup evidence places recovery before the victim timeout")
+    for event in view.observed_events("recovery", "worker_recovered"):
+        recovered = timestamp(event.get("atMs"))
+        if recovered is None:
+            continue
+        if grace is not None and window_end is not None and window_end - recovered < grace:
+            view.findings.append("INCOMPLETE: cleanup observation window lacks the declared grace after recovery")
+        if recovery_start is not None and recovered < recovery_start:
+            view.findings.append("ASSERTION: cleanup worker recovery precedes its native invocation")
+        for timeout_event in timeout_events:
+            timed_out = timestamp(timeout_event.get("atMs"))
+            if (
+                timed_out is not None
+                and recovery_budget is not None
+                and not (timed_out <= recovered <= timed_out + recovery_budget)
+            ):
+                view.findings.append("ASSERTION: cleanup worker recovery exceeds the frozen recovery measurement")
+        for peer in view.selected:
+            if isinstance(peer, str) and peer.startswith("peer"):
+                _, peer_end = view.known_interval(peer)
+                if peer_end is not None and recovered > peer_end:
+                    view.findings.append("PLACEMENT: cleanup worker recovery outlived established peer capacity")
+                progress = [
+                    at
+                    for row in view.observed_events(peer, "peer_progress")
+                    if (at := timestamp(row.get("atMs"))) is not None
+                ]
+                for timeout_event in timeout_events:
+                    timed_out = timestamp(timeout_event.get("atMs"))
+                    if timed_out is not None and not peer_progress_spans_timeout(progress, timed_out, recovered):
+                        view.findings.append(
+                            "ASSERTION: cleanup healthy peer lacks progress across the timeout and recovery"
+                        )
+
+
+def reconcile_python_recovery(view: ReconcileView) -> None:
+    """Reject a Python recovery in the victim process before the victim completed natively."""
+    if not (view.changed_time("victim", "endedAtMs") or view.changed_time("recovery", "startedAtMs")):
+        return
+    start, end = view.native_time("recovery", "startedAtMs"), view.native_time("victim", "endedAtMs")
+    victim, recovery = view.role("victim"), view.role("recovery")
+    if (
+        view.original.get("runtime") == "python"
+        and victim.get("processId")
+        and victim.get("processId") == recovery.get("processId")
+        and start is not None
+        and end is not None
+        and start < end
+    ):
+        view.findings.append("PLACEMENT: cleanup evidence places Python recovery before victim native completion")
