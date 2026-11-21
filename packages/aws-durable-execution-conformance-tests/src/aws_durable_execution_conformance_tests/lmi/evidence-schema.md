@@ -131,7 +131,11 @@ any declared output expectation is still compared. For example,
 `{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]}`
 permits an active timeout victim without accepting a successful outcome. This
 observation allowance does not establish retirement: every owned execution still
-needs a terminal retirement record. All declared expected fields are compared;
+needs a terminal retirement record. When replay re-checks a collected capture,
+an execution that settles inside the observation window must have its declared
+`result`/`error` supplied by a terminal history observation with the settled
+status, in any snapshot. A frozen nonterminal view does not supply it. All
+declared expected fields are compared;
 `allowedStatuses` itself is expectation metadata, not a service-history field.
 Never generate expectations by copying the observed status or output.
 
@@ -395,7 +399,8 @@ durable-execution-conformance lmi-lifecycle --manifest lmi-live/manifest.json --
 Replay binds the frozen observations to the launch journal. A service-initiated
 attempt journaled after observations froze can be missing from them only if
 the bundle's retirement snapshot passes `validate_retirement_evidence` and records
-the same request, role, ordinal and execution. Otherwise the case is incomplete.
+the same request, role, ordinal and execution. Every request that the retirement
+snapshot records must also be journaled. Otherwise the case is incomplete.
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
 --output output` with an empty output directory. The runner reads existing

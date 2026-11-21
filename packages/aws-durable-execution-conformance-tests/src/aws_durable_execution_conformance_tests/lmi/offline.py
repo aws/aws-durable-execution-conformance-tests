@@ -345,7 +345,9 @@ def frozen_journal_errors(
     A service-initiated request discovered after observations froze may be
     absent from them only when an independent retirement snapshot that passes
     ``validate_retirement_evidence`` records the same request, role, ordinal and
-    execution, proving that its work settled.
+    execution, proving that its work settled. Conversely, every request that the
+    retirement snapshot records must be journaled, so retirement cannot account
+    for service work the collection never recorded.
     """
     attempts = evidence.get("attempts")
     if not isinstance(attempts, list) or not all(isinstance(row, Mapping) for row in attempts):
@@ -376,19 +378,23 @@ def frozen_journal_errors(
     ):
         return ["INCOMPLETE: frozen observations do not cover all client-journaled launches"]
     later = [request for request in recorded if request not in observed]
-    if not later:
-        return []
     snapshot = retirement_evidence if isinstance(retirement_evidence, Mapping) else {}
-    if not snapshot or validate_retirement_evidence(snapshot):
-        return [f"INCOMPLETE: service-discovered request {later[0]} lacks validated retirement proof"]
-    settled = {attempt.get("requestId"): attempt for attempt in snapshot["attempts"]}
-    for request in later:
-        launch, retired = recorded[request], settled.get(request)
-        # JSON comparison keeps booleans distinct from ordinals.
-        if retired is None or any(
-            not same_json(launch.get(key), retired.get(key)) for key in ("role", "attempt", "executionArn")
-        ):
-            return [f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof"]
+    if later:
+        if not snapshot or validate_retirement_evidence(snapshot):
+            return [f"INCOMPLETE: service-discovered request {later[0]} lacks validated retirement proof"]
+        settled = {attempt.get("requestId"): attempt for attempt in snapshot["attempts"]}
+        for request in later:
+            launch, retired = recorded[request], settled.get(request)
+            # JSON comparison keeps booleans distinct from ordinals.
+            if retired is None or any(
+                not same_json(launch.get(key), retired.get(key)) for key in ("role", "attempt", "executionArn")
+            ):
+                return [f"INCOMPLETE: service-discovered request {request} lacks validated retirement proof"]
+    retired_attempts = snapshot.get("attempts")
+    for row in retired_attempts if isinstance(retired_attempts, list) else ():
+        request = row.get("requestId") if isinstance(row, Mapping) else None
+        if isinstance(request, str) and request not in recorded:
+            return [f"INCOMPLETE: retirement request {request} is not journaled"]
     return []
 
 

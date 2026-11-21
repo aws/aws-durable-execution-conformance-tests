@@ -6135,7 +6135,7 @@ def test_partial_cleanup_history_only_fails_on_supplied_contradictions(cleanup_h
 
 
 @pytest.mark.parametrize("frozen_status", ["SUCCEEDED", "RUNNING"])
-@pytest.mark.parametrize("cleanup_result", ["omitted", "expected", "unexpected"])
+@pytest.mark.parametrize("cleanup_result", ["omitted", "no-row", "expected", "unexpected"])
 def test_in_window_terminal_history_must_supply_declared_fields(frozen_status: str, cleanup_result: str) -> None:
     arn = "arn:execution:victim"
     declared = {"marker": "victim"}
@@ -6150,11 +6150,62 @@ def test_in_window_terminal_history_must_supply_declared_fields(frozen_status: s
     if cleanup_result != "omitted":
         row["result"] = declared if cleanup_result == "expected" else {"marker": "unexpected"}
     snapshot = {
-        "histories": [row],
+        # "no-row": settlement alone, with no history row for the execution.
+        "histories": [] if cleanup_result == "no-row" else [row],
         "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
     }
     findings = _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
     contradiction = f"ASSERTION: service history {arn}.result differs from the fixture expectation"
     missing = f"INCOMPLETE: terminal service history {arn} lacks declared result"
     assert (contradiction in findings) is (cleanup_result == "unexpected")
-    assert (missing in findings) is (cleanup_result == "omitted" and frozen_status == "RUNNING")
+    assert (missing in findings) is (cleanup_result in ("omitted", "no-row") and frozen_status == "RUNNING")
+
+
+@pytest.mark.parametrize("final_result", ["expected", "omitted", "unexpected"])
+def test_terminal_history_may_arrive_without_its_settlement(final_result: str) -> None:
+    arn = "arn:execution:victim"
+    declared = {"marker": "victim"}
+    original = {
+        "expectedHistories": {arn: {"allowedStatuses": ["RUNNING", "SUCCEEDED"], "result": declared}},
+        "observationEndedAtMs": 200,
+        "histories": [{"executionArn": arn, "status": "RUNNING", "result": declared}],
+    }
+    # A retained snapshot records the in-window settlement with a status-only row.
+    retained = {
+        "histories": [{"executionArn": arn, "status": "SUCCEEDED"}],
+        "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
+    }
+    # The final snapshot supplies the terminal result but records a later settlement.
+    row: dict[str, Any] = {"executionArn": arn, "status": "SUCCEEDED"}
+    if final_result != "omitted":
+        row["result"] = declared if final_result == "expected" else {"marker": "unexpected"}
+    final = {
+        "histories": [row],
+        "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 210}]},
+    }
+    findings = _cleanup_behavior_errors(original, final, standard=True, known_snapshots=[retained], final=True)
+    missing = f"INCOMPLETE: terminal service history {arn} lacks declared result"
+    contradiction = f"ASSERTION: service history {arn}.result differs from the fixture expectation"
+    assert (missing in findings) is (final_result == "omitted")
+    # Any row that supplies a declared field is compared with the expectation.
+    assert (contradiction in findings) is (final_result == "unexpected")
+
+
+def test_every_terminal_history_row_that_supplies_fields_is_compared() -> None:
+    arn = "arn:execution:victim"
+    declared = {"marker": "victim"}
+    original = {
+        "expectedHistories": {arn: {"allowedStatuses": ["RUNNING", "SUCCEEDED"], "result": declared}},
+        "observationEndedAtMs": 200,
+        "histories": [{"executionArn": arn, "status": "RUNNING", "result": declared}],
+    }
+    snapshot = {
+        # The earlier duplicate row carries a wrong result; the later one has none.
+        "histories": [
+            {"executionArn": arn, "status": "SUCCEEDED", "result": {"marker": "unexpected"}},
+            {"executionArn": arn, "status": "SUCCEEDED"},
+        ],
+        "retirement": {"resources": [{"kind": "execution", "id": arn, "outcome": "SUCCEEDED", "settledAtMs": 190}]},
+    }
+    findings = _cleanup_behavior_errors(original, snapshot, standard=True, final=True)
+    assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in findings

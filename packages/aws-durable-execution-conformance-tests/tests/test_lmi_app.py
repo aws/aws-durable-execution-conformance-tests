@@ -1098,7 +1098,8 @@ def test_collected_replay_reports_wrong_victim_outcome_as_failed():
 
 
 @pytest.mark.parametrize(
-    "proof", ["validated", "absent", "unlisted", "other-role", "other-ordinal", "other-execution", "unsettled"]
+    "proof",
+    ["validated", "absent", "unlisted", "unjournaled", "other-role", "other-ordinal", "other-execution", "unsettled"],
 )
 def test_collected_replay_requires_retirement_proof_for_service_discoveries(proof):
     from aws_durable_execution_conformance_tests.lmi.app import collected_evidence_results
@@ -1119,7 +1120,8 @@ def test_collected_replay_requires_retirement_proof_for_service_discoveries(proo
     retry = next(row for row in snapshot["attempts"] if row["requestId"] == "service-retry")
     journal = [{**row, "launchedAtMs": 1} for row in value["attempts"]]
     discovered = {key: retry[key] for key in ("requestId", "executionArn", "role", "attempt")} | {"discoveredAtMs": 207}
-    journal.append(discovered)
+    if proof != "unjournaled":
+        journal.append(discovered)
     if proof == "unlisted":
         # The snapshot stays valid but never mentions this discovery.
         discovered["requestId"] = "unlisted-retry"
@@ -1147,6 +1149,10 @@ def test_collected_replay_requires_retirement_proof_for_service_discoveries(proo
         # The CLI selects the shared rules, so a service retry proven during
         # retirement is accepted as the single disposal invocation's successor.
         assert result["status"] == "PASSED", result["errors"]
+    elif proof == "unjournaled":
+        # Retirement cannot account for a service retry the collection never journaled.
+        assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+        assert f"INCOMPLETE: retirement request {retry['requestId']} is not journaled" in result["errors"]
     else:
         assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
         request = discovered["requestId"]
