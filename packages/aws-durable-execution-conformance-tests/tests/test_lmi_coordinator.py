@@ -2076,8 +2076,8 @@ def test_cleanup_frames_keep_an_explicitly_malformed_event_sequence():
     # Later frames that omit or correct the sequence do not erase the malformed value.
     frames = [{"events": [{**event, "sequence": False}]}, {"events": [event]}, final]
 
-    assert _cleanup_record_errors(frames, final).count(malformed) == 1
-    assert malformed not in _cleanup_record_errors(frames[1:], final)
+    assert _cleanup_record_errors(frames, final) == [malformed]
+    assert _cleanup_record_errors(frames[1:], final) == []
 
 
 @pytest.mark.parametrize("inventory", ["operationExecutions", "retry.attempts"])

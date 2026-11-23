@@ -1424,6 +1424,25 @@ def test_cleanup_late_activity_tied_with_the_frozen_task_exit_is_ordered_by_sequ
     assert result.evidence["events"] == frozen_events
 
 
+@pytest.mark.parametrize("late_first", [True, False], ids=["before-exit", "after-exit"])
+def test_cleanup_tie_orders_against_an_exit_kept_as_its_observed_alias(late_first: bool) -> None:
+    value, owner = _tied_late_activity_fixture()
+    snapshot = deepcopy(value)
+    _insert_tied_late_activity(snapshot, owner, late_first=late_first)
+    exit_event = next(
+        item
+        for item in snapshot["events"]
+        if item["requestId"] == owner["requestId"] and item["kind"] == "task_exit" and item["taskId"] == "root"
+    )
+    exit_event.update(kind="observed_task_exit", sourceKind="task_exit")
+    _resequence(snapshot)
+
+    findings = _cleanup_behavior_errors(value, snapshot, standard=True)
+
+    assert (_CLEANUP_LATE_ACTIVITY in findings) is not late_first, findings
+    assert _UNORDERED_CLEANUP_TIE not in findings, findings
+
+
 @pytest.mark.parametrize(
     ("frame_copies", "final_copies", "unordered"),
     [

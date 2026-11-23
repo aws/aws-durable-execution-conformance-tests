@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
 from aws_durable_execution_conformance_tests.lmi.rules.values import is_json_integer, mappings, same_json, timestamp
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 
@@ -82,11 +83,8 @@ def tied_late_activity_follows_exit(
     """
     sequences = [
         event.get("sequence")
-        for event in source_events
-        if (
-            event.get("kind") == "task_exit"
-            or (event.get("kind") == "observed_task_exit" and event.get("sourceKind") == "task_exit")
-        )
+        for event in normalize_retirement_events(source_events, [])
+        if event.get("kind") == "task_exit"
         and event.get("requestId") == task_exit.get("requestId")
         and same_json(event.get("taskId"), task_exit.get("taskId"))
         and type(event.get("atMs")) in (int, float)
