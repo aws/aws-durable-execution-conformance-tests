@@ -14,6 +14,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     same_json,
     validate_common_evidence,
     validate_evidence,
+    validate_observed_retirement,
     validate_retirement_evidence,
 )
 
@@ -755,7 +756,7 @@ def test_warm_reuse_checks_all_recorded_post_closure_probes(
         assert errors == [], errors
 
 
-def complete_retirement_events(value: dict[str, Any]) -> None:
+def complete_sdk_dispatches(value: dict[str, Any]) -> None:
     for index, request in enumerate(value["sdkRequests"]):
         if request["outcome"] != "DISPATCHED":
             continue
@@ -765,9 +766,13 @@ def complete_retirement_events(value: dict[str, Any]) -> None:
         value["events"].extend(
             [
                 {**request, "kind": f"{call_kind}_call"},
-                {**request, "kind": f"{call_kind}_exit"},
+                {**request, "kind": f"{call_kind}_exit", "atMs": request["atMs"] + 0.001},
             ]
         )
+
+
+def complete_retirement_events(value: dict[str, Any]) -> None:
+    complete_sdk_dispatches(value)
     for owner in value["attempts"]:
         value["events"].extend(
             [
@@ -789,6 +794,101 @@ def complete_retirement_events(value: dict[str, Any]) -> None:
         )
         for sequence, item in enumerate(ordered):
             item["sequence"] = sequence
+
+
+def resequence(value: dict[str, Any]) -> None:
+    for request in value["attempts"]:
+        local = sorted(
+            (event for event in value["events"] if event["requestId"] == request["requestId"]),
+            key=lambda event: event["atMs"],
+        )
+        for sequence, event in enumerate(local):
+            event["sequence"] = sequence
+
+
+def complete_fixture_sdk_calls(value: dict[str, Any]) -> None:
+    value["events"] = [
+        event for event in value["events"] if not str(event.get("callId", "")).startswith("fixture-dispatch-")
+    ]
+    for index, request in enumerate(value["sdkRequests"]):
+        if request["outcome"] != "DISPATCHED":
+            continue
+        request["callId"] = f"fixture-dispatch-{index}"
+        kind = "poll" if request["method"] == "GetDurableExecutionState" else "checkpoint"
+        value["events"].extend([{**request, "kind": f"{kind}_call"}, {**request, "kind": f"{kind}_exit"}])
+    resequence(value)
+
+
+def standard_retirement_snapshot(factory: str, runtime: str = "javascript", *, requirement: int = 2) -> dict[str, Any]:
+    make = globals()[factory]
+    value = (
+        make(requirement, runtime)
+        if factory == "evidence"
+        else make()
+        if factory in ("replay_evidence", "failure_evidence")
+        else make(runtime=runtime)
+    )
+    for attempt in value["attempts"]:
+        owner = {key: attempt[key] for key in ("requestId", "executionArn")}
+        owner["ownerRequestId"] = attempt["requestId"]
+        local = [event for event in value["events"] if event["requestId"] == attempt["requestId"]]
+        value["events"].extend(
+            [
+                {**owner, "kind": "wrapper_enter", "atMs": attempt["startedAtMs"]},
+                {**owner, "kind": "task_start", "taskId": "root", "atMs": attempt["startedAtMs"] + 0.1},
+            ]
+        )
+        exits = [event for event in local if event["kind"] == "task_exit"]
+        if exits:
+            for event in exits:
+                event["taskId"] = "root"
+        else:
+            value["events"].append({**owner, "kind": "task_exit", "taskId": "root", "atMs": attempt["endedAtMs"] - 0.1})
+        if not any(event["kind"] == "wrapper_return" for event in local):
+            value["events"].append({**owner, "kind": "wrapper_return", "atMs": attempt["endedAtMs"]})
+    complete_fixture_sdk_calls(value)
+    # Callers load this module with run_path, which bypasses pytest's assertion
+    # rewriting, so the messages carry the findings.
+    errors = validate_evidence(value)
+    assert errors == [], errors
+    errors = validate_retirement_evidence(value)
+    assert errors == [], errors
+    return value
+
+
+def lifecycle_7_retirement_retry() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A lifecycle 7 capture whose service retry is proven only by the retirement snapshot."""
+    original = standard_retirement_snapshot("failure_evidence")
+    first = original["attempts"][0]
+    arn = first["executionArn"]
+    original["histories"][0]["status"] = "RUNNING"
+    original["expectedHistories"][arn] = {"allowedStatuses": ["RUNNING", "FAILED"]}
+    snapshot = deepcopy(original)
+    snapshot["histories"][0]["status"] = "SUCCEEDED"
+    snapshot["observationEndedAtMs"] = 206
+    snapshot["collection"]["watermarks"] = {key: 206 for key in snapshot["collection"]["watermarks"]}
+    retry_id = "service-retry"
+    snapshot["attempts"].append(
+        {**first, "requestId": retry_id, "attempt": 2, "startedAtMs": 201, "endedAtMs": 205, "outcome": "SUCCEEDED"}
+    )
+    for event in ("wrapper_enter", "task_start", "task_exit", "wrapper_return"):
+        template = next(row for row in original["events"] if row["kind"] == event)
+        snapshot["events"].append(
+            {
+                **template,
+                "requestId": retry_id,
+                "ownerRequestId": retry_id,
+                "atMs": 201 if event in ("wrapper_enter", "task_start") else 205,
+            }
+        )
+    invocation = {"kind": "invocation", "id": retry_id, "ownerCaseId": original["caseId"]}
+    snapshot["resourcesCreated"].append(invocation)
+    snapshot["retirement"]["resources"].append(
+        {**invocation, "settledAtMs": 208, "outcome": "QUIESCENT", "evidenceUri": "memory://service"}
+    )
+    next(row for row in snapshot["retirement"]["resources"] if row["id"] == arn).update(outcome="SUCCEEDED")
+    resequence(snapshot)
+    return original, snapshot
 
 
 @pytest.mark.parametrize(
@@ -2453,6 +2553,20 @@ def test_retirement_rejects_dispatched_request_matched_to_rejected_call() -> Non
         if not (item["kind"] == "checkpoint_exit" and item.get("callId") == "dispatch-0")
     ]
     assert any("cannot correlate dispatched SDK request" in error for error in validate_retirement_evidence(value))
+    assert any(
+        "lacks a unique completed checkpoint_call/checkpoint_exit" in error
+        for error in validate_observed_retirement(value)
+    )
+
+
+@pytest.mark.parametrize("requests", [[None], ["bad"], {"not": "an array"}])
+def test_sdk_request_rejection_check_handles_malformed_records(requests: Any) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    call = next(row for row in value["events"] if row["kind"] == "checkpoint_call")
+    call["outcome"] = "REJECTED"
+    value["sdkRequests"] = requests
+    assert any("sdkRequests" in error for error in validate_evidence(value))
 
 
 def test_replay_requires_observed_durable_suspension_checkpoint() -> None:
@@ -3019,3 +3133,32 @@ def test_retry_sequences_order_nonadjacent_bodies_on_the_same_request(last_seque
         assert "ASSERTION: retry attempt order contradicts timed user-code entries" in errors
     else:
         assert not errors
+
+
+@pytest.mark.parametrize("allowed", [[], ["UNKNOWN"], ["FAILED", "FAILED"], [[]]])
+def test_adjudication_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> None:
+    frozen = evidence(2)
+    arn = frozen["histories"][0]["executionArn"]
+    frozen["expectedHistories"][arn].pop("status")
+    frozen["expectedHistories"][arn]["allowedStatuses"] = allowed
+    findings = validate_evidence(frozen, phase="observations")
+    assert any(item.startswith("INCOMPLETE:") and "allowedStatuses" in item for item in findings)
+    assert not any(item.startswith("ASSERTION:") and "allowedStatuses" in item for item in findings)
+
+
+@pytest.mark.parametrize("dispatch", ["complete", "uncorrelated"])
+def test_observed_retirement_correlates_dispatched_sdk_requests(dispatch: str) -> None:
+    value = evidence()
+    complete_retirement_events(value)
+    if dispatch == "uncorrelated":
+        call_id = next(row["callId"] for row in value["sdkRequests"] if row["outcome"] == "DISPATCHED")
+        value["events"] = [row for row in value["events"] if row.get("callId") != call_id]
+
+    errors = validate_observed_retirement(value)
+
+    if dispatch == "complete":
+        assert errors == []
+    else:
+        assert errors == [
+            "INCOMPLETE: retirement cannot correlate dispatched SDK request with its unique checkpoint_call"
+        ]

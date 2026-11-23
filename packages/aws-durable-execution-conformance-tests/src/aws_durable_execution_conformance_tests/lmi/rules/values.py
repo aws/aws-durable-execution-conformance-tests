@@ -8,11 +8,12 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Protocol, TypeGuard
+from typing import Any, Literal, Protocol, TypeGuard
 
 SCHEMA_VERSION = 1
 REQUIREMENT_IDS = tuple(f"lmi-lifecycle-{index}" for index in range(1, 8))
 RUNTIMES = ("javascript", "java", "python")
+RECOVERY_POLICIES = ("reuse-worker", "replace-worker")
 HISTORY_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED", "RUNNING", "PENDING")
 TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
 COMPLETED_OPERATION_STATUSES = ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED")
@@ -27,7 +28,9 @@ _CALL_METHODS = {"checkpoint_call": "CheckpointDurableExecution", "poll_call": "
 
 
 class EvidenceValidator(Protocol):
-    def __call__(self, evidence: Mapping[str, Any], *, phase: str = "final") -> Sequence[str]: ...
+    def __call__(
+        self, evidence: Mapping[str, Any], *, phase: Literal["observations", "final"] = "final"
+    ) -> Sequence[str]: ...
 
 
 def is_json_integer(value: Any) -> TypeGuard[int | float]:
@@ -56,3 +59,17 @@ def same_json(left: Any, right: Any) -> bool:
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return left == right
     return type(left) is type(right) and bool(left == right)
+
+
+def mappings(value: Any) -> list[Mapping[str, Any]]:
+    """The objects in a JSON array; nothing for any other value."""
+    return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+
+def timestamp(value: Any) -> int | float | None:
+    """A finite non-negative JSON number that is not a boolean, else ``None``."""
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and math.isfinite(value) and value >= 0:
+        return value
+    return None

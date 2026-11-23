@@ -24,7 +24,10 @@ from aws_durable_execution_conformance_tests.lmi.rules.common import (
 from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
 from aws_durable_execution_conformance_tests.lmi.rules.engine import _validate_observations as _validate_observations
 from aws_durable_execution_conformance_tests.lmi.rules.engine import validate_common_evidence, validate_evidence
-from aws_durable_execution_conformance_tests.lmi.rules.retirement import validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import (
+    validate_observed_retirement,
+    validate_retirement_evidence,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.values import _CALL_METHODS as _CALL_METHODS
 from aws_durable_execution_conformance_tests.lmi.rules.values import _WORK_INTERVALS as _WORK_INTERVALS
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
@@ -53,6 +56,7 @@ __all__ = [
     "same_json",
     "validate_common_evidence",
     "validate_evidence",
+    "validate_observed_retirement",
     "validate_retirement_evidence",
 ]
 

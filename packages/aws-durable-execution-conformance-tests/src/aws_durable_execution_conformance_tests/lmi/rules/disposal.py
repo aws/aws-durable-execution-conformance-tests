@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     TERMINAL_STATUSES,
+    same_json,
+    timestamp,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
 
 
 def disposal(view: CaseView, expected_outcome: str) -> None:
@@ -50,3 +55,14 @@ def require_probes(view: CaseView, victim: Mapping[str, Any], boundary: Mapping[
             for event in view.events
         ):
             view.error(f"missing post-closure {probe} admission probe")
+
+
+def reconcile_disposal(view: ReconcileView) -> None:
+    """Check later root completions against the frozen disposal boundaries."""
+    returned, exited = view.boundary("victim", "wrapper_return"), view.boundary("victim", "task_exit")
+    for event in view.observed_events("victim", "root_completed"):
+        if "outcome" in event and not same_json(event["outcome"], view.role("victim").get("outcome")):
+            view.findings.append("ASSERTION: cleanup root completion contradicts the frozen invocation outcome")
+        completed_at = timestamp(event.get("atMs"))
+        if completed_at is not None and any(end is not None and completed_at > end for end in (returned, exited)):
+            view.findings.append("ASSERTION: cleanup root completion follows the frozen wrapper or task exit")

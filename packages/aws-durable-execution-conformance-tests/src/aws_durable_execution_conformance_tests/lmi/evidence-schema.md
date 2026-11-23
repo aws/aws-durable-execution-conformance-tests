@@ -129,7 +129,11 @@ any declared output expectation is still compared. For example,
 `{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]}`
 permits an active timeout victim without accepting a successful outcome. This
 observation allowance does not establish retirement: every owned execution still
-needs a terminal retirement record. All declared expected fields are compared;
+needs a terminal retirement record. When adjudication re-checks a collected capture,
+an execution that settles inside the observation window must have its declared
+`result`/`error` supplied by a terminal history observation with the settled
+status, in any snapshot. A frozen nonterminal view does not supply it. All
+declared expected fields are compared;
 `allowedStatuses` itself is expectation metadata, not a service-history field.
 Never generate expectations by copying the observed status or output.
 
@@ -236,13 +240,14 @@ timestamps must be at or before `retirement.retiredAtMs`. An absent original rel
 remains valid when the final acknowledgment proves release. Releasing a fault
 before the asserted cleanup or recovery is a failure regardless of release mode.
 
-The coordinator first freezes collected observations and validates with
-`phase="observations"`, before release. It preserves those findings while adding
-retirement observations for `phase="final"`. Final retirement validation runs
-even when earlier observation records were malformed or incomplete. Successful emergency release cannot
-rewrite failed behavior. Missing or uncertain retirement quarantines the affected
-profile; other profiles remain independent. A blanket `passed` or `cleanedUp`
-boolean is not evidence for any requirement.
+The coordinator freezes collected observations before release and verifies
+physical retirement before allowing target reuse. Missing or uncertain
+retirement quarantines the affected profile. Adjudication checks the frozen
+observations once and audits retirement once, against a copy combined with the
+retirement records; a custom validator receives `phase="observations"` and then
+`phase="final"`. Emergency release cannot
+erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
+insufficient evidence.
 
 The SDK adapter is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
