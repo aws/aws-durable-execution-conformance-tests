@@ -99,7 +99,7 @@ def main() -> None:
         assert not any(name.startswith("aws_durable_execution_sdk_") for name in sys.modules)
         assert "lmi-lifecycle" not in registry.suites
         lmi_resources = files("aws_durable_execution_conformance_tests.lmi")
-        assert lmi_resources.joinpath("evidence-schema.json").is_file()
+        assert not lmi_resources.joinpath("evidence-schema.json").is_file()
         assert not lmi_resources.joinpath("lifecycle_regressions.py").is_file()
         assert not lmi_resources.joinpath("python-lifecycle.md").is_file()
         for number in range(8, 17):

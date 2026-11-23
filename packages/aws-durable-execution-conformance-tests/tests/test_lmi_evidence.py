@@ -1794,7 +1794,7 @@ def test_unnamed_context_replay_still_rejects_completed_user_code(operation_id: 
 
 @pytest.mark.parametrize("parent", [False, 1, ["parent"], {"id": "parent"}])
 def test_history_operation_parent_must_be_a_string_or_null(parent: Any) -> None:
-    # The wire schema allows a string or null; presence alone accepted a
+    # The contract allows a string or null; presence alone accepted a
     # malformed parent that the replay comparison then matched consistently.
     value = evidence()
     value["histories"][0]["operations"] = [
