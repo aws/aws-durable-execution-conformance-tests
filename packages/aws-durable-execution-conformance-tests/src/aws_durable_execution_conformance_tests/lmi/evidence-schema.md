@@ -39,10 +39,10 @@ not the number of requests sent.
 `runId` and the run-unique `caseId` identify the scenario and its evidence.
 There is no additional cohort identifier; roles bind its original invocations.
 
-`selectedRequests` maps fixture roles to original invocation request IDs. The
-coordinator must bind this map to its launch journal, before interpreting results.
-A later service retry cannot replace a selected original request. Every launched
-attempt remains in `attempts`, including failed placement and unrelated retries.
+`selectedRequests` maps fixture roles to original invocation request IDs: the
+first journaled launch of each role. A later service retry cannot replace a
+selected original request. Every launched attempt remains in `attempts`,
+including failed placement and unrelated retries.
 Adapters call `record_attempt` before dispatch and `record_service_attempt` when
 discovering a service-initiated attempt against an already journaled execution.
 Each attempt records:
@@ -364,13 +364,20 @@ Collection runs the cases on AWS and records what happened. Adjudication then
 derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
+Collection trusts its adapter, the shared AWS driver. The coordinator records
+the snapshots the driver reports without auditing them against earlier
+snapshots, its launch journal, the admitted case, or other cases, so driver
+defects are caught by the driver's own tests. SDK fixture output that the driver
+relays stays untrusted: the rules judge it, and collection still verifies
+physical retirement from the driver's retirement snapshot before a target is
+reused. A journaled launch without an identified invocation request also keeps
+its target quarantined, because no snapshot can show that it ended.
+
 Collection holds each target through physical retirement of its own cases.
 It finishes profiles only after every case in the run has ended its retirement
-attempt and registered its ownership claims, so a conflicting claim quarantines
-the affected targets before any release. Quiescence then decides which targets
-an adapter may unlock. If any case phase in the
-run was interrupted, no profile is reported quiescent, because the interrupted
-task could have claimed, or could still claim, any target. A failed or
+attempt. Quiescence then decides which targets an adapter may unlock. If any
+case phase in the run was interrupted, no profile is reported quiescent,
+because the interrupted task could still be working on any target. A failed or
 interrupted preparation or `finish` quarantines its own target. Each run uses
 its own scheduler. Because profiles finish together, an adapter's `prepare` must
 not wait on a lock that another profile's `finish` releases, in this run or a

@@ -25,7 +25,6 @@ from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_r
 from aws_durable_execution_conformance_tests.lmi.rules.engine import _validate_observations as _validate_observations
 from aws_durable_execution_conformance_tests.lmi.rules.engine import validate_common_evidence, validate_evidence
 from aws_durable_execution_conformance_tests.lmi.rules.retirement import (
-    retained_fault_releases,
     validate_observed_retirement,
     validate_retirement_evidence,
 )
@@ -56,7 +55,6 @@ __all__ = [
     "EvidenceValidator",
     "is_json_integer",
     "normalize_retirement_events",
-    "retained_fault_releases",
     "same_json",
     "validate_common_evidence",
     "validate_evidence",
