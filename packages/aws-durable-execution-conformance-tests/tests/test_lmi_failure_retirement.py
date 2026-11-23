@@ -1527,7 +1527,7 @@ def test_cleanup_admission_discovery_keeps_an_original_failed_observation() -> N
 
 
 @pytest.mark.parametrize("phase", ["normal", "partial"])
-def test_replaced_collector_input_keeps_newest_returned_completion_and_sequence(phase: str) -> None:
+def test_collector_response_keeps_newest_completion_and_sequence(phase: str) -> None:
     class EnrichingCollectorAdapter(FailureAdapter):
         def observations(self, context: ScenarioContext) -> dict[str, Any]:
             observed = super().observations(context)
@@ -1543,9 +1543,6 @@ def test_replaced_collector_input_keeps_newest_returned_completion_and_sequence(
                 context.evidence["histories"][0].update(status="RUNNING", result=None)
 
         def completed(self, context: ScenarioContext) -> dict[str, Any]:
-            context.evidence["resourcesCreated"].append(
-                {"id": "control:failed", "kind": "control", "ownerCaseId": "failed"}
-            )
             context.evidence = self.observations(context)
             final = deepcopy(self.snapshots["failed"])
             _add_retained_resource(final, "control", "DELETED")
@@ -1565,7 +1562,6 @@ def test_replaced_collector_input_keeps_newest_returned_completion_and_sequence(
 
     adapter = EnrichingCollectorAdapter(phase="assertion" if phase == "normal" else "placement")
     (collected, following), scheduler = _run(adapter)
-    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
     assert any(item["id"] == "control:failed" for item in collected.evidence["resourcesCreated"])
     assert len(collected.evidence["histories"]) == 1
     assert collected.evidence["histories"][0]["result"] == {"completed": True}
@@ -1732,17 +1728,12 @@ def test_reordered_cleanup_inventories_do_not_require_a_new_independent_audit(cl
 
 
 class CleanupIdentityAdapter(FailureAdapter):
-    def __init__(
-        self, phase: str, path: tuple[str, ...], value: Any, *, restore: bool = False, mutate_context: bool = False
-    ) -> None:
+    def __init__(self, phase: str, path: tuple[str, ...], value: Any) -> None:
         super().__init__(phase="assertion")
         self.cleanup_phase, self.path, self.value = phase, path, value
-        self.restore, self.mutate_context = restore, mutate_context
-        self.original_run_id = ""
 
     async def start(self, context: ScenarioContext) -> None:
         await super().start(context)
-        self.original_run_id = context.run_id
         snapshot = self.snapshots[context.scenario.case_id]
         snapshot["histories"][0]["result"] = None
         snapshot["profile"]["recoveryPolicy"] = "reuse-worker"
@@ -1765,8 +1756,6 @@ class CleanupIdentityAdapter(FailureAdapter):
         for key in self.path[:-1]:
             target = target[key]
         target[self.path[-1]] = deepcopy(self.value)
-        if self.mutate_context:
-            context.run_id = self.value
 
     async def release(self, context: ScenarioContext) -> None:
         await super().release(context)
@@ -1778,9 +1767,6 @@ class CleanupIdentityAdapter(FailureAdapter):
             return await super().retire(context)
         if self.cleanup_phase == "retire":
             self.change_identity(context)
-        if self.restore:
-            context.run_id = self.original_run_id
-            context.evidence = self.observations(context)
         context.evidence["retirement"] = deepcopy(self.snapshots["failed"]["retirement"])
         return True
 
@@ -1798,7 +1784,7 @@ class CleanupIdentityAdapter(FailureAdapter):
 def test_cleanup_accepts_unchanged_and_completed_identity_metadata(
     phase: str, path: tuple[str, ...], value: Any
 ) -> None:
-    adapter = CleanupIdentityAdapter(phase, path, value, restore=True)
+    adapter = CleanupIdentityAdapter(phase, path, value)
     profile = replace(PROFILE, recovery_policy="reuse-worker")
     scheduler = ResourceScheduler()
     result, following = asyncio.run(
@@ -1813,6 +1799,13 @@ def test_cleanup_accepts_unchanged_and_completed_identity_metadata(
     )
     assert result.status == following.status == "PASSED", result.errors
     assert result.retirement_evidence.get("retirement") == result.evidence.get("retirement")
+    snapshot = result.cleanup_evidence[phase][0]
+    if path:
+        for key in path:
+            snapshot = snapshot[key]
+        assert snapshot == value
+    else:
+        assert snapshot["artifact"] == snapshot["profile"] == {}
     assert adapter.finished == [True]
     assert scheduler.quarantine_reason(profile.resource_id) is None
 
@@ -1825,8 +1818,6 @@ class IndependentCleanupIdentityAdapter(CleanupIdentityAdapter):
             for key in self.path[:-1]:
                 target = target[key]
             target[self.path[-1]] = deepcopy(self.value)
-            if self.mutate_context:
-                context.profile = replace(context.profile, recovery_policy=self.value)
         context.retirement_evidence = final
         context.evidence["retirement"] = deepcopy(self.snapshots[context.scenario.case_id]["retirement"])
         return True
@@ -1861,6 +1852,10 @@ def test_independent_retirement_can_fill_unobserved_identity_metadata(path: tupl
     )
     assert result.status == following.status == "PASSED", result.errors
     assert validate_retirement_evidence(result.retirement_evidence) == []
+    filled = result.retirement_evidence
+    for key in path:
+        filled = filled[key]
+    assert filled == value
     assert adapter.finished == [True]
     assert scheduler.quarantine_reason(profile.resource_id) is None
 
@@ -2569,6 +2564,40 @@ def test_retirement_preserves_relative_order_without_freezing_sequence_numbers(c
     assert scheduler.quarantine_reason(PROFILE.resource_id) is None
 
 
+@pytest.mark.parametrize("failure", ["raise", "cancel", "timeout"])
+def test_failed_partial_collection_keeps_the_target_quarantined(failure: str) -> None:
+    class FailingPartialAdapter(FailureAdapter):
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            self.steps.append((context.scenario.case_id, "partial"))
+            if failure == "raise":
+                raise RuntimeError("partial read failed")
+            if failure == "cancel":
+                raise asyncio.CancelledError
+            await asyncio.sleep(1)
+            return self.observations(context)
+
+    adapter = FailingPartialAdapter(phase="execute")
+    scheduler = ResourceScheduler()
+    failed, following = asyncio.run(
+        run_and_adjudicate(
+            [_case("failed"), _case("next")],
+            [PROFILE],
+            adapter,
+            run_id="run",
+            validator=_validator,
+            scheduler=scheduler,
+            budgets=Budgets(collection=0.05),
+        )
+    )
+    # Retirement itself is verified, so the failed snapshot alone keeps the fence.
+    assert ("failed", "partial") in adapter.steps
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert "Partial collection did not retain trustworthy observations" in failed.errors, failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
 def test_early_failure_freezes_context_observations_without_partial_collection() -> None:
     class ContextEvidenceAdapter(FailureAdapter):
         async def start(self, context: ScenarioContext) -> None:
@@ -2701,7 +2730,6 @@ def test_collection_accepts_completion_and_semantic_event_resequencing(phase: st
     else:
         assert collected.status != "PASSED"
         assert ORIGINAL_FAILURE in collected.errors
-    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
     if enrichment == "history-result":
         assert collected.evidence["histories"][0]["result"] == {"completed": True}
     elif enrichment == "operation-result":
@@ -2739,7 +2767,6 @@ def test_collection_enriches_owned_inventory_without_duplicating_identity(phase:
 
     adapter = InventoryEnrichmentAdapter(phase="none" if phase == "normal" else "placement")
     (collected, following), scheduler = _run(adapter)
-    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
     if phase == "normal":
         assert collected.status == "PASSED", collected.errors
     else:
@@ -2813,7 +2840,6 @@ def test_collection_can_add_an_expectation_for_a_newly_observed_execution(phase:
         assert collected.status == "PASSED", collected.errors
     else:
         assert collected.status != "PASSED"
-    assert not any("omitted or changed retained" in error for error in collected.errors)
     assert len(collected.evidence["expectedHistories"]) == len(collected.evidence["histories"]) == 2
     assert following.status == "PASSED", following.errors
     assert adapter.finished == [True]
@@ -2850,7 +2876,6 @@ def test_collection_accepts_real_operation_state_completion(phase: str, initial:
     else:
         assert collected.status != "PASSED"
         assert ORIGINAL_FAILURE in collected.errors
-    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
     operations = collected.evidence["histories"][0]["operations"]
     assert len(operations) == 1
     assert operations[0]["status"] == terminal
@@ -2901,7 +2926,6 @@ def test_collection_retains_evolving_nonterminal_operation_outcomes(phase: str, 
     else:
         assert collected.status != "PASSED"
         assert ORIGINAL_FAILURE in collected.errors
-    assert not any("omitted or changed retained" in error for error in collected.errors), collected.errors
     operations = collected.evidence["histories"][0]["operations"]
     assert len(operations) == 1
     assert operations[0]["status"] == "SUCCEEDED"
@@ -2959,7 +2983,6 @@ def test_rereading_provisional_fields_does_not_reverse_observed_progress(discove
             return value
 
         async def start(self, context: ScenarioContext) -> None:
-            provided = context.evidence
             await super().start(context)
             operation = {"id": "step", "name": "work", "type": "STEP", "parentId": None}
             self.snapshots[context.scenario.case_id]["histories"][0]["operations"] = [
@@ -2968,27 +2991,15 @@ def test_rereading_provisional_fields_does_not_reverse_observed_progress(discove
             context.evidence = self.observations(context)
             context.evidence["histories"][0].update(status="RUNNING")
             context.evidence["histories"][0]["operations"] = [{**operation, "status": "STARTED", "result": {"poll": 1}}]
-            # Both objects have been observed before place provides completion.
-            provided.update(deepcopy(context.evidence))
-            self.original_input = provided
 
         async def place(self, context: ScenarioContext) -> None:
-            # The coordinator later revisits the object supplied to place even
-            # though this replacement already retained its monotonic completion.
+            # A later snapshot completes the step that start observed in progress.
             context.evidence = self.observations(context)
             if discover_control:
-                self.original_input["resourcesCreated"].append(
-                    {
-                        "id": f"control:{context.scenario.case_id}",
-                        "kind": "control",
-                        "ownerCaseId": context.scenario.case_id,
-                    }
-                )
                 _add_retained_resource(self.snapshots[context.scenario.case_id], "control", "DELETED")
 
     (collected, following), scheduler = _run(ReplacedProvisionalAdapter(phase="none"))
     assert collected.status == following.status == "PASSED", collected.errors
-    assert not any("conflict with retained facts" in error for error in collected.errors)
     assert collected.evidence["histories"][0]["operations"][0]["result"] == {"poll": 2}
     if discover_control:
         assert any(resource["kind"] == "control" for resource in collected.evidence["resourcesCreated"])

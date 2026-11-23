@@ -251,10 +251,11 @@ retirement records; a custom validator receives `phase="observations"` and then
 erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
 insufficient evidence.
 
-The SDK adapter is responsible for faithful instrumentation through the real
+The SDK fixture is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
 incomplete evidence; it cannot authenticate observations supplied by a dishonest
-adapter or substitute local synthetic controls for real LMI validation.
+fixture or driver, or substitute local synthetic controls for real LMI
+validation.
 
 
 ## Independent physical retirement audit
@@ -365,13 +366,15 @@ derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
 Collection trusts its adapter, the shared AWS driver. The coordinator records
-the snapshots the driver reports without auditing them against earlier
-snapshots, its launch journal, the admitted case, or other cases, so driver
-defects are caught by the driver's own tests. SDK fixture output that the driver
-relays stays untrusted: the rules judge it, and collection still verifies
-physical retirement from the driver's retirement snapshot before a target is
-reused. A journaled launch without an identified invocation request also keeps
-its target quarantined, because no snapshot can show that it ended.
+the driver's own reports, such as launches, inventories and retirement, without
+auditing them against earlier snapshots, its launch journal, the admitted case,
+or other cases, so driver defects are caught by the driver's own tests. SDK
+fixture output that the driver relays stays untrusted. The rules judge its
+behavior, and before a target is reused collection requires the driver's
+retirement snapshot to establish physical retirement and to settle the native
+owner of every SDK record seen in any snapshot. A journaled launch without an
+identified invocation request also keeps its target quarantined, because no
+snapshot can show that it ended.
 
 Collection holds each target through physical retirement of its own cases.
 It finishes profiles only after every case in the run has ended its retirement

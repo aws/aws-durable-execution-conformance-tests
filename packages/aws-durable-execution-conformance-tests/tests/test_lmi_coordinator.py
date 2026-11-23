@@ -1329,7 +1329,7 @@ def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
     async def check():
         other = replace(PROFILE, profile_id="other", resource_id="arn:other")
         finishing = asyncio.Event()
-        claimed = asyncio.Event()
+        launched_late = asyncio.Event()
 
         class CancellationResistant(Adapter):
             async def execute(self, context):
@@ -1341,13 +1341,13 @@ def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
                     # Ignore cancellation and keep launching work after the
                     # run barrier has passed.
                     await finishing.wait()
-                    context.record_attempt("late", requestId="late-request", executionArn="arn:execution:fast:victim")
-                    claimed.set()
+                    context.record_attempt("late", requestId="late-request", executionArn="arn:execution:slow:late")
+                    launched_late.set()
 
             async def finish(self, profile, *, quiescent):
                 finishing.set()
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(claimed.wait(), 0.5)
+                    await asyncio.wait_for(launched_late.wait(), 0.5)
                 await super().finish(profile, quiescent=quiescent)
 
         adapter = CancellationResistant()
@@ -1358,7 +1358,7 @@ def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
             run_id="capture",
             budgets=Budgets(execution=0.05),
         )
-        assert claimed.is_set()
+        assert launched_late.is_set()
         assert set(adapter.finished) == {(PROFILE.profile_id, False), (other.profile_id, False)}
 
     asyncio.run(check())

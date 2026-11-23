@@ -227,7 +227,7 @@ def test_side_effect_observations_can_reach_the_predeclared_count(partial: bool)
     else:
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
-    assert not any("side-effect" in error or "omitted or changed retained" in error for error in result.errors)
+    assert not any("side-effect" in error for error in result.errors)
     assert _effect(result.evidence) == {"operationId": "done", "count": 2, "expectedCount": 2}
 
 
@@ -389,7 +389,6 @@ def test_checkpoint_snapshots_can_fill_missing_operation_metadata(
     else:
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
-    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
     assert result.evidence["replay"][snapshot] == value["replay"][snapshot]
 
 
@@ -444,7 +443,6 @@ def test_operation_entry_can_gain_missing_outcome_metadata(mode: str, operation_
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
     assert result.evidence["replay"]["operationExecutions"] == value["replay"]["operationExecutions"]
-    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
 
 
 def test_operation_entry_enrichment_matches_occurrences_without_stealing_known_metadata() -> None:

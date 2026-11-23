@@ -9,10 +9,12 @@ traces. A scheduler is local to one event loop: adapters must also hold a
 cross-process deployment/run lock when persistent targets are shared by runs.
 
 The adapter, in production the shared AWS driver, is trusted: the coordinator
-records what it reports without re-auditing it against earlier snapshots, the
-launch journal, admission, or other cases. SDK fixture output that the adapter
-relays stays untrusted and is judged by adjudication. The coordinator still
-verifies physical retirement before it releases a target.
+records the adapter's own reports, such as launches, inventories and
+retirement, without re-auditing them against earlier snapshots, the launch
+journal, admission, or other cases. SDK fixture output that the adapter relays
+stays untrusted. Adjudication judges its behavior, and before the coordinator
+releases a target the retirement snapshot must establish physical retirement
+and settle the native owner of every SDK record seen in any snapshot.
 """
 
 from __future__ import annotations
@@ -454,7 +456,7 @@ class ScenarioAdapter(Protocol):
     """Trusted fixture bridge; all methods must cooperate with cancellation.
 
     In production this is the shared AWS driver. The coordinator does not
-    re-audit what an adapter reports, so adapter bugs are caught only by the
+    re-audit the adapter's own reports, so their defects are caught by the
     adapter's own tests. Fixture observations it relays remain untrusted.
 
     ``prepare`` must hold an external run/deployment lock if another process can
@@ -617,8 +619,9 @@ async def run_scenarios(
         for case in scenarios
     }
     adapter_preparation_started: set[str] = set()
-    # A cancelled case-phase adapter task may still be working on any target,
-    # even after it finished. A run with one reports no profile quiescent.
+    # Work that a cancelled case-phase adapter task started may still be running
+    # on any target, even after the task itself finished. A run with one reports
+    # no profile quiescent.
     interrupted: list[list[asyncio.Task[Any]]] = []
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 
@@ -739,7 +742,6 @@ async def run_scenarios(
             # Snapshot the context at every phase boundary, even after a failure.
             async def establish() -> None:
                 for operation in (adapter.start, adapter.place):
-                    observe_context()
                     try:
                         await operation(context)
                     finally:
