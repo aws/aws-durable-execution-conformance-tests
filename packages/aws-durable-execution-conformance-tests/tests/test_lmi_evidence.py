@@ -3,17 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Positive controls and deliberate corruption of independent lifecycle evidence."""
 
-from collections.abc import Sequence
 from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Literal
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence, evaluate_evidence
-from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioResult, run_scenarios
 from aws_durable_execution_conformance_tests.lmi.evidence import (
-    EvidenceValidator,
     _Evidence,
     same_json,
     validate_common_evidence,
@@ -21,39 +17,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_observed_retirement,
     validate_retirement_evidence,
 )
-
-
-async def run_and_adjudicate(
-    scenarios: Sequence[Scenario],
-    profiles: Sequence[Profile],
-    adapter: Any,
-    *,
-    validator: EvidenceValidator | None = None,
-    **options: Any,
-) -> list[ScenarioResult]:
-    """Collect with the coordinator, then adjudicate each capture.
-
-    The coordinator reports only collection outcomes. Tests that assert a
-    verdict adjudicate each capture with ``lmi.adjudication.adjudicate_evidence``;
-    ``validator=None`` selects the shared standard rules.
-    """
-    outcomes = await run_scenarios(scenarios, profiles, adapter, **options)
-    standard = {case.case_id: case.coverage_profile == "standard" for case in scenarios}
-    for result in outcomes:
-        if result.evidence:
-            result.status, result.errors, result.evidence = adjudicate_evidence(
-                result.status,
-                result.errors,
-                result.evidence,
-                retirement_evidence=result.retirement_evidence,
-                cleanup_evidence=result.cleanup_evidence,
-                observation_evidence=result.observation_evidence,
-                attempts=result.attempts,
-                validator=validator,
-                standard=standard[result.case_id],
-                trusted_observations=result.trusted_observations,
-            )
-    return outcomes
 
 
 def attempt(role: str, *, start: int = 10, end: int = 40, process: str = "process-1") -> dict[str, Any]:
@@ -831,6 +794,101 @@ def complete_retirement_events(value: dict[str, Any]) -> None:
         )
         for sequence, item in enumerate(ordered):
             item["sequence"] = sequence
+
+
+def resequence(value: dict[str, Any]) -> None:
+    for request in value["attempts"]:
+        local = sorted(
+            (event for event in value["events"] if event["requestId"] == request["requestId"]),
+            key=lambda event: event["atMs"],
+        )
+        for sequence, event in enumerate(local):
+            event["sequence"] = sequence
+
+
+def complete_fixture_sdk_calls(value: dict[str, Any]) -> None:
+    value["events"] = [
+        event for event in value["events"] if not str(event.get("callId", "")).startswith("fixture-dispatch-")
+    ]
+    for index, request in enumerate(value["sdkRequests"]):
+        if request["outcome"] != "DISPATCHED":
+            continue
+        request["callId"] = f"fixture-dispatch-{index}"
+        kind = "poll" if request["method"] == "GetDurableExecutionState" else "checkpoint"
+        value["events"].extend([{**request, "kind": f"{kind}_call"}, {**request, "kind": f"{kind}_exit"}])
+    resequence(value)
+
+
+def standard_retirement_snapshot(factory: str, runtime: str = "javascript", *, requirement: int = 2) -> dict[str, Any]:
+    make = globals()[factory]
+    value = (
+        make(requirement, runtime)
+        if factory == "evidence"
+        else make()
+        if factory in ("replay_evidence", "failure_evidence")
+        else make(runtime=runtime)
+    )
+    for attempt in value["attempts"]:
+        owner = {key: attempt[key] for key in ("requestId", "executionArn")}
+        owner["ownerRequestId"] = attempt["requestId"]
+        local = [event for event in value["events"] if event["requestId"] == attempt["requestId"]]
+        value["events"].extend(
+            [
+                {**owner, "kind": "wrapper_enter", "atMs": attempt["startedAtMs"]},
+                {**owner, "kind": "task_start", "taskId": "root", "atMs": attempt["startedAtMs"] + 0.1},
+            ]
+        )
+        exits = [event for event in local if event["kind"] == "task_exit"]
+        if exits:
+            for event in exits:
+                event["taskId"] = "root"
+        else:
+            value["events"].append({**owner, "kind": "task_exit", "taskId": "root", "atMs": attempt["endedAtMs"] - 0.1})
+        if not any(event["kind"] == "wrapper_return" for event in local):
+            value["events"].append({**owner, "kind": "wrapper_return", "atMs": attempt["endedAtMs"]})
+    complete_fixture_sdk_calls(value)
+    # Callers load this module with run_path, which bypasses pytest's assertion
+    # rewriting, so the messages carry the findings.
+    errors = validate_evidence(value)
+    assert errors == [], errors
+    errors = validate_retirement_evidence(value)
+    assert errors == [], errors
+    return value
+
+
+def lifecycle_7_retirement_retry() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A lifecycle 7 capture whose service retry is proven only by the retirement snapshot."""
+    original = standard_retirement_snapshot("failure_evidence")
+    first = original["attempts"][0]
+    arn = first["executionArn"]
+    original["histories"][0]["status"] = "RUNNING"
+    original["expectedHistories"][arn] = {"allowedStatuses": ["RUNNING", "FAILED"]}
+    snapshot = deepcopy(original)
+    snapshot["histories"][0]["status"] = "SUCCEEDED"
+    snapshot["observationEndedAtMs"] = 206
+    snapshot["collection"]["watermarks"] = {key: 206 for key in snapshot["collection"]["watermarks"]}
+    retry_id = "service-retry"
+    snapshot["attempts"].append(
+        {**first, "requestId": retry_id, "attempt": 2, "startedAtMs": 201, "endedAtMs": 205, "outcome": "SUCCEEDED"}
+    )
+    for event in ("wrapper_enter", "task_start", "task_exit", "wrapper_return"):
+        template = next(row for row in original["events"] if row["kind"] == event)
+        snapshot["events"].append(
+            {
+                **template,
+                "requestId": retry_id,
+                "ownerRequestId": retry_id,
+                "atMs": 201 if event in ("wrapper_enter", "task_start") else 205,
+            }
+        )
+    invocation = {"kind": "invocation", "id": retry_id, "ownerCaseId": original["caseId"]}
+    snapshot["resourcesCreated"].append(invocation)
+    snapshot["retirement"]["resources"].append(
+        {**invocation, "settledAtMs": 208, "outcome": "QUIESCENT", "evidenceUri": "memory://service"}
+    )
+    next(row for row in snapshot["retirement"]["resources"] if row["id"] == arn).update(outcome="SUCCEEDED")
+    resequence(snapshot)
+    return original, snapshot
 
 
 @pytest.mark.parametrize(
@@ -3077,95 +3135,6 @@ def test_retry_sequences_order_nonadjacent_bodies_on_the_same_request(last_seque
         assert not errors
 
 
-@pytest.mark.parametrize("retained_at", [50, 201])
-def test_adjudication_checks_retained_terminal_settlement_against_observation_window(retained_at: int) -> None:
-    frozen = deadline_evidence()
-    arn = frozen["histories"][0]["executionArn"]
-    frozen["histories"][0]["status"] = "RUNNING"
-    frozen["expectedHistories"][arn] = {"allowedStatuses": ["RUNNING", "TIMED_OUT"]}
-    independent = deepcopy(frozen)
-    resource = next(row for row in independent["retirement"]["resources"] if row["id"] == arn)
-    resource.update(outcome="SUCCEEDED", settledAtMs=210)
-    retained = deepcopy(independent)
-    next(row for row in retained["retirement"]["resources"] if row["id"] == arn)["settledAtMs"] = retained_at
-    frozen_copy, retained_copy, independent_copy = map(deepcopy, (frozen, retained, independent))
-
-    findings = evaluate_evidence(
-        frozen,
-        retirement_evidence=independent,
-        cleanup_evidence={"release": [retained]},
-        standard=True,
-    )
-
-    assert any("outside the declared allowedStatuses" in finding for finding in findings) == (retained_at == 50)
-    assert (frozen, retained, independent) == (frozen_copy, retained_copy, independent_copy)
-
-
-def test_adjudication_deadline_budget_targets_the_controlled_task() -> None:
-    frozen = deadline_evidence()
-    victim = frozen["attempts"][0]
-    independent = deepcopy(frozen)
-    independent["events"].extend(
-        [event(victim, "task_start", 13, taskId="child"), event(victim, "task_exit", 15, taskId="child")]
-    )
-    findings = evaluate_evidence(
-        frozen,
-        retirement_evidence=independent,
-        cleanup_evidence={},
-        standard=True,
-    )
-    assert not any(
-        "cleanupMs measurement" in finding or "exited before the observed" in finding for finding in findings
-    )
-
-
-@pytest.mark.parametrize(("factory", "kind"), [(deadline_evidence, "platform_timeout"), (replay_evidence, "pending")])
-def test_adjudication_rejects_duplicate_boundaries_in_one_snapshot(factory, kind: str) -> None:
-    frozen = factory()
-    independent = deepcopy(frozen)
-    duplicate = deepcopy(next(row for row in independent["events"] if row["kind"] == kind))
-    duplicate["atMs"] += 0.5
-    independent["events"].append(duplicate)
-    findings = evaluate_evidence(
-        frozen,
-        retirement_evidence=independent,
-        cleanup_evidence={},
-        standard=True,
-    )
-    assert any(f"needs exactly one {kind} event" in finding for finding in findings)
-
-
-@pytest.mark.parametrize(("start", "fails"), [(199, True), (201, False)])
-def test_adjudication_overlap_excludes_retries_in_frozen_window(start: int, fails: bool) -> None:
-    frozen = evidence()
-    independent = deepcopy(frozen)
-    victim = frozen["attempts"][0]
-    independent["attempts"].append({**victim, "requestId": "extra", "attempt": 2, "startedAtMs": start})
-    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
-    assert any("original successful execution without retry" in item for item in findings) is fails
-
-
-@pytest.mark.parametrize("requirement", [3, 4])
-def test_adjudication_lifecycle_grace_uses_frozen_observation_window(requirement: int) -> None:
-    frozen = deadline_evidence() if requirement == 3 else recovery_evidence()
-    boundary_kind, fixed_at = ("platform_timeout", 30.5) if requirement == 3 else ("worker_recovered", 45.5)
-    frozen["budgets"]["observationGraceMs"] = 170 if requirement == 3 else 155
-    independent = deepcopy(frozen)
-    independent["observationEndedAtMs"] = 201
-    next(row for row in independent["events"] if row["kind"] == boundary_kind)["atMs"] = fixed_at
-    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
-    assert any("cleanup observation window lacks the declared grace after" in item for item in findings)
-
-
-def test_adjudication_rejects_multiple_disposal_root_completions_in_one_frame() -> None:
-    frozen = evidence(2)
-    independent = deepcopy(frozen)
-    root = next(row for row in independent["events"] if row["kind"] == "root_completed")
-    independent["events"].append({**root, "atMs": 36})
-    findings = evaluate_evidence(frozen, retirement_evidence=independent, cleanup_evidence={}, standard=True)
-    assert any("needs exactly one root_completed event" in item for item in findings)
-
-
 @pytest.mark.parametrize("allowed", [[], ["UNKNOWN"], ["FAILED", "FAILED"], [[]]])
 def test_adjudication_invalid_status_allowance_is_incomplete(allowed: list[Any]) -> None:
     frozen = evidence(2)
@@ -3175,187 +3144,6 @@ def test_adjudication_invalid_status_allowance_is_incomplete(allowed: list[Any])
     findings = validate_evidence(frozen, phase="observations")
     assert any(item.startswith("INCOMPLETE:") and "allowedStatuses" in item for item in findings)
     assert not any(item.startswith("ASSERTION:") and "allowedStatuses" in item for item in findings)
-
-
-@pytest.mark.parametrize(
-    "invalid",
-    [None, 1, {"kind": "task_exit", "requestId": [], "taskId": []}],
-)
-def test_adjudication_invalid_retirement_completion_is_incomplete(invalid: Any) -> None:
-    frozen = evidence(2)
-    retirement = deepcopy(frozen)
-    retirement["retirement"]["completions"] = [invalid]
-    status, findings, _ = adjudicate_evidence(
-        "COLLECTED",
-        [],
-        frozen,
-        retirement_evidence=retirement,
-        cleanup_evidence={},
-        standard=True,
-    )
-    assert status == "INCOMPLETE_EVIDENCE", findings
-    assert any("malformed captured retirement completions" in item for item in findings)
-
-
-@pytest.mark.parametrize("trusted", [False, True])
-def test_adjudication_retains_trustworthy_behavior_failure_after_cleanup_error(trusted: bool) -> None:
-    frozen = evidence(2)
-    frozen["expectedHistories"][frozen["histories"][0]["executionArn"]]["result"] = "different"
-    status, findings, _ = adjudicate_evidence(
-        "INFRASTRUCTURE_ERROR",
-        ["cleanup failed"],
-        frozen,
-        retirement_evidence={},
-        cleanup_evidence={},
-        standard=True,
-        trusted_observations=trusted,
-    )
-    assert status == ("FAILED" if trusted else "INFRASTRUCTURE_ERROR")
-    assert "cleanup failed" in findings
-    assert any(item.startswith("ASSERTION:") for item in findings)
-
-
-def test_adjudication_shared_rules_check_scenario_observations_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    from aws_durable_execution_conformance_tests.lmi.rules import engine
-
-    checked: list[Any] = []
-    scenario_rules = engine._validate_observations
-
-    def counted(view: Any, value: Any) -> None:
-        checked.append(value.get("retirement"))
-        scenario_rules(view, value)
-
-    monkeypatch.setattr(engine, "_validate_observations", counted)
-    frozen = evidence(2)
-    retired = deepcopy(frozen)
-    retired["retirement"]["retiredAtMs"] = 221
-    status, findings, projected = adjudicate_evidence(
-        "COLLECTED", [], frozen, retirement_evidence=retired, cleanup_evidence={}, standard=True
-    )
-    assert status == "PASSED", findings
-    # Scenario rules see the frozen observations once; only retirement sees the projection.
-    assert checked == [frozen["retirement"]]
-    assert projected["retirement"]["retiredAtMs"] == 221
-
-
-def test_adjudication_custom_validator_checks_observations_then_final() -> None:
-    phases: list[str] = []
-
-    def validator(evidence: Any, *, phase: Literal["observations", "final"] = "final") -> list[str]:
-        phases.append(phase)
-        return []
-
-    frozen = evidence(2)
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=deepcopy(frozen), cleanup_evidence={}, standard=True, validator=validator
-    )
-    assert findings == []
-    assert phases == ["observations", "final"]
-
-
-@pytest.mark.parametrize(("journal_key", "covered"), [("launchedAtMs", False), ("discoveredAtMs", True)])
-def test_adjudication_requires_frozen_observations_to_cover_client_launches(journal_key: str, covered: bool) -> None:
-    frozen = evidence()
-    journal = [{"requestId": row["requestId"], "launchedAtMs": row["startedAtMs"]} for row in frozen["attempts"]]
-    journal.append({"requestId": "request-unseen", journal_key: 1})
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=deepcopy(frozen), cleanup_evidence={}, standard=True, attempts=journal
-    )
-    if covered:
-        assert findings == []
-    else:
-        assert "INCOMPLETE: frozen observations do not cover all client-journaled launches" in findings
-
-
-@pytest.mark.parametrize(
-    ("counts", "finding"),
-    [
-        (((2, 2), (2, 2)), None),
-        (((2, 2), (1, 2)), "ASSERTION: observed side-effect count differs from earlier observations for retry"),
-        (((2, 2), (2, 3)), "ASSERTION: declared side-effect expectation for retry changed across observations"),
-    ],
-)
-def test_adjudication_rejects_side_effect_regressions_across_observations(
-    counts: tuple[tuple[int, int], ...], finding: str | None
-) -> None:
-    frozen = replay_evidence()
-    snapshots = []
-    for count, expected in counts:
-        snapshot = deepcopy(frozen)
-        record = next(row for row in snapshot["replay"]["sideEffects"] if row["operationId"] == "retry")
-        record.update(count=count, expectedCount=expected)
-        snapshots.append(snapshot)
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=deepcopy(frozen), cleanup_evidence={}, standard=True, observation_evidence=snapshots
-    )
-    if finding is None:
-        assert findings == []
-    else:
-        assert finding in findings
-
-
-@pytest.mark.parametrize(
-    ("orders", "finding"),
-    [
-        ((("retry-1", "retry-2"), ("retry-1", "retry-2")), None),
-        (
-            (("retry-1", "retry-2"), ("retry-2", "retry-1")),
-            "ASSERTION: observed retry attempt orders contradict each other across observations",
-        ),
-        (
-            (("retry-1", "retry-2"), ("retry-2", "retry-3"), ("retry-3", "retry-1")),
-            "ASSERTION: observed retry attempt orders contradict each other across observations",
-        ),
-        ((("retry-1", "retry-2"), ("retry-2", "retry-3")), None),
-        ((("retry-1", "retry-1"),), "INCOMPLETE: duplicate retry attemptId in observations"),
-    ],
-)
-def test_adjudication_checks_retry_order_across_observations(
-    orders: tuple[tuple[str, ...], ...], finding: str | None
-) -> None:
-    frozen = replay_evidence()
-    snapshots = []
-    for order in orders:
-        snapshot = deepcopy(frozen)
-        attempts = {row["attemptId"]: row for row in snapshot["replay"]["retry"]["attempts"]}
-        snapshot["replay"]["retry"]["attempts"] = [
-            deepcopy(attempts.get(identifier, {**attempts["retry-2"], "attemptId": identifier})) for identifier in order
-        ]
-        snapshots.append(snapshot)
-    findings = evaluate_evidence(
-        frozen, retirement_evidence=deepcopy(frozen), cleanup_evidence={}, standard=True, observation_evidence=snapshots
-    )
-    if finding is None:
-        assert findings == []
-    else:
-        assert finding in findings
-
-
-@pytest.mark.parametrize(
-    ("status", "trusted", "resolved"),
-    [
-        ("INFRASTRUCTURE_ERROR", True, "FAILED"),
-        ("INFRASTRUCTURE_ERROR", False, "INFRASTRUCTURE_ERROR"),
-        ("COLLECTED", False, "FAILED"),
-    ],
-)
-def test_adjudication_applies_collection_observation_findings(status: str, trusted: bool, resolved: str) -> None:
-    frozen = evidence()
-    complete_retirement_events(frozen)
-    finding = "ASSERTION: adapter observed a duplicate dispatch"
-
-    result, errors, _ = adjudicate_evidence(
-        status,
-        [],
-        frozen,
-        retirement_evidence=deepcopy(frozen),
-        cleanup_evidence={},
-        standard=True,
-        trusted_observations=trusted,
-        observation_findings=[finding],
-    )
-
-    assert (result, errors) == (resolved, [finding])
 
 
 @pytest.mark.parametrize("dispatch", ["complete", "uncorrelated"])

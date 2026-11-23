@@ -21,7 +21,7 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import same_json, validate_evidence
 
-run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))["run_and_adjudicate"]
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_coordinator.py")))["run_and_adjudicate"]
 
 
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
