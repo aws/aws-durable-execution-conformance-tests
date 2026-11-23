@@ -17,6 +17,7 @@ from aws_durable_execution_conformance_tests.lmi.adjudication import (
     evaluate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.replay import replay_checkpoint_timing
 
 _fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
 complete_retirement_events = _fixtures["complete_retirement_events"]
@@ -677,6 +678,38 @@ def test_cleanup_rejects_completed_replay_bodies_after_observed_pending() -> Non
     findings = _cleanup_behavior_errors(value, snapshot, standard=True)
     assert any("reports repeated completed user code for done" in error for error in findings)
     assert any("reports repeated completed user code for failed" in error for error in findings)
+
+
+@pytest.mark.parametrize("source", ["retirement", "cleanup"])
+@pytest.mark.parametrize("view", ["before", "after"])
+@pytest.mark.parametrize("operation_id", [["done"], {"id": "done"}, 7])
+def test_cleanup_replay_non_string_checkpoint_id_keeps_behavior_findings(
+    source: str, view: str, operation_id: Any
+) -> None:
+    """A non-string checkpoint ID is reported and does not hide the other cleanup findings."""
+    value = standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    snapshot["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": "done"})
+    snapshot["replay"][view][0]["id"] = operation_id
+    assert validate_retirement_evidence(snapshot) == []
+    findings = evaluate_evidence(
+        value,
+        retirement_evidence=snapshot if source == "retirement" else deepcopy(value),
+        cleanup_evidence={"release": [snapshot]} if source == "cleanup" else {},
+        standard=True,
+    )
+    assert f"ASSERTION: cleanup replay.{view} checkpoint lacks an operation ID" in findings
+    assert "ASSERTION: cleanup evidence reports repeated completed user code for done" in findings
+    assert "INCOMPLETE: malformed captured evidence" not in findings
+
+
+@pytest.mark.parametrize("operation_id", [["x"], {"id": "x"}, 7])
+def test_replay_checkpoint_timing_skips_non_string_ids_only_for_omission(operation_id: Any) -> None:
+    """A non-string ID is never an omitted checkpoint, but its end time still counts as late."""
+    before = [{"id": operation_id, "type": "STEP", "status": "SUCCEEDED", "endedAtMs": 40}]
+    after = [{"id": operation_id, "status": "SUCCEEDED", "endedAtMs": 20}]
+    assert replay_checkpoint_timing(before, after, 35) == (False, True)
+    assert replay_checkpoint_timing([], [{**after[0], "id": "x"}], 35) == (True, False)
 
 
 def test_cleanup_recovery_rechecks_declared_observation_grace() -> None:

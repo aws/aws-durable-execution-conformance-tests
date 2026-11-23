@@ -312,7 +312,9 @@ def replay_checkpoint_timing(
     observed_ends: Mapping[str, set[int | float]] | None = None,
 ) -> tuple[bool, bool]:
     """Return whether a completed checkpoint is omitted or ends after suspension."""
-    before_ids = {operation.get("id") for operation in before}
+    # Non-string IDs are reported elsewhere; skipping them keeps an unhashable
+    # ID from hiding the other findings.
+    before_ids = {operation["id"] for operation in before if isinstance(operation.get("id"), str)}
 
     def times(operation: Mapping[str, Any]) -> set[int | float]:
         operation_id = operation.get("id")
@@ -326,7 +328,8 @@ def replay_checkpoint_timing(
 
     omitted = any(
         operation.get("status") in COMPLETED_OPERATION_STATUSES
-        and operation.get("id") not in before_ids
+        and isinstance(operation.get("id"), str)
+        and operation["id"] not in before_ids
         and any(end <= pending_at for end in times(operation))
         for operation in after
     )
