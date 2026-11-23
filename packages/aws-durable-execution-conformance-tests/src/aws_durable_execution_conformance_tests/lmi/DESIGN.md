@@ -1,8 +1,8 @@
 # Lambda Managed Instances lifecycle conformance
 
-**Design reconstructed from the PR stack at the #199 head as of November 19, 2026 ([`584254d`](https://github.com/aws/aws-durable-execution-conformance-tests/commit/584254d97d1016218bed433f70c6d4a5d6851e76)) · updated November 21, 2026 with the #195 collection and adjudication decisions**
+**Design reconstructed from the PR stack at the #199 head as of November 19, 2026 ([`584254d`](https://github.com/aws/aws-durable-execution-conformance-tests/commit/584254d97d1016218bed433f70c6d4a5d6851e76)) · updated November 21, 2026 with the #195 collection and adjudication decisions, and November 23, 2026 with the code layout**
 
-Statements about #195 follow its November 21 decisions. Other statements about the state of the stack, including "the #199 snapshot", "At #199", work that later stack branches still need, and the #197–#199 drafts, describe the stack as of November 19, when `584254d` was the #199 head, unless they say *current* (as of November 21). The current branches have since resolved some of them.
+Statements about #195 follow its November 21 decisions. Other statements about the state of the stack, including "the #199 snapshot", "At #199", work that later stack branches still need, and the #197–#199 drafts, describe the stack as of November 19, when `584254d` was the #199 head, unless they say *current* (as of November 21). The current branches have since resolved some of them. The code layout section, and statements that name #209 or #210, describe the stack as of November 23.
 
 Lambda Managed Instances (LMI) can run overlapping invocations in one execution environment and reuse workers across requests. A platform timeout can end an invocation while user code is still running. Durable execution history can show the persisted outcome, but proving invocation isolation also requires knowing which request owned the work, when the SDK dispatched it, and what happened to the original worker and its peers. JavaScript, Java, and Python need the same acceptance rules across different runtime models. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161)
 
@@ -37,6 +37,74 @@ The merged #193 contract makes the selected victim’s operation probe optional 
 | Reusable workflow | Runs the harness and trusted cloud jobs, owns OIDC and account verification, refreshes credentials, and collects cleanup results, artifacts and summaries. SDK callers supply a stage script that builds and deploys the tested SDK artifact, and pin the workflow and package to the same revision. |
 
 The runtime profile describes real placement. Node.js overlap occurs within a worker, Java overlap within a JVM, and Python overlap across worker processes in one environment. Python warm reuse establishes sequential reuse of a specific process. The scheduler reserves capacity, while placement assertions use observed environment and worker identities. Use a new deployment profile when the scenario needs incompatible runtime or function settings. [Contract #193](https://github.com/aws/aws-durable-execution-conformance-tests/pull/193) · [Coordinator #195](https://github.com/aws/aws-durable-execution-conformance-tests/pull/195) · [Driver #189](https://github.com/aws/aws-durable-execution-conformance-tests/pull/189) · [Workflow #190](https://github.com/aws/aws-durable-execution-conformance-tests/pull/190)
+
+## Code layout
+
+The contract, collection, adjudication and rules rows follow the module layout that #209, #195 and #210 introduce. The other rows follow the #202 tree. That tree and the #189, #190 and #197–#199 branches keep the earlier layout until they adopt the new one. In the earlier layout, the rules live in `evidence.py`, adjudication lives in `offline.py`, and some cleanup re-checks and retention helpers also remain in the coordinator. Package paths are relative to `packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/`. Test paths are relative to `packages/aws-durable-execution-conformance-tests/`. [Adjudication #209](https://github.com/aws/aws-durable-execution-conformance-tests/pull/209) · [Coordinator #195](https://github.com/aws/aws-durable-execution-conformance-tests/pull/195) · [CLI #210](https://github.com/aws/aws-durable-execution-conformance-tests/pull/210)
+
+**Contract, collection and adjudication**
+
+| Path | Responsibility |
+| --- | --- |
+| `__init__.py` | Package for the opt-in multi-invocation LMI suite. |
+| `app.py` | CLI and programmatic entry point. It admits the manifest and claims the output directory. With `--adapter` it runs collection followed by adjudication, and with `--collected-evidence` it adjudicates a saved bundle again. With neither, it validates the manifest's standalone evidence files, a mode that a separate PR will remove. Every mode writes the results and reports. |
+| `coordinator.py` | Collection. It schedules cases on shared targets, journals launches, freezes observations and audits physical retirement to decide reuse or quarantine. It never decides conformance. |
+| `adjudication.py` | Adjudication. It derives each case's final status from a collected capture alone: its snapshots, launch journal and collection status. |
+| `evidence.py` | Public facade for validating a single evidence snapshot: `validate_evidence`, the retirement audits and the `EvidenceValidator` protocol. |
+| `catalog.py` | Explicit catalog of LMI requirements, capability profiles and runtimes, separate from ordinary suite discovery. |
+| `matrix.py` | Scenario and configuration slots that each coverage profile requires, used to report missing coverage. |
+| `requirements/lmi-lifecycle/` | Requirement YAML for the seven lifecycle scenarios. |
+| `evidence-schema.json` | Version 1 JSON Schema for evidence. |
+| `evidence-schema.md` | Evidence contract, the collection and adjudication flow, the trust boundary and the manifest format. |
+
+**Rules (`rules/`)**
+
+| Path | Responsibility |
+| --- | --- |
+| `rules/engine.py` | Rule entry points. `establish` runs the envelope and scenario rules, and `retire` audits case-owned retirement. |
+| `rules/view.py` | Per-case evaluation state: the evidence frame, derived indexes and findings. |
+| `rules/frames.py` | The evidence frames, or snapshots, that a case is judged from. |
+| `rules/values.py` | Contract constants, the validator protocol and exact JSON comparison helpers. |
+| `rules/common.py` | Rules shared by every scenario: envelope, ownership, histories and admission. |
+| `rules/overlap.py` | Lifecycle 1 and the lifecycle 4 cohort: native overlap and execution isolation. |
+| `rules/disposal.py` | Lifecycle 2 and 7: normal return or failure, and admission after return. |
+| `rules/deadline.py` | Lifecycle 3 and the lifecycle 4 victim: crossing a real invocation deadline. |
+| `rules/recovery.py` | Lifecycle 4: healthy peer progress and worker recovery. |
+| `rules/replay.py` | Lifecycle 5: suspension, replay and retry. |
+| `rules/warm_reuse.py` | Lifecycle 6: warm reuse and late activity. |
+| `rules/retirement.py` | Settlement of case-owned work and the independent retirement audit. |
+| `rules/reconcile.py` | Shared cleanup re-check state, which pairs the frozen evidence with later snapshots, for each scenario's `reconcile_*` checks. |
+| `rules/retention.py` | Merging one run's snapshots and reconciling their records. Collection and adjudication share it. |
+
+**Shared AWS driver (#189), workflow (#190) and guides**
+
+| Path | Responsibility |
+| --- | --- |
+| `adapter.py` | `SharedAdapter`, which an SDK instantiates to implement the coordinator's adapter protocol over the shared driver. |
+| `scenarios.py` | Drives the seven lifecycle scenarios through real SDK handlers. |
+| `cloud.py` | Bounded real-service driver built on the repository's cloud runner. |
+| `service.py` | Bounded AWS transport, independent of SDK language and testing libraries. |
+| `deployment.py` | Deploys and reuses the persistent LMI stacks. Runtime and build choices stay with the caller. |
+| `configuration.py` | Identity of the deployed runtime artifact and its configuration. |
+| `runtime.py` | Explicit runtime and artifact configuration for an SDK-owned fixture. |
+| `observations.py` | Language-neutral source selection and runtime-specific placement models. |
+| `source_evidence.py` | Normalizes observed SDK and service records into the evidence contract. |
+| `artifacts.py` | Run artifacts, redaction and deterministic case namespaces. |
+| `quarantine.py` | Persistent retirement fences that keep a target out of use across runs until it is recovered. |
+| `runner.py` | Builds the standard manifest from a deployment (`make_manifest`), runs it with strict reporting (`run`) and performs run-scoped cleanup (`cleanup`). |
+| `summary.py` | Summarizes the lifecycle report without claiming cloud acceptance. |
+| `errors.py` | Shared deployment, placement and source-collection failures. |
+| `README.md` | User guide for running the suite and writing its manifest. |
+| `REUSE.md` | Guide for SDKs that reuse the harness: the bindings they supply and the reusable workflow. |
+| `DESIGN.md` | This design document. |
+| `.github/workflows/lmi-lifecycle.yml` (repository root) | Reusable workflow that runs the harness and the trusted cloud jobs. |
+
+**Tests**
+
+| Path | Responsibility |
+| --- | --- |
+| `tests/test_lmi_*.py` | Tests of the contract, rules, adjudication, coordinator and CLI, and of the user guide's manifest examples. They use hand-built evidence and fake adapters, and need no AWS access. |
+| `tests/lmi_driver/` | Tests of the driver, deployment, quarantine fences and evidence normalization against mocked or stubbed AWS clients, and of the reusable workflow file. |
 
 ## Execution and evidence
 
@@ -82,6 +150,6 @@ The workflow's fixed concurrency group serializes cloud jobs within each caller 
 - **Standalone evidence files.** #195 still validates `evidence_file` entries from the manifest when neither `--adapter` nor `--collected-evidence` is given. A pass in that mode proves less than a collected run, because there is no journal, cleanup or independent physical retirement audit. A separate PR will remove the mode, its manifest field and its documentation, keeping the library `validate_evidence`.
 - **Retirement audit during adjudication.** Adjudication could re-run the independent physical retirement audit from a saved bundle instead of trusting the recorded collection status. Under the trust boundary above, this has lower priority and can follow #189's adoption of the latest #195 changes.
 
-The core merge order is **#193 → #195 → #189 → #190**, followed by Python caller **#931** pinned to the final shared workflow revision. The core PRs report validation without live AWS runs: retained evidence, fake transport and fixtures. The rollout gate requires retained evidence and regression-sensitivity controls on at least two distinct real runtime models. Each supported runtime still needs to pass all seven cases for conformance. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161) · [Python #931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931)
+The core merge order is **#193 → #195 → #189 → #190**, followed by Python caller **#931** pinned to the final shared workflow revision. #195 is now split into #209 → #195 → #210, which merge in that order ahead of #189. The core PRs report validation without live AWS runs: retained evidence, fake transport and fixtures. The rollout gate requires retained evidence and regression-sensitivity controls on at least two distinct real runtime models. Each supported runtime still needs to pass all seven cases for conformance. [Tracking issue #161](https://github.com/aws/aws-durable-execution-conformance-tests/issues/161) · [Python #931](https://github.com/aws/aws-durable-execution-sdk-python/pull/931)
 
 GitHub shows #197, #198 and #199 above the core changes. The November 19 #199 snapshot contains the held-fault regressions. The warm-reuse fix and missing-return regressions live on separate commits outside that snapshot. That snapshot predates the #195 collection and adjudication split: its coordinator still reports verdicts, and its CLI neither offers `--collected-evidence` nor claims the output directory exclusively. The current #189 and #190 branches have the split. The current #197, #198 and #199 branches have the saved-bundle CLI, but their coordinator can still adjudicate cases itself. All five current branches use the earlier #195 names (`live_results`, `collected_evidence_results` and `lmi/offline.py`) and predate the latest #195 changes described here, such as the trust boundary, the run-wide finish barrier and one scheduler per run. The current branches need to adopt those changes, including the renames to `collect_and_adjudicate`, `adjudicate_collected_evidence` and `lmi/adjudication.py`. [Stack #196](https://github.com/aws/aws-durable-execution-conformance-tests/stack/196)
