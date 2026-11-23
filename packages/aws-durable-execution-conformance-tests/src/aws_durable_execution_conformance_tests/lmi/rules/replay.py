@@ -693,9 +693,12 @@ def _cleanup_checkpoint_errors(
                 continue
             for operation in records(history.get("operations")):
                 operation_id = operation.get("id")
-                if isinstance(operation_id, str) and operation_id.strip():
-                    history_ids.add(operation_id)
-                    observations.setdefault(operation_id, []).append(("history", operation))
+                # Collection shape-checks only the retirement snapshot's histories.
+                if not isinstance(operation_id, str) or not operation_id.strip():
+                    findings.append("INCOMPLETE: cleanup history checkpoint lacks an operation ID")
+                    continue
+                history_ids.add(operation_id)
+                observations.setdefault(operation_id, []).append(("history", operation))
 
     for operation_id, observed in observations.items():
         identity: dict[str, Any] = {"id": operation_id}

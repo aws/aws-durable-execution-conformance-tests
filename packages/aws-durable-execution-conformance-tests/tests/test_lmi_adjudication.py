@@ -703,6 +703,34 @@ def test_cleanup_replay_non_string_checkpoint_id_keeps_behavior_findings(
     assert "INCOMPLETE: malformed captured evidence" not in findings
 
 
+@pytest.mark.parametrize("source", ["retirement", "cleanup"])
+@pytest.mark.parametrize("operation_id", [7, ["x"], {"id": "x"}, "", " "])
+def test_cleanup_history_checkpoint_without_usable_id_is_reported(source: str, operation_id: Any) -> None:
+    """A completed history operation without a usable ID cannot pass unreported."""
+    value = standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    history = next(row for row in snapshot["histories"] if row["executionArn"] == "arn:execution:victim")
+    history["operations"].append(
+        {
+            "id": operation_id,
+            "type": "STEP",
+            "status": "SUCCEEDED",
+            "name": None,
+            "parentId": None,
+            "startedAtMs": 25,
+            "endedAtMs": 30,
+        }
+    )
+    findings = evaluate_evidence(
+        value,
+        retirement_evidence=snapshot if source == "retirement" else deepcopy(value),
+        cleanup_evidence={"release": [snapshot]} if source == "cleanup" else {},
+        standard=True,
+    )
+    assert "INCOMPLETE: cleanup history checkpoint lacks an operation ID" in findings
+    assert "INCOMPLETE: malformed captured evidence" not in findings
+
+
 @pytest.mark.parametrize("operation_id", [["x"], {"id": "x"}, 7])
 def test_replay_checkpoint_timing_skips_non_string_ids_only_for_omission(operation_id: Any) -> None:
     """A non-string ID is never an omitted checkpoint, but its end time still counts as late."""
