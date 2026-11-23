@@ -2766,6 +2766,13 @@ def test_replay_rejects_a_completed_snapshot_from_after_suspension() -> None:
     assert "ASSERTION: replay.before contains an operation that completed after suspension" in validate_evidence(value)
 
 
+def test_replay_rejects_a_step_the_service_completed_after_suspension_even_without_snapshot_timing() -> None:
+    value = replay_evidence()
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["id"] == "done")["endedAtMs"] = 60
+    assert "ASSERTION: replay changed completed operation identity, result, or failure" in validate_evidence(value)
+
+
 def test_deadline_rejects_admission_closed_before_a_tied_timeout() -> None:
     value = deadline_evidence()
     timeout = next(item for item in value["events"] if item["kind"] == "platform_timeout")
@@ -2906,6 +2913,23 @@ def test_replay_allows_completed_suspension_callback_in_resume_snapshot() -> Non
     value["replay"]["before"].append(deepcopy(callback))
     value["replay"]["sideEffects"].append({"operationId": "pause", "count": 0, "expectedCount": 0})
     assert validate_evidence(value) == []
+
+
+def test_replay_resume_snapshot_without_service_timing_matches_completed_wait() -> None:
+    value = replay_evidence()
+    wait = next(item for item in value["replay"]["after"] if item["id"] == "pause")
+    snapshot = {key: item for key, item in wait.items() if key != "endedAtMs"}
+    value["replay"]["before"].append({**snapshot, "result": None})
+    wait["result"] = None
+    next(item for item in value["histories"][0]["operations"] if item["id"] == "pause")["result"] = None
+    value["replay"]["sideEffects"].append({"operationId": "pause", "count": 0, "expectedCount": 0})
+    assert validate_evidence(value) == []
+
+
+def test_replay_after_must_keep_the_service_completion_time() -> None:
+    value = replay_evidence()
+    next(item for item in value["replay"]["after"] if item["id"] == "pause")["endedAtMs"] = 46
+    assert any("replay.after differs from the collected service history" in error for error in validate_evidence(value))
 
 
 def test_replay_unordered_body_tie_is_incomplete_without_asserting_sdk_failure() -> None:

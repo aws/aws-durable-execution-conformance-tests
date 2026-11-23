@@ -1209,6 +1209,61 @@ def test_standard_collection_timing_budgets_preserve_the_admitted_snapshot(tmp_p
         assert any("behavior budgets" in error for error in result["errors"])
 
 
+def test_active_retry_requires_an_independent_retirement_audit():
+    plan, value = timed_plan(3)
+    active = dict(value["attempts"][0], requestId="in-flight", attempt=2, activeAtObservationEnd=True)
+    active.pop("endedAtMs")
+    active.pop("outcome")
+    value["attempts"].append(active)
+    (row,) = coordinator_capture(plan, {value["caseId"]: value})
+    row["retirement_evidence"] = {}
+    result = adjudicate_collected_evidence(plan, [row])[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+    assert any("independent retirement audit" in error for error in result["errors"]), result["errors"]
+    assert result["evidence"]["attempts"][-1] == active
+
+
+@pytest.mark.parametrize("matches", [False, True])
+def test_collected_evidence_binds_conformance_revision(matches):
+    plan, value = timed_plan(3)
+    revision = value["artifact"]["conformance"]
+    plan["sdk"] = {"deployment": {"conformanceRevision": revision if matches else "wrong-revision"}}
+
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {value["caseId"]: value}))[0]
+
+    assert result["status"] == ("PASSED" if matches else "INCOMPLETE_EVIDENCE"), result["errors"]
+    if not matches:
+        assert "INCOMPLETE: evidence conformance revision does not match the admitted plan" in result["errors"]
+
+
+def test_collection_cli_persists_canonical_binding_directory(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+    from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_artifact_directory
+
+    plan = manifest()
+    plan["sdk"] = {"artifacts_dir": "case-journals"}
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(plan))
+    working = tmp_path / "original-cwd"
+    working.mkdir()
+    output = tmp_path / "test-output"
+    monkeypatch.chdir(working)
+
+    async def inspect(manifest, adapter, *, audit_dir):
+        expected = str(working / "case-journals")
+        assert manifest["sdk"]["artifacts_dir"] == expected
+        assert json.loads((audit_dir / "manifest.json").read_text())["sdk"]["artifacts_dir"] == expected
+        raise RuntimeError("validated before dispatch")
+
+    monkeypatch.setattr(app, "collect_and_adjudicate", inspect)
+    with pytest.raises(RuntimeError, match="validated before dispatch"):
+        app.run(["--manifest", str(path), "--adapter", "fixture:adapter", "--output", str(output)])
+    monkeypatch.chdir(tmp_path)
+    old_plan = {"sdk": {"artifacts_dir": "case-journals"}}
+    with pytest.raises(ValueError, match="original location is unresolved"):
+        sdk_artifact_directory(output, old_plan)
+
+
 def test_collection_audit_directory_is_claimed_before_adapter_load(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
 

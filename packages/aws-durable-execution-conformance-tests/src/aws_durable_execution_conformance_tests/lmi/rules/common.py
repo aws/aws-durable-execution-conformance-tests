@@ -5,18 +5,24 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, TypeGuard
 
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_service_requests
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors, _native_intervals
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     _CALL_METHODS,
+    CUTOFF_ACTIVE_STATUSES,
     HISTORY_STATUSES,
     RECOVERY_POLICIES,
     RUNTIMES,
     SCHEMA_VERSION,
     TERMINAL_STATUSES,
+    _json_result_fingerprint,
+    _same_checkpoint_display,
+    _valid_fingerprint,
     is_json_integer,
     mappings,
     same_json,
@@ -46,10 +52,19 @@ def optional_shapes(view: CaseView) -> None:
     if "replay" not in view.value:
         return
     replay = view.mapping(view.value["replay"], "replay")
-    for field in ("before", "after"):
+    for field in ("before", "after", "expectedBefore"):
         if field in replay:
-            for operation in view.records(replay[field], f"replay.{field}", nonempty=True):
+            for operation in view.records(replay[field], f"replay.{field}", nonempty=field != "expectedBefore"):
                 view.operation_shape(operation, f"replay.{field}", completed=field == "before")
+    if "projectionErrors" in replay:
+        projection_errors = replay["projectionErrors"]
+        if not isinstance(projection_errors, list) or any(
+            not isinstance(error, str) or not error.strip() for error in projection_errors
+        ):
+            view.error("replay.projectionErrors must be an array of nonempty strings")
+    for field in ("durableWaitObserved", "suspensionCheckpointMatches"):
+        if field in replay and type(replay[field]) is not bool:
+            view.error(f"replay.{field} must be a boolean")
     if "operationExecutions" in replay:
         for execution in view.records(replay["operationExecutions"], "replay.operationExecutions", nonempty=True):
             for field in ("requestId", "operationId"):
@@ -58,11 +73,16 @@ def optional_shapes(view: CaseView) -> None:
         retry = view.mapping(replay["retry"], "replay.retry")
         view.string(retry.get("operationId"), "replay.retry.operationId")
         attempts = view.records(retry.get("attempts"), "replay.retry.attempts")
-        if len(attempts) < 2:
+        missing = replay.get("missingExpectedEffects")
+        if len(attempts) < 2 and not (len(attempts) == 1 and isinstance(missing, list) and "retry" in missing):
             view.error("retry requires at least two observed attempts")
         for attempt in attempts:
             for field in ("attemptId", "requestId", "outcome"):
                 view.string(attempt.get(field), f"retry.{field}")
+    if "missingExpectedEffects" in replay:
+        missing = replay["missingExpectedEffects"]
+        if not isinstance(missing, list) or any(not isinstance(name, str) or not name.strip() for name in missing):
+            view.error("replay.missingExpectedEffects must be an array of nonempty operation names")
     if "sideEffects" in replay:
         for count in view.records(replay["sideEffects"], "replay.sideEffects", nonempty=True):
             view.string(count.get("operationId"), "replay.sideEffects.operationId")
@@ -71,7 +91,7 @@ def optional_shapes(view: CaseView) -> None:
                     view.error(f"replay.sideEffects.{field} must be a non-negative integer")
 
 
-def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches: bool = False) -> None:
+def envelope(view: CaseView) -> None:
     value = view.value
     if not is_json_integer(value.get("schemaVersion")) or value.get("schemaVersion") != SCHEMA_VERSION:
         view.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
@@ -92,7 +112,16 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
         view.error("profile.nativeConcurrency must be a positive integer")
     if view.number(view.profile.get("timeoutMs"), "profile.timeoutMs") <= 0:
         view.error("profile.timeoutMs must be positive")
+
+
+def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches: bool = False) -> None:
+    envelope(view)
+    value = view.value
     if validate_behavior:
+        artifact = value.get("artifact")
+        revision = artifact.get("conformance") if isinstance(artifact, Mapping) else None
+        if isinstance(revision, str) and revision.strip().lower() == "unverified":
+            view.error("conformance revision is unverified")
         # Physical retirement can retain partial behavior diagnostics;
         # only the observation validators require their supplied shapes.
         optional_shapes(view)
@@ -115,6 +144,21 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
                 view.error(f"duplicate attempt ordinal {ordinal} for role {role}")
             attempt_ordinals.add(identity)
         start = view.number(attempt.get("startedAtMs"), f"attempt {request_id}.startedAtMs")
+        if "activeAtObservationEnd" in attempt:
+            if (
+                not validate_behavior
+                or not view.standard_behavior
+                or value.get("requirementId") not in ("lmi-lifecycle-3", "lmi-lifecycle-4")
+                or attempt["activeAtObservationEnd"] is not True
+                or role != "victim"
+                or not is_json_integer(ordinal)
+                or ordinal < 2
+                or start > observation_end
+                or "endedAtMs" in attempt
+                or "outcome" in attempt
+            ):
+                view.error(f"attempt {request_id} cannot represent an active retry at observation end")
+            continue
         end = view.number(attempt.get("endedAtMs"), f"attempt {request_id}.endedAtMs")
         if end <= start or end > observation_end:
             view.error(f"attempt {request_id} has an invalid observation interval")
@@ -173,6 +217,12 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
         ):
             view.error(f"tied native admissions cannot establish the original {role} invocation")
         view.selected[role] = attempt
+    victim = view.selected.get("victim", {})
+    for request_id, attempt in view.attempts.items():
+        if attempt.get("activeAtObservationEnd") is True and (
+            request_id in seen or attempt.get("executionArn") != victim.get("executionArn")
+        ):
+            view.error(f"attempt {request_id} is not a nonselected retry on the victim execution")
     view.events = view.records(value.get("events"), "events", nonempty=not allow_no_launches)
     for event in view.events:
         kind = view.string(event.get("kind"), "event.kind")
@@ -212,6 +262,16 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
         if "releasedAtMs" in fault:
             view.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
     histories(view, check_expectations=validate_behavior, allow_no_launches=allow_no_launches)
+    for arn in deferred_service_requests(value).values():
+        if arn not in {attempt.get("executionArn") for attempt in view.attempts.values()}:
+            view.error("deferred service request is outside the observed execution inventory")
+    collection(view, observation_end)
+    if validate_behavior:
+        no_late_dispatch(view)
+
+
+def collection(view: CaseView, observation_end: float | None = None) -> Mapping[str, Any]:
+    value = view.value
     collection_errors = value.get("collectionErrors", [])
     if not isinstance(collection_errors, list):
         view.error("collectionErrors must be an array of non-empty strings")
@@ -221,18 +281,18 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
             if message:
                 view.error(f"collectionErrors[{index}]: {message}")
     collection = view.mapping(value.get("collection"), "collection")
-    watermarks = view.mapping(collection.get("watermarks"), "collection.watermarks")
-    for source in ("lifecycle", "sdkRequests", "history"):
-        if view.number(watermarks.get(source), f"collection.watermarks.{source}") < observation_end:
-            view.error(f"{source} collection does not cover the observation window")
+    if observation_end is not None:
+        watermarks = view.mapping(collection.get("watermarks"), "collection.watermarks")
+        for source in ("lifecycle", "sdkRequests", "history"):
+            if view.number(watermarks.get(source), f"collection.watermarks.{source}") < observation_end:
+                view.error(f"{source} collection does not cover the observation window")
     references = collection.get("evidenceUris")
     if not isinstance(references, list) or not references:
         view.error("collection.evidenceUris must retain the raw evidence references")
     else:
         for index, uri in enumerate(references):
             view.string(uri, f"collection.evidenceUris[{index}]")
-    if validate_behavior:
-        no_late_dispatch(view)
+    return collection
 
 
 def owned_record(view: CaseView, record: Mapping[str, Any], kind: str, end: float) -> None:
@@ -254,9 +314,20 @@ def owned_record(view: CaseView, record: Mapping[str, Any], kind: str, end: floa
         else:
             observed_attempt = view.attempts[observed_during]
             start = view.number(observed_attempt.get("startedAtMs"), "observed attempt.startedAtMs")
-            finish = view.number(observed_attempt.get("endedAtMs"), "observed attempt.endedAtMs")
+            finish = (
+                end
+                if observed_attempt.get("activeAtObservationEnd") is True
+                else view.number(observed_attempt.get("endedAtMs"), "observed attempt.endedAtMs")
+            )
             if not start <= time <= finish:
                 view.error(f"{kind} lies outside its observedDuringRequestId interval", "ASSERTION")
+
+
+def result_fingerprint(view: CaseView, record: Mapping[str, Any], path: str) -> None:
+    if "resultFingerprint" in record and (
+        "result" not in record or not _valid_fingerprint(record["resultFingerprint"])
+    ):
+        view.error(f"{path}.resultFingerprint requires a stored result and a SHA-256 digest")
 
 
 def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launches: bool = False) -> None:
@@ -267,6 +338,7 @@ def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launc
         if arn in actual:
             view.error(f"duplicate service history {arn}")
         actual[arn] = history
+        result_fingerprint(view, history, f"history {arn}")
         if history.get("status") not in HISTORY_STATUSES:
             view.error(f"history {arn}.status must be a recognized execution status")
         if "startedAtMs" in history:
@@ -295,7 +367,8 @@ def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launc
                 ids.add(operation_id)
         if check_expectations:
             expectation = view.mapping(expected.get(arn), f"expectedHistories.{arn}")
-            allow_running = False
+            result_fingerprint(view, expectation, f"expectedHistories.{arn}")
+            allows_unfinished = False
             if ("status" in expectation) == ("allowedStatuses" in expectation):
                 view.error(f"expectedHistories.{arn} must declare exactly one of status or allowedStatuses")
             if "allowedStatuses" in expectation:
@@ -305,10 +378,10 @@ def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launc
                         f"expectedHistories.{arn}.allowedStatuses must contain distinct recognized execution statuses"
                     )
                 else:
-                    allow_running = "RUNNING" in allowed
+                    allows_unfinished = any(status in allowed for status in CUTOFF_ACTIVE_STATUSES)
             elif expectation.get("status") not in HISTORY_STATUSES:
                 view.error(f"expectedHistories.{arn}.status must be a recognized execution status")
-            if not allow_running and "result" not in expectation and "error" not in expectation:
+            if not allows_unfinished and "result" not in expectation and "error" not in expectation:
                 view.error(f"history {arn} needs an independently declared expected result/error")
             view.errors.extend(_history_expectation_mismatches(arn, history, expectation))
     arns = {attempt.get("executionArn") for attempt in view.attempts.values()}
@@ -454,7 +527,14 @@ def _history_expectation_mismatches(arn: str, history: Mapping[str, Any], expect
     if _valid_history_status_allowance(allowed) and history.get("status") not in allowed:
         errors.append(f"ASSERTION: service history {arn}.status is outside the declared allowedStatuses")
     for key, item in expectation.items():
-        if key != "allowedStatuses" and (key not in history or not same_json(history[key], item)):
+        if key == "allowedStatuses":
+            continue
+        matches = (
+            _same_execution_result(history, expectation)
+            if key == "result"
+            else key in history and same_json(history[key], item)
+        )
+        if not matches:
             errors.append(f"ASSERTION: service history {arn}.{key} differs from the fixture expectation")
     return errors
 
@@ -711,3 +791,17 @@ def reconcile_unique_events(view: ReconcileView) -> None:
             for source in view.sources
         ):
             view.findings.append(f"INCOMPLETE: request {request} needs exactly one {unique_kind} event")
+
+
+def _same_execution_result(history: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    if "result" not in history:
+        return False
+    if "resultFingerprint" not in history:
+        return same_json(history["result"], expected["result"])
+    try:
+        expected_digest = _json_result_fingerprint(json.dumps(expected["result"], allow_nan=False))
+    except TypeError, ValueError:
+        return False
+    return history["resultFingerprint"] == expected_digest and _same_checkpoint_display(
+        history["result"], expected["result"]
+    )

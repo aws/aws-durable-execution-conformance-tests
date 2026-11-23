@@ -33,6 +33,14 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_observed_retirement,
     validate_retirement_evidence,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.controls import controls_only_retirement, invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    active_pre_cutoff_errors,
+    active_retry_interval,
+    deferred_retirement_errors,
+    deferred_service_requests,
+    requests_after_cutoff,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.retention import (
     _OPERATION_TERMINAL_STATUSES,
     _cleanup_record_errors,
@@ -339,6 +347,7 @@ class ScenarioContext:
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
+    _collection_deadline: float | None = field(default=None, init=False, repr=False, compare=False)
     _on_claim: Callable[[ScenarioContext], None] | None = field(default=None, repr=False, kw_only=True)
     _claim_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, kw_only=True)
     _validate_attempt: Callable[[Mapping[str, Any]], None] | None = field(default=None, repr=False)
@@ -481,7 +490,12 @@ class ScenarioContext:
                     raise ValueError("Attempt ordinal must remain an integer")
                 # Once bound, a launch keeps its request and execution: a later
                 # update must not rebind it to another invocation's work.
-                for name, label in (("requestId", "invocation request ID"), ("executionArn", "durable execution")):
+                for name, label in (
+                    ("requestId", "invocation request ID"),
+                    ("executionArn", "durable execution"),
+                    ("nativeStartedAtMs", "service native start"),
+                    ("nativeEndedAtMs", "service native completion"),
+                ):
                     if name in attempt and diagnostics.get(name, attempt[name]) != attempt[name]:
                         raise ValueError(f"Cannot replace the original {label}")
                 if "attempt" in diagnostics:
@@ -577,6 +591,9 @@ async def _bounded(
 ) -> Any:
     started = time.time() * 1000
     monotonic_started = time.monotonic()
+    if name in {"collection", "partialCollection"}:
+        # Leave the worker time to return its retained evidence before the watchdog.
+        context._collection_deadline = monotonic_started + budget - min(0.1, budget / 10)
     task = asyncio.ensure_future(operation)
     try:
         done, _ = await asyncio.wait((task,), timeout=budget)
@@ -586,6 +603,8 @@ async def _bounded(
             raise RuntimeError(f"{name} operation was cancelled")
         return task.result()
     finally:
+        if name in {"collection", "partialCollection"}:
+            context._collection_deadline = None
         context.timings[name] = {
             "startedAtMs": started,
             "finishedAtMs": time.time() * 1000,
@@ -596,6 +615,41 @@ async def _bounded(
             residual.append(task)
             # Do not wait without a bound for a cancellation-resistant adapter.
             task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
+
+
+def _controls_only_dispatch_reconciled(context: ScenarioContext, evidence: Mapping[str, Any]) -> bool:
+    retirement = evidence["retirement"]
+    launches = retirement.get("undispatchedLaunches")
+    if not isinstance(launches, list):
+        return False
+    rejected: dict[str, Mapping[str, Any]] = {}
+    for launch in launches:
+        if not isinstance(launch, Mapping):
+            return False
+        if invoke_rejection_proven(launch):
+            marker = launch.get("marker")
+            if not isinstance(marker, str) or marker in rejected:
+                return False
+            rejected[marker] = launch
+    if len(rejected) != len(context.attempts):
+        return False
+    for journaled in context.attempts:
+        marker = journaled.get("attemptId")
+        if not isinstance(marker, str) or marker not in rejected or not invoke_rejection_proven(journaled):
+            return False
+        launch = rejected.pop(marker)
+        if journaled.get("source") != "driver-invoke" or set(launch) != {
+            "marker",
+            "functionArn",
+            "durableExecutionName",
+            "dispatchState",
+            "retryAttempts",
+            "rejectionCode",
+        }:
+            return False
+        if any(key not in journaled or not same_json(journaled[key], value) for key, value in launch.items()):
+            return False
+    return not rejected
 
 
 def _ownership_errors(
@@ -625,11 +679,40 @@ def _ownership_errors(
     if not isinstance(artifact, Mapping) or artifact.get("sdk") != context.profile.artifact_id:
         errors.append("Collected SDK artifact does not match the deployed revision")
     attempts = evidence.get("attempts")
+    if not complete_cohort and controls_only_retirement(evidence):
+        if (
+            attempts != []
+            or evidence.get("selectedRequests") != {}
+            or not _controls_only_dispatch_reconciled(context, evidence)
+        ):
+            errors.append("Controls-only retirement cannot reconcile the dispatch journal")
+        return errors
+    journaled_attempts = context.attempts
+    if complete_cohort:
+        excluded = requests_after_cutoff(journaled_attempts, evidence.get("observationEndedAtMs"))
+        journaled_attempts = [
+            item
+            for item in journaled_attempts
+            if not isinstance(request := item.get("requestId"), str) or request not in excluded
+        ]
+    else:
+        journaled_attempts = [
+            item
+            for item in journaled_attempts
+            if not (
+                invoke_rejection_proven(item)
+                and item.get("source") == "driver-invoke"
+                and item.get("functionArn") == context.profile.resource_id
+                and item.get("marker") == item.get("attemptId")
+                and isinstance(item.get("durableExecutionName"), str)
+                and bool(item["durableExecutionName"].strip())
+            )
+        ]
     if not isinstance(attempts, list) or not all(isinstance(item, Mapping) for item in attempts):
         errors.append("Collected invocation attempts are missing or malformed")
     else:
         collected = [item.get("requestId") for item in attempts]
-        recorded = [item.get("requestId") for item in context.attempts]
+        recorded = [item.get("requestId") for item in journaled_attempts]
         if (complete_cohort and not recorded) or any(not isinstance(item, str) or not item for item in recorded):
             errors.append("Every launched attempt must retain an identified invocation request")
         elif (
@@ -640,7 +723,7 @@ def _ownership_errors(
         ):
             errors.append("Collected attempts do not match all original journaled launches")
         else:
-            journal = {item["requestId"]: item for item in context.attempts}
+            journal = {item["requestId"]: item for item in journaled_attempts}
             for item in attempts:
                 original = journal[item["requestId"]]
                 if (
@@ -653,8 +736,22 @@ def _ownership_errors(
                 # accept its result and leave the journaled execution unaudited.
                 if "executionArn" in original and item.get("executionArn") != original["executionArn"]:
                     errors.append(f"Collected execution substitutes the journaled execution of {item['requestId']}")
+                if "nativeStartedAtMs" in original and item.get("startedAtMs") != original["nativeStartedAtMs"]:
+                    errors.append(f"Collected native start contradicts service history for {item['requestId']}")
+                if item.get("activeAtObservationEnd") is True:
+                    selected = evidence.get("selectedRequests")
+                    victim_id = selected.get("victim") if isinstance(selected, Mapping) else None
+                    victim = journal.get(victim_id, {}) if isinstance(victim_id, str) else {}
+                    if not complete_cohort or not active_retry_interval(
+                        original, evidence.get("observationEndedAtMs"), victim.get("executionArn")
+                    ):
+                        errors.append(
+                            f"Collected active retry lacks a verified service interval for {item['requestId']}"
+                        )
+                elif "nativeEndedAtMs" in original and item.get("endedAtMs") != original["nativeEndedAtMs"]:
+                    errors.append(f"Collected native end contradicts service history for {item['requestId']}")
         selected = evidence.get("selectedRequests")
-        originals = {item["role"]: item.get("requestId") for item in context.attempts if item["attempt"] == 1}
+        originals = {item["role"]: item.get("requestId") for item in journaled_attempts if item["attempt"] == 1}
         if complete_cohort and (
             not isinstance(selected, Mapping)
             or set(selected) != set(originals)
@@ -673,6 +770,12 @@ def _retirement_ownership_errors(
     compare_order: bool = True,
 ) -> list[str]:
     errors = _ownership_errors(context, final, complete_cohort=False)
+    if controls_only_retirement(final) and (
+        any(original.get(key, []) != [] for key in ("attempts", "events", "histories", "sdkRequests", "faultsCreated"))
+        or original.get("selectedRequests", {}) != {}
+        or "replay" in original
+    ):
+        errors.append("Controls-only retirement cannot replace retained runtime evidence")
     if final.get("coverageProfile", "standard") != context.scenario.coverage_profile:
         errors.append("Retirement coverageProfile changed the admitted case")
     if "runtime" in original and not same_json(original["runtime"], final.get("runtime")):
@@ -687,6 +790,8 @@ def _retirement_ownership_errors(
             for key, value in original_artifact.items():
                 if key not in final_artifact or not same_json(value, final_artifact[key]):
                     errors.append(f"Retirement artifact.{key} differs from the original observations")
+    errors.extend(active_pre_cutoff_errors(original, final))
+    errors.extend(deferred_retirement_errors(original, final, undispatched=True))
     original_attempts = original.get("attempts", [])
     observed = final.get("attempts", [])
     if not isinstance(original_attempts, list) or not isinstance(observed, list):
@@ -1050,7 +1155,7 @@ def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Map
         if isinstance(item, Mapping) and isinstance(item.get("id"), str)
     }
     terminal_outcomes = {
-        "invocation": ("QUIESCENT",),
+        "invocation": ("QUIESCENT", "UNDISPATCHED"),
         "execution": TERMINAL_STATUSES,
         "callback": ("SUCCEEDED", "FAILED", "TIMED_OUT"),
         "control": ("DELETED",),
@@ -1734,10 +1839,35 @@ async def run_scenarios(
                         snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
+                # Adapter evidence is untrusted. A malformed deferral must fail
+                # retirement here; raising would skip the non-quiescent release.
+                try:
+                    journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
+                    if journaled_late:
+                        deferred = deferred_service_requests(evidence)
+                        deferred.update(
+                            {
+                                item["requestId"]: item["executionArn"]
+                                for item in context.attempts
+                                if item.get("requestId") in journaled_late
+                            }
+                        )
+                        evidence.setdefault("collection", {})["deferredServiceRequests"] = [
+                            {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
+                        ]
+                    full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
+                        isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
+                        for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
+                    )
+                except Exception as exc:
+                    cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
+                    full_runtime_audit_required = True
                 supplied_retirement = context.retirement_evidence
                 if not isinstance(supplied_retirement, Mapping):
                     cleanup_errors.append("Independent retirement snapshot must be an object")
-                if owned_work and (status != "COLLECTED" or supplied_retirement or cleanup_changed):
+                if owned_work and (
+                    status != "COLLECTED" or supplied_retirement or cleanup_changed or full_runtime_audit_required
+                ):
                     try:
                         retirement_evidence = (
                             copy.deepcopy(dict(supplied_retirement)) if isinstance(supplied_retirement, Mapping) else {}
@@ -1871,6 +2001,15 @@ async def run_scenarios(
             return
         profile = profile_map[profile_id]
         context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
+        # Quiescence must be positive: a case that ended without releasing its
+        # lease never completed its retirement audit, so keep the fence.
+        stranded = sorted(
+            owner for owner in leases._resources[profile.resource_id].owners if owner.startswith(f"{run_id}:")
+        )
+        if stranded:
+            await leases.quarantine(
+                profile.resource_id, f"Case ownership was not released after retirement: {', '.join(stranded)}"
+            )
         quiet = leases.quarantine_reason(profile.resource_id) is None and not any(interrupted)
         task = asyncio.current_task()
         assert task is not None

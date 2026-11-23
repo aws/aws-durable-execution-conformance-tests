@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.adjudication import _cleanup_behavior_errors
+from aws_durable_execution_conformance_tests.lmi.adjudication import _cleanup_behavior_errors, evaluate_evidence
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Budgets,
     Profile,
@@ -265,12 +265,220 @@ def _run(
     return results, scheduler
 
 
+@pytest.mark.parametrize("dispatch", ["PREPARED", "REJECTED", "SUBMITTED", "MIXED"])
+@pytest.mark.parametrize("standard_replay", [False, True])
+def test_controls_only_audit_reconciles_original_launch_journal(dispatch: str, standard_replay: bool) -> None:
+    from aws_durable_execution_conformance_tests.lmi.artifacts import case_key
+
+    class ControlsOnlyAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id != "failed":
+                await super().start(context)
+                return
+            self.started.append("failed")
+            final = _snapshot(context)
+            rejected = {
+                "marker": "fixture",
+                "functionArn": context.profile.resource_id,
+                "durableExecutionName": "fixture-name",
+                "dispatchState": "REJECTED",
+                "rejectionCode": "AccessDeniedException",
+                "retryAttempts": 0,
+            }
+            if dispatch in ("REJECTED", "MIXED"):
+                context.record_attempt("fixture", role="victim", source="driver-invoke", **rejected)
+            if dispatch in ("SUBMITTED", "MIXED"):
+                context.record_attempt("uncertain", role="victim", dispatchState="SUBMITTED")
+            undispatched = (
+                [
+                    {key: value for key, value in rejected.items() if key not in {"rejectionCode", "retryAttempts"}}
+                    | {"dispatchState": "PREPARED"}
+                ]
+                if dispatch == "PREPARED"
+                else [rejected]
+                if dispatch in ("REJECTED", "MIXED")
+                else []
+            )
+            scope = case_key(context.scenario.case_id)
+            uri = f"file:///local/artifacts/cases/{scope}/control-records.json"
+            control = {
+                "kind": "control",
+                "id": f"s3://bucket/runs/{context.run_id}/cases/{scope}/control/release-all",
+                "ownerCaseId": context.scenario.case_id,
+                "gate": "release-all",
+            }
+            for key in ("attempts", "events", "histories", "sdkRequests", "faultsCreated"):
+                final[key] = []
+            final["selectedRequests"] = {}
+            final["collection"] = {"watermarks": {}, "evidenceUris": [uri]}
+            final["resourcesCreated"] = [control]
+            final["controlRecords"] = [
+                {"gate": "release-all", "action": action, "state": "ACKNOWLEDGED", "started": at - 0.1, "time": at}
+                for action, at in (("hold", 1), ("release", 2), ("delete", 3))
+            ]
+            final["retirement"].update(
+                mode="controls-only",
+                undispatchedLaunches=undispatched,
+                faults=[],
+                resources=[{**control, "outcome": "DELETED", "settledAtMs": 3000, "evidenceUri": uri}],
+            )
+            self.snapshots["failed"] = final
+            raise RuntimeError(PHASE_FAILURE)
+
+    adapter = ControlsOnlyAdapter()
+    if standard_replay:
+        scheduler = ResourceScheduler()
+        case = Scenario(
+            "failed",
+            "lmi-lifecycle-5",
+            PROFILE.profile_id,
+            "suspension-retry",
+            roles=("victim", "resume"),
+            exclusive=True,
+            coverage_profile="standard",
+        )
+        results = asyncio.run(
+            run_and_adjudicate(
+                [case, _case("next")], [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler
+            )
+        )
+    else:
+        results, scheduler = _run(adapter)
+    failed, following = results
+    reusable = dispatch in ("PREPARED", "REJECTED")
+    assert any(PHASE_FAILURE in error for error in failed.errors)
+    assert failed.status == "INFRASTRUCTURE_ERROR"
+    assert (scheduler.quarantine_reason(PROFILE.resource_id) is None) is reusable
+    assert following.status == ("PASSED" if reusable else "INFRASTRUCTURE_ERROR"), failed.errors
+    assert adapter.finished == [reusable]
+    if dispatch == "REJECTED":
+        assert failed.attempts[0]["dispatchState"] == "REJECTED"
+
+
+@pytest.mark.parametrize("retry_attempts", [0, 1])
+def test_runtime_retirement_ignores_only_proven_rejected_peer_attempts(retry_attempts: int) -> None:
+    class RejectedPeerAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                context.record_attempt(
+                    "peer-marker",
+                    role="peer",
+                    marker="peer-marker",
+                    source="driver-invoke",
+                    functionArn=context.profile.resource_id,
+                    durableExecutionName="peer-name",
+                    dispatchState="REJECTED",
+                    rejectionCode="AccessDeniedException",
+                    retryAttempts=retry_attempts,
+                )
+                raise RuntimeError(PHASE_FAILURE)
+
+    adapter = RejectedPeerAdapter()
+    scheduler = ResourceScheduler()
+    first = replace(_case("failed"), roles=("victim", "peer"))
+    failed, following = asyncio.run(
+        run_and_adjudicate(
+            [first, _case("next")], [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler
+        )
+    )
+    assert failed.status == "INFRASTRUCTURE_ERROR"
+    assert any(PHASE_FAILURE in error for error in failed.errors)
+    assert failed.attempts[-1]["dispatchState"] == "REJECTED"
+    assert following.status == ("PASSED" if retry_attempts == 0 else "INFRASTRUCTURE_ERROR"), failed.errors
+    assert (scheduler.quarantine_reason(PROFILE.resource_id) is None) is (retry_attempts == 0)
+
+
+def test_driver_incomplete_observation_window_does_not_quarantine_a_drained_target() -> None:
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import patch
+
+    from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence
+
+    class PendingWindowAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            baseline = super().observations(context)
+            histories = baseline["histories"]
+            histories[0]["result"] = None
+            self.snapshots[context.scenario.case_id]["histories"][0]["result"] = None
+            expected = {histories[0]["executionArn"]: {"status": "SUCCEEDED", "result": None}}
+            if context.scenario.case_id != "failed":
+                return {**baseline, "expectedHistories": expected}
+
+            cloud = SimpleNamespace(
+                observation_ended_at=20,
+                source_uris={"memory://raw"},
+                manifest={"invocationTimeout": 0.5, "conformanceRevision": "tested-validator"},
+                control_records=[],
+                invocations=[
+                    {"arn": histories[0]["executionArn"], "native_requests": [baseline["attempts"][0]["requestId"]]}
+                ],
+                events={},
+                raw_histories={},
+                terminal_histories=set(),
+                _save=lambda *args: None,
+            )
+            events = [event for event in baseline["events"] if event["kind"] != "io_exit"]
+            events.extend(
+                {
+                    **events[0],
+                    "kind": kind,
+                    "atMs": at,
+                    "callId": "closed-call",
+                    **extra,
+                }
+                for kind, at, extra in (
+                    ("checkpoint_call", 1100, {"outcome": "REJECTED"}),
+                    ("checkpoint_exit", 1200, {}),
+                )
+            )
+            self.snapshots[context.scenario.case_id]["events"].extend(deepcopy(events[-2:]))
+            _resequence(self.snapshots[context.scenario.case_id])
+            sources = SimpleNamespace(
+                observations=lambda **_: (events, []),
+                histories=lambda **_: (histories, expected, []),
+                attempts=lambda _, **kwargs: (baseline["attempts"], baseline["selectedRequests"], []),
+            )
+            with patch(
+                "aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources
+            ):
+                result = build_evidence(
+                    context,
+                    cast(Cloud, cloud),
+                    runtime="javascript",
+                    expected_outcome=lambda *_: {},
+                    worker_identity=lambda _: "",
+                )
+            self.snapshots[context.scenario.case_id]["sdkRequests"] = deepcopy(result["sdkRequests"])
+            return result
+
+    adapter = PendingWindowAdapter(phase="assertion")
+    first_and_following, scheduler = _run(adapter, validator=_service_fact_validator)
+    first, following = first_and_following
+    assert first.evidence["collectionErrors"] == []
+    assert first.evidence["collection"]["pending"]
+    assert first.evidence["collection"]["watermarks"] == {}
+    assert first.evidence["sdkRequests"][0]["outcome"] == "REJECTED"
+    assert first.status == "INCOMPLETE_EVIDENCE", first.errors
+    assert any("INCOMPLETE: lifecycle collection does not cover" in error for error in first.errors)
+    assert following.status == "PASSED", " | ".join(first.errors)
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    assert adapter.finished == [True]
+
+
 def _add_retained_resource(value: dict[str, Any], kind: str, outcome: str) -> None:
     resource = {"id": f"{kind}:{value['caseId']}", "kind": kind, "ownerCaseId": value["caseId"]}
     value["resourcesCreated"].append(resource)
     value["retirement"]["resources"].append(
         {**resource, "settledAtMs": 20900, "outcome": outcome, "evidenceUri": "memory://provider-completion"}
     )
+
+
+def _adjudicate(frozen: Mapping[str, Any], retirement: Mapping[str, Any]) -> list[str]:
+    """Adjudicate frozen evidence against an independent retirement snapshot."""
+    return evaluate_evidence(frozen, retirement_evidence=retirement, cleanup_evidence={}, standard=True)
 
 
 def _run_standard_cleanup_discovery(
@@ -611,6 +819,16 @@ def test_cleanup_replay_discoveries_use_frozen_operations_and_count_oracles(phas
     assert result.evidence["replay"] == frozen_replay
     if rejected:
         assert any("completed user code" in error or "side-effect" in error for error in result.errors), result.errors
+
+
+def test_missing_expected_effect_is_behavior_failure_not_retirement_failure() -> None:
+    value = _standard_retirement_snapshot("replay_evidence")
+    value["replay"]["missingExpectedEffects"] = ["fixture-success"]
+    assert any(
+        error == "ASSERTION: replay omitted the expected side-effect operation fixture-success"
+        for error in validate_evidence(value)
+    )
+    assert validate_retirement_evidence(value) == []
 
 
 @pytest.mark.parametrize("phase", ["release", "retire", "snapshot"])
@@ -5332,6 +5550,355 @@ def test_cleanup_common_record_late_native_binding_can_establish_physical_retire
     assert result.evidence["events"] == value["events"]
     assert validate_retirement_evidence(result.retirement_evidence) == []
     assert any(attempt.get("requestId") == event["requestId"] for attempt in result.attempts)
+
+
+def test_in_place_retirement_cannot_omit_a_known_post_cutoff_retry() -> None:
+    class InPlaceAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                context.retirement_evidence = {}
+                context.record_attempt(
+                    "late-retry",
+                    role="victim",
+                    source="service-observed",
+                    requestId="late-request",
+                    executionArn=self.snapshots["failed"]["attempts"][0]["executionArn"],
+                    nativeStartedAtMs=20100,
+                )
+            return True
+
+    results, scheduler = _run(InPlaceAdapter(phase="assertion"))
+    first, following = results
+    assert first.status == following.status == "INFRASTRUCTURE_ERROR"
+    assert any("has no independent retirement evidence" in error for error in first.errors)
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+@pytest.mark.parametrize("contradiction", ["expectedBefore", "durableWaitObserved", "suspensionCheckpointMatches"])
+def test_retirement_replay_contradictions_fail_behavior_without_holding_lease(contradiction):
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot):
+        replay = snapshot["replay"]
+        if contradiction == "expectedBefore":
+            extra = dict(replay["before"][0], id="unreported-completed-operation")
+            replay[contradiction] = [*replay["before"], extra]
+        else:
+            replay[contradiction] = False
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == "FAILED", result.errors
+    assert any("cleanup service history" in error for error in result.errors), result.errors
+
+    snapshot = deepcopy(value)
+    mutate(snapshot)
+    assert any("cleanup service history" in error for error in _adjudicate(value, snapshot))
+
+
+def test_cleanup_wrapper_raise_is_an_admission_boundary_for_late_poll():
+    original = _standard_retirement_snapshot("deadline_evidence")
+    snapshot = deepcopy(original)
+    retry = dict(snapshot["attempts"][0], requestId="late-retry", attempt=2, startedAtMs=215, endedAtMs=217)
+    snapshot["attempts"].append(retry)
+    scope = {
+        "requestId": "late-retry",
+        "ownerRequestId": "late-retry",
+        "executionArn": retry["executionArn"],
+    }
+    snapshot["events"].append({**scope, "kind": "wrapper_raise", "atMs": 217})
+    snapshot["sdkRequests"].append(
+        {
+            **scope,
+            "method": "GetDurableExecutionState",
+            "outcome": "DISPATCHED",
+            "atMs": 218,
+        }
+    )
+    errors = _cleanup_behavior_errors(original, snapshot, standard=True)
+    assert any(error.startswith("ASSERTION:") and "dispatch" in error for error in errors), errors
+
+
+def test_in_place_retirement_must_audit_service_only_deferred_request():
+    class DeferredAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            observed["behaviorErrors"] = []
+            if context.scenario.case_id == "failed":
+                observed["collection"]["deferredServiceRequests"] = [
+                    {
+                        "requestId": "not-yet-published",
+                        "executionArn": observed["attempts"][0]["executionArn"],
+                    }
+                ]
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                context.retirement_evidence = {}
+            return True
+
+    (first, next_case), scheduler = _run(DeferredAdapter(phase="assertion"))
+    assert first.status == next_case.status == "INFRASTRUCTURE_ERROR"
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any("independent retirement evidence" in error for error in first.errors)
+
+
+@pytest.mark.parametrize("deferred", [None, {}, [None], [{"requestId": "", "executionArn": "owned"}]])
+def test_malformed_deferred_requests_keep_the_target_fenced(deferred: Any) -> None:
+    class MalformedDeferralAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["collection"]["deferredServiceRequests"] = deferred
+            return observed
+
+    adapter = MalformedDeferralAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status != "PASSED"
+    assert any("Deferred service request reconciliation" in error for error in first.errors), first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert adapter.finished == [False]
+
+
+def test_unreleased_case_lease_keeps_the_target_fenced(monkeypatch: pytest.MonkeyPatch) -> None:
+    import aws_durable_execution_conformance_tests.lmi.coordinator as coordinator
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("audit crashed before lease release")
+
+    monkeypatch.setattr(coordinator, "_ownership_claims", fail)
+    adapter = FailureAdapter(phase="assertion")
+    scheduler = ResourceScheduler()
+    with pytest.raises(RuntimeError, match="audit crashed"):
+        asyncio.run(
+            run_and_adjudicate(
+                [_case("failed")], [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler
+            )
+        )
+    reason = scheduler.quarantine_reason(PROFILE.resource_id)
+    assert reason and "was not released" in reason
+    assert adapter.finished == [False]
+
+
+def test_no_work_missing_fixture_permits_later_case_on_same_target():
+    class MissingThenSupported(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed":
+                raise NotImplementedError("fixture unavailable")
+            await super().start(context)
+
+        async def collect_partial(self, context: ScenarioContext) -> Any:
+            if context.scenario.case_id == "failed":
+                return {}
+            return await super().collect_partial(context)
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            if context.scenario.case_id == "failed":
+                return True
+            return await super().retire(context)
+
+    (missing, supported), scheduler = _run(MissingThenSupported(phase="assertion"))
+    assert missing.status == "NOT_IMPLEMENTED" and not missing.retirement_evidence
+    assert supported.status == "PASSED", supported.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+
+
+def test_retirement_only_replay_projection_errors_do_not_hold_lease():
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot):
+        snapshot["replay"]["projectionErrors"] = ["retry chronology unavailable"]
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+    assert any("retry chronology unavailable" in error for error in result.errors)
+
+
+def test_retirement_allows_only_the_selected_disposal_operation_probe():
+    original = _standard_retirement_snapshot("evidence")
+    snapshot = deepcopy(original)
+    victim = snapshot["attempts"][0]
+    probe = {
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "kind": "admission_probe",
+        "probe": "operation",
+        "outcome": "ACCEPTED",
+        "atMs": victim["endedAtMs"] + 0.1,
+    }
+    snapshot["events"].append(probe)
+    _resequence(snapshot)
+    assert _adjudicate(original, snapshot) == []
+
+    probe["probe"] = "checkpoint"
+    assert any(
+        "admitted a checkpoint probe after admission closed" in error for error in _adjudicate(original, snapshot)
+    )
+
+    # A closure visible only in observations still bounds the detached probe.
+    original["events"].append(
+        {
+            **{key: probe[key] for key in ("requestId", "ownerRequestId", "executionArn")},
+            "kind": "admission_closed",
+            "atMs": victim["endedAtMs"] - 0.2,
+        }
+    )
+    _resequence(original)
+    probe["atMs"] = victim["endedAtMs"] - 0.1
+    _resequence(snapshot)
+    assert validate_retirement_evidence(snapshot) == []
+    assert any(
+        "admitted a checkpoint probe after admission closed" in error for error in _adjudicate(original, snapshot)
+    )
+
+
+def test_retirement_rejects_a_changed_service_checkpoint_result():
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    victim = value["selectedRequests"]["victim"]
+    arn = next(attempt["executionArn"] for attempt in value["attempts"] if attempt["requestId"] == victim)
+    history = next(row for row in snapshot["histories"] if row["executionArn"] == arn)
+    operation = next(row for row in history["operations"] if "result" in row)
+    operation["result"] = {"unexpected": True}
+    assert any("has contradictory observations" in error for error in _adjudicate(value, snapshot))
+
+
+@pytest.mark.parametrize("change", ["work", "result", "body", "effects", "decimal"])
+def test_retirement_reconciles_frozen_work_and_replay(change):
+    value = _standard_retirement_snapshot("replay_evidence")
+    victim = value["selectedRequests"]["victim"]
+    arn = next(attempt["executionArn"] for attempt in value["attempts"] if attempt["requestId"] == victim)
+    history = next(row for row in value["histories"] if row["executionArn"] == arn)
+    if change == "work":
+        scope = {"requestId": victim, "ownerRequestId": victim, "executionArn": arn, "callId": "observed-io"}
+        value["events"].extend(
+            [
+                {**scope, "kind": "io_start", "atMs": 35},
+                {**scope, "kind": "io_exit", "atMs": 36},
+            ]
+        )
+        _resequence(value)
+    if change in ("work", "result"):
+        # Collection compares the frozen work and service results with the
+        # independent retirement snapshot before it records the capture.
+        def mutate(retired):
+            if change == "work":
+                retired["events"] = [row for row in retired["events"] if row.get("callId") != "observed-io"]
+            else:
+                next(row for row in retired["histories"] if row["executionArn"] == arn)["result"] = "changed"
+
+        result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent", quiescent=False)
+        assert result.status != "PASSED", result.errors
+        expected = "previously observed work" if change == "work" else "terminal execution"
+        assert any(expected in error for error in result.errors), result.errors
+        return
+    snapshot = deepcopy(value)
+    if change == "body":
+        snapshot["replay"]["operationExecutions"].append(
+            {"operationId": value["replay"]["before"][0]["id"], "requestId": value["selectedRequests"]["resume"]}
+        )
+        expected = "repeated completed user code"
+    elif change == "effects":
+        snapshot["replay"]["sideEffects"][0]["count"] += 1
+        expected = "differs from the frozen fixture oracle"
+    else:
+        source_operation = next(
+            row for row in history["operations"] if row.get("status") == "SUCCEEDED" and "result" in row
+        )
+        operation_id = source_operation["id"]
+        for node in (*value["replay"]["before"], *value["replay"]["after"], source_operation):
+            if node["id"] == operation_id:
+                node.update(result=1.0, resultEncoding="json", resultFingerprint="a" * 64)
+        snapshot = deepcopy(value)
+        next(row for row in snapshot["replay"]["after"] if row["id"] == operation_id)["resultFingerprint"] = "b" * 64
+        expected = "contradictory observations"
+    assert validate_retirement_evidence(snapshot) == []
+    assert any(expected in error for error in _adjudicate(value, snapshot)), _adjudicate(value, snapshot)
+
+
+def test_disposal_accepts_a_strictly_later_operation_probe_in_retirement():
+    original = _standard_retirement_snapshot("evidence")
+    victim = original["attempts"][0]
+    snapshot = deepcopy(original)
+    probe = {
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "kind": "admission_probe",
+        "probe": "operation",
+        "outcome": "ACCEPTED",
+        "atMs": victim["endedAtMs"] + 1,
+    }
+    snapshot["events"].append(probe)
+    _resequence(snapshot)
+    assert _adjudicate(original, snapshot) == []
+    probe.pop("outcome")
+    assert any("admitted" in error for error in _adjudicate(original, snapshot))
+
+
+@pytest.mark.parametrize(("count", "expected", "fails"), [(1, 0, True), (1, 1, False), (0, 1, False)])
+def test_late_fixture_policy_assertion_keeps_retirement_verified(count, expected, fails):
+    value = _standard_retirement_snapshot("replay_evidence")
+
+    def mutate(snapshot):
+        snapshot["replay"]["sideEffects"].append({"operationId": "new", "count": count, "expectedCount": expected})
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="snapshot", path="independent")
+    assert result.status == ("FAILED" if fails else "PASSED"), result.errors
+    snapshot = deepcopy(value)
+    mutate(snapshot)
+    assert any("exceeds the fixture oracle" in error for error in _adjudicate(value, snapshot)) is fails
+
+
+def test_retirement_cannot_drop_an_aliased_child_task():
+    original = _standard_retirement_snapshot("evidence")
+    snapshot = deepcopy(original)
+    victim = original["attempts"][0]
+    scope = {
+        "requestId": victim["requestId"],
+        "ownerRequestId": victim["requestId"],
+        "executionArn": victim["executionArn"],
+        "taskId": "child",
+    }
+    original["events"].extend(
+        [
+            {**scope, "kind": "observed_task_start", "sourceKind": "task_start", "atMs": victim["startedAtMs"] + 1},
+            {**scope, "kind": "observed_task_exit", "sourceKind": "task_exit", "atMs": victim["endedAtMs"] - 1},
+        ]
+    )
+    _resequence(original)
+    assert validate_retirement_evidence(snapshot) == []
+
+    # Collection compares the frozen work with the independent retirement snapshot.
+    def drop_child(retired):
+        retired["events"] = [row for row in retired["events"] if row.get("taskId") != "child"]
+
+    result = _run_standard_cleanup_discovery(
+        original, drop_child, phase="snapshot", path="independent", quiescent=False
+    )
+    assert result.status != "PASSED", result.errors
+    assert any("previously observed work" in error for error in result.errors), result.errors
+
+
+def test_saved_replay_counts_accept_integral_json_floats():
+    value = _standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    for capture in (value, snapshot):
+        for row in capture["replay"]["sideEffects"]:
+            row["count"] = float(row["count"])
+            row["expectedCount"] = float(row["expectedCount"])
+
+    assert validate_evidence(value) == []
+    assert _adjudicate(value, snapshot) == []
 
 
 def test_cleanup_replay_rejects_undeclared_retry_body() -> None:

@@ -14,9 +14,11 @@ from itertools import pairwise
 from typing import Any, TypeGuard
 
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
+    CUTOFF_ACTIVE_STATUSES,
     HISTORY_STATUSES,
     TERMINAL_STATUSES,
     is_json_integer,
+    same_checkpoint_result,
     same_json,
 )
 
@@ -43,7 +45,7 @@ def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) ->
     if path in (("attempts", "startedAtMsSource"), ("attempts", "endedAtMsSource")):
         return previous == "fixture" and current == "platform"
     if path == ("histories", "status"):
-        return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
+        return previous in (*CUTOFF_ACTIVE_STATUSES, "PENDING") and current in HISTORY_STATUSES
     if path[:-1] in _OPERATION_RECORD_PATHS and path[-1:] == ("status",):
         return previous in _OPERATION_NONTERMINAL_STATUSES and current in (
             *_OPERATION_NONTERMINAL_STATUSES,
@@ -264,7 +266,7 @@ def _retain_observations(
     changed = _RetentionChanges()
     completing_execution = (
         path == ("histories",)
-        and original.get("status") in ("RUNNING", "PENDING")
+        and original.get("status") in (*CUTOFF_ACTIVE_STATUSES, "PENDING")
         and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
     )
     progressing_operation = path in _OPERATION_RECORD_PATHS and _observation_advanced(
@@ -314,6 +316,13 @@ def _retain_observations(
             # Active operations can replace intermediate poll results or retry
             # errors. Terminal checkpoints and non-null execution outcomes stay
             # immutable; an unfinished execution's null is only a placeholder.
+            continue
+        if (
+            key == "result"
+            and path in _OPERATION_RECORD_PATHS | {("replay", "before")}
+            and same_checkpoint_result(original, retained)
+        ):
+            # Matching result fingerprints reconcile a numeric display difference.
             continue
         if path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error")):
             # Checkpoint JSON and each predeclared execution expectation are

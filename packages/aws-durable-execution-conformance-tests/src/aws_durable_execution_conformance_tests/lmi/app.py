@@ -404,6 +404,11 @@ def _identity_errors(
             errors.append(f"INCOMPLETE: evidence profile.{key} does not match the deployed profile")
     if artifact.get("sdk") != profile["artifact_id"]:
         errors.append("INCOMPLETE: evidence SDK artifact does not match the deployed revision")
+    sdk = manifest.get("sdk")
+    deployment = sdk.get("deployment") if isinstance(sdk, Mapping) else None
+    revision = deployment.get("conformanceRevision") if isinstance(deployment, Mapping) else None
+    if revision is not None and artifact.get("conformance") != revision:
+        errors.append("INCOMPLETE: evidence conformance revision does not match the admitted plan")
     if profile.get("recovery_policy") is not None and observed.get("recoveryPolicy") != profile["recovery_policy"]:
         errors.append("INCOMPLETE: observed recovery policy does not match the declared profile")
     return errors
@@ -897,6 +902,11 @@ def run(argv: list[str] | None = None) -> None:
         _make_durable_directory(args.output)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
+        sdk = manifest.get("sdk")
+        if args.adapter and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
+            from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_plan_with_artifact_directory
+
+            manifest = sdk_plan_with_artifact_directory(args.output, manifest)
         # Every mode claims the directory with an exclusive manifest write, so
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)

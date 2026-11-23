@@ -23,6 +23,8 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     COMPLETED_OPERATION_STATUSES,
     is_json_integer,
     mappings,
+    same_checkpoint,
+    same_checkpoint_set,
     same_json,
     timestamp,
 )
@@ -43,9 +45,23 @@ def replay(view: CaseView) -> None:
     if not pending.get("atMs", 0) <= wrapper.get("atMs", 0) < resume.get("startedAtMs", 0):
         view.error("resume did not follow a real PENDING wrapper return", "ASSERTION")
     replay = view.mapping(view.value.get("replay"), "replay")
+    if replay.get("durableWaitObserved") is False:
+        view.error("replay did not verify a durable wait across suspension and resume", "ASSERTION")
+    if replay.get("suspensionCheckpointMatches") is False:
+        view.error("replay did not verify the checkpoint snapshot of a public suspension resume", "ASSERTION")
     before = view.records(replay.get("before"), "replay.before", nonempty=True)
     after = view.records(replay.get("after"), "replay.after", nonempty=True)
     after_by_id = {operation.get("id"): operation for operation in after}
+    for error in replay.get("projectionErrors", []):
+        view.error(f"replay service projection: {error}")
+    if "expectedBefore" in replay:
+        expected_before = view.records(replay["expectedBefore"], "replay.expectedBefore")
+        expected_by_id = {operation.get("id"): operation for operation in expected_before}
+        observed_by_id = {operation.get("id"): operation for operation in before}
+        if len(expected_by_id) != len(expected_before):
+            view.error("replay.expectedBefore contains duplicate operation IDs")
+        if not same_checkpoint_set(expected_by_id, observed_by_id):
+            view.error("replay checkpoint snapshot differs from the complete pre-resume service history", "ASSERTION")
     same_execution = [
         attempt for attempt in view.attempts.values() if attempt.get("executionArn") == victim.get("executionArn")
     ]
@@ -56,7 +72,7 @@ def replay(view: CaseView) -> None:
         view.error("tied native admissions cannot establish the original replay invocation")
     if not completed_suspension_checkpoint(same_execution, view.events, view.value["sdkRequests"], after):
         view.error("replay needs an observed wait or callback checkpoint followed by suspension and resume")
-    if any(not same_json(after_by_id.get(operation.get("id")), operation) for operation in before):
+    if any(not same_checkpoint(after_by_id.get(operation.get("id")), operation) for operation in before):
         view.error("replay changed completed operation identity, result, or failure", "ASSERTION")
     ids: set[str] = set()
     for operation in before:
@@ -68,7 +84,14 @@ def replay(view: CaseView) -> None:
     final_history = next(
         history for history in view.value["histories"] if history["executionArn"] == victim["executionArn"]
     )
-    if not same_json(final_history.get("operations"), after):
+    recorded = final_history.get("operations")
+    if (
+        not isinstance(recorded, list)
+        or len(recorded) != len(after)
+        or not all(
+            same_checkpoint(left, right, include_timing=True) for left, right in zip(recorded, after, strict=True)
+        )
+    ):
         view.error("replay.after differs from the collected service history", "ASSERTION")
     statuses = {operation.get("status") for operation in before}
     if not {"SUCCEEDED", "FAILED"} <= statuses:
@@ -140,112 +163,125 @@ def replay(view: CaseView) -> None:
             )
         if "endedAtMs" in operation and any(event["atMs"] > operation["endedAtMs"] for event in timed_bodies):
             view.error("completed replay step body occurred after recorded completion", "ASSERTION")
-    retry = view.mapping(replay.get("retry"), "replay.retry")
-    retry_id = view.string(retry.get("operationId"), "replay.retry.operationId")
-    retry_attempts = view.records(retry.get("attempts"), "replay.retry.attempts", nonempty=True)
-    retry_attempt_ids = [view.string(item.get("attemptId"), "retry.attemptId") for item in retry_attempts]
-    if len(retry_attempt_ids) < 2 or len(set(retry_attempt_ids)) != len(retry_attempt_ids):
-        view.error("retry requires distinct observed attempts")
-    if retry_attempts and (
-        retry_attempts[0].get("outcome") != "FAILED" or retry_attempts[-1].get("outcome") != "SUCCEEDED"
-    ):
-        view.error("retry must demonstrate a failed attempt followed by success", "ASSERTION")
-    for retry_attempt in retry_attempts:
-        view.string(retry_attempt.get("outcome"), "retry.outcome")
-        if retry_attempt.get("requestId") not in view.attempts:
-            view.error("retry references an unrecorded request")
-        elif view.attempts[retry_attempt["requestId"]].get("executionArn") != victim.get("executionArn"):
-            view.error("retry attempt did not run on the suspended execution", "ASSERTION")
-        if not any(
-            item.get("operationId") == retry_id
-            and item.get("attemptId") == retry_attempt.get("attemptId")
-            and item.get("requestId") == retry_attempt.get("requestId")
+    missing = replay.get("missingExpectedEffects", [])
+    for name in missing:
+        view.error(f"replay omitted the expected side-effect operation {name}", "ASSERTION")
+    retry_id = None
+    if "retry" in replay:
+        retry = view.mapping(replay.get("retry"), "replay.retry")
+        retry_id = view.string(retry.get("operationId"), "replay.retry.operationId")
+        retry_attempts = view.records(retry.get("attempts"), "replay.retry.attempts", nonempty=True)
+        retry_attempt_ids = [view.string(item.get("attemptId"), "retry.attemptId") for item in retry_attempts]
+        if (len(retry_attempt_ids) < 2 and "retry" not in missing) or len(set(retry_attempt_ids)) != len(
+            retry_attempt_ids
+        ):
+            view.error("retry requires distinct observed attempts")
+        if len(retry_attempts) >= 2 and (
+            retry_attempts[0].get("outcome") != "FAILED" or retry_attempts[-1].get("outcome") != "SUCCEEDED"
+        ):
+            view.error("retry must demonstrate a failed attempt followed by success", "ASSERTION")
+        for retry_attempt in retry_attempts:
+            view.string(retry_attempt.get("outcome"), "retry.outcome")
+            if retry_attempt.get("requestId") not in view.attempts:
+                view.error("retry references an unrecorded request")
+            elif view.attempts[retry_attempt["requestId"]].get("executionArn") != victim.get("executionArn"):
+                view.error("retry attempt did not run on the suspended execution", "ASSERTION")
+            if not any(
+                item.get("operationId") == retry_id
+                and item.get("attemptId") == retry_attempt.get("attemptId")
+                and item.get("requestId") == retry_attempt.get("requestId")
+                for item in executions
+            ):
+                view.error("retry attempt lacks observed user-code execution")
+        observed_retry_bodies = [
+            (item.get("requestId"), item.get("attemptId"))
             for item in executions
+            if item.get("operationId") == retry_id
+            and item.get("requestId") in view.attempts
+            and view.attempts[item["requestId"]].get("executionArn") == victim.get("executionArn")
+        ]
+        declared_retry_bodies = [(item.get("requestId"), item.get("attemptId")) for item in retry_attempts]
+        if len(observed_retry_bodies) != len(declared_retry_bodies) or any(
+            observed_retry_bodies.count(body) != 1 for body in declared_retry_bodies
         ):
-            view.error("retry attempt lacks observed user-code execution")
-    observed_retry_bodies = [
-        (item.get("requestId"), item.get("attemptId"))
-        for item in executions
-        if item.get("operationId") == retry_id
-        and item.get("requestId") in view.attempts
-        and view.attempts[item["requestId"]].get("executionArn") == victim.get("executionArn")
-    ]
-    declared_retry_bodies = [(item.get("requestId"), item.get("attemptId")) for item in retry_attempts]
-    if len(observed_retry_bodies) != len(declared_retry_bodies) or any(
-        observed_retry_bodies.count(body) != 1 for body in declared_retry_bodies
-    ):
-        view.error("retry body executions must match the declared retry attempts exactly")
-    timed_retries: dict[tuple[str, str], Mapping[str, Any]] = {}
-    for event in view.events:
-        retry_request_id = event.get("requestId")
-        if (
-            event.get("kind") != "body"
-            or event.get("operationId") != retry_id
-            or not isinstance(retry_request_id, str)
-            or view.attempts[retry_request_id].get("executionArn") != victim.get("executionArn")
-        ):
-            continue
-        identity = retry_body_identity(event)
-        if identity is None:
-            view.error("observed retry body does not match a declared attempt")
-            continue
-        if identity not in declared_retry_bodies:
-            view.error("observed retry body does not match a declared attempt")
-        elif identity in timed_retries:
-            view.error("retry attempt has multiple timed user-code entries")
-        else:
-            timed_retries[identity] = event
-    timed_retry_bodies = [timed_retries[identity] for identity in declared_retry_bodies if identity in timed_retries]
-    last_by_request: dict[str, Mapping[str, Any]] = {}
-    invalid_order = any(earlier["atMs"] > later_body["atMs"] for earlier, later_body in pairwise(timed_retry_bodies))
-    for body in timed_retry_bodies:
-        request_id = body["requestId"]
-        earlier = last_by_request.get(request_id)
-        if earlier is not None and view.at_or_after(body, earlier, require_sequence=True) is False:
-            invalid_order = True
-        last_by_request[request_id] = body
-    if invalid_order:
-        view.error("retry attempt order contradicts timed user-code entries", "ASSERTION")
-    latest_admission = 0
-    for declared_request, declared_attempt in declared_retry_bodies:
-        if not isinstance(declared_request, str) or not isinstance(declared_attempt, str):
-            continue
-        owner = view.attempts.get(declared_request)
-        if owner is not None:
-            latest_admission = max(latest_admission, owner["startedAtMs"])
-        timed_body = timed_retries.get((declared_request, declared_attempt))
-        if timed_body is not None and timed_body["atMs"] < latest_admission:
-            view.error("retry body precedes a prior attempt's admission", "ASSERTION")
-    # replay.after equals the collected final history (checked above), so a
-    # retry that never checkpointed cannot satisfy the retry semantics.
-    retried = next((operation for operation in after if operation.get("id") == retry_id), None)
-    if retried is None or retried.get("status") != "SUCCEEDED":
-        view.error("the retried operation must succeed in the collected final history", "ASSERTION")
-    elif "result" not in retried:
-        view.error("the retried operation must preserve its stored result", "INCOMPLETE")
-    if (
-        retried is not None
-        and "endedAtMs" in retried
-        and any(body["atMs"] > retried["endedAtMs"] for body in timed_retry_bodies)
-    ):
-        view.error("timed retry body occurred after the recorded operation completion", "ASSERTION")
-    if (
-        retried is not None
-        and "endedAtMs" in retried
-        and any(
-            item.get("requestId") in view.attempts
-            and view.attempts[item["requestId"]]["startedAtMs"] > retried["endedAtMs"]
-            for item in retry_attempts
+            view.error("retry body executions must match the declared retry attempts exactly")
+        timed_retries: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for event in view.events:
+            retry_request_id = event.get("requestId")
+            if (
+                event.get("kind") != "body"
+                or event.get("operationId") != retry_id
+                or not isinstance(retry_request_id, str)
+                or view.attempts[retry_request_id].get("executionArn") != victim.get("executionArn")
+            ):
+                continue
+            identity = retry_body_identity(event)
+            if identity is None:
+                view.error("observed retry body does not match a declared attempt")
+                continue
+            if identity not in declared_retry_bodies:
+                view.error("observed retry body does not match a declared attempt")
+            elif identity in timed_retries:
+                view.error("retry attempt has multiple timed user-code entries")
+            else:
+                timed_retries[identity] = event
+        timed_retry_bodies = [
+            timed_retries[identity] for identity in declared_retry_bodies if identity in timed_retries
+        ]
+        last_by_request: dict[str, Mapping[str, Any]] = {}
+        invalid_order = any(
+            earlier["atMs"] > later_body["atMs"] for earlier, later_body in pairwise(timed_retry_bodies)
         )
-    ):
-        view.error("retry owner was admitted after the recorded operation completion", "ASSERTION")
-    if retry_id in completed:
-        view.error("retry must not repeat an already completed operation", "ASSERTION")
+        for body in timed_retry_bodies:
+            request_id = body["requestId"]
+            earlier = last_by_request.get(request_id)
+            if earlier is not None and view.at_or_after(body, earlier, require_sequence=True) is False:
+                invalid_order = True
+            last_by_request[request_id] = body
+        if invalid_order:
+            view.error("retry attempt order contradicts timed user-code entries", "ASSERTION")
+        latest_admission = 0
+        for declared_request, declared_attempt in declared_retry_bodies:
+            if not isinstance(declared_request, str) or not isinstance(declared_attempt, str):
+                continue
+            owner = view.attempts.get(declared_request)
+            if owner is not None:
+                latest_admission = max(latest_admission, owner["startedAtMs"])
+            timed_body = timed_retries.get((declared_request, declared_attempt))
+            if timed_body is not None and timed_body["atMs"] < latest_admission:
+                view.error("retry body precedes a prior attempt's admission", "ASSERTION")
+        # replay.after equals the collected final history (checked above), so a
+        # retry that never checkpointed cannot satisfy the retry semantics.
+        retried = next((operation for operation in after if operation.get("id") == retry_id), None)
+        if retried is None or retried.get("status") != "SUCCEEDED":
+            view.error("the retried operation must succeed in the collected final history", "ASSERTION")
+        elif "result" not in retried:
+            view.error("the retried operation must preserve its stored result", "INCOMPLETE")
+        if (
+            retried is not None
+            and "endedAtMs" in retried
+            and any(body["atMs"] > retried["endedAtMs"] for body in timed_retry_bodies)
+        ):
+            view.error("timed retry body occurred after the recorded operation completion", "ASSERTION")
+        if (
+            retried is not None
+            and "endedAtMs" in retried
+            and any(
+                item.get("requestId") in view.attempts
+                and view.attempts[item["requestId"]]["startedAtMs"] > retried["endedAtMs"]
+                for item in retry_attempts
+            )
+        ):
+            view.error("retry owner was admitted after the recorded operation completion", "ASSERTION")
+        if retry_id in completed:
+            view.error("retry must not repeat an already completed operation", "ASSERTION")
+    elif "retry" not in missing:
+        view.error("replay.retry must be an object")
     counts = view.records(replay.get("sideEffects"), "replay.sideEffects", nonempty=True)
     effect_ids = {view.string(item.get("operationId"), "replay.sideEffects.operationId") for item in counts}
     if len(effect_ids) != len(counts):
         view.error("side-effect counts must be unique per operation")
-    if not completed | {retry_id} <= effect_ids:
+    if not completed | ({retry_id} if retry_id is not None else set()) <= effect_ids:
         view.error("side-effect counts must cover stored successes, failures, and retries")
     for count in counts:
         actual = count.get("count")
@@ -983,6 +1019,7 @@ def reconcile_replay(view: ReconcileView) -> None:
         if not isinstance(observed_replay, Mapping):
             view.findings.append("INCOMPLETE: cleanup replay observations must be an object")
             continue
+        view.findings.extend(cleanup_replay_history_errors(replay, observed_replay))
         entries = observed_replay.get("operationExecutions", [])
         if not isinstance(entries, list):
             view.findings.append("INCOMPLETE: cleanup operation executions must be an array")
@@ -1018,17 +1055,7 @@ def reconcile_replay(view: ReconcileView) -> None:
             if not isinstance(operation_id, str) or not operation_id.strip():
                 view.findings.append("INCOMPLETE: cleanup side-effect observation lacks an operationId")
                 continue
-            expected = expected_counts.get(operation_id)
-            if expected is None:
-                continue  # Cleanup cannot invent an oracle for an unasserted operation.
-            if "expectedCount" in count and not same_json(count["expectedCount"], expected):
-                view.findings.append(
-                    f"ASSERTION: cleanup side-effect expectation for {operation_id} changed the frozen fixture oracle"
-                )
-            if is_json_integer(count.get("count")) and count["count"] != expected:
-                view.findings.append(
-                    f"ASSERTION: cleanup side-effect count for {operation_id} differs from the frozen fixture oracle"
-                )
+            view.findings.extend(cleanup_replay_count_errors(count, expected_counts.get(operation_id)))
     view.findings.extend(
         _cleanup_retry_errors(
             replay,
@@ -1038,3 +1065,48 @@ def reconcile_replay(view: ReconcileView) -> None:
             lambda observation, boundary_event: view.at_or_after(observation, boundary_event, require_sequence=True),
         )
     )
+
+
+def cleanup_replay_history_errors(frozen: Mapping[str, Any], observed: Mapping[str, Any]) -> list[str]:
+    findings = []
+    expected, before = observed.get("expectedBefore"), frozen.get("before")
+    if isinstance(expected, list) and isinstance(before, list):
+        expected_ids = {
+            row.get("id"): row for row in expected if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+        }
+        frozen_ids = {
+            row.get("id"): row for row in before if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+        }
+        if len(expected_ids) != len(expected):
+            findings.append("INCOMPLETE: cleanup pre-resume service checkpoints have duplicate or malformed IDs")
+        elif not same_checkpoint_set(frozen_ids, expected_ids):
+            findings.append("ASSERTION: cleanup service history contradicts the frozen replay checkpoint snapshot")
+    if observed.get("durableWaitObserved") is False:
+        findings.append("ASSERTION: cleanup service history refutes the durable wait suspension")
+    if observed.get("suspensionCheckpointMatches") is False:
+        findings.append("ASSERTION: cleanup service history refutes the public suspension replay checkpoint snapshot")
+    return findings
+
+
+def cleanup_replay_count_errors(count: Mapping[str, Any], expected: int | float | None) -> list[str]:
+    identity = count["operationId"]
+    if expected is None:
+        reported, observed = count.get("expectedCount"), count.get("count")
+        if is_json_integer(reported) and reported >= 0 and is_json_integer(observed) and observed > reported:
+            return [f"ASSERTION: cleanup side-effect count for {identity} exceeds the fixture oracle"]
+        return []
+    errors = []
+    if "expectedCount" in count and not same_json(count["expectedCount"], expected):
+        errors.append(f"ASSERTION: cleanup side-effect expectation for {identity} changed the frozen fixture oracle")
+    if is_json_integer(count.get("count")) and count["count"] != expected:
+        errors.append(f"ASSERTION: cleanup side-effect count for {identity} differs from the frozen fixture oracle")
+    return errors
+
+
+def cleanup_replay_projection_errors(replay: Mapping[str, Any]) -> list[str]:
+    if "projectionErrors" not in replay:
+        return []
+    raw = replay["projectionErrors"]
+    if not isinstance(raw, list) or any(not isinstance(error, str) or not error.strip() for error in raw):
+        return ["INCOMPLETE: cleanup replay projection errors are malformed"]
+    return [f"INCOMPLETE: cleanup replay projection: {error}" for error in raw]
