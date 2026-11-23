@@ -7,11 +7,11 @@ name: OpenTelemetry Conformance Tests
 # - Orchestrator is called by relative path so the PR's own workflow copy runs.
 # - conformance_test_ref is omitted, so resolve uses github.sha (this PR's
 #   requirements).
-# - sdk_ref pins the reference fixture revision that implements the full
-#   catalog. Update it alongside companion SDK handler PRs; otherwise new cases
-#   are UNCOVERED before those handlers reach SDK main. Manual dispatch can select
-#   another revision (including main) without reducing the coverage threshold.
-#   Reference handlers: aws/aws-durable-execution-sdk-python#796, stacked on #758/#795.
+# - sdk_ref defaults to SDK main (resolved to a commit per run), so SDK handler
+#   and template fixes apply here once they merge. Cases that SDK main declares
+#   NotImplemented report NOT_IMPLEMENTED. New invocation or execution cases
+#   report UNCOVERED until their handlers reach SDK main. Manual dispatch can
+#   select another revision without reducing the coverage threshold.
 
 on:
   pull_request:
@@ -43,7 +43,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk_ref:
-        description: SDK commit or branch to test against (default is the pinned reference fixture)
+        description: SDK commit or branch to test against (default is SDK main)
         required: false
         type: string
       phase:
@@ -71,7 +71,6 @@ permissions: {}
 jobs:
   opentelemetry:
     permissions:
-      actions: write
       contents: read
       id-token: write
     uses: ./.github/workflows/opentelemetry-orchestrator.yml
@@ -84,9 +83,8 @@ jobs:
       language: py
       resource_prefix: py-self
       sdk_repository: aws/aws-durable-execution-sdk-python
-      # Reference fixture implementing cases 1–27, including caught failure/replay.
-      # Overridable on manual dispatch.
-      sdk_ref: ${{ inputs.sdk_ref || '68f4bdc2ad9bfe8efa4241de4ad3cc3bb889f209' }}
+      # SDK main by default; overridable on manual dispatch.
+      sdk_ref: ${{ inputs.sdk_ref || 'main' }}
       checkout_sdk: true
       # Relative to the conformance workspace, where the SDK is checked out.
       examples_dir: .build/durable-sdk/packages/aws-durable-execution-sdk-python-conformance-tests-otel

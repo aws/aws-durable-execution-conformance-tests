@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from aws_durable_execution_conformance_tests.lmi.rules.values import UNDISPATCHED_ERROR_TYPES
+
 from .errors import CollectionError, PlacementError
 
 # The error type Lambda reports in InvocationCompletedDetails when the
@@ -45,47 +47,6 @@ def service_native_intervals(history: Sequence[Mapping[str, Any]]) -> dict[str, 
         if 0 <= start <= end < math.inf:
             intervals[request] = (start, end)
     return {request: interval for request, interval in intervals.items() if reported[request] == 1}
-
-
-def active_retry_interval(attempt: Mapping[str, Any], cutoff: Any, victim_arn: Any) -> bool:
-    """Check the service-bound interval for a nonselected retry of the admitted victim."""
-    ordinal, started, ended = (attempt.get(key) for key in ("attempt", "nativeStartedAtMs", "nativeEndedAtMs"))
-    return (
-        attempt.get("source") == "service-observed"
-        and attempt.get("role") == "victim"
-        and isinstance(victim_arn, str)
-        and bool(victim_arn)
-        and attempt.get("executionArn") == victim_arn
-        and type(ordinal) is int
-        and ordinal > 1
-        and isinstance(started, (int, float))
-        and not isinstance(started, bool)
-        and isinstance(ended, (int, float))
-        and not isinstance(ended, bool)
-        and isinstance(cutoff, (int, float))
-        and not isinstance(cutoff, bool)
-        and 0 <= started <= cutoff < ended < math.inf
-    )
-
-
-def requests_after_cutoff(attempts: Sequence[Mapping[str, Any]], cutoff_ms: Any) -> set[str]:
-    """Exclude proven late service retries while keeping every role's first attempt."""
-    if type(cutoff_ms) not in (int, float) or not 0 <= cutoff_ms < math.inf:
-        return set()
-    return {
-        request
-        for item in attempts
-        if item.get("source") == "service-observed"
-        and type(ordinal := item.get("attempt")) is int
-        and ordinal > 1
-        and isinstance(request := item.get("requestId"), str)
-        and bool(request)
-        and isinstance(arn := item.get("executionArn"), str)
-        and bool(arn)
-        and isinstance(start := item.get("nativeStartedAtMs"), (int, float))
-        and not isinstance(start, bool)
-        and cutoff_ms < start < math.inf
-    }
 
 
 def _pending_native_decisions(
@@ -243,6 +204,25 @@ def service_error_type(details):
 def is_platform_timeout(details):
     """Classify by error type: messages and stack traces can mention timeouts."""
     return service_error_type(details) in PLATFORM_TIMEOUT_ERROR_TYPES
+
+
+def is_undispatched_rejection(details):
+    """Classify a platform rejection that proves a request never reached a handler.
+
+    Platform rejections carry no stack trace, while handler-raised errors
+    normally do; a handler that ran and raised a throttling exception must not
+    qualify. So this requires the exact real payload shape (only ErrorType and
+    ErrorMessage, both strings, and an untruncated error) and never matches on
+    message text, ErrorData or a stack trace.
+    """
+    error = details.get("Error") if isinstance(details, Mapping) else None
+    if not isinstance(error, Mapping) or error.get("Truncated", False) is not False:
+        return False
+    payload = error.get("Payload")
+    if not isinstance(payload, Mapping) or set(payload) != {"ErrorType", "ErrorMessage"}:
+        return False
+    error_type, message = payload.get("ErrorType"), payload.get("ErrorMessage")
+    return isinstance(error_type, str) and isinstance(message, str) and error_type in UNDISPATCHED_ERROR_TYPES
 
 
 def select(events, phase, marker=None):

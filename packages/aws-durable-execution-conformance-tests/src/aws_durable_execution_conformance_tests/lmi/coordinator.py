@@ -19,30 +19,39 @@ from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from itertools import pairwise
-from typing import Any, Protocol, TypeGuard
+from typing import Any, Protocol
 
-from aws_durable_execution_conformance_tests.lmi.artifacts import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     _CALL_METHODS,
-    HISTORY_STATUSES,
     RECOVERY_POLICIES,
     SCHEMA_VERSION,
     TERMINAL_STATUSES,
-    EvidenceValidator,
-    active_pre_cutoff_errors,
-    controls_only_retirement,
-    deferred_retirement_errors,
-    deferred_service_requests,
     is_json_integer,
     normalize_retirement_events,
     retained_fault_releases,
-    retirement_artifact_errors,
     same_json,
     validate_observed_retirement,
     validate_retirement_evidence,
 )
-from aws_durable_execution_conformance_tests.lmi.observations import active_retry_interval, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.rules.controls import controls_only_retirement, invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    active_pre_cutoff_errors,
+    active_retry_interval,
+    deferred_retirement_errors,
+    deferred_service_requests,
+    requests_after_cutoff,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.retention import (
+    _OPERATION_TERMINAL_STATUSES,
+    _cleanup_record_errors,
+    _event_frames_order_changed,
+    _native_intervals,
+    _observation_updates,
+    _owned_record_enriches,
+    _retain_observations,
+    _sdk_closure_order_changed,
+    _sdk_frames_order_changed,
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +91,8 @@ class Scenario:
     service_role_transitions: frozenset[tuple[str, str]] = field(default_factory=frozenset, kw_only=True)
 
     def __post_init__(self) -> None:
+        # Callers may pass any sequence; adapters receive an immutable tuple.
+        object.__setattr__(self, "roles", tuple(self.roles))
         if not all((self.case_id, self.requirement_id, self.profile_id, self.scenario)):
             raise ValueError("Scenario identities must be nonempty")
         if not self.roles or len(set(self.roles)) != len(self.roles) or not all(self.roles):
@@ -139,13 +150,9 @@ class _Waiter:
 class _Resource:
     capacity: int
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
-    recovery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     queue: deque[_Waiter] = field(default_factory=deque)
     owners: dict[str, _Waiter] = field(default_factory=dict)
-    residual: set[asyncio.Task[Any]] = field(default_factory=set)
-    profile_active: bool = False
     quarantine_reason: str | None = None
-    quarantine_version: int = 0
 
 
 @dataclass
@@ -188,8 +195,6 @@ class ResourceScheduler:
 
     def __init__(self) -> None:
         self._resources: dict[str, _Resource] = {}
-        self._run_locks: dict[str, asyncio.Lock] = {}
-        # Runs can share a scheduler, so each keeps its own work budget.
         self._limits: dict[str, int] = {}
         self._active: Counter[str] = Counter()
 
@@ -228,7 +233,6 @@ class ResourceScheduler:
         resource = self._resources[resource_id]
         async with resource.condition:
             resource.quarantine_reason = reason
-            resource.quarantine_version += 1
             resource.condition.notify_all()
 
     def _quarantine_claim_conflict(self, resource_id: str, reason: str) -> None:
@@ -236,7 +240,6 @@ class ResourceScheduler:
         # wake queued owners once the resource condition can be acquired.
         resource = self._resources[resource_id]
         resource.quarantine_reason = reason
-        resource.quarantine_version += 1
 
         async def wake() -> None:
             async with resource.condition:
@@ -256,8 +259,8 @@ class ResourceScheduler:
     ) -> Lease:
         """Grant a target's capacity, and a slot in the named work budget.
 
-        Deployment and run-ownership leases are never budgeted: they serialize
-        a target rather than run a case's work.
+        The deployment lease is never budgeted: it serializes a target rather
+        than running a case's work.
         """
         resource = self._resources[resource_id]
         if not owner or type(slots) is not int or not 1 <= slots <= resource.capacity:
@@ -314,7 +317,6 @@ class ResourceScheduler:
                 return
             if not quiescent:
                 resource.quarantine_reason = f"Unretired owner {lease.owner}"
-                resource.quarantine_version += 1
             released = resource.owners.pop(lease.owner)
             lease.released = True
             if released.budget is not None:
@@ -322,30 +324,6 @@ class ResourceScheduler:
             resource.condition.notify_all()
         if released.budget is not None:
             await self._wake_other_resources(lease.resource_id)
-
-    def track_residual(self, resource_id: str, tasks: Sequence[asyncio.Task[Any]]) -> None:
-        pending = self._resources[resource_id].residual
-        for task in tasks:
-            if not task.done():
-                pending.add(task)
-                task.add_done_callback(pending.discard)
-
-    async def _acquire_run(self, resource_id: str, *, timeout: float) -> asyncio.Lock:
-        lock = self._run_locks.setdefault(resource_id, asyncio.Lock())
-        async with asyncio.timeout(timeout):
-            await lock.acquire()
-        return lock
-
-    @asynccontextmanager
-    async def deployment(self, resource_id: str, owner: str, *, timeout: float = 300):
-        """Exclude runs and individual target owners while publishing an artifact."""
-        deadline = asyncio.get_running_loop().time() + timeout
-        lock = await self._acquire_run(resource_id, timeout=timeout)
-        try:
-            async with self._deployment_lease(resource_id, owner, timeout=deadline - asyncio.get_running_loop().time()):
-                yield
-        finally:
-            lock.release()
 
     @asynccontextmanager
     async def _deployment_lease(self, resource_id: str, owner: str, *, timeout: float):
@@ -356,41 +334,6 @@ class ResourceScheduler:
             completed = True
         finally:
             await lease.release(quiescent=completed)
-
-    async def recover(self, resource_id: str, verify: Callable[[], Awaitable[bool]], *, timeout: float = 120) -> None:
-        """Clear quarantine only after explicit, bounded external reconciliation.
-
-        No active owner is allowed. The verification must retire residual AWS
-        work and establish the deployed artifact before returning literal True.
-        Verification leaves admission quarantined without holding its condition,
-        so external I/O cannot block retirement or admission on other targets.
-        """
-        resource = self._resources[resource_id]
-        async with asyncio.timeout(timeout):
-            async with resource.recovery_lock:
-                async with resource.condition:
-                    if resource.owners or resource.profile_active:
-                        raise QuarantinedError("Cannot recover a resource while an owner is active")
-                    if any(not task.done() for task in resource.residual):
-                        raise QuarantinedError("Cannot recover while an interrupted adapter task is active")
-                    if resource.quarantine_reason is None:
-                        return
-                    version = resource.quarantine_version
-                verification = asyncio.ensure_future(verify())
-                try:
-                    await asyncio.shield(verification)
-                    if verification.result() is not True:
-                        raise QuarantinedError("Recovery could not prove quiescence")
-                finally:
-                    if not verification.done():
-                        verification.cancel()
-                        self.track_residual(resource_id, [verification])
-                        verification.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-                async with resource.condition:
-                    if resource.quarantine_version != version:
-                        raise QuarantinedError("Quarantine changed during recovery; verification must be repeated")
-                    resource.quarantine_reason = None
-                    resource.condition.notify_all()
 
 
 @dataclass
@@ -406,6 +349,7 @@ class ScenarioContext:
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
     _collection_deadline: float | None = field(default=None, init=False, repr=False, compare=False)
     _on_claim: Callable[[ScenarioContext], None] | None = field(default=None, repr=False, kw_only=True)
+    _claim_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, kw_only=True)
     _validate_attempt: Callable[[Mapping[str, Any]], None] | None = field(default=None, repr=False)
 
     @property
@@ -453,7 +397,20 @@ class ScenarioContext:
         adapter must supply it. Ordinals are assigned in launch order per role;
         an explicit ``attempt`` must equal that next ordinal.
         """
+        self._require_coordinator_loop()
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
+
+    def _require_coordinator_loop(self) -> None:
+        # Claims quarantine targets through the scheduler, which belongs to the
+        # coordinator's event loop. Refuse another thread before changing state.
+        if self._on_claim is None:
+            return
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is None or running is not self._claim_loop:
+            raise RuntimeError("Call ScenarioContext methods on the coordinator's event loop thread")
 
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
@@ -500,6 +457,7 @@ class ScenarioContext:
         execution. Replay's resume role is distinct from its original victim;
         service retries otherwise retain the original role.
         """
+        self._require_coordinator_loop()
         original = next((item for item in self._attempts if item.get("requestId") == original_request_id), None)
         if (
             original is None
@@ -520,6 +478,7 @@ class ScenarioContext:
         )
 
     def update_attempt(self, attempt_id: str, **diagnostics: Any) -> None:
+        self._require_coordinator_loop()
         diagnostics = copy.deepcopy(diagnostics)
         for attempt in self._attempts:
             if attempt["attemptId"] == attempt_id:
@@ -566,6 +525,12 @@ class ScenarioAdapter(Protocol):
 
     ``prepare`` must hold an external run/deployment lock if another process can
     use this persistent target. Retain that lock until every case has retired.
+    Profiles finish only after every case in the run, so ``prepare`` must not
+    wait on a lock that another profile's ``finish`` releases. Acquire a lock
+    that several of this run's targets share once for the run. Release it after
+    the last ``finish`` only if every target sharing it finished with
+    ``quiescent=True``; otherwise keep it. Fail fast, or wait well under the
+    provisioning budget, on a lock another run holds.
     ``place`` must positively identify the cohort and release only its barriers.
     ``collect`` returns observation evidence; ``release`` touches only this
     context's controls; ``retire`` writes final ``context.evidence['retirement']``
@@ -797,527 +762,6 @@ def _ownership_errors(
     return errors
 
 
-# Lambda OperationStatus differs from the execution-level status vocabulary.
-_OPERATION_NONTERMINAL_STATUSES = ("STARTED", "PENDING", "READY")
-_OPERATION_TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "STOPPED")
-# replay.before contains completed checkpoints; only current operation views progress.
-_OPERATION_RECORD_PATHS: frozenset[tuple[str, ...]] = frozenset({("histories", "operations"), ("replay", "after")})
-_OUTCOME_RECORD_PATHS = _OPERATION_RECORD_PATHS | {("histories",), ("replay", "before")}
-_OBSERVATION_IDENTITIES: dict[tuple[str, ...], str] = {
-    ("attempts",): "requestId",
-    ("histories",): "executionArn",
-    ("histories", "operations"): "id",
-    ("faultsCreated",): "id",
-    ("resourcesCreated",): "id",
-    ("replay", "before"): "id",
-    ("replay", "after"): "id",
-    ("replay", "retry", "attempts"): "attemptId",
-    ("replay", "sideEffects"): "operationId",
-}
-
-
-def _observation_advanced(previous: Any, current: Any, path: tuple[str, ...]) -> bool:
-    if path in (("attempts", "startedAtMsSource"), ("attempts", "endedAtMsSource")):
-        return previous == "fixture" and current == "platform"
-    if path == ("histories", "status"):
-        return previous in ("RUNNING", "PENDING") and current in HISTORY_STATUSES
-    if path[:-1] in _OPERATION_RECORD_PATHS and path[-1:] == ("status",):
-        return previous in _OPERATION_NONTERMINAL_STATUSES and current in (
-            *_OPERATION_NONTERMINAL_STATUSES,
-            *_OPERATION_TERMINAL_STATUSES,
-        )
-    if path == ("replay", "sideEffects", "count"):
-        return is_json_integer(previous) and is_json_integer(current) and 0 <= previous <= current
-    increasing = path == ("observationEndedAtMs",) or path[:2] == ("collection", "watermarks")
-    increasing |= path == ("attempts", "endedAtMs")
-    decreasing = path == ("attempts", "startedAtMs")
-    if not (increasing or decreasing):
-        return False
-    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in (previous, current)):
-        return False
-    return current >= previous if increasing else current <= previous
-
-
-def _owned_record_enriches(previous: Any, current: Any, *, event: bool = False) -> bool:
-    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
-        return False
-    metadata = {"observedDuringRequestId"}
-    if event:
-        metadata.add("sequence")
-        for record in (previous, current):
-            if "sequence" in record and (not is_json_integer(record["sequence"]) or record["sequence"] < 0):
-                return False
-        if "sequence" in previous and "sequence" not in current:
-            return False
-    # The shared owned-record validator treats missing and null correlation as
-    # unassigned. Once an invocation ID is present it cannot be replaced.
-    if previous.get("observedDuringRequestId") is not None and (
-        "observedDuringRequestId" not in current
-        or not same_json(previous["observedDuringRequestId"], current["observedDuringRequestId"])
-    ):
-        return False
-    return same_json(
-        {key: value for key, value in previous.items() if key not in metadata},
-        {key: value for key, value in current.items() if key not in metadata},
-    )
-
-
-@dataclass
-class _RetentionChanges:
-    omitted: set[tuple[str, ...]] = field(default_factory=set)
-    conflicts: set[tuple[str, ...]] = field(default_factory=set)
-
-    def __bool__(self) -> bool:
-        return bool(self.omitted or self.conflicts)
-
-    def merge(self, other: _RetentionChanges) -> None:
-        self.omitted.update(other.omitted)
-        self.conflicts.update(other.conflicts)
-
-
-def _operation_entries_compatible(previous: Any, current: Any) -> bool:
-    if same_json(previous, current):
-        return True
-    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
-        return False
-    for key in ("requestId", "operationId"):
-        if not isinstance(previous.get(key), str) or not previous[key].strip() or previous[key] != current.get(key):
-            return False
-    if ("attemptId" in previous) != ("attemptId" in current):
-        return False
-    if "attemptId" in previous:
-        attempt_id = previous["attemptId"]
-        if not isinstance(attempt_id, str) or not attempt_id.strip() or attempt_id != current["attemptId"]:
-            return False
-    elif not (previous.keys() <= current.keys() or current.keys() <= previous.keys()):
-        # Without a retry identity, complementary partial descriptions do not
-        # establish that two observations came from the same body occurrence.
-        return False
-    return all(same_json(previous[key], current[key]) for key in previous.keys() & current.keys())
-
-
-def _retain_operation_entries(previous: list[Any], current: list[Any]) -> tuple[list[Any], _RetentionChanges]:
-    """Match compatible body entries one-to-one; their order is not an identity."""
-    candidates = [
-        [index for index, item in enumerate(current) if _operation_entries_compatible(record, item)]
-        for record in previous
-    ]
-    by_previous: dict[int, int] = {}
-    by_current: dict[int, int] = {}
-    for start in range(len(previous)):
-        pending = deque([start])
-        parents: dict[int, int] = {}
-        endpoint: int | None = None
-        while pending and endpoint is None:
-            original = pending.popleft()
-            for observed in candidates[original]:
-                if observed in parents:
-                    continue
-                parents[observed] = original
-                if observed not in by_current:
-                    endpoint = observed
-                    break
-                pending.append(by_current[observed])
-        # Reassign an earlier match when necessary, so a bare entry cannot
-        # consume the only occurrence compatible with another entry's metadata.
-        while endpoint is not None:
-            original = parents[endpoint]
-            prior_match = by_previous.get(original)
-            by_previous[original] = endpoint
-            by_current[endpoint] = original
-            endpoint = prior_match
-
-    retained = copy.deepcopy(current)
-    changes = _RetentionChanges()
-    for index, record in enumerate(previous):
-        match = by_previous.get(index)
-        if match is None:
-            retained.append(copy.deepcopy(record))
-            changes.omitted.add(("replay", "operationExecutions"))
-        elif isinstance(record, Mapping):
-            for key, value in record.items():
-                if key not in retained[match]:
-                    retained[match][key] = copy.deepcopy(value)
-                    changes.omitted.add(("replay", "operationExecutions"))
-    return retained, changes
-
-
-def _observation_updates(
-    previous: Mapping[str, Any], current: Mapping[str, Any], path: tuple[str, ...] = ()
-) -> dict[str, Any]:
-    """Extract new facts without replaying stale fields from a supplied object."""
-    updates: dict[str, Any] = {}
-    for key, value in current.items():
-        if key in previous and same_json(previous[key], value):
-            continue
-        atomic = path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error"))
-        if key not in previous or atomic:
-            updates[key] = copy.deepcopy(value)
-        elif isinstance(previous[key], Mapping) and isinstance(value, Mapping):
-            nested = _observation_updates(previous[key], value, (*path, key))
-            if nested:
-                updates[key] = nested
-        elif isinstance(previous[key], list) and isinstance(value, list) and (*path, key) in _OBSERVATION_IDENTITIES:
-            identity = _OBSERVATION_IDENTITIES[(*path, key)]
-            previous_counts = Counter(
-                record[identity]
-                for record in previous[key]
-                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
-            )
-            current_counts = Counter(
-                record[identity]
-                for record in value
-                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
-            )
-            if any(current_counts[identifier] > count for identifier, count in previous_counts.items()):
-                # A lone extra occurrence would merge back into the known row.
-                # Preserve this inventory's full multiplicity and facts instead.
-                updates[key] = copy.deepcopy(value)
-                continue
-            remaining = list(previous[key])
-            records = []
-            for record in value:
-                match = next(
-                    (
-                        index
-                        for index, item in enumerate(remaining)
-                        if isinstance(record, Mapping)
-                        and isinstance(record.get(identity), str)
-                        and isinstance(item, Mapping)
-                        and record[identity] == item.get(identity)
-                    ),
-                    None,
-                )
-                if match is None:
-                    records.append(copy.deepcopy(record))
-                    continue
-                prior = remaining.pop(match)
-                nested = _observation_updates(prior, record, (*path, key))
-                if nested:
-                    nested[identity] = record[identity]
-                    if (*path, key) == ("attempts",):
-                        for time_field in ("startedAtMs", "endedAtMs"):
-                            source_field = f"{time_field}Source"
-                            if time_field in nested or source_field in nested:
-                                for field_name in (time_field, source_field):
-                                    if field_name in record:
-                                        nested[field_name] = record[field_name]
-                    if (
-                        (*path, key) in _OUTCOME_RECORD_PATHS
-                        and {"status", "result", "error"} & nested.keys()
-                        and "status" in record
-                    ):
-                        nested["status"] = record["status"]
-                        # Status can make an unchanged outcome immutable. Carry
-                        # present values (including null), but not removed fields.
-                        for outcome in ("result", "error"):
-                            if outcome in record:
-                                nested[outcome] = copy.deepcopy(record[outcome])
-                    records.append(nested)
-            if records:
-                updates[key] = records
-        else:
-            # Unkeyed lists stay whole: operationExecutions can contain multiple
-            # body occurrences with the same request/operation identities.
-            updates[key] = copy.deepcopy(value)
-    return updates
-
-
-def _retain_observations(
-    original: Mapping[str, Any],
-    captured: Mapping[str, Any],
-    path: tuple[str, ...] = (),
-    *,
-    compare_sdk_order: bool = True,
-) -> tuple[dict[str, Any], _RetentionChanges]:
-    """Keep every prior fact while adding a failed collector's new observations.
-
-    Native intervals, observation watermarks and unfinished service histories
-    may advance. Other conflicting facts retain their original values. Lists
-    preserve known records, including multiplicity, so collection cannot erase
-    owned work. The raw snapshots are audited separately during retirement.
-    """
-    retained = copy.deepcopy(dict(captured))
-    changed = _RetentionChanges()
-    completing_execution = (
-        path == ("histories",)
-        and original.get("status") in ("RUNNING", "PENDING")
-        and captured.get("status") in ("SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED")
-    )
-    progressing_operation = path in _OPERATION_RECORD_PATHS and _observation_advanced(
-        original.get("status"), captured.get("status"), (*path, "status")
-    )
-    for key, previous in original.items():
-        if path == ("attempts",) and key in ("startedAtMs", "endedAtMs"):
-            source_key = f"{key}Source"
-            if original.get(source_key) == captured.get(source_key) == "platform" and key in captured:
-                if type(captured[key]) not in (int, float) or previous != captured[key]:
-                    retained[key] = previous
-                    changed.conflicts.add((*path, key))
-                continue
-        if path == ("attempts",) and key in ("startedAtMsSource", "endedAtMsSource"):
-            timestamp_key = key.removesuffix("Source")
-            if (
-                previous == "platform"
-                and key not in captured
-                and type(captured.get(timestamp_key)) in (int, float)
-                and captured[timestamp_key] == original.get(timestamp_key)
-            ):
-                retained[key] = previous
-                continue
-            if retained.get(key) == "platform" and timestamp_key not in captured and previous != "platform":
-                retained[key] = previous
-                changed.conflicts.add((*path, key))
-                continue
-
-        if (
-            path == ("attempts",)
-            and key in ("startedAtMs", "endedAtMs")
-            and original.get(f"{key}Source") in (None, "fixture")
-            and captured.get(f"{key}Source") == "platform"
-            and key in captured
-        ):
-            continue  # The platform measurement supersedes the fixture estimate.
-
-        if (
-            path == ("attempts",)
-            and key in ("startedAtMs", "endedAtMs")
-            and original.get(f"{key}Source") == "platform"
-            and captured.get(f"{key}Source") in (None, "fixture")
-        ):
-            retained[key] = previous
-            continue
-        if key in ("result", "error") and (progressing_operation or (completing_execution and previous is None)):
-            # Active operations can replace intermediate poll results or retry
-            # errors. Terminal checkpoints and non-null execution outcomes stay
-            # immutable; an unfinished execution's null is only a placeholder.
-            continue
-        if path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error")):
-            # Checkpoint JSON and each predeclared execution expectation are
-            # atomic contracts: arrays, object contents and status allowances
-            # cannot be rewritten to accommodate the observed result.
-            if key not in retained or not same_json(previous, retained[key]):
-                if key in retained:
-                    changed.conflicts.add((*path, key))
-                else:
-                    changed.omitted.add((*path, key))
-                retained[key] = copy.deepcopy(previous)
-            continue
-        if key not in retained:
-            retained[key] = copy.deepcopy(previous)
-            changed.omitted.add((*path, key))
-        elif isinstance(previous, Mapping) and isinstance(retained[key], Mapping):
-            retained[key], nested_changed = _retain_observations(previous, retained[key], (*path, key))
-            changed.merge(nested_changed)
-        elif (
-            (*path, key) == ("replay", "operationExecutions")
-            and isinstance(previous, list)
-            and isinstance(retained[key], list)
-        ):
-            retained[key], nested_changed = _retain_operation_entries(previous, retained[key])
-            changed.merge(nested_changed)
-        elif isinstance(previous, list) and isinstance(retained[key], list):
-            remaining = list(range(len(retained[key])))
-            identity = _OBSERVATION_IDENTITIES.get((*path, key))
-            events = (*path, key) == ("events",)
-            owned_records = (*path, key) in (("events",), ("sdkRequests",))
-            event_order: dict[str, list[tuple[int, int]]] = {}
-            prior_records = previous
-            if events and all(
-                isinstance(record, Mapping) and is_json_integer(record.get("sequence"))
-                for record in [*previous, *retained[key]]
-            ):
-                prior_records = sorted(previous, key=lambda record: record["sequence"])
-                remaining.sort(key=lambda index: retained[key][index]["sequence"])
-            elif owned_records:
-                # Reserve already correlated occurrences before matching an
-                # unattributed record that could fit more than one occurrence.
-                prior_records = sorted(
-                    previous,
-                    key=lambda record: not isinstance(record, Mapping) or record.get("observedDuringRequestId") is None,
-                )
-            for record in prior_records:
-                match = next(
-                    (
-                        index
-                        for index in remaining
-                        if same_json(record, retained[key][index])
-                        or (
-                            owned_records
-                            and (
-                                _owned_record_enriches(record, retained[key][index], event=owned_records)
-                                or _owned_record_enriches(retained[key][index], record, event=owned_records)
-                            )
-                        )
-                        or (
-                            identity is not None
-                            and isinstance(record, Mapping)
-                            and isinstance(record.get(identity), str)
-                            and isinstance(retained[key][index], Mapping)
-                            and record[identity] == retained[key][index].get(identity)
-                        )
-                    ),
-                    None,
-                )
-                if match is None:
-                    retained[key].append(copy.deepcopy(record))
-                    changed.omitted.add((*path, key))
-                else:
-                    remaining.remove(match)
-                    raw_sequence = retained[key][match].get("sequence") if events else None
-                    if owned_records and isinstance(record, Mapping):
-                        for metadata in ("observedDuringRequestId", "sequence"):
-                            if metadata == "observedDuringRequestId" and record.get(metadata) is None:
-                                continue
-                            if metadata in record and (
-                                metadata not in retained[key][match]
-                                or (metadata == "observedDuringRequestId" and retained[key][match][metadata] is None)
-                            ):
-                                retained[key][match][metadata] = copy.deepcopy(record[metadata])
-                                changed.omitted.add((*path, key))
-                    if events and isinstance(record, Mapping):
-                        old_sequence, new_sequence = record.get("sequence"), raw_sequence
-                        request_id = record.get("requestId")
-                        if (
-                            isinstance(request_id, str)
-                            and is_json_integer(old_sequence)
-                            and is_json_integer(new_sequence)
-                        ):
-                            event_order.setdefault(request_id, []).append((int(old_sequence), int(new_sequence)))
-                    if identity is not None and isinstance(record, Mapping):
-                        retained[key][match], nested_changed = _retain_observations(
-                            record, retained[key][match], (*path, key)
-                        )
-                        changed.merge(nested_changed)
-            for order in event_order.values():
-                # Numerical renumbering is harmless; reversing known local
-                # event order would erase a lifecycle failure before its audit.
-                if compare_sdk_order and any(
-                    first[0] < second[0] and first[1] >= second[1] for first, second in pairwise(sorted(order))
-                ):
-                    changed.conflicts.add((*path, key, "sequence"))
-        elif (
-            path == ("attempts",)
-            and key in ("startedAtMsSource", "endedAtMsSource")
-            and previous == "platform"
-            and retained[key] == "fixture"
-        ):
-            retained[key] = previous
-        elif not same_json(previous, retained[key]) and not _observation_advanced(
-            previous, retained[key], (*path, key)
-        ):
-            retained[key] = copy.deepcopy(previous)
-            changed.conflicts.add((*path, key))
-    if path == ("attempts",):
-        for key in ("startedAtMs", "endedAtMs"):
-            source_key = f"{key}Source"
-            if (
-                captured.get(source_key) == "platform"
-                and key not in captured
-                and original.get(source_key) != "platform"
-            ):
-                retained.pop(source_key, None)
-                changed.conflicts.add((*path, source_key))
-    if not path:
-        for attempt in retained.get("attempts", ()) if isinstance(retained.get("attempts"), list) else ():
-            if isinstance(attempt, dict):
-                for endpoint in ("startedAtMs", "endedAtMs"):
-                    source = f"{endpoint}Source"
-                    if endpoint not in attempt and attempt.get(source) == "platform":
-                        attempt.pop(source)
-        if compare_sdk_order and _sdk_frames_order_changed(original, captured):
-            changed.conflicts.add(("sdkRequests", "sequence"))
-    return retained, changed
-
-
-def _sdk_closure_order_changed(
-    request: Mapping[str, Any],
-    settled_request: Mapping[str, Any],
-    before_events: Sequence[Any],
-    after_events: Sequence[Any],
-) -> bool:
-    if request.get("outcome") == "DISPATCHED":
-        local_closures = []
-        for events in (before_events, after_events):
-            local_closures.append(
-                [
-                    event
-                    for event in events
-                    if event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
-                    and event.get("requestId") == request.get("requestId")
-                    and event.get("atMs") == request.get("atMs")
-                ]
-            )
-        for before_boundary in local_closures[0]:
-            for after_boundary in local_closures[1]:
-                if before_boundary.get("kind") != after_boundary.get("kind"):
-                    continue
-                sequences = [
-                    request.get("sequence"),
-                    before_boundary.get("sequence"),
-                    settled_request.get("sequence"),
-                    after_boundary.get("sequence"),
-                ]
-                if all(is_json_integer(sequence) for sequence in sequences) and (
-                    (sequences[0] < sequences[1]) != (sequences[2] < sequences[3])
-                ):
-                    return True
-
-    return False
-
-
-def _sdk_frames_order_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
-    prior_requests = before.get("sdkRequests", [])
-    current_requests = after.get("sdkRequests", [])
-    if not isinstance(prior_requests, list) or not isinstance(current_requests, list):
-        return False
-    return any(
-        _sdk_closure_order_changed(request, candidate, before.get("events", []), after.get("events", []))
-        for request in prior_requests
-        if isinstance(request, Mapping)
-        for candidate in current_requests
-        if isinstance(candidate, Mapping)
-        if _owned_record_enriches(request, candidate, event=True)
-    )
-
-
-def _event_frames_order_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
-    _, changes = _retain_observations({"events": before.get("events", [])}, {"events": after.get("events", [])})
-    return ("events", "sequence") in changes.conflicts
-
-
-def _native_intervals(
-    sources: Sequence[Mapping[str, Any]],
-) -> dict[str, dict[str, tuple[int | float, bool]]]:
-    """Resolve each endpoint with its source before using native intervals."""
-    native: dict[str, dict[str, tuple[int | float, bool]]] = {}
-    for source in sources:
-        attempts = source.get("attempts", [])
-        for attempt in attempts if isinstance(attempts, list) else ():
-            if not isinstance(attempt, Mapping) or not isinstance(request := attempt.get("requestId"), str):
-                continue
-            endpoints = native.setdefault(request, {})
-            for endpoint in ("startedAtMs", "endedAtMs"):
-                at = attempt.get(endpoint)
-                if (
-                    not isinstance(at, (int, float))
-                    or isinstance(at, bool)
-                    or at < 0
-                    or (isinstance(at, float) and not math.isfinite(at))
-                ):
-                    continue
-                platform = attempt.get(f"{endpoint}Source") == "platform"
-                previous = endpoints.get(endpoint)
-                if previous is None or (platform and not previous[1]):
-                    endpoints[endpoint] = (at, platform)
-                elif platform == previous[1]:
-                    # Conflicting platform measurements are audit errors. Use
-                    # the stricter bound for checks that also consume them.
-                    select = max if (endpoint == "startedAtMs") == platform else min
-                    endpoints[endpoint] = (select(previous[0], at), platform)
-    return native
-
-
 def _retirement_ownership_errors(
     context: ScenarioContext,
     original: Mapping[str, Any],
@@ -1336,9 +780,18 @@ def _retirement_ownership_errors(
         errors.append("Retirement coverageProfile changed the admitted case")
     if "runtime" in original and not same_json(original["runtime"], final.get("runtime")):
         errors.append("Retirement runtime differs from the original observations")
-    errors.extend(retirement_artifact_errors(original, final))
+    if "artifact" in original:
+        # Provisional observations may know only the deployed SDK revision.
+        # Completion can add metadata while keeping every known field intact.
+        original_artifact, final_artifact = original["artifact"], final.get("artifact")
+        if not isinstance(original_artifact, Mapping) or not isinstance(final_artifact, Mapping):
+            errors.append("Retirement artifact metadata must remain an object")
+        else:
+            for key, value in original_artifact.items():
+                if key not in final_artifact or not same_json(value, final_artifact[key]):
+                    errors.append(f"Retirement artifact.{key} differs from the original observations")
     errors.extend(active_pre_cutoff_errors(original, final))
-    errors.extend(deferred_retirement_errors(original, final))
+    errors.extend(deferred_retirement_errors(original, final, undispatched=True))
     original_attempts = original.get("attempts", [])
     observed = final.get("attempts", [])
     if not isinstance(original_attempts, list) or not isinstance(observed, list):
@@ -1578,8 +1031,6 @@ def _retirement_ownership_errors(
     def latest_time(values: Sequence[Any]) -> int | float:
         return max((time for value in values if (time := observed_time(value)) is not None), default=0)
 
-    before_events = original.get("events", [])
-    before_requests = original.get("sdkRequests", [])
     # Audit settlement against the frozen observations as well as the final
     # snapshot: even an otherwise valid snapshot cannot erase prior activity.
     retirement = final.get("retirement")
@@ -1694,171 +1145,6 @@ def _cleanup_envelope_errors(sources: Sequence[Mapping[str, Any]], final: Mappin
     return findings
 
 
-def _cleanup_record_errors(sources: Sequence[Mapping[str, Any]], final_snapshot: Mapping[str, Any] | None) -> list[str]:
-    """Reconcile every raw record's native owner, even for opaque event kinds."""
-    findings: list[str] = []
-
-    def records(value: Any) -> list[Mapping[str, Any]]:
-        return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
-
-    def identifier(value: Any) -> TypeGuard[str]:
-        return isinstance(value, str) and bool(value.strip())
-
-    def timestamp(value: Any) -> int | float | None:
-        try:
-            if type(value) in (int, float) and value >= 0 and math.isfinite(value):
-                return value
-        except OverflowError:
-            pass
-        return None
-
-    bindings: dict[str, set[str]] = {}
-    native = _native_intervals(sources)
-    starts = {request: bounds["startedAtMs"][0] for request, bounds in native.items() if "startedAtMs" in bounds}
-    ends = {request: bounds["endedAtMs"][0] for request, bounds in native.items() if "endedAtMs" in bounds}
-    windows: list[int | float] = []
-    for source in sources:
-        end = timestamp(source.get("observationEndedAtMs"))
-        if end is not None:
-            windows.append(end)
-        for attempt in records(source.get("attempts")):
-            request_id = attempt.get("requestId")
-            if not identifier(request_id):
-                continue
-            known = bindings.setdefault(request_id, set())
-            execution_arn = attempt.get("executionArn")
-            if identifier(execution_arn):
-                known.add(execution_arn)
-    known_executions = {execution for observed in bindings.values() for execution in observed}
-    retirement = final_snapshot.get("retirement") if final_snapshot is not None else None
-    settlements = {
-        (item.get("kind"), item.get("id")): item
-        for item in records(retirement.get("resources") if isinstance(retirement, Mapping) else None)
-        if identifier(item.get("kind")) and identifier(item.get("id"))
-    }
-
-    for source in sources:
-        collections = {name: records(source.get(name)) for name in ("events", "sdkRequests")}
-        replay = source.get("replay")
-        if isinstance(replay, Mapping):
-            collections["replay.operationExecutions"] = records(replay.get("operationExecutions"))
-            retry = replay.get("retry")
-            if isinstance(retry, Mapping):
-                collections["replay.retry.attempts"] = records(retry.get("attempts"))
-        for collection, inventory in collections.items():
-            for record in inventory:
-                if collection.startswith("replay.") and not {
-                    "requestId",
-                    "ownerRequestId",
-                    "executionArn",
-                    "observedDuringRequestId",
-                }.intersection(record):
-                    continue  # Behavior-only partial records need no physical owner yet.
-                field = {"events": "kind", "sdkRequests": "method"}.get(collection)
-                if field is not None and field in record and not identifier(record[field]):
-                    findings.append(f"INCOMPLETE: cleanup {collection}.{field} must be a non-empty string")
-                if (
-                    collection == "events"
-                    and "sequence" in record
-                    and not (is_json_integer(record["sequence"]) and record["sequence"] >= 0)
-                ):
-                    # A later snapshot cannot repair a sequence that was explicitly malformed.
-                    findings.append("INCOMPLETE: cleanup events.sequence must be a non-negative integer")
-                if (
-                    collection == "sdkRequests"
-                    and "outcome" in record
-                    and record["outcome"] not in ("DISPATCHED", "REJECTED")
-                ):
-                    findings.append("INCOMPLETE: cleanup sdkRequests.outcome must be DISPATCHED or REJECTED")
-                observed_at = timestamp(record.get("atMs"))
-                if "atMs" in record and observed_at is None:
-                    findings.append(f"INCOMPLETE: cleanup {collection}.atMs must be a finite non-negative number")
-                for key in ("requestId", "ownerRequestId", "executionArn", "observedDuringRequestId"):
-                    if (
-                        key in record
-                        and not (key == "observedDuringRequestId" and record[key] is None)
-                        and not identifier(record[key])
-                    ):
-                        findings.append(f"INCOMPLETE: cleanup {collection}.{key} must identify its native owner")
-                if final_snapshot is None:
-                    continue
-
-                referenced_requests: set[str] = set()
-                for key in ("requestId", "ownerRequestId", "observedDuringRequestId"):
-                    request_id = record.get(key)
-                    if not identifier(request_id):
-                        continue
-                    referenced_requests.add(request_id)
-                    if len(bindings.get(request_id, set())) != 1:
-                        findings.append(f"INCOMPLETE: cleanup {collection}.{key} has an unresolved native binding")
-                request_id = record.get("requestId", record.get("ownerRequestId"))
-                execution_arn = record.get("executionArn")
-                if not referenced_requests and identifier(execution_arn):
-                    candidates = {request for request, known in bindings.items() if known == {execution_arn}}
-                    if len(candidates) == 1:
-                        referenced_requests.update(candidates)
-                        request_id = next(iter(candidates))
-                if not referenced_requests:
-                    findings.append(f"INCOMPLETE: cleanup {collection} has no resolved native owner")
-                expected = bindings.get(request_id, set()) if identifier(request_id) else set()
-                if identifier(execution_arn) and execution_arn not in known_executions:
-                    findings.append(f"INCOMPLETE: cleanup {collection}.executionArn has an unresolved execution owner")
-                elif identifier(execution_arn) and len(expected) == 1 and execution_arn not in expected:
-                    findings.append(f"ASSERTION: cleanup {collection} is attributed to a different execution")
-                owner = record.get("ownerRequestId")
-                if (
-                    identifier(record.get("requestId"))
-                    and identifier(owner)
-                    and len(bindings.get(record["requestId"], set())) == 1
-                    and len(bindings.get(owner, set())) == 1
-                    and owner != record["requestId"]
-                ):
-                    findings.append(f"ASSERTION: cleanup {collection} is attributed to a different invocation")
-
-                # Event-only discoveries need settlement coverage too: the
-                # snapshot containing an event may predate its native binding.
-                for referenced in referenced_requests:
-                    settlement = settlements.get(("invocation", referenced), {})
-                    settled_at = timestamp(settlement.get("settledAtMs"))
-                    if (
-                        settlement.get("outcome") != "QUIESCENT"
-                        or settled_at is None
-                        or (observed_at is not None and settled_at < observed_at)
-                    ):
-                        findings.append(f"INCOMPLETE: cleanup {collection} native owner {referenced} is not settled")
-                referenced_executions = {
-                    execution for referenced in referenced_requests for execution in bindings.get(referenced, set())
-                }
-                if identifier(execution_arn):
-                    referenced_executions.add(execution_arn)
-                for execution in referenced_executions:
-                    settlement = settlements.get(("execution", execution), {})
-                    if (
-                        settlement.get("outcome") not in TERMINAL_STATUSES
-                        or timestamp(settlement.get("settledAtMs")) is None
-                    ):
-                        findings.append(f"INCOMPLETE: cleanup {collection} execution owner {execution} is not settled")
-
-                if observed_at is None:
-                    continue  # Omitted timestamp metadata can still be completed.
-                started = starts.get(request_id) if identifier(request_id) else None
-                if (windows and observed_at > max(windows)) or (started is not None and observed_at < started):
-                    findings.append(
-                        f"INCOMPLETE: cleanup {collection}.atMs lies outside the retained observation window"
-                    )
-                during = record.get("observedDuringRequestId")
-                if identifier(during):
-                    if during not in starts or during not in ends:
-                        findings.append(
-                            f"INCOMPLETE: cleanup {collection}.observedDuringRequestId lacks a native interval"
-                        )
-                    elif not starts[during] <= observed_at <= ends[during]:
-                        findings.append(
-                            f"ASSERTION: cleanup {collection}.atMs lies outside its observedDuringRequestId interval"
-                        )
-    return findings
-
-
 def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Mapping[str, Any]) -> list[str]:
     retirement = final.get("retirement")
     retirement = retirement if isinstance(retirement, Mapping) else {}
@@ -1869,7 +1155,7 @@ def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Map
         if isinstance(item, Mapping) and isinstance(item.get("id"), str)
     }
     terminal_outcomes = {
-        "invocation": ("QUIESCENT",),
+        "invocation": ("QUIESCENT", "UNDISPATCHED"),
         "execution": TERMINAL_STATUSES,
         "callback": ("SUCCEEDED", "FAILED", "TIMED_OUT"),
         "control": ("DELETED",),
@@ -1984,7 +1270,6 @@ async def run_scenarios(
     adapter: ScenarioAdapter,
     *,
     run_id: str,
-    validator: EvidenceValidator | None = None,
     scenario_concurrency: int = 8,
     budgets: Budgets | None = None,
     scheduler: ResourceScheduler | None = None,
@@ -1994,14 +1279,24 @@ async def run_scenarios(
 ) -> list[ScenarioResult]:
     """Prepare each profile once, then run compatible cases concurrently.
 
+    The coordinator collects evidence and decides physical target reuse; it
+    never decides conformance. Results carry collection statuses, never
+    ``PASSED``. Verdicts for these captures come only from adjudication, through
+    ``lmi.app.collect_and_adjudicate`` or ``lmi.app.adjudicate_collected_evidence``.
+
     Results preserve pre-release failures. Normal final collection can only add
     the retirement record. Failed cases and cleanup discoveries retain a separate
     audited retirement snapshot, so cleanup cannot rewrite their original behavior
     observations.
     Missing handlers, infrastructure failures and evidence gaps are never passes.
+    ``scheduler`` serves this run only; sharing one across runs is not supported.
     ``on_attempt`` is a synchronous durable journal sink called before transport
-    dispatch. ``on_result`` receives case retirement and final profile-retirement
-    updates, including cancelled cases; sinks should replace records by case ID.
+    dispatch. ``validate_attempt`` checks each journaled or updated attempt
+    before ``on_attempt``. If it raises, an undispatched launch is rolled back, a
+    service-discovered attempt stays journaled, and a rejected update still binds
+    the request and execution identities it supplied. ``on_result`` receives case
+    retirement and final profile-retirement updates, including cancelled cases;
+    sinks should replace records by case ID.
     """
     if not run_id or type(scenario_concurrency) is not int or scenario_concurrency < 1:
         raise ValueError("run_id and positive scenario_concurrency are required")
@@ -2094,31 +1389,32 @@ async def run_scenarios(
             _on_attempt=on_attempt,
             _on_claim=record_attempt_claims,
             _validate_attempt=validate_attempt,
+            _claim_loop=asyncio.get_running_loop(),
         )
         for case in scenarios
     }
-    run_locks: dict[str, asyncio.Lock] = {}
     adapter_preparation_started: set[str] = set()
+    # A cancelled case-phase adapter task may have claimed any target, or still
+    # claim one later, even after it finished. A run with one reports no profile
+    # quiescent.
+    interrupted: list[list[asyncio.Task[Any]]] = []
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 
     async def prepare(profile: Profile) -> tuple[list[str], dict[str, dict[str, float]]]:
         context = ScenarioContext(
             run_id, Scenario("deployment", "deployment", profile.profile_id, "deployment"), profile
         )
+        # Preparation has no claiming context, and a timed-out preparation
+        # leaves its own deployment lease non-quiescent, so it is not tracked.
         residual: list[asyncio.Task[Any]] = []
 
         async def provision() -> None:
             adapter_preparation_started.add(profile.profile_id)
-            leases._resources[profile.resource_id].profile_active = True
             await adapter.prepare(profile)
 
         try:
-            run_locks[profile.profile_id] = await leases._acquire_run(profile.resource_id, timeout=limits.lease)
             async with leases._deployment_lease(profile.resource_id, f"{run_id}:deployment", timeout=limits.lease):
-                try:
-                    await _bounded(provision(), "provisioning", limits.provisioning, context, residual)
-                finally:
-                    leases.track_residual(profile.resource_id, residual)
+                await _bounded(provision(), "provisioning", limits.provisioning, context, residual)
             return [], context.timings
         except Exception as exc:
             return [f"provisioning: {type(exc).__name__}: {exc}"], context.timings
@@ -2132,6 +1428,8 @@ async def run_scenarios(
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
         admitted_identity = admission_identities[case.case_id]
+        residual: list[asyncio.Task[Any]] = []
+        interrupted.append(residual)
         evidence: dict[str, Any] = {}
         observation_baselines: list[dict[str, Any]] = []
         retirement_evidence: dict[str, Any] = {}
@@ -2142,7 +1440,6 @@ async def run_scenarios(
         context_retention_failed = False
         context_observations: dict[int, tuple[Any, dict[str, Any]]] = {}
         status = "COLLECTED"
-        residual: list[asyncio.Task[Any]] = []
         lease: Lease | None = None
         cancelled = False
 
@@ -2515,7 +1812,6 @@ async def run_scenarios(
                 # A timed-out adapter can continue sending requests despite
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
-                    leases.track_residual(lease.resource_id, residual)
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 normal_retirement = evidence
                 try:
@@ -2543,23 +1839,29 @@ async def run_scenarios(
                         snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
-                journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
-                if journaled_late:
-                    deferred = deferred_service_requests(evidence)
-                    deferred.update(
-                        {
-                            item["requestId"]: item["executionArn"]
-                            for item in context.attempts
-                            if item.get("requestId") in journaled_late
-                        }
+                # Adapter evidence is untrusted. A malformed deferral must fail
+                # retirement here; raising would skip the non-quiescent release.
+                try:
+                    journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
+                    if journaled_late:
+                        deferred = deferred_service_requests(evidence)
+                        deferred.update(
+                            {
+                                item["requestId"]: item["executionArn"]
+                                for item in context.attempts
+                                if item.get("requestId") in journaled_late
+                            }
+                        )
+                        evidence.setdefault("collection", {})["deferredServiceRequests"] = [
+                            {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
+                        ]
+                    full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
+                        isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
+                        for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
                     )
-                    evidence.setdefault("collection", {})["deferredServiceRequests"] = [
-                        {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
-                    ]
-                full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
-                    isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
-                    for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
-                )
+                except Exception as exc:
+                    cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
+                    full_runtime_audit_required = True
                 supplied_retirement = context.retirement_evidence
                 if not isinstance(supplied_retirement, Mapping):
                     cleanup_errors.append("Independent retirement snapshot must be an object")
@@ -2685,27 +1987,30 @@ async def run_scenarios(
             raise asyncio.CancelledError
         return result
 
-    tasks_by_profile: dict[str, list[asyncio.Task[ScenarioResult]]] = {}
-    tasks = []
-    for case in scenarios:
-        case_task = asyncio.create_task(run_case(case))
-        tasks_by_profile.setdefault(case.profile_id, []).append(case_task)
-        tasks.append(case_task)
+    tasks = [asyncio.create_task(run_case(case)) for case in scenarios]
     case_results = asyncio.gather(*tasks)
 
     finishing_profiles: set[asyncio.Task[Any]] = set()
 
-    async def finish_profile(profile_id: str, case_tasks: list[asyncio.Task[ScenarioResult]]) -> None:
-        await asyncio.gather(prepared[profile_id], *case_tasks, return_exceptions=True)
-        run_lock = run_locks.get(profile_id)
-        if run_lock is None:
-            return
+    async def finish_profile(profile_id: str) -> None:
+        # Any case can register a claim that conflicts with another profile's
+        # target. Decide quiescence only after every case, in every profile,
+        # has registered its claims.
+        await asyncio.gather(prepared[profile_id], *tasks, return_exceptions=True)
         if profile_id not in adapter_preparation_started:
-            run_lock.release()
             return
         profile = profile_map[profile_id]
         context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
-        quiet = leases.quarantine_reason(profile.resource_id) is None
+        # Quiescence must be positive: a case that ended without releasing its
+        # lease never completed its retirement audit, so keep the fence.
+        stranded = sorted(
+            owner for owner in leases._resources[profile.resource_id].owners if owner.startswith(f"{run_id}:")
+        )
+        if stranded:
+            await leases.quarantine(
+                profile.resource_id, f"Case ownership was not released after retirement: {', '.join(stranded)}"
+            )
+        quiet = leases.quarantine_reason(profile.resource_id) is None and not any(interrupted)
         task = asyncio.current_task()
         assert task is not None
         finishing_profiles.add(task)
@@ -2722,12 +2027,7 @@ async def run_scenarios(
                         result.status = "INFRASTRUCTURE_ERROR"
                     result.errors.append(f"Run ownership release failed: {type(exc).__name__}: {exc}")
         finally:
-            # The target's case resource remains quarantined independently;
-            # a later run can acquire this mutex but cannot deploy or admit.
             finishing_profiles.discard(task)
-            leases.track_residual(profile.resource_id, residual)
-            leases._resources[profile.resource_id].profile_active = False
-            run_lock.release()
             for result in completed.values():
                 if result.profile_id == profile_id:
                     result.timings.update(copy.deepcopy(context.timings))
@@ -2735,7 +2035,8 @@ async def run_scenarios(
 
     async def drain_and_finish() -> None:
         finished = asyncio.gather(
-            *(finish_profile(profile_id, case_tasks) for profile_id, case_tasks in tasks_by_profile.items())
+            # The admitted profiles, not the caller's sequence, which it may change.
+            *(finish_profile(profile_id) for profile_id in tuple(prepared))
         )
         cancellation: asyncio.CancelledError | None = None
         while not finished.done():
@@ -2769,25 +2070,4 @@ async def run_scenarios(
         draining.result()
         if cancellation is not None:
             raise cancellation
-
-    if validator is not None:
-        from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence
-
-        for result in outcomes:
-            if result.evidence:
-                capture_status = result.status
-                result.status, result.errors, projected = adjudicate_evidence(
-                    capture_status,
-                    result.errors,
-                    result.evidence,
-                    retirement_evidence=result.retirement_evidence,
-                    cleanup_evidence=result.cleanup_evidence,
-                    observation_evidence=result.observation_evidence,
-                    attempts=result.attempts,
-                    validator=validator,
-                    standard=contexts[result.case_id].scenario.coverage_profile == "standard",
-                    trusted_observations=result.trusted_observations,
-                )
-                result.evidence = projected
-                emit(result)
     return outcomes

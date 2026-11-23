@@ -19,27 +19,27 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, TypeGuard
 
-from aws_durable_execution_conformance_tests.lmi.artifacts import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioContext
-from aws_durable_execution_conformance_tests.lmi.evidence import (
-    CUTOFF_ACTIVE_STATUSES,
-    _decimal_identity,
-    _decode_json_wire,
-    _json_result_fingerprint,
-    is_json_integer,
-    same_checkpoint,
-)
 from aws_durable_execution_conformance_tests.lmi.observations import (
-    active_retry_interval,
     is_platform_timeout,
-    requests_after_cutoff,
+    is_undispatched_rejection,
     service_error_type,
     service_native_intervals,
     suspension_resumptions,
 )
 from aws_durable_execution_conformance_tests.lmi.observations import (
     timestamp_ms as _milliseconds,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import active_retry_interval, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.rules.values import (
+    CUTOFF_ACTIVE_STATUSES,
+    _decimal_identity,
+    _decode_json_wire,
+    _json_result_fingerprint,
+    is_json_integer,
+    same_checkpoint,
 )
 from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
 
@@ -329,6 +329,59 @@ def ledger_seal_status(
         ):
             errors.append(f"Native request {request} has an incomplete capture sequence at its ledger seal")
     return known, missing, errors
+
+
+def undispatched_requests(
+    records: Sequence[Mapping[str, Any]],
+    histories: Mapping[str, Sequence[Mapping[str, Any]]],
+    launches: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """The service proves these requests never reached a handler.
+
+    A request qualifies only if it has no runtime trace of any phase (no
+    ledger row, published or not, and no binding to a launch) and exactly one
+    service-recorded completion, on an owned execution, that is an allowlisted
+    platform rejection with a valid native interval. Such a request is exempt
+    only from the physical-retirement seal requirement; it never satisfies
+    behavior evidence.
+    """
+    published = {record.get("request") for record in records}
+    bound = {request for launch in launches for request in launch.get("native_requests", ())}
+    owned = {launch.get("arn") for launch in launches if launch.get("arn")}
+    found: defaultdict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)
+    for arn, history in histories.items():
+        for event in history:
+            # Count leniently, the same way _invocation_completions matches
+            # events, so a malformed extra completion for the same request
+            # cannot be hidden behind a technicality and still disqualify it.
+            if event.get("EventType") != "InvocationCompleted" and "InvocationCompletedDetails" not in event:
+                continue
+            details = event.get("InvocationCompletedDetails")
+            if isinstance(details, Mapping) and isinstance(details.get("RequestId"), str):
+                found[details["RequestId"]].append((arn, event))
+    proven: dict[str, dict[str, Any]] = {}
+    for request, completions in found.items():
+        if len(completions) != 1 or request in published or request in bound:
+            continue
+        ((arn, event),) = completions
+        details = event["InvocationCompletedDetails"]
+        interval = service_native_intervals([event]).get(request)  # also requires EventType == InvocationCompleted
+        event_id = event.get("EventId")
+        if (
+            arn in owned
+            and interval is not None
+            and is_undispatched_rejection(details)
+            and type(event_id) is int
+            and event_id >= 1
+        ):
+            proven[request] = {
+                "executionArn": arn,
+                "serviceErrorType": service_error_type(details),
+                "sourceEventId": event_id,
+                "startedAtMs": interval[0],
+                "settledAtMs": interval[1],
+            }
+    return proven
 
 
 def _terminal_end(history: Sequence[Mapping[str, Any]], result: Mapping[str, Any]) -> float | None:
@@ -708,6 +761,10 @@ class CaseSources:
                     elif kind == "WAIT":
                         # WaitSucceeded has no Result field in the service model.
                         operation["result"] = None
+                    # The suspension check orders a wait or callback's service
+                    # completion between the suspending return and the resume.
+                    if kind in ("WAIT", "CALLBACK") and (completed_at := _service_event_time(raw)) is not None:
+                        operation["endedAtMs"] = completed_at
                 elif event_type == "StepFailed" and "NextAttemptDelaySeconds" in details.get("RetryDetails", {}):
                     operation["status"] = "STARTED"
                 elif event_type.endswith("Failed"):
@@ -791,6 +848,7 @@ class CaseSources:
         cutoff_ms: float | None = None,
         excluded: set[str] | None = None,
         sealed: set[str] | None = None,
+        undispatched: Collection[str] = (),
     ) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
         attempts: list[dict[str, Any]] = []
         selected: dict[str, str] = {}
@@ -828,6 +886,7 @@ class CaseSources:
                 if (
                     isinstance(native, str)
                     and native not in raw_by_request
+                    and native not in undispatched
                     and (excluded is None or native not in excluded)
                 ):
                     unpublished[native] = service_error_type(details)
@@ -1456,6 +1515,12 @@ def build_evidence(
     history_pending: list[str] = []
     known, missing, seal_errors = ledger_seal_status(ledger, service, cloud.invocations, excluded)
     errors.extend(seal_errors)
+    # The service proves a physically undispatched request never reached a
+    # handler, so it is exempt from the physical seal requirement; it still
+    # counts as incomplete behavior evidence everywhere else, so it is never
+    # computed outside the final (physical retirement) phase.
+    undispatched = undispatched_requests(all_ledger, service, cloud.invocations) if final else {}
+    missing -= undispatched.keys()
     sealed = (
         known - missing
         if frozen
@@ -1465,7 +1530,7 @@ def build_evidence(
     )
     if final:
         histories, expected, history_errors = sources.histories()
-        attempts, selected, attempt_errors = sources.attempts(events)
+        attempts, selected, attempt_errors = sources.attempts(events, undispatched=undispatched.keys())
     else:
         histories, expected, history_errors = sources.histories(
             pending=history_pending, cutoff_ms=ended if frozen else None
@@ -1551,7 +1616,7 @@ def build_evidence(
             (item["executionArn"] for item in attempts if item["requestId"] == selected.get("victim")), None
         )
         # Clouds built by live drivers record the selected suspension mode.
-        # Legacy offline fixture assemblies can still verify the first resume.
+        # Fixture-built clouds without a driver can still verify the first resume.
         suspension_mode = getattr(cloud, "suspension_mode", None)
         resumes = _public_suspension_histories(cloud, ledger, victim_arn) if complete_replay and suspension_mode else {}
         resume_id = selected.get("resume")
@@ -1763,7 +1828,20 @@ def build_evidence(
                 "evidenceUri": (cloud.artifacts_dir / "events.json").resolve().as_uri(),
             }
             if resource["kind"] == "invocation":
-                item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
+                proof = undispatched.get(resource["id"])
+                if proof is not None:
+                    # A request proven undispatched settles with its proof fields;
+                    # settledAtMs becomes its native rejection time, not the
+                    # overall retirement time. Behavior validation must still
+                    # reject this outcome, so a retry can never stand in for it.
+                    item.update(outcome="UNDISPATCHED", **proof)
+                    invocation = next((i for i in cloud.invocations if i.get("arn") == proof["executionArn"]), None)
+                    if invocation is not None:
+                        item["evidenceUri"] = (
+                            (cloud.artifacts_dir / f"histories/{invocation['marker']}.json").resolve().as_uri()
+                        )
+                else:
+                    item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
             elif resource["kind"] == "execution":
                 item["outcome"] = cloud.execution_results.get(resource["id"], {}).get("Status", "UNKNOWN")
                 invocation = next((i for i in cloud.invocations if i.get("arn") == resource["id"]), None)

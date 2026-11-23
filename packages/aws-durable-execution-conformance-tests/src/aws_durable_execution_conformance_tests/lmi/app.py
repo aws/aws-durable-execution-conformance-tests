@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Run live LMI lifecycle cases or validate retained evidence with strict coverage."""
+"""Collect LMI lifecycle evidence and adjudicate it, with strict coverage."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import importlib
 import json
 import math
@@ -21,16 +22,12 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from aws_durable_execution_conformance_tests.lmi.artifacts import (
-    sdk_plan_with_artifact_directory,
-)
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
     EvidenceValidator,
     is_json_integer,
     same_json,
-    validate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
@@ -327,25 +324,16 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
-        if "not_implemented" in scenario:
-            if not isinstance(scenario["not_implemented"], str):
-                raise ValueError("not_implemented must be a string")
-            if scenario.get("evidence_file"):
-                raise ValueError("a scenario cannot declare both evidence_file and not_implemented")
+        if "evidence_file" in scenario:
+            raise ValueError("evidence_file is not supported; collect evidence with --adapter")
+        if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
+            raise ValueError("not_implemented must be a string")
     return manifest
 
 
 def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
-    """Load a manifest using the same admission rules as direct live runs."""
+    """Load a manifest using the same admission rules as direct collection runs."""
     return _validate_manifest(_read_json(path), suite=suite)
-
-
-def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
-    if evidence.get("coverageProfile", "standard") != "standard":
-        return ["INCOMPLETE: unknown evidence coverage profile"]
-    if phase not in ("observations", "final"):
-        return ["INCOMPLETE: unknown evidence validation phase"]
-    return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
 
 
 def _identity_errors(
@@ -370,9 +358,8 @@ def _identity_errors(
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
     definition = _case_definition(manifest, scenario, profile, suite)
-    # A manifest may declare roles beyond the requirement's defaults. Live
-    # runs reject an incomplete cohort through the coordinator's ownership
-    # check; retained evidence must cover the same role set for every suite.
+    # A manifest may declare roles beyond the requirement's defaults. Collected
+    # evidence must cover the declared role set for every suite.
     declared = set(scenario.get("roles", definition.roles))
     selected_roles = evidence.get("selectedRequests")
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
@@ -427,52 +414,6 @@ def _identity_errors(
     return errors
 
 
-def evidence_results(
-    manifest: Mapping[str, Any], base: Path, *, suite: SuiteDefinition | None = None
-) -> list[dict[str, Any]]:
-    _required(manifest, suite)
-    results = []
-    for scenario in manifest["scenarios"]:
-        result: dict[str, Any] = {
-            "case_id": scenario["case_id"],
-            "requirement_id": scenario["requirement_id"],
-            "profile_id": scenario["profile_id"],
-        }
-        if "not_implemented" in scenario:
-            result.update(status="NOT_IMPLEMENTED", errors=[scenario["not_implemented"]])
-        elif not scenario.get("evidence_file"):
-            result.update(status="INCOMPLETE_EVIDENCE", errors=["INCOMPLETE: missing evidence_file"])
-        else:
-            try:
-                evidence = _read_json(base / scenario["evidence_file"])
-                if not isinstance(evidence, dict):
-                    raise ValueError("evidence must be an object")
-                attempts = evidence.get("attempts")
-                collection = evidence.get("collection")
-                deferred = isinstance(collection, Mapping) and bool(collection.get("deferredServiceRequests"))
-                active = isinstance(attempts, list) and any(
-                    isinstance(attempt, Mapping) and attempt.get("activeAtObservationEnd") is True
-                    for attempt in attempts
-                )
-                if (active or deferred) and not isinstance(evidence.get("retirementSnapshot"), Mapping):
-                    result.update(
-                        evidence=evidence,
-                        status="INCOMPLETE_EVIDENCE",
-                        errors=["INCOMPLETE: active-at-cutoff evidence requires an independent retirement audit"],
-                    )
-                    results.append(result)
-                    continue
-                errors = _identity_errors(manifest, scenario, evidence, suite=suite) + list(
-                    (suite.validator if suite else validate)(evidence)
-                )
-                result.update(evidence=evidence, errors=errors, status="FAILED" if errors else "PASSED")
-            except (OSError, ValueError, TypeError) as exc:
-                result.update(status="INCOMPLETE_EVIDENCE", errors=[f"INCOMPLETE: {exc}"])
-        results.append(result)
-    _check_unique_ownership(results)
-    return results
-
-
 def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
     from aws_durable_execution_conformance_tests.lmi.coordinator import _ownership_claims
 
@@ -523,6 +464,67 @@ def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
     _append_audit_row(path, _dump_json(record, compact=True))
 
 
+def _sync_directory(path: Path) -> None:
+    """Persist a directory's entries, such as a newly created journal file."""
+    if os.name == "nt":
+        return  # Windows cannot open a directory for fsync.
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        # Some filesystems cannot fsync a directory at all; nothing more is possible.
+        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def _write_new_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
+    """Create ``path`` exclusively with the manifest, leaving nothing on failure."""
+    document = _dump_json(manifest) + "\n"
+    created = False
+    try:
+        with path.open("x") as stream:
+            created = True
+            stream.write(document)
+    except BaseException:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
+
+
+# Files an earlier collection or adjudication wrote into an output directory.
+_RUN_OUTPUTS = (
+    "attempts.jsonl",
+    "results.jsonl",
+    "collected-evidence.json",
+    "evidence.json",
+    "coverage.json",
+    "report.json",
+    "report.xml",
+)
+
+
+def _make_durable_directory(path: Path) -> None:
+    """Create a directory and persist every entry on its path.
+
+    Every ancestor is synced, not only those created now, so a directory that an
+    earlier failed attempt created still gets a durable name. A directory this
+    process can change must sync; one it cannot write, such as ``/``, cannot hold
+    an entry this run created, so its sync is best effort.
+    """
+    created = {directory for directory in (path, *path.parents) if not directory.exists()}
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in (path, *path.parents):
+        if directory.parent == directory:
+            break
+        try:
+            _sync_directory(directory.parent)
+        except OSError:
+            if directory in created or os.access(directory.parent, os.W_OK):
+                raise
+
+
 def _append_audit_row(path: Path, document: str) -> None:
     row = (document + "\n").encode("utf-8")
     with path.open("a+b", buffering=0) as stream:
@@ -542,6 +544,9 @@ def _append_audit_row(path: Path, document: str) -> None:
             raise
         # A complete row remains a possible durable claim if sync raises.
         os.fsync(stream.fileno())
+    # A row is durable only once the journal's name is. Sync on every append so
+    # a failed earlier sync cannot leave a later row authorizing dispatch.
+    _sync_directory(path.parent)
 
 
 def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -558,7 +563,7 @@ def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return fallback, _dump_json(fallback, compact=True)
 
 
-async def live_results(
+async def collect_and_adjudicate(
     manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
 ) -> list[dict[str, Any]]:
     from aws_durable_execution_conformance_tests.lmi.coordinator import (
@@ -595,21 +600,29 @@ async def live_results(
             frozenset(suite.service_role_transitions.get(scenario["requirement_id"], ())) if suite else frozenset()
         )
         scenarios.append(Scenario(**configured))
-    audit_dir.mkdir(parents=True, exist_ok=True)
+    _make_durable_directory(audit_dir)
     result_journal = audit_dir / "results.jsonl"
     attempt_journal = audit_dir / "attempts.jsonl"
     capture_path = audit_dir / "collected-evidence.json"
-    if any(path.exists() for path in (result_journal, attempt_journal)):
+    # A manifest and caller-owned artifacts may precede collection; the outputs of
+    # an earlier collection or adjudication may not.
+    # Look names up in the filesystem, which may ignore case, and count dangling links.
+    if any(os.path.lexists(audit_dir / name) for name in _RUN_OUTPUTS):
         raise ValueError("audit directory already contains lifecycle evidence")
     manifest_path = audit_dir / "manifest.json"
-    if manifest_path.exists() and not same_json(_read_json(manifest_path), manifest):
-        raise ValueError("audit directory contains a different manifest")
-    # Claim this run's output before any adapter work. Simultaneous callers
-    # targeting the same directory cannot interleave their journals.
+    # Claim this run's output before any adapter work, then bind the manifest
+    # under that claim. Simultaneous callers targeting the same directory cannot
+    # interleave their journals or record another plan's manifest.
     capture_path.touch(exist_ok=False)
-    if not manifest_path.exists():
-        with manifest_path.open("x") as admitted:
-            admitted.write(_dump_json(manifest) + "\n")
+    try:
+        if manifest_path.exists():
+            if not same_json(_read_json(manifest_path), manifest):
+                raise ValueError("audit directory contains a different manifest")
+        else:
+            _write_new_manifest(manifest_path, manifest)
+    except BaseException:
+        capture_path.unlink(missing_ok=True)
+        raise
     publications: dict[str, str] = {}
     emitted: dict[str, ScenarioResult] = {}
 
@@ -620,15 +633,9 @@ async def live_results(
     def result_fields(result: ScenarioResult) -> dict[str, Any]:
         return {item.name: getattr(result, item.name) for item in fields(result)}
 
-    def capture_fields(result: ScenarioResult) -> dict[str, Any]:
-        raw = result_fields(result)
-        if raw["status"] == "PASSED":
-            raw["status"] = "COLLECTED"
-        return raw
-
     def write_result(result: ScenarioResult) -> None:
         emitted[result.case_id] = result
-        raw = capture_fields(result)
+        raw = result_fields(result)
         _, document = _result_for_audit(raw)
         publish(result.case_id, document)
 
@@ -659,10 +666,10 @@ async def live_results(
             skipped_results.append(skipped)
 
     def reconcile_results(outcomes: Iterable[ScenarioResult]) -> list[dict[str, Any]]:
-        results = [_result_for_audit(capture_fields(outcome))[0] for outcome in outcomes]
+        results = [_result_for_audit(result_fields(outcome))[0] for outcome in outcomes]
         results.extend(skipped_results)
         capture_path.write_text(_dump_json(results) + "\n")
-        results = collected_evidence_results(manifest, _read_json(capture_path), suite=suite)
+        results = adjudicate_collected_evidence(manifest, _read_json(capture_path), suite=suite)
         for index, result in enumerate(results):
             results[index], document = _result_for_audit(result)
             publish_final(results[index], document)
@@ -701,14 +708,14 @@ async def live_results(
     return reconcile_results(outcomes)
 
 
-def collected_evidence_results(
+def adjudicate_collected_evidence(
     manifest: Mapping[str, Any],
     collected: Any,
     *,
     suite: SuiteDefinition | None = None,
 ) -> list[dict[str, Any]]:
     """Adjudicate captured cases without an adapter or an acquired target."""
-    from aws_durable_execution_conformance_tests.lmi.offline import adjudicate_evidence, frozen_journal_errors
+    from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence
 
     if not isinstance(collected, list):
         raise ValueError("collected evidence must be an array of case results")
@@ -767,8 +774,6 @@ def collected_evidence_results(
                     raise ValueError("recorded attempts must be an array of objects")
                 collection_errors = [finding for finding in findings if finding.startswith("INCOMPLETE:")]
                 behavior_findings = [finding for finding in findings if not finding.startswith("INCOMPLETE:")]
-                if result["status"] == "COLLECTED":
-                    collection_errors.extend(frozen_journal_errors(evidence, attempts))
                 result["status"], result["errors"], _ = adjudicate_evidence(
                     result["status"],
                     list(dict.fromkeys([*result["errors"], *collection_errors])),
@@ -779,7 +784,7 @@ def collected_evidence_results(
                     cleanup_evidence=cleanup,
                     observation_evidence=observations,
                     attempts=attempts,
-                    validator=suite.validator if suite else validate_evidence,
+                    validator=suite.validator if suite else None,
                     standard=manifest.get("coverageProfile", "standard") == "standard",
                 )
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
@@ -885,27 +890,30 @@ def build_report(
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="durable-execution-conformance lmi-lifecycle", description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
-    input_source = parser.add_mutually_exclusive_group()
-    input_source.add_argument("--collected-evidence", type=Path, help="validate a prior live collection offline")
-    input_source.add_argument("--adapter", help="SDK-owned local module:factory; omit to validate retained evidence")
+    input_source = parser.add_mutually_exclusive_group(required=True)
+    input_source.add_argument(
+        "--collected-evidence", type=Path, help="adjudicate a saved collected-evidence bundle without collecting"
+    )
+    input_source.add_argument("--adapter", help="SDK-owned local module:factory that collects the evidence")
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
-        args.output.mkdir(parents=True, exist_ok=True)
+        _make_durable_directory(args.output)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
         sdk = manifest.get("sdk")
         if args.adapter and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
+            from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_plan_with_artifact_directory
+
             manifest = sdk_plan_with_artifact_directory(args.output, manifest)
-        with (args.output / "manifest.json").open("x") as output:
-            output.write(_dump_json(manifest) + "\n")
+        # Every mode claims the directory with an exclusive manifest write, so
+        # simultaneous runs cannot both pass the emptiness check and publish.
+        _write_new_manifest(args.output / "manifest.json", manifest)
         results = (
-            asyncio.run(live_results(manifest, args.adapter, audit_dir=args.output))
+            asyncio.run(collect_and_adjudicate(manifest, args.adapter, audit_dir=args.output))
             if args.adapter is not None
-            else collected_evidence_results(manifest, _read_json(args.collected_evidence))
-            if args.collected_evidence is not None
-            else evidence_results(manifest, args.manifest.parent)
+            else adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
         )
         report = build_report(manifest, results)
     except (OSError, ValueError, TypeError, ImportError, AttributeError) as exc:

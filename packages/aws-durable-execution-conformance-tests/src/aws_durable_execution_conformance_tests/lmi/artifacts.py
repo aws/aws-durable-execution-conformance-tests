@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run artifacts, redaction and deterministic case namespaces."""
 
-import hashlib
 import json
 import os
 import tempfile
@@ -13,34 +12,7 @@ from typing import Any
 
 from .catalog import COVERAGE_PROFILES
 from .errors import ProvisioningError
-
-_DEFINITE_INVOKE_REJECTIONS = frozenset(
-    {
-        "AccessDeniedException",
-        "ExpiredTokenException",
-        "TooManyRequestsException",
-        "DurableExecutionAlreadyStartedException",
-        "InvalidParameterValueException",
-        "ResourceNotFoundException",
-        "RequestTooLargeException",
-        "InvalidRequestContentException",
-        "UnsupportedMediaTypeException",
-        "InvalidRuntimeException",
-        "SerializedRequestEntityTooLargeException",
-    }
-)
-
-
-def invoke_rejection_proven(record: Mapping[str, Any]) -> bool:
-    code = record.get("rejectionCode")
-    return (
-        record.get("dispatchState") == "REJECTED"
-        and type(record.get("retryAttempts")) is int
-        and record["retryAttempts"] == 0
-        and isinstance(code, str)
-        and code in _DEFINITE_INVOKE_REJECTIONS
-        and not any(field in record for field in ("arn", "executionArn", "requestId"))
-    )
+from .rules.controls import case_key as case_key
 
 
 def scrub(value):
@@ -87,10 +59,6 @@ def clear_run_artifacts(artifacts: Path, *, preserve: frozenset[str] = frozenset
         # manifest unavailable to always-run cleanup even if later moves fail.
         path.replace(archive / path.name)
     return archive
-
-
-def case_key(case_id: str) -> str:
-    return hashlib.sha256(case_id.encode()).hexdigest()[:20]
 
 
 def case_output_directory(artifacts: Path, run: str, *, require_available: bool = False) -> Path:

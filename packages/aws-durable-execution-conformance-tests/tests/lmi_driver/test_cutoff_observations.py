@@ -7,6 +7,8 @@ import asyncio
 import io
 import time
 from copy import deepcopy
+from pathlib import Path
+from runpy import run_path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -16,9 +18,10 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 
 from aws_durable_execution_conformance_tests.lmi import cloud as cloud_module
 from aws_durable_execution_conformance_tests.lmi import scenarios as scenarios_module
+from aws_durable_execution_conformance_tests.lmi.adjudication import evaluate_evidence
 from aws_durable_execution_conformance_tests.lmi.artifacts import case_key
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
-from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, ResourceScheduler, Scenario, run_scenarios
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, ResourceScheduler, Scenario
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_common_evidence,
     validate_evidence,
@@ -26,6 +29,8 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
 )
 from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
 from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence
+
+run_and_adjudicate = run_path(str(Path(__file__).parents[1] / "test_lmi_coordinator.py"))["run_and_adjudicate"]
 
 
 @pytest.mark.parametrize(
@@ -39,6 +44,10 @@ from aws_durable_execution_conformance_tests.lmi.source_evidence import build_ev
         (False, "active-unsealed", None),
         (False, "active-no-completion", None),
         (False, "active-bad-final", None),
+        # Collection compares the independent retirement snapshot with the
+        # frozen observations; adjudication relies on those checks.
+        (False, "active-changed-outcome", None),
+        (False, "active-changed-coverage", None),
         (False, None, "status"),
         (False, None, "stop-response"),
     ],
@@ -262,6 +271,11 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             if late_retry == "active-bad-final":
                 retry = next(row for row in context.retirement_evidence["attempts"] if row["requestId"] == "late-retry")
                 retry["endedAtMs"] = 100200
+            elif late_retry == "active-changed-outcome":
+                victim = next(row for row in context.retirement_evidence["attempts"] if row["requestId"] == "native")
+                victim["outcome"] = "SUCCEEDED"
+            elif late_retry == "active-changed-coverage":
+                context.retirement_evidence["coverageProfile"] = "sdk-regression"
             retirement = context.retirement_evidence["retirement"]
             owned = {resource["id"] for resource in context.evidence["resourcesCreated"]}
             context.evidence["retirement"] = {
@@ -270,19 +284,18 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             }
             return True
 
-    def validate(evidence, *, phase="final"):
-        return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
-
     scheduler = ResourceScheduler()
     adapter = Adapter()
-    (result,) = asyncio.run(
-        run_scenarios([case], [profile], adapter, run_id="run", validator=validate, scheduler=scheduler)
-    )
+    (result,) = asyncio.run(run_and_adjudicate([case], [profile], adapter, run_id="run", scheduler=scheduler))
     if invalid:
         assert result.status != "PASSED", result.errors
         assert scheduler.quarantine_reason(target), result.errors
         if late_retry == "active-bad-final":
             assert any("actual service completion" in error for error in result.errors)
+        elif late_retry == "active-changed-outcome":
+            assert "Retirement changed an original invocation's outcome" in result.errors, result.errors
+        elif late_retry == "active-changed-coverage":
+            assert "Retirement coverageProfile changed the admitted case" in result.errors, result.errors
         else:
             assert all("activeAtObservationEnd" not in row for row in result.evidence["attempts"])
         return
@@ -300,50 +313,55 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
         assert "activeAtObservationEnd" not in final["late-retry"]
         journaled_retry = next(attempt for attempt in result.attempts if attempt["requestId"] == "late-retry")
         assert journaled_retry["nativeEndedAtMs"] == 100250
+        # A single document cannot prove a cutoff obligation; adjudication proves
+        # it against the capture's independent retirement evidence.
+        assert any("independent retirement audit" in error for error in validate_evidence(result.evidence))
+
+        def adjudicate(frozen_evidence, retirement_evidence, validator=None):
+            return evaluate_evidence(
+                frozen_evidence,
+                retirement_evidence=retirement_evidence,
+                cleanup_evidence=result.cleanup_evidence,
+                observation_evidence=result.observation_evidence,
+                attempts=result.attempts,
+                standard=True,
+                validator=validator,
+            )
+
+        # A custom suite built on the common rules gets the cutoff proof from
+        # adjudication too; validate_common_evidence does not report it.
+        def common(evidence, *, phase="final"):
+            return validate_common_evidence(evidence, phase=phase)
+
+        assert adjudicate(result.evidence, result.retirement_evidence) == []
+        assert any("independent retirement audit" in error for error in adjudicate(result.evidence, {}))
         if late_retry == "active":
             assert frozen["late-retry"]["activeAtObservationEnd"] is True
             assert frozen["late-retry"]["startedAtMs"] == journaled_retry["nativeStartedAtMs"] == 100180
             assert not ({"endedAtMs", "outcome"} & frozen["late-retry"].keys())
             assert [request["callId"] for request in result.evidence["sdkRequests"]] == ["retry-call"]
-            offline = deepcopy(result.evidence)
-            offline["retirementSnapshot"] = result.retirement_evidence
-            assert validate_evidence(offline) == []
-            alternate = deepcopy(offline)
-            alternate["retirementSnapshot"]["artifact"]["diagnostic"] = "more metadata"
-            for source in (alternate, alternate["retirementSnapshot"]):
+            alternate_frozen, alternate = deepcopy(result.evidence), deepcopy(result.retirement_evidence)
+            alternate["artifact"]["diagnostic"] = "more metadata"
+            for source in (alternate_frozen, alternate):
                 for row in source["events"]:
                     if row["requestId"] == "late-retry":
                         row["sequence"] = float(row["sequence"])
-            assert validate_evidence(alternate) == []
-            for key, invalid in (("runtime", "wrong-runtime"), ("coverageProfile", "wrong-coverage")):
-                wrong_scope = deepcopy(offline)
-                wrong_scope["retirementSnapshot"][key] = invalid
-                assert any("different scope" in error for error in validate_evidence(wrong_scope))
-            false_receipt = deepcopy(offline)
-            arn = frozen["native"]["executionArn"]
-            receipt = next(row for row in false_receipt["retirement"]["resources"] if row["id"] == arn)
-            receipt["outcome"] = "SUCCEEDED"
-            assert any("contradicts the audited settlement" in error for error in validate_evidence(false_receipt))
-            contradicted = deepcopy(offline)
-            victim = next(row for row in contradicted["retirementSnapshot"]["attempts"] if row["requestId"] == "native")
-            victim["outcome"] = "SUCCEEDED"
-            assert any("changed an original invocation's outcome" in error for error in validate_evidence(contradicted))
-            late = deepcopy(offline)
-            snapshot = late["retirementSnapshot"]
+            assert adjudicate(alternate_frozen, alternate) == []
+            late = deepcopy(result.retirement_evidence)
             scope = {
                 "requestId": "late-retry",
                 "ownerRequestId": "late-retry",
                 "executionArn": frozen["late-retry"]["executionArn"],
                 "callId": "late-dispatch",
             }
-            sequence = max(event["sequence"] for event in snapshot["events"] if event["requestId"] == "late-retry")
-            snapshot["events"].extend(
+            sequence = max(event["sequence"] for event in late["events"] if event["requestId"] == "late-retry")
+            late["events"].extend(
                 [
                     {**scope, "kind": "poll_call", "atMs": 100246, "sequence": sequence + 1},
                     {**scope, "kind": "poll_exit", "atMs": 100247, "sequence": sequence + 2},
                 ]
             )
-            snapshot["sdkRequests"].append(
+            late["sdkRequests"].append(
                 {
                     **scope,
                     "method": "GetDurableExecutionState",
@@ -351,32 +369,83 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
                     "atMs": 100246,
                 }
             )
-            assert validate_retirement_evidence(snapshot) == []
-            assert any("dispatched SDK work after admission closed" in error for error in validate_evidence(late))
-            offline["sdkRequests"] = []
-            offline["events"] = [event for event in offline["events"] if event.get("callId") != "retry-call"]
-            assert any("pre-cutoff SDK requests" in error for error in validate_evidence(offline))
+            assert validate_retirement_evidence(late) == []
+            assert any("after admission closed" in error for error in adjudicate(result.evidence, late))
+            unrecorded = deepcopy(result.evidence)
+            unrecorded["sdkRequests"] = []
+            unrecorded["events"] = [event for event in unrecorded["events"] if event.get("callId") != "retry-call"]
+            assert any(
+                "pre-cutoff SDK requests" in error for error in adjudicate(unrecorded, result.retirement_evidence)
+            )
         else:
             assert set(frozen) == {"native"}
             assert journaled_retry["nativeStartedAtMs"] == 100210
             deferred = result.evidence["collection"]["deferredServiceRequests"]
             assert deferred == [{"requestId": "late-retry", "executionArn": journaled_retry["executionArn"]}]
-            detached = deepcopy(result.evidence)
-            detached.pop("retirementSnapshot", None)
-            assert any("independent retirement audit" in error for error in validate_evidence(detached))
-            offline = deepcopy(result.evidence)
-            offline["retirementSnapshot"] = {}
-            assert validate_common_evidence(offline)
-            offline["retirementSnapshot"] = deepcopy(result.retirement_evidence)
-            assert validate_evidence(offline) == []
-            assert validate_common_evidence(offline) == []
-            concealed = deepcopy(offline)
+            assert adjudicate(result.evidence, result.retirement_evidence, common) == []
+            concealed = deepcopy(result.evidence)
             concealed["collection"].pop("deferredServiceRequests")
             assert any(
-                "must match the frozen and deferred inventories" in error for error in validate_evidence(concealed)
+                "do not cover all client-journaled launches" in error
+                for error in adjudicate(concealed, result.retirement_evidence)
             )
-            retry = next(row for row in offline["retirementSnapshot"]["attempts"] if row["requestId"] == "late-retry")
-            retry["startedAtMs"] = 100199
-            assert any("started after the cutoff" in error for error in validate_evidence(offline))
-            assert any("started after the cutoff" in error for error in validate_common_evidence(offline))
+            phantom = deepcopy(result.evidence)
+            phantom["collection"]["deferredServiceRequests"].append(
+                {"requestId": "phantom", "executionArn": journaled_retry["executionArn"]}
+            )
+            for validator in (None, common):
+                assert any(
+                    "must match the frozen and deferred inventories" in error
+                    for error in adjudicate(phantom, result.retirement_evidence, validator)
+                )
+            early = deepcopy(result.retirement_evidence)
+            next(row for row in early["attempts"] if row["requestId"] == "late-retry")["startedAtMs"] = 100199
+            for validator in (None, common):
+                assert any(
+                    "started after the cutoff" in error for error in adjudicate(result.evidence, early, validator)
+                )
         assert result.evidence["selectedRequests"] == {"victim": "native"}
+
+
+def test_deferred_undispatched_rejection_never_satisfies_the_deferred_obligation(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
+    from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_retirement_errors
+
+    from .support import build_evidence as normalize
+    from .test_source_seals import cloud_source, rejected_completion
+
+    ctx, cloud = cloud_source(tmp_path)
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
+    cloud.invocations[0].update(role="victim", resume_roles=())
+    cloud.raw_histories["execution"].append(rejected_completion("rejected", 4, 1.1, 1.3))
+    cloud.source_uris.add((tmp_path / "histories/marker.json").resolve().as_uri())
+
+    frozen = normalize(ctx, cloud)
+    assert frozen["collection"]["deferredServiceRequests"] == [{"requestId": "rejected", "executionArn": "execution"}]
+
+    final = normalize(ctx, cloud, phase="final")
+    settlement = next(item for item in final["retirement"]["resources"] if item["id"] == "rejected")
+    assert settlement["outcome"] == "UNDISPATCHED"
+    assert settlement["startedAtMs"] == 1100
+
+    # Physical retirement settles it, and the deferred obligation and the
+    # coordinator's full ownership audit accept that settlement.
+    assert deferred_retirement_errors(frozen, final, undispatched=True) == []
+    assert _retirement_ownership_errors(ctx, frozen, final) == []
+
+    # Requirement 1 still holds: behavior never accepts the settlement for the
+    # deferred obligation, and the final document reports it incomplete.
+    assert deferred_retirement_errors(frozen, final) == ["Retirement omitted deferred service request rejected"]
+    assert any(
+        "service rejected native request rejected before its handler ran" in error for error in validate_evidence(final)
+    )
+
+    # A settlement that cannot prove it started after the cutoff fails the
+    # physical deferred check, exactly like a late service retry would.
+    not_after_cutoff = deepcopy(final)
+    tampered = next(item for item in not_after_cutoff["retirement"]["resources"] if item["id"] == "rejected")
+    tampered["startedAtMs"] = frozen["observationEndedAtMs"]
+    assert any(
+        "did not prove deferred service request rejected started after the cutoff" in error
+        for error in deferred_retirement_errors(frozen, not_after_cutoff, undispatched=True)
+    )

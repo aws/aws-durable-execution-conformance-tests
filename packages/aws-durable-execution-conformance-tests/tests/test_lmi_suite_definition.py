@@ -17,10 +17,10 @@ import pytest
 
 from aws_durable_execution_conformance_tests.lmi.app import (
     SuiteDefinition,
+    adjudicate_collected_evidence,
     build_report,
+    collect_and_adjudicate,
     coverage_inventory,
-    evidence_results,
-    live_results,
     load_manifest,
 )
 from aws_durable_execution_conformance_tests.lmi.catalog import requirements
@@ -96,11 +96,28 @@ def plan_and_evidence() -> tuple[dict[str, Any], dict[str, Any]]:
                 "profile_id": "c2",
                 "scenario": value["scenario"],
                 "behavior_budgets": deepcopy(value["sdkPolicy"]["budgets"]),
-                "evidence_file": "evidence.json",
             }
         ],
     }
     return plan, value
+
+
+def adjudicate(plan: dict[str, Any], value: dict[str, Any], suite: SuiteDefinition) -> list[dict[str, Any]]:
+    """Adjudicate a coordinator-shaped capture of the plan's single case."""
+    (case,) = plan["scenarios"]
+    row = {
+        "case_id": case["case_id"],
+        "requirement_id": case["requirement_id"],
+        "profile_id": case["profile_id"],
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": deepcopy(value),
+        "retirement_evidence": deepcopy(value),
+        "cleanup_evidence": {},
+        "observation_evidence": [],
+        "attempts": [],
+    }
+    return adjudicate_collected_evidence(plan, [row], suite=suite)
 
 
 def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog(tmp_path: Path) -> None:
@@ -111,17 +128,15 @@ def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog
         load_manifest(path)
     assert load_manifest(path, suite=definition()) == plan
     assert LOCAL_ID not in requirements("lifecycle", runtime="javascript")
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    results = evidence_results(plan, tmp_path, suite=definition())
-    assert results[0]["status"] == "PASSED"
+    results = adjudicate(plan, value, definition())
+    assert results[0]["status"] == "PASSED", results[0]["errors"]
     report = build_report(plan, results, suite=definition())
     assert report.exit_code() == 0
     assert report.run.suites == ["sdk-checks"]
     assert coverage_inventory(plan, suite=definition())["missing"] == []
     assert build_report(plan, [], suite=definition()).exit_code() == 1
     value["sdkObserved"] = False
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    assert evidence_results(plan, tmp_path, suite=definition())[0]["status"] == "FAILED"
+    assert adjudicate(plan, value, definition())[0]["status"] == "FAILED"
 
 
 @pytest.mark.parametrize("entry_point", ["manifest", "coverage", "report"])
@@ -142,7 +157,7 @@ def test_suite_rejects_a_mandatory_case_missing_from_its_requirement_catalog(tmp
 
 
 @pytest.mark.parametrize("role_source", ["manifest", "suite"])
-def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
+def test_local_collected_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
     plan, value = plan_and_evidence()
     suite = definition()
     roles = ("victim", "peer", "spare")
@@ -153,10 +168,8 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
     assert load_manifest(path, suite=suite) == plan
-    evidence_path = tmp_path / "evidence.json"
-    evidence_path.write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
-    assert result["status"] == "FAILED"
+    result = adjudicate(plan, value, suite)[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE"
 
     assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
 
@@ -166,8 +179,7 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     value["selectedRequests"]["spare"] = spare["requestId"]
     fixtures["refresh_histories"](value)
     fixtures["record_owned_resources"](value)
-    evidence_path.write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
+    result = adjudicate(plan, value, suite)[0]
     assert result["status"] == "PASSED", result["errors"]
 
 
@@ -202,13 +214,12 @@ def test_caller_owned_budget_binding_preserves_json_types(
     value["sdkPolicy"]["budgets"]["allowance"] = observed
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
     suite = definition()
     admitted = load_manifest(path, suite=suite)
 
-    results = evidence_results(admitted, tmp_path, suite=suite)
+    results = adjudicate(admitted, value, suite)
 
-    assert results[0]["status"] == ("PASSED" if matches else "FAILED")
+    assert results[0]["status"] == ("PASSED" if matches else "INCOMPLETE_EVIDENCE"), results[0]["errors"]
     if not matches:
         assert any("behavior budgets" in error for error in results[0]["errors"])
     assert build_report(admitted, results, suite=suite).exit_code() == (0 if matches else 1)
@@ -222,7 +233,7 @@ def test_caller_owned_budget_binding_preserves_json_types(
         ("roles", ["victim"], "required cohort roles"),
     ],
 )
-def test_local_live_suite_enforces_admission_before_adapter_import(
+def test_local_collection_suite_enforces_admission_before_adapter_import(
     tmp_path: Path, field: str, value: Any, reason: str
 ) -> None:
     plan, _ = plan_and_evidence()
@@ -233,12 +244,14 @@ def test_local_live_suite_enforces_admission_before_adapter_import(
         load_adapter = adapter_imports.import_module
         load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
         with pytest.raises(ValueError, match=reason):
-            asyncio.run(live_results(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
+            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
         load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("mutate", [False, True])
-def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(tmp_path: Path, mutate: bool) -> None:
+def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_journal(
+    tmp_path: Path, mutate: bool
+) -> None:
     plan, value = plan_and_evidence()
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     fixtures["complete_sdk_dispatches"](value)
@@ -284,13 +297,78 @@ def test_local_live_suite_preserves_budget_snapshot_and_before_dispatch_journal(
             suite,
             requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
         )
-        results = asyncio.run(live_results(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite))
+        results = asyncio.run(
+            collect_and_adjudicate(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite)
+        )
     assert plan == original
     if mutate:
         assert results[0]["status"] != "PASSED"
         assert any("budgets" in error for error in results[0]["errors"])
     else:
         assert results[0]["status"] == "PASSED", results[0]["errors"]
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_local_collection_suite_declares_service_role_transitions(tmp_path: Path, declared: bool) -> None:
+    plan, value = plan_and_evidence()
+    suite = definition()
+    if declared:
+        suite = replace(suite, service_role_transitions={LOCAL_ID: frozenset({("victim", "peer")})})
+    victim = value["attempts"][0]
+    outcomes: list[str] = []
+
+    class Adapter:
+        async def prepare(self, profile: Any) -> None:
+            pass
+
+        async def finish(self, profile: Any, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: Any) -> None:
+            context.record_attempt(
+                victim["requestId"],
+                role=victim["role"],
+                requestId=victim["requestId"],
+                executionArn=victim["executionArn"],
+            )
+            try:
+                context.record_service_attempt(
+                    "request-continued",
+                    original_request_id=victim["requestId"],
+                    execution_arn=victim["executionArn"],
+                    role="peer",
+                )
+            except ValueError as error:
+                outcomes.append(str(error))
+            else:
+                outcomes.append("journaled")
+
+        async def place(self, context: Any) -> None:
+            pass
+
+        async def execute(self, context: Any) -> None:
+            pass
+
+        async def collect(self, context: Any) -> dict[str, Any]:
+            return deepcopy(value)
+
+        async def release(self, context: Any) -> None:
+            pass
+
+        async def retire(self, context: Any) -> bool:
+            return True
+
+    with patch.dict("sys.modules", {"local_suite_adapter": SimpleNamespace(create=lambda manifest: Adapter())}):
+        asyncio.run(collect_and_adjudicate(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite))
+
+    journal = [json.loads(line) for line in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    discovered = [row for entry in journal for row in entry["attempts"] if "discoveredAtMs" in row]
+    if declared:
+        assert outcomes == ["journaled"]
+        assert [(row["requestId"], row["role"]) for row in discovered] == [("request-continued", "peer")]
+    else:
+        assert outcomes == ["Service attempt role does not match its original invocation"]
+        assert discovered == []
 
 
 @pytest.mark.parametrize("reserved", ["profile", "report", "requirement"])
@@ -335,14 +413,13 @@ def test_suite_slots_reject_overlap_without_shadowing_disjoint_exact_slot(tmp_pa
 
 
 @pytest.mark.parametrize("observed", [None, 10, 1000])
-def test_suite_without_policy_key_binds_top_level_budgets(tmp_path: Path, observed: int | None) -> None:
+def test_suite_without_policy_key_binds_top_level_budgets(observed: int | None) -> None:
     plan, value = plan_and_evidence()
     suite = replace(definition(), evidence_policy_key=None)
     if observed is not None:
         value["budgets"] = {"settleMs": observed, "allowance": 0}
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
-    assert result["status"] == ("PASSED" if observed == 10 else "FAILED")
+    result = adjudicate(plan, value, suite)[0]
+    assert result["status"] == ("PASSED" if observed == 10 else "INCOMPLETE_EVIDENCE"), result["errors"]
     if observed != 10:
         assert result["errors"] == ["INCOMPLETE: observed behavior budgets do not match the declared case budgets"]
 

@@ -18,9 +18,10 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Scenario,
     ScenarioContext,
     ScenarioResult,
-    run_scenarios,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import same_json, validate_evidence
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_coordinator.py")))["run_and_adjudicate"]
 
 
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
@@ -126,7 +127,7 @@ def _run(adapter: RetryObservationAdapter) -> tuple[ScenarioResult, ResourceSche
     )
     scheduler = ResourceScheduler()
     (result,) = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [case],
             [profile],
             adapter,
@@ -161,7 +162,7 @@ def test_retry_order_conflict_survives_corrected_collection(source: str) -> None
     )
     assert result.status != "PASSED", result.errors
     assert any("retry attempt order" in error for error in result.errors), result.errors
-    # Retry order is an offline verdict. Only the interrupted capture lacks
+    # Retry order is an adjudication verdict. Only the interrupted capture lacks
     # the physical retirement required to reuse the target.
     assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (source == "partial")
 
@@ -275,7 +276,11 @@ def test_side_effect_progress_cannot_decrease_or_change_the_declared_expectation
     assert result.status != "PASSED", result.errors
     assert _effect(result.evidence)["expectedCount"] == 1
     assert _effect(result.evidence)["count"] == 2
-    assert any("side-effect count differs" in error for error in result.errors), result.errors
+    expected = {
+        "decrease": "ASSERTION: observed side-effect count differs from earlier observations for done",
+        "expectation": "ASSERTION: declared side-effect expectation for done changed across observations",
+    }[change]
+    assert expected in result.errors, result.errors
 
 
 @pytest.mark.parametrize("source", ["context", "collector"])

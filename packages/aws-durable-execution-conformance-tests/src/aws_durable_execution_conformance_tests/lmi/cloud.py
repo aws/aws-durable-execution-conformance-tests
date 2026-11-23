@@ -20,7 +20,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from aws_durable_execution_conformance_tests.lmi.artifacts import (
     case_key,
     case_output_directory,
-    invoke_rejection_proven,
     save,
     saved_case_plans,
     sdk_artifact_directory,
@@ -38,6 +37,7 @@ from aws_durable_execution_conformance_tests.lmi.observations import (
     select,
     service_native_intervals,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.runtime import CONCURRENCIES, QUALIFIER
 from aws_durable_execution_conformance_tests.lmi.service import (
     DurableFunctionRunner,

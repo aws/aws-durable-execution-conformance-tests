@@ -129,7 +129,7 @@ def normalized(tmp_path, *, callback_outcome="SUCCEEDED", control_deleted=True, 
     sources = SimpleNamespace(
         observations=lambda **_: (deepcopy(baseline["events"]), []),
         histories=lambda: (baseline["histories"], {}, []),
-        attempts=lambda _: (baseline["attempts"], baseline["selectedRequests"], []),
+        attempts=lambda _, **kwargs: (baseline["attempts"], baseline["selectedRequests"], []),
     )
     with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
         return build_evidence(ctx, cloud, phase="final")
@@ -469,6 +469,74 @@ def test_retirement_rereads_terminal_history_and_a_new_requests_seal(monkeypatch
     assert cloud.retired_at == 8
 
 
+def test_retirement_accepts_a_request_the_service_proves_undispatched_without_its_seal(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
+
+    times = iter([5.0, 6.0])
+    monkeypatch.setattr(
+        "aws_durable_execution_conformance_tests.lmi.scenarios.time",
+        SimpleNamespace(time=lambda: next(times)),
+    )
+    arn, marker = "execution", "marker"
+
+    def stream(request):
+        owner = {"execution": arn, "marker": marker, "request": request}
+        return [
+            {**owner, "phase": "WRAPPER_ENTER", "sequence": 1},
+            {**owner, "phase": "WRAPPER_RETURN", "sequence": 2},
+            {
+                **owner,
+                "phase": "CONFORMANCE",
+                "sequence": 3,
+                "observation": {"kind": "task_start", "taskId": "root", "captureSequence": 1, "atMs": 3000},
+            },
+            {
+                **owner,
+                "phase": "CONFORMANCE",
+                "sequence": 4,
+                "observation": {"kind": "task_exit", "taskId": "root", "captureSequence": 2, "atMs": 4000},
+            },
+            {**owner, "phase": "SEALED", "sequence": 5, "sourceProtocol": 2, "throughCapture": 2},
+        ]
+
+    def completed(identifier, request, *, error=None):
+        details: dict[str, Any] = {"RequestId": request, "StartTimestamp": 1, "EndTimestamp": 4}
+        if error is not None:
+            details["Error"] = error
+        return {"EventType": "InvocationCompleted", "EventId": identifier, "InvocationCompletedDetails": details}
+
+    rejection = {
+        "Payload": {"ErrorType": "TooManyRequestsException", "ErrorMessage": "capacity"},
+        "Truncated": False,
+    }
+    actions = []
+    cloud = SimpleNamespace(
+        invocations=[{"arn": arn, "marker": marker, "native_requests": ["original"]}],
+        manifest={},
+        events=dict(enumerate(stream("original"))),
+        raw_histories={
+            arn: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                completed(2, "original"),
+                {"EventType": "ExecutionStopped", "EventId": 3},
+                completed(4, "rejected", error=rejection),
+            ]
+        },
+        terminal_histories={arn},
+        execution_results={arn: {"Status": "STOPPED", "EndTimestamp": 4}},
+        settle_case=lambda: actions.append("settle"),
+        delete_controls=lambda: actions.append("delete"),
+    )
+    cloud.refresh = lambda **_: list(cloud.events.values())
+    cloud.collect = lambda **_: actions.append("collect")
+    cloud.poll = lambda predicate, **_: predicate() or pytest.fail("retirement readiness was not proven")
+    driver = object.__new__(ScenarioDriver)
+    driver.cloud = cast(Any, cloud)
+    assert driver.retire()
+    assert actions == ["settle", "collect", "delete"]
+    assert cloud.retired_at == 6.0
+
+
 @pytest.mark.parametrize("recovers", [True, False])
 def test_retirement_retries_transient_reads_within_poll_budget(recovers):
     from aws_durable_execution_conformance_tests.lmi.errors import TransientCollectionError
@@ -524,3 +592,114 @@ def test_retirement_rereads_after_quiescence_binds_a_new_native_request(monkeypa
     monkeypatch.setattr(driver, "quiescent", quiescent)
     assert not driver._retirement_ready()
     cloud.collect.assert_called_once()
+
+
+def _undispatched_retirement_fixture():
+    from pathlib import Path
+    from runpy import run_path
+
+    module = run_path(str(Path(__file__).parents[1] / "test_lmi_evidence.py"))
+    value = module["evidence"]()
+    module["complete_retirement_events"](value)
+    resource = {"id": "rejected", "kind": "invocation", "ownerCaseId": value["caseId"]}
+    value["resourcesCreated"].append(resource)
+    value["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": value["attempts"][0]["executionArn"],
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 99,
+            "startedAtMs": 5,
+            "settledAtMs": 6,
+            "evidenceUri": value["collection"]["evidenceUris"][0],
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    return value
+
+
+def test_undispatched_settlement_with_a_consistent_proof_passes_independent_retirement():
+    assert validate_retirement_evidence(_undispatched_retirement_fixture()) == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda resource, value: resource.update(serviceErrorType="ClientError"),
+        lambda resource, value: resource.update(executionArn="arn:execution:foreign"),
+        lambda resource, value: resource.pop("sourceEventId"),
+        lambda resource, value: resource.update(startedAtMs=resource["settledAtMs"] + 1),
+        lambda resource, value: resource.update(settledAtMs=value["retirement"]["retiredAtMs"] + 1000),
+        lambda resource, value: resource.update(evidenceUri="s3://evidence/unretained.json"),
+    ],
+    ids=[
+        "unlisted-error-type",
+        "foreign-execution-arn",
+        "missing-source-event-id",
+        "started-after-settled",
+        "settled-after-retired",
+        "evidence-uri-not-retained",
+    ],
+)
+def test_tampered_undispatched_proof_fields_fail_independent_retirement(mutate):
+    value = _undispatched_retirement_fixture()
+    resource = next(item for item in value["retirement"]["resources"] if item["id"] == "rejected")
+    mutate(resource, value)
+    assert (
+        "INCOMPLETE: undispatched invocation rejected lacks a consistent service rejection proof"
+        in validate_retirement_evidence(value)
+    )
+
+
+def test_duplicate_source_event_id_fails_independent_retirement():
+    value = _undispatched_retirement_fixture()
+    original = next(item for item in value["retirement"]["resources"] if item["id"] == "rejected")
+    duplicate = {**original, "id": "rejected-again"}
+    value["resourcesCreated"].append({"id": "rejected-again", "kind": "invocation", "ownerCaseId": value["caseId"]})
+    value["retirement"]["resources"].append(duplicate)
+    errors = validate_retirement_evidence(value)
+    assert {
+        "INCOMPLETE: undispatched invocation rejected lacks a consistent service rejection proof",
+        "INCOMPLETE: undispatched invocation rejected-again lacks a consistent service rejection proof",
+    } <= set(errors)
+
+
+@pytest.mark.parametrize("field", ["requestId", "ownerRequestId", "observedDuringRequestId"])
+def test_a_reference_anywhere_to_an_undispatched_request_fails_independent_retirement(field):
+    value = _undispatched_retirement_fixture()
+    owner = value["attempts"][0]
+    value["events"].append(
+        {
+            "requestId": owner["requestId"],
+            "ownerRequestId": owner["requestId"],
+            "executionArn": owner["executionArn"],
+            "kind": "task_start",
+            "atMs": owner["startedAtMs"] + 1,
+            "taskId": "scratch",
+            field: "rejected",
+        }
+    )
+    assert (
+        "INCOMPLETE: undispatched invocation rejected lacks a consistent service rejection proof"
+        in validate_retirement_evidence(value)
+    )
+
+
+def test_an_undispatched_id_equal_to_an_existing_attempt_fails_independent_retirement():
+    value = _undispatched_retirement_fixture()
+    victim = value["attempts"][0]
+    value["resourcesCreated"] = [item for item in value["resourcesCreated"] if item["id"] != "rejected"]
+    settled = next(item for item in value["retirement"]["resources"] if item["id"] == victim["requestId"])
+    settled.update(
+        outcome="UNDISPATCHED",
+        executionArn=victim["executionArn"],
+        serviceErrorType="TooManyRequestsException",
+        sourceEventId=99,
+        startedAtMs=5,
+        settledAtMs=6,
+    )
+    value["retirement"]["resources"] = [item for item in value["retirement"]["resources"] if item["id"] != "rejected"]
+    assert (
+        f"INCOMPLETE: undispatched invocation {victim['requestId']} lacks a consistent service rejection proof"
+        in validate_retirement_evidence(value)
+    )

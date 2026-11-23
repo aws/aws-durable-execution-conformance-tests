@@ -123,18 +123,22 @@ a name. Optional operation `startedAtMs` and `endedAtMs` are finite, nonnegative
 timestamps; when both are supplied, the end must be at or after the start.
 Execution history status and its fixture
 expectation must be recognized `SUCCEEDED`, `FAILED`, `TIMED_OUT`, `STOPPED`,
-`RUNNING`, `PAUSING`, `PAUSED`, or `PENDING` values; nonterminal observations cannot establish final
-retirement. `expectedHistories` is keyed by execution
+`RUNNING`, `PAUSING`, `PAUSED`, or `PENDING` values; nonterminal observations
+cannot establish final retirement. `expectedHistories` is keyed by execution
 ARN and declares the fixture's expected `status` and `result`/`error` independently
 of the fetched service output. A fixture whose execution can remain active while
 its fault is held may instead declare `allowedStatuses`, a nonempty list of
 unique recognized statuses. Exactly one of `status` or `allowedStatuses` is
-required. Only a list containing `RUNNING`, `PAUSING`, or `PAUSED` permits omission of `result`/`error`;
-any declared output expectation is still compared. For example,
+required. Only a list containing `RUNNING`, `PAUSING`, or `PAUSED` permits
+omission of `result`/`error`; any declared output expectation is still compared. For example,
 `{"allowedStatuses": ["RUNNING", "FAILED", "TIMED_OUT", "STOPPED"]}`
 permits an active timeout victim without accepting a successful outcome. This
 observation allowance does not establish retirement: every owned execution still
-needs a terminal retirement record. All declared expected fields are compared;
+needs a terminal retirement record. When adjudication re-checks a collected capture,
+an execution that settles inside the observation window must have its declared
+`result`/`error` supplied by a terminal history observation with the settled
+status, in any snapshot. A frozen nonterminal view does not supply it. All
+declared expected fields are compared;
 `allowedStatuses` itself is expectation metadata, not a service-history field.
 Never generate expectations by copying the observed status or output.
 
@@ -144,14 +148,16 @@ Never generate expectations by copying the observed status or output.
 namespace. An empty query without a collection watermark cannot prove absence.
 Source collection failures and incomplete observations must remain visible.
 An observation that excludes an owned service-only retry retains its request
-and execution identity in `collection.deferredServiceRequests`. Final
-validation requires the independent retirement snapshot to contain every
+and execution identity in `collection.deferredServiceRequests`. Adjudication
+requires the capture's independent retirement evidence to contain every
 deferred request and its actual completion.
-A service retry first discovered during retirement also appears in the saved
-audit obligations. Final validation checks both quiescence and late SDK
-dispatches against the retained snapshot.
+A service retry first discovered during retirement also joins that inventory.
+Collection audits its quiescence, and adjudication checks late SDK dispatches
+against the retirement evidence. A single document cannot prove these
+obligations, so `validate_evidence` reports such a case incomplete;
+`validate_common_evidence` leaves them to adjudication.
 
-Live replay observations compare `replay.before` with
+Collected replay observations compare `replay.before` with
 `replay.expectedBefore`, the complete set of stored operation outcomes in
 service history strictly before the selected native resume. When an actual
 serialized value provides encoding evidence, `resultEncoding` distinguishes
@@ -170,7 +176,7 @@ comparison. A saved replay
 can report `projectionErrors` when service chronology is incomplete.
 Those errors invalidate behavior evidence without erasing the physical audit.
 Timer fixtures report `replay.durableWaitObserved` after complete service
-collection. Live callback and timer fixtures also verify the native request
+collection. Callback and timer fixtures also verify the native request
 resumed by the public operation and report `replay.suspensionCheckpointMatches`.
 A wakeup tied with the resume timestamp counts only for the independently
 identified waking operation. A false value is a behavior failure.
@@ -178,7 +184,8 @@ identified waking operation. A false value is a behavior failure.
 A complete replay observation may report `replay.missingExpectedEffects` when
 a fixture's named effect has no durable operation identity or when no retry
 attempts were observed. When `missingExpectedEffects` includes `retry`, the
-retry record may be absent or retain one observed attempt. This fails the behavior check. It does not invalidate independent retirement evidence.
+retry record may be absent or retain one observed attempt. This fails the
+behavior check. It does not invalidate independent retirement evidence.
 The optional `collectionErrors` array retains non-empty source error messages;
 omit it or use an empty array when collection succeeded. Owned lifecycle events
 with kind `observation_error` or `control_error` retain failed observation or
@@ -188,7 +195,7 @@ watermarks cover the full window. Independent retirement applies the same rule.
 
 ## Scenario observations
 
-Live shared runs require a conformance revision in the generated plan.
+Shared driver runs require a conformance revision in the generated plan.
 Historical evidence without known provenance cannot pass behavior validation.
 
 A lifecycle-3 or lifecycle-4 observation may mark a nonselected victim retry
@@ -197,12 +204,9 @@ completion must prove that it started by the cutoff and ended afterwards.
 The observation retains its in-window events, SDK requests and
 `startedAtMs`, and omits `endedAtMs` and `outcome`. Independent retirement
 must retain the same native start, the actual post-cutoff end and the
-observed outcome. Earlier V1 documents are unchanged. Offline validation
-of an observation with this marker requires independent retirement proof.
-For direct final validation, pass the independent evidence in
-`retirementSnapshot`. The coordinator supplies it only to validation and
-keeps the two retained artifacts separate.
-
+observed outcome. Earlier V1 documents are unchanged. Adjudication proves
+this marker against the capture's independent retirement evidence, and
+`validate_evidence` reports a single document with the marker incomplete.
 
 | ID | Required observations |
 | --- | --- |
@@ -269,11 +273,23 @@ enforces the same correspondence; a settlement entry alone cannot account for
 an unobserved invocation or execution.
 `retirement.resources` matches every created resource exactly once, preserving
 kind and owner, with `settledAtMs`, an `evidenceUri`, and outcome. Invocations must
-be `QUIESCENT`; executions must have terminal `SUCCEEDED`, `FAILED`, `TIMED_OUT`,
-or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle ownership.
-An execution's settlement must be at or after its service history's `startedAtMs`
-when supplied. Native admission is a separate boundary and does not substitute
-for missing service-start metadata.
+be `QUIESCENT` or `UNDISPATCHED`; executions must have terminal `SUCCEEDED`, `FAILED`,
+`TIMED_OUT`, or `STOPPED` outcomes. PENDING and wrapper return alone cannot settle
+ownership. An execution's settlement must be at or after its service history's
+`startedAtMs` when supplied. Native admission is a separate boundary and does
+not substitute for missing service-start metadata.
+
+An invocation the service rejected before any handler ran may settle as
+`UNDISPATCHED`, in physical retirement only. `executionArn` is the owned
+execution whose history holds the request's only `InvocationCompleted` event.
+`sourceEventId` is that event's `EventId`. `serviceErrorType` is its
+`Error.Payload.ErrorType` and must exactly match the validator's allowlist.
+`startedAtMs` and `settledAtMs` are its normalized `StartTimestamp` and
+`EndTimestamp`, with `settledAtMs <= retiredAtMs`. `evidenceUri` is the
+retained raw history, listed in `collection.evidenceUris`. The request has no
+attempt, event, SDK request or completion. Behavior validation reports every
+`UNDISPATCHED` invocation as INCOMPLETE; it never satisfies a role, attempt or
+deferred-request obligation.
 Durable callbacks use `kind: callback` and require an observed `SUCCEEDED`,
 `FAILED`, or `TIMED_OUT` outcome; their `evidenceUri` retains the service completion
 record. Case-owned control objects use `kind: control` and require `DELETED`,
@@ -295,9 +311,10 @@ before the asserted cleanup or recovery is a failure regardless of release mode.
 
 The coordinator freezes collected observations before release and verifies
 physical retirement before allowing target reuse. Missing or uncertain
-retirement quarantines the affected profile. The offline evaluator checks
-the frozen observations with `phase="observations"` and combines a copy
-with retirement records for `phase="final"`. Emergency release cannot
+retirement quarantines the affected profile. Adjudication checks the frozen
+observations once and audits retirement once, against a copy combined with the
+retirement records; a custom validator receives `phase="observations"` and then
+`phase="final"`. Emergency release cannot
 erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
 insufficient evidence.
 
@@ -365,6 +382,13 @@ completion contracts in this audit; an unknown retained resource kind cannot
 permit target reuse. Successful retirement does not clear failed behavior
 assertions, and unresolved completion keeps the target quarantined.
 
+A proven `UNDISPATCHED` invocation is exempt from the entry/exit/sequence
+completion contract above: the service's own rejection record, not a wrapper
+stream, is its proof. The audit still requires its `executionArn`,
+`serviceErrorType`, `sourceEventId`, `startedAtMs`, and `settledAtMs` to be
+internally consistent and that no event, SDK request, `observedDuringRequestId`,
+or retirement completion names the request. This settles physical retirement
+only; behavior validation always reports it INCOMPLETE.
 
 An independent retirement snapshot may mark `retirement.mode` as
 `controls-only` after a case fails before any Invoke could succeed. This
@@ -413,52 +437,103 @@ A retry `body` event for the retried operation identifies a declared attempt by
 with retry order and precede or coincide with the recorded operation completion.
 Completed step bodies likewise cannot follow their recorded completion.
 
-The offline reader preserves precise fractional values in checkpoint payloads
+Adjudication preserves precise fractional values in checkpoint payloads
 and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
 
-## Live lifecycle runner
+## Collection
 
-Use the same manifest with an SDK-owned adapter to run cases and collect evidence.
-The adapter module must be importable in the runner's Python environment. Its
-factory receives the admitted manifest and returns an adapter implementing
-preparation, scenario execution, evidence collection, and retirement.
+Collection runs the cases on AWS and records what happened. Adjudication then
+derives the verdict from that record alone. Collection never decides
+conformance; adjudication never contacts AWS.
 
-```sh
-durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-live
-```
-
-Choose an empty output directory. The runner journals attempts before dispatch
-and publishes case outcomes to `results.jsonl`, including predeclared skips.
-Both JSONL journals may have multiple records for a case. The last record for
-the case contains its latest published attempts or outcome.
-
-The live runner holds each target through physical retirement of its own cases.
-Each profile can release its external lock independently. A conflict with a
-claim discovered after release is reported against both cases and quarantines
-the affected targets in the current scheduler. The external release cannot
-be revoked. After all targets
-are released or quarantined, it writes frozen observations and separate cleanup
-evidence to `collected-evidence.json` and uses the offline evaluator to produce
-the final report. A journal row with status `COLLECTED` awaits that verdict.
-
-## Offline lifecycle runner
-
-Re-evaluate a live evidence bundle without loading an adapter:
+Write a manifest as described under [Manifest](#manifest), and use it with an
+SDK-owned adapter to run cases and collect evidence. The adapter module must be importable
+in the runner's Python environment. Its factory receives the admitted manifest
+and returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
+and `finish` for each profile that an active case uses, and `start`, `place`,
+`execute`, `collect`, `release`, and `retire` for each case. When every case is
+`not_implemented`, the runner does not load the adapter.
 
 ```sh
-durable-execution-conformance lmi-lifecycle --manifest lmi-live/manifest.json --collected-evidence lmi-live/collected-evidence.json --output lmi-offline
+durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-collection
 ```
 
+Choose an empty output directory, and use a separate one for every run. The
+runner journals attempts to `attempts.jsonl` before dispatch and publishes case
+outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
+may have multiple records for a case. The last record for the case contains its
+latest published attempts or outcome. A row with status `COLLECTED` awaits the
+verdict. After all targets are released or quarantined, the runner writes frozen
+observations and separate cleanup evidence to `collected-evidence.json`, reads
+the file back, and adjudicates it to produce the final report.
 
-Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
---output output` with an empty output directory. The runner reads existing
-evidence. Under strict coverage, failed, missing, uncovered, and
-`not_implemented` cases all produce a nonzero exit status.
+A collection manifest may also set `scenarioConcurrency`, the most cases the run
+executes at once (default 8), and `budgets`, harness time limits in seconds:
+`provisioning` for each target's `prepare` (default 300), `lease` for waiting on
+target capacity (300), `placement` for `start` and `place` (120), `execution`
+(300), `collection` (120), `release` (30), and `retirement` for each case's
+`retire` and each target's `finish` (120). These bound the harness, not SDK
+cleanup or delivery.
 
-An inventory with two default profiles and no evidence cases looks like this.
-The runner reports all mandatory cases as uncovered until cases are added.
+Collection holds each target through physical retirement of its own cases.
+It finishes profiles only after every case in the run has ended its retirement
+attempt and registered its ownership claims, so a conflicting claim quarantines
+the affected targets before any release. Quiescence then decides which targets
+an adapter may unlock. If any case phase in the
+run was interrupted, no profile is reported quiescent, because the interrupted
+task could have claimed, or could still claim, any target. A failed or
+interrupted preparation or `finish` quarantines its own target. Each run uses
+its own scheduler. Because profiles finish together, an adapter's `prepare` must
+not wait on a lock that another profile's `finish` releases, in this run or a
+concurrent one: such a wait can reach the provisioning deadline and leave the
+waiting target quarantined. Acquire a lock that several of this run's targets
+share once for the run. Release it after the last `finish` only if every target
+sharing it finished with `quiescent=True`; otherwise keep it. For a lock another
+run holds, fail fast or wait well under the provisioning budget.
+
+The coordinator only collects evidence and decides whether a target can be
+reused. Its `run_scenarios` API returns collection statuses and never reports
+`PASSED`. A collection run with `--adapter` and a later `--collected-evidence`
+run judge the coordinator's captures with the same adjudication.
+
+## Adjudication
+
+A collection run with `--adapter` adjudicates its evidence as soon as it is
+collected. To adjudicate a saved bundle again, without loading an adapter, pass
+`--collected-evidence`. This is a tool for debugging, for investigating a
+reported verdict, and for developing rules. It is not a verification step:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
+```
+
+Adjudication trusts the bundle: it assumes that the coordinator wrote it and
+that it was not modified. Before recording `COLLECTED`, the coordinator bound
+every observation and retirement record to the launch journal and checked that
+the case's work settled. Adjudication judges behavior again with the current
+rules, but it keeps the recorded collection status and the facts only collection
+observed. Pass the collection's own `manifest.json`. Adjudication re-checks only
+the collection facts its verdict rules use: each case's identity against that
+manifest, ownership claims across cases, launch coverage, and the retirement
+proof behind the lifecycle 2/7 allowance. The frozen observations must include
+every client launch the journal records (`launchedAtMs`): cleanup can journal a
+new client launch after observations froze, and the coordinator still records
+`COLLECTED`, so adjudication reports that case incomplete. A service-initiated
+attempt (`discoveredAtMs`) may be absent. The lifecycle 2/7 allowance requires a
+retirement snapshot that passes `validate_retirement_evidence`. Adjudication
+does not verify collection integrity otherwise, so a hand-edited bundle can
+receive a wrong verdict.
+
+## Manifest
+
+A manifest admits the run's target profiles and cases. Under strict coverage,
+failed, missing, uncovered, and `not_implemented` cases all produce a nonzero
+exit status.
+
+An inventory with two default profiles and no cases looks like this. The runner
+reports all mandatory cases as uncovered until cases are added.
 
 ```json
 {
@@ -506,5 +581,5 @@ to `worker_recovered`. The evidence must
 report each declared budget with the same value. If the profile declares
 `recovery_policy`, it must match evidence `profile.recoveryPolicy`.
 
-Set `evidence_file` to the retained JSON path relative to the manifest. For
-an unavailable fixture, use `not_implemented` with an optional reason instead.
+For an unavailable fixture, declare `not_implemented` with an optional reason.
+The runner reports the case without dispatching it.

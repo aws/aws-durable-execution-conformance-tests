@@ -14,10 +14,11 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
+
 from .artifacts import (
     case_key,
     case_output_directory,
-    invoke_rejection_proven,
     owner_lock,
     same_owner_lock,
     save,
@@ -122,8 +123,8 @@ def make_manifest(
 def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable, adapter_name: str) -> int:
     from aws_durable_execution_conformance_tests.lmi.app import (
         build_report,
+        collect_and_adjudicate,
         coverage_inventory,
-        live_results,
         load_manifest,
     )
     from aws_durable_execution_conformance_tests.reporters import (
@@ -153,7 +154,7 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         save(path, plan)
         validated = load_manifest(path)
         results = asyncio.run(
-            live_results(
+            collect_and_adjudicate(
                 validated,
                 adapter_name,
                 audit_dir=output,

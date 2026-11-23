@@ -57,6 +57,46 @@ class EvidenceBuilder(Protocol):
     def __call__(self, context: ScenarioContext, cloud: Cloud, *, phase: str) -> dict[str, Any]: ...
 
 
+class _CoordinatorLoopContext:
+    """A ScenarioContext view for driver worker threads.
+
+    The driver runs blocking service calls in worker threads, but a
+    ScenarioContext refuses journal and claim calls from any thread other than
+    the coordinator's event loop. This view runs those calls on that loop and
+    waits for them, so a journal failure still stops the dispatch that follows.
+    Every other attribute is the context's own.
+    """
+
+    _LOOP_METHODS = frozenset({"record_attempt", "record_service_attempt", "update_attempt"})
+
+    def __init__(self, context: ScenarioContext, loop: asyncio.AbstractEventLoop) -> None:
+        object.__setattr__(self, "_context", context)
+        object.__setattr__(self, "_loop", loop)
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._context, name)
+        if name not in self._LOOP_METHODS:
+            return value
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is self._loop:
+                return value(*args, **kwargs)
+
+            async def invoke() -> Any:
+                return value(*args, **kwargs)
+
+            return asyncio.run_coroutine_threadsafe(invoke(), self._loop).result()
+
+        return call
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._context, name, value)
+
+
 class _Case:
     def __init__(self, driver: ScenarioDriver) -> None:
         self.driver = driver
@@ -216,14 +256,15 @@ class SharedAdapter:
         if key is None:
             raise ProvisioningError("Case target is outside the owned deployment")
         owner = case_key(context.scenario.case_id)
+        threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
         cloud = await asyncio.to_thread(
             self.cloud_factory,
             self.deployment,
             key,
             artifacts_dir=self.artifacts_dir / "cases" / owner,
-            case_context=context,
+            case_context=threaded,
         )
-        driver = self.driver_factory(context, cloud)
+        driver = self.driver_factory(threaded, cloud)
         case = self.cases[context.scenario.case_id] = _Case(driver)
         try:
             await case.call(driver.start)
