@@ -344,6 +344,15 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
     return _validate_manifest(_read_json(path), suite=suite)
 
 
+def load_collected_evidence(path: Path) -> Any:
+    """Read a saved ``collected-evidence.json`` with the JSON rules collection uses.
+
+    Exact decimals stay ``Decimal`` and non-finite numbers are rejected, as when
+    collection reads its own capture back before adjudicating it.
+    """
+    return _read_json(path)
+
+
 def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
     if evidence.get("coverageProfile", "standard") != "standard":
         return ["INCOMPLETE: unknown evidence coverage profile"]
@@ -818,8 +827,12 @@ async def _collect_and_adjudicate(
     except asyncio.CancelledError as cancelled:
         try:
             reconcile_results(emitted.values())
-        except (OSError, ValueError, TypeError) as error:
-            cancelled.add_note(f"Could not preserve cancelled run evidence: {error}")
+        except Exception as error:
+            # Adjudication can run an SDK-owned suite's validator, which may raise
+            # anything; the cancellation must still reach the caller.
+            cancelled.add_note(
+                f"Could not adjudicate and journal the cancelled run's evidence: {type(error).__name__}: {error}"
+            )
         raise
     return reconcile_results(outcomes)
 
@@ -1113,7 +1126,7 @@ def _run(argv: list[str] | None) -> None:
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
         results = (
-            adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
+            adjudicate_collected_evidence(manifest, load_collected_evidence(args.collected_evidence))
             if args.collected_evidence is not None
             else evidence_results(manifest, args.manifest.parent)
         )

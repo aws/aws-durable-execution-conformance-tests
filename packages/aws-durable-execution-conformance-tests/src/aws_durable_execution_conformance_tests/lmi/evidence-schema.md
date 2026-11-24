@@ -378,10 +378,18 @@ an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
 admitted and the audit directory is claimed, and never when every case is
 `not_implemented`.
 
+Load the manifest with `load_manifest(path, suite=suite)`, which applies the same
+admission and normalization as collection, and use that admitted manifest for
+collection and reporting alike. A manifest that was not admitted can misreport
+coverage: an integral `2.0` concurrency, for example, is normalized only by
+admission.
+
 ```python
+manifest = load_manifest(Path("manifest.json"), suite=suite)
 results = await collect_and_adjudicate(
     manifest, audit_dir=Path("lmi-collection"), suite=suite, adapter_factory=create_adapter
 )
+report = build_report(manifest, results, suite=suite)
 ```
 
 Choose an empty audit directory, and use a separate one for every run. The
@@ -392,8 +400,8 @@ latest published attempts or outcome. A row with status `COLLECTED` awaits the
 verdict. After all targets are released or quarantined, the runner writes frozen
 observations and separate cleanup evidence to `collected-evidence.json`, reads
 the file back, and adjudicates it. `collect_and_adjudicate` returns the
-adjudicated results; the caller reports them with `build_report(manifest,
-results, suite=suite)` and `reporters.write_report`.
+adjudicated results; the caller reports them against the admitted manifest with
+`build_report(manifest, results, suite=suite)` and `reporters.write_report`.
 
 A collection manifest may also set `scenarioConcurrency`, the most cases the run
 executes at once (default 8), and `budgets`, harness time limits in seconds:
@@ -448,8 +456,12 @@ durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.j
 ```
 
 The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
-its bundle again in Python with `adjudicate_collected_evidence(manifest, bundle,
-suite=suite)` and reports it with `build_report(..., suite=suite)`.
+its bundle again in Python. It loads the collection's own manifest with
+`load_manifest(Path("lmi-collection/manifest.json"), suite=suite)` and the bundle
+with `load_collected_evidence(Path("lmi-collection/collected-evidence.json"))`,
+which reads exact decimals the way collection does. It then adjudicates with
+`adjudicate_collected_evidence(manifest, bundle, suite=suite)` and reports with
+`build_report(manifest, results, suite=suite)`.
 
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
 that it was not modified. Before recording `COLLECTED`, the coordinator checked
