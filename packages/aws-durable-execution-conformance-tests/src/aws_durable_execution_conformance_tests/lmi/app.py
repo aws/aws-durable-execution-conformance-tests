@@ -7,21 +7,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import errno
-import importlib
 import json
 import math
 import os
 import sys
+import threading
 import time
-from collections.abc import Coroutine, Iterable, Mapping
+import traceback
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import (
@@ -40,6 +42,9 @@ from aws_durable_execution_conformance_tests.report import (
     RunMetadata,
 )
 from aws_durable_execution_conformance_tests.reporters import render_console, write_report
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioAdapter
 
 
 @dataclass(frozen=True)
@@ -230,7 +235,7 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         raise ValueError(f"capabilityProfile must be one of {CAPABILITIES}")
     if not isinstance(manifest.get("runId"), str) or not manifest["runId"].strip():
         raise ValueError("runId must be a non-empty string")
-    # Resolve the profile before any adapter import, deployment or admission.
+    # Resolve the profile before any adapter is constructed, deployed or admitted.
     _required(manifest, suite)
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) < 2:
@@ -657,7 +662,30 @@ def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
 
 
 async def collect_and_adjudicate(
-    manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
+    manifest: Mapping[str, Any],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition,
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+) -> list[dict[str, Any]]:
+    """Collect an SDK-owned suite with the SDK's own collector, then adjudicate it.
+
+    Only SDK-owned suites collect through this API. ``adapter_factory`` receives a
+    separate copy of the admitted manifest. It is called only after the manifest
+    is validated and ``audit_dir`` is claimed, and never when every case is
+    declared not implemented.
+    """
+    if not isinstance(suite, SuiteDefinition):
+        raise TypeError("collect_and_adjudicate requires an SDK-owned suite definition")
+    return await _collect_and_adjudicate(manifest, adapter_factory, audit_dir=audit_dir, suite=suite)
+
+
+async def _collect_and_adjudicate(
+    manifest: Mapping[str, Any],
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition | None = None,
 ) -> list[dict[str, Any]]:
     from aws_durable_execution_conformance_tests.lmi.coordinator import (
         Budgets,
@@ -672,9 +700,6 @@ async def collect_and_adjudicate(
     if suite is not None:
         suite = replace(suite, requirements={key: deepcopy(dict(row)) for key, row in suite.requirements.items()})
     manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
-    module_name, separator, factory_name = adapter_name.partition(":")
-    if not separator or not factory_name:
-        raise ValueError("--adapter must be a local Python module:factory")
     profiles = [
         Profile(**{item.name: profile[item.name] for item in fields(Profile) if item.name in profile})
         for profile in manifest["profiles"]
@@ -770,8 +795,7 @@ async def collect_and_adjudicate(
 
     if not scenarios:
         return reconcile_results(())
-    factory = getattr(importlib.import_module(module_name), factory_name)
-    adapter = factory(deepcopy(manifest))
+    adapter = adapter_factory(deepcopy(manifest))
     try:
         outcomes = await run_scenarios(
             scenarios,
@@ -1028,15 +1052,55 @@ def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
         loop.run_until_complete(loop.shutdown_default_executor(_RESIDUAL_TASK_GRACE_SECONDS))
 
 
+# Ends the process without running interpreter shutdown; replaced in tests.
+_hard_exit: Callable[[int], NoReturn] = os._exit
+
+
 def run(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="durable-execution-conformance lmi-lifecycle", description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
-    input_source = parser.add_mutually_exclusive_group()
-    input_source.add_argument(
-        "--collected-evidence", type=Path, help="adjudicate a saved collected-evidence bundle without collecting"
+    """Run the CLI, then exit even if a thread started during the run is still alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started during the run is still alive as the CLI finishes,
+    the process ends with the CLI's exit code without waiting for it. That path
+    skips atexit hooks.
+    """
+    existing = set(threading.enumerate())
+    try:
+        _run(argv)
+    except BaseException as error:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if not lingering:
+            raise
+        if isinstance(error, SystemExit):
+            code = error.code
+            if code is not None and not isinstance(code, int):
+                print(code, file=sys.stderr)
+                code = 1
+        else:
+            traceback.print_exception(error)
+            code = 130 if isinstance(error, KeyboardInterrupt) else 1
+        names = ", ".join(thread.name for thread in lingering)
+        print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
+        _hard_exit(code or 0)
+
+
+def _run(argv: list[str] | None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="durable-execution-conformance lmi-lifecycle",
+        description="Adjudicate LMI lifecycle evidence with strict coverage.",
     )
-    input_source.add_argument(
-        "--adapter", help="local module:factory for the trusted collection adapter; omit to validate retained evidence"
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--collected-evidence",
+        type=Path,
+        help="adjudicate a saved collected-evidence bundle; omit to validate retained evidence files",
     )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
@@ -1049,14 +1113,12 @@ def run(argv: list[str] | None = None) -> None:
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
         results = (
-            _run_collection(collect_and_adjudicate(manifest, args.adapter, audit_dir=args.output))
-            if args.adapter is not None
-            else adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
+            adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
             if args.collected_evidence is not None
             else evidence_results(manifest, args.manifest.parent)
         )
         report = build_report(manifest, results)
-    except (OSError, ValueError, TypeError, ImportError, AttributeError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
     (args.output / "evidence.json").write_text(_dump_json(results) + "\n")
     (args.output / "coverage.json").write_text(json.dumps(coverage_inventory(manifest), indent=2) + "\n")
