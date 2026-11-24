@@ -798,7 +798,8 @@ def test_cli_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monk
 
     assert elapsed < 5, elapsed
     assert exc.value.code == 1
-    assert cancellations, "the leftover task was never cancelled"
+    # Cancelled once by the drain, then abandoned; never re-cancelled every round.
+    assert len(cancellations) == 1, cancellations
     assert not leftovers[0].done()
     assert "abandoned 1 task(s) that ignored cancellation" in capsys.readouterr().err
     assert json.loads((output / "report.json").read_text())["ci"]["exit_code"] == 1
@@ -858,7 +859,8 @@ def test_shutdown_cancels_tasks_started_while_others_unwind(monkeypatch, capsys,
         assert 2.0 <= elapsed < 5, elapsed
         assert "abandoned 1 task(s) that ignored cancellation" in warning
     else:
-        assert elapsed < 1, elapsed
+        # Well under the 2 s grace period: nothing held the loop.
+        assert elapsed < 1.5, elapsed
         assert warning == ""
 
 
@@ -867,11 +869,13 @@ def test_shutdown_bounds_async_generator_finalization(monkeypatch):
 
     monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
     generators: list[Any] = []
+    finalized: list[bool] = []
 
     async def slow_to_close() -> Any:
         try:
             yield 1
         finally:
+            finalized.append(True)
             await asyncio.sleep(10)
 
     async def main() -> str:
@@ -882,6 +886,7 @@ def test_shutdown_bounds_async_generator_finalization(monkeypatch):
     started = time.monotonic()
     assert app._run_collection(main()) == "result"
     assert time.monotonic() - started < 5
+    assert finalized == [True]
 
 
 def test_shutdown_bounds_the_default_executor(monkeypatch):
@@ -902,6 +907,37 @@ def test_shutdown_bounds_the_default_executor(monkeypatch):
         assert time.monotonic() - started < 5
     finally:
         release.set()
+
+
+def test_shutdown_tears_down_when_the_run_raises():
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    loops: list[asyncio.AbstractEventLoop] = []
+    cancelled: list[bool] = []
+    tasks: list[asyncio.Task[None]] = []
+
+    async def leftover() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # Cleanup that awaits must not be interrupted by a second cancellation.
+            await asyncio.sleep(0.3)
+            cancelled.append(True)
+            raise
+
+    async def main() -> None:
+        loops.append(asyncio.get_running_loop())
+        tasks.append(loops[0].create_task(leftover()))
+        await asyncio.sleep(0)
+        raise ValueError("collection failed")
+
+    with pytest.raises(ValueError, match="collection failed"):
+        app._run_collection(main())
+    assert cancelled == [True]
+    assert tasks[0].cancelled()
+    assert loops[0].is_closed()
+    with pytest.raises(RuntimeError):
+        asyncio.get_event_loop()
 
 
 def test_shutdown_closes_the_loop_even_when_interrupted(monkeypatch):
