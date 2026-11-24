@@ -248,8 +248,10 @@ Resources:
 ### JUnit details (CI correlation)
 
 Each `<testcase>` uses `classname="{language}.{suite}"` and `name="{id}"`
-(the stable key). `FAILED` maps to `<failure>`; every other non-passing status
-maps to `<skipped>` so CI viewers render gaps as skipped, not failed. A
+(the stable key). `FAILED` maps to `<failure>`, and so does any other
+non-optional status that blocks the exit code under `--fail-on` (for example,
+`UNCOVERED` with `failed+uncovered`). Every other non-passing status maps to
+`<skipped>` so CI viewers render non-blocking gaps as skipped, not failed. A
 `<properties>` block plus `<system-out>` carry the correlation metadata:
 
 ```xml
