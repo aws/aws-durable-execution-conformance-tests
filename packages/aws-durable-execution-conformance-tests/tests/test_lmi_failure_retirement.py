@@ -2589,10 +2589,33 @@ def test_failed_partial_collection_keeps_the_target_quarantined(failure: str) ->
             budgets=Budgets(collection=0.05),
         )
     )
-    # Retirement itself is verified, so the failed snapshot alone keeps the fence.
+    # Retirement itself is verified. A partial collection that raised keeps the
+    # fence by itself; one that was cancelled or timed out is also residual work.
     assert ("failed", "partial") in adapter.steps
     assert validate_retirement_evidence(failed.retirement_evidence) == []
     assert "Partial collection did not retain trustworthy observations" in failed.errors, failed.errors
+    interrupted = "A bounded phase was interrupted; residual work requires reconciliation" in failed.errors
+    assert interrupted is (failure != "raise"), failed.errors
+    assert following.status == "INFRASTRUCTURE_ERROR", following.errors
+    assert adapter.finished == [False]
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+
+
+def test_self_cancelled_phase_keeps_a_retired_target_quarantined() -> None:
+    class SelfCancellingAdapter(FailureAdapter):
+        async def execute(self, context: ScenarioContext) -> None:
+            if context.scenario.case_id == "failed":
+                cancelled = asyncio.get_running_loop().create_future()
+                cancelled.cancel()
+                await cancelled
+
+    adapter = SelfCancellingAdapter(phase="none")
+    (failed, following), scheduler = _run(adapter)
+    # Retirement is independently verified, but the cancelled phase may have
+    # left work running, so the target stays fenced like an interrupted one.
+    assert validate_retirement_evidence(failed.retirement_evidence) == []
+    assert "RuntimeError: execution operation was cancelled" in failed.errors
+    assert "A bounded phase was interrupted; residual work requires reconciliation" in failed.errors
     assert following.status == "INFRASTRUCTURE_ERROR", following.errors
     assert adapter.finished == [False]
     assert scheduler.quarantine_reason(PROFILE.resource_id)

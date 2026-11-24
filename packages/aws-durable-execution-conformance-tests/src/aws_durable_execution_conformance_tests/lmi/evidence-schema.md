@@ -405,19 +405,20 @@ owner of every SDK record seen in any snapshot. A journaled launch without an
 identified invocation request also keeps its target quarantined, because no
 snapshot can show that it ended.
 
-Collection holds each target through physical retirement of its own cases.
-It finishes profiles only after every case in the run has ended its retirement
+Collection holds each target through physical retirement of its own cases. It
+finishes profiles only after every case in the run has ended its retirement
 attempt. Quiescence then decides which targets an adapter may unlock. If any
-case phase in the run was interrupted, no profile is reported quiescent,
-because the interrupted task could still be working on any target. A failed or
-interrupted preparation or `finish` quarantines its own target. Each run uses
-its own scheduler. Because profiles finish together, an adapter's `prepare` must
-not wait on a lock that another profile's `finish` releases, in this run or a
-concurrent one: such a wait can reach the provisioning deadline and leave the
-waiting target quarantined. Acquire a lock that several of this run's targets
-share once for the run. Release it after the last `finish` only if every target
-sharing it finished with `quiescent=True`; otherwise keep it. For a lock another
-run holds, fail fast or wait well under the provisioning budget.
+case phase in the run timed out or was cancelled, by the coordinator or by
+itself, no profile is reported quiescent, because work it started could still be
+running on any target. A failed or interrupted preparation or `finish`
+quarantines its own target. Each run uses its own scheduler. Because profiles
+finish together, an adapter's `prepare` must not wait on a lock that another
+profile's `finish` releases, in this run or a concurrent one: such a wait can
+reach the provisioning deadline and leave the waiting target quarantined.
+Acquire a lock that several of this run's targets share once for the run.
+Release it after the last `finish` only if every target sharing it finished with
+`quiescent=True`; otherwise keep it. For a lock another run holds, fail fast or
+wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
