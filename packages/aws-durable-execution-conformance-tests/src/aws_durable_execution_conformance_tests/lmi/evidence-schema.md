@@ -39,10 +39,12 @@ not the number of requests sent.
 `runId` and the run-unique `caseId` identify the scenario and its evidence.
 There is no additional cohort identifier; roles bind its original invocations.
 
-`selectedRequests` maps fixture roles to original invocation request IDs. The
-coordinator must bind this map to its launch journal, before interpreting results.
-A later service retry cannot replace a selected original request. Every launched
-attempt remains in `attempts`, including failed placement and unrelated retries.
+`selectedRequests` maps fixture roles to original invocation request IDs: the
+first journaled launch of each role. A later service retry cannot replace a
+selected original request. Every launched attempt remains in `attempts`,
+including failed placement and unrelated retries.
+Adapters call `record_attempt` before dispatch and `record_service_attempt` when
+discovering a service-initiated attempt against an already journaled execution.
 Each attempt records:
 
 - `requestId`, `executionArn`, `environmentId`, `workerId`, `processId`, `role`;
@@ -249,10 +251,11 @@ retirement records; a custom validator receives `phase="observations"` and then
 erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
 insufficient evidence.
 
-The SDK adapter is responsible for faithful instrumentation through the real
+The SDK fixture is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
 incomplete evidence; it cannot authenticate observations supplied by a dishonest
-adapter or substitute local synthetic controls for real LMI validation.
+fixture or driver, or substitute local synthetic controls for real LMI
+validation.
 
 
 ## Independent physical retirement audit
@@ -355,6 +358,42 @@ The offline reader preserves precise fractional values in checkpoint payloads
 and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
+
+## Collection
+
+Collection runs the cases on AWS and records what happened. Adjudication then
+derives the verdict from that record alone. Collection never decides
+conformance; adjudication never contacts AWS.
+
+Collection trusts its adapter, the shared AWS driver. The coordinator records
+the driver's own reports, such as launches, inventories and retirement, without
+auditing them against earlier snapshots, its launch journal, the admitted case,
+or other cases, so driver defects are caught by the driver's own tests. SDK
+fixture output that the driver relays stays untrusted. The rules judge its
+behavior, and before a target is reused collection requires the driver's
+retirement snapshot to establish physical retirement and to settle the native
+owner of every SDK record seen in any snapshot. A journaled launch without an
+identified invocation request also keeps its target quarantined, because no
+snapshot can show that it ended.
+
+Collection holds each target through physical retirement of its own cases. It
+finishes profiles only after every case in the run has ended its retirement
+attempt. Quiescence then decides which targets an adapter may unlock. If any
+case phase in the run timed out or was cancelled, by the coordinator or by
+itself, no profile is reported quiescent, because work it started could still be
+running on any target. A failed or interrupted preparation or `finish`
+quarantines its own target. Each run uses its own scheduler. Because profiles
+finish together, an adapter's `prepare` must not wait on a lock that another
+profile's `finish` releases, in this run or a concurrent one: such a wait can
+reach the provisioning deadline and leave the waiting target quarantined.
+Acquire a lock that several of this run's targets share once for the run.
+Release it after the last `finish` only if every target sharing it finished with
+`quiescent=True`; otherwise keep it. For a lock another run holds, fail fast or
+wait well under the provisioning budget.
+
+The coordinator only collects evidence and decides whether a target can be
+reused. Its `run_scenarios` API returns collection statuses and never reports
+`PASSED`.
 
 ## Offline lifecycle runner
 

@@ -71,7 +71,7 @@ def optional_shapes(view: CaseView) -> None:
                     view.error(f"replay.sideEffects.{field} must be a non-negative integer")
 
 
-def common(view: CaseView, *, validate_behavior: bool = True) -> None:
+def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches: bool = False) -> None:
     value = view.value
     if not is_json_integer(value.get("schemaVersion")) or value.get("schemaVersion") != SCHEMA_VERSION:
         view.error(f"unsupported schemaVersion; expected {SCHEMA_VERSION}")
@@ -98,7 +98,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
         optional_shapes(view)
     observation_end = view.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
     attempt_ordinals: set[tuple[str, int]] = set()
-    for attempt in view.records(value.get("attempts"), "attempts", nonempty=True):
+    for attempt in view.records(value.get("attempts"), "attempts", nonempty=not allow_no_launches):
         request_id = view.string(attempt.get("requestId"), "attempt.requestId")
         if request_id in view.attempts:
             view.error(f"duplicate requestId {request_id}")
@@ -173,7 +173,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
         ):
             view.error(f"tied native admissions cannot establish the original {role} invocation")
         view.selected[role] = attempt
-    view.events = view.records(value.get("events"), "events", nonempty=True)
+    view.events = view.records(value.get("events"), "events", nonempty=not allow_no_launches)
     for event in view.events:
         kind = view.string(event.get("kind"), "event.kind")
         owned_record(view, event, "event", observation_end)
@@ -211,7 +211,7 @@ def common(view: CaseView, *, validate_behavior: bool = True) -> None:
     for fault in view.records(value.get("faultsCreated"), "faultsCreated"):
         if "releasedAtMs" in fault:
             view.number(fault["releasedAtMs"], "faultsCreated.releasedAtMs")
-    histories(view, check_expectations=validate_behavior)
+    histories(view, check_expectations=validate_behavior, allow_no_launches=allow_no_launches)
     collection_errors = value.get("collectionErrors", [])
     if not isinstance(collection_errors, list):
         view.error("collectionErrors must be an array of non-empty strings")
@@ -259,10 +259,10 @@ def owned_record(view: CaseView, record: Mapping[str, Any], kind: str, end: floa
                 view.error(f"{kind} lies outside its observedDuringRequestId interval", "ASSERTION")
 
 
-def histories(view: CaseView, *, check_expectations: bool = True) -> None:
+def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launches: bool = False) -> None:
     expected = view.mapping(view.value.get("expectedHistories"), "expectedHistories") if check_expectations else {}
     actual: dict[str, Mapping[str, Any]] = {}
-    for history in view.records(view.value.get("histories"), "histories", nonempty=True):
+    for history in view.records(view.value.get("histories"), "histories", nonempty=not allow_no_launches):
         arn = view.string(history.get("executionArn"), "history.executionArn")
         if arn in actual:
             view.error(f"duplicate service history {arn}")

@@ -341,9 +341,8 @@ def _identity_errors(
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
     definition = _case_definition(manifest, scenario, profile, suite)
-    # A manifest may declare roles beyond the requirement's defaults. Live
-    # runs reject an incomplete cohort through the coordinator's ownership
-    # check; retained evidence must cover the same role set for every suite.
+    # A manifest may declare roles beyond the requirement's defaults, and
+    # retained evidence must cover every declared role for every suite.
     declared = set(scenario.get("roles", definition.roles))
     selected_roles = evidence.get("selectedRequests")
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
