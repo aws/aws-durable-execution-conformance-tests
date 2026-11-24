@@ -39,10 +39,10 @@ not the number of requests sent.
 `runId` and the run-unique `caseId` identify the scenario and its evidence.
 There is no additional cohort identifier; roles bind its original invocations.
 
-`selectedRequests` maps fixture roles to original invocation request IDs. The
-coordinator must bind this map to its launch journal, before interpreting results.
-A later service retry cannot replace a selected original request. Every launched
-attempt remains in `attempts`, including failed placement and unrelated retries.
+`selectedRequests` maps fixture roles to original invocation request IDs: the
+first journaled launch of each role. A later service retry cannot replace a
+selected original request. Every launched attempt remains in `attempts`,
+including failed placement and unrelated retries.
 Adapters call `record_attempt` before dispatch and `record_service_attempt` when
 discovering a service-initiated attempt against an already journaled execution.
 Each attempt records:
@@ -251,10 +251,11 @@ retirement records; a custom validator receives `phase="observations"` and then
 erase a behavior failure. A blanket `passed` or `cleanedUp` boolean is
 insufficient evidence.
 
-The SDK adapter is responsible for faithful instrumentation through the real
+The SDK fixture is responsible for faithful instrumentation through the real
 public handler registration paths. This schema detects inconsistent or
 incomplete evidence; it cannot authenticate observations supplied by a dishonest
-adapter or substitute local synthetic controls for real LMI validation.
+fixture or driver, or substitute local synthetic controls for real LMI
+validation.
 
 
 ## Independent physical retirement audit
@@ -365,8 +366,8 @@ derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
 Use a manifest, as described under
-[Standalone evidence files](#standalone-evidence-files), with an SDK-owned
-adapter to run cases and collect evidence. The adapter module must be importable
+[Standalone evidence files](#standalone-evidence-files), with an adapter to run
+cases and collect evidence. The adapter module must be importable
 in the runner's Python environment. Its factory receives the admitted manifest
 and returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
 and `finish` for each profile that an active case uses, and `start`, `place`,
@@ -394,13 +395,22 @@ target capacity (300), `placement` for `start` and `place` (120), `execution`
 `retire` and each target's `finish` (120). These bound the harness, not SDK
 cleanup or delivery.
 
+Collection trusts its adapter, the shared AWS driver. The coordinator records
+the driver's own reports, such as launches, inventories and retirement, without
+auditing them against earlier snapshots, its launch journal, the admitted case,
+or other cases, so driver defects are caught by the driver's own tests. SDK
+fixture output that the driver relays stays untrusted. The rules judge its
+behavior, and before a target is reused collection requires the driver's
+retirement snapshot to establish physical retirement and to settle the native
+owner of every SDK record seen in any snapshot. A journaled launch without an
+identified invocation request also keeps its target quarantined, because no
+snapshot can show that it ended.
+
 Collection holds each target through physical retirement of its own cases.
 It finishes profiles only after every case in the run has ended its retirement
-attempt and registered its ownership claims, so a conflicting claim quarantines
-the affected targets before any release. Quiescence then decides which targets
-an adapter may unlock. If any case phase in the
-run was interrupted, no profile is reported quiescent, because the interrupted
-task could have claimed, or could still claim, any target. A failed or
+attempt. Quiescence then decides which targets an adapter may unlock. If any
+case phase in the run was interrupted, no profile is reported quiescent,
+because the interrupted task could still be working on any target. A failed or
 interrupted preparation or `finish` quarantines its own target. Each run uses
 its own scheduler. Because profiles finish together, an adapter's `prepare` must
 not wait on a lock that another profile's `finish` releases, in this run or a
@@ -428,14 +438,14 @@ durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.j
 ```
 
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
-that it was not modified. Before recording `COLLECTED`, the coordinator bound
-every observation and retirement record to the launch journal and checked that
-the case's work settled. Adjudication judges behavior again with the current
-rules, but it keeps the recorded collection status and the facts only collection
-observed. Pass the collection's own `manifest.json`. Adjudication re-checks only
-the collection facts its verdict rules use: each case's identity against that
-manifest, ownership claims across cases, launch coverage, and the retirement
-proof behind the lifecycle 2/7 allowance. The frozen observations must include
+that it was not modified. Before recording `COLLECTED`, the coordinator checked
+that the case's work settled; like the coordinator, adjudication trusts what the
+driver reported. Adjudication judges behavior again with the current rules, but
+it keeps the recorded collection status and the facts only collection observed.
+Pass the collection's own `manifest.json`. Adjudication re-checks only the
+collection facts its verdict rules use: each case's identity against that
+manifest, launch coverage, and the retirement proof behind the lifecycle 2/7
+allowance. The frozen observations must include
 every client launch the journal records (`launchedAtMs`): cleanup can journal a
 new client launch after observations froze, and the coordinator still records
 `COLLECTED`, so adjudication reports that case incomplete. A service-initiated

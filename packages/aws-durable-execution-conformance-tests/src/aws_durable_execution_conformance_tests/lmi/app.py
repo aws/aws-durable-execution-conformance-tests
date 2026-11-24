@@ -368,9 +368,8 @@ def _identity_errors(
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
     definition = _case_definition(manifest, scenario, profile, suite)
-    # A manifest may declare roles beyond the requirement's defaults. Collection
-    # rejects an incomplete cohort through the coordinator's ownership
-    # check; retained evidence must cover the same role set for every suite.
+    # A manifest may declare roles beyond the requirement's defaults, and
+    # retained evidence must cover every declared role for every suite.
     declared = set(scenario.get("roles", definition.roles))
     selected_roles = evidence.get("selectedRequests")
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
@@ -451,9 +450,51 @@ def evidence_results(
     return results
 
 
-def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _ownership_claims
+def _ownership_claims(
+    journal: list[dict[str, Any]], evidence: Any, retirement: Any, cleanup: Any, *, case_id: str
+) -> set[tuple[str, str]]:
+    sources = [{"attempts": journal}, evidence, retirement]
+    if isinstance(cleanup, Mapping):
+        sources.extend(snapshot for phase in cleanup.values() if isinstance(phase, list) for snapshot in phase)
+    identities: set[tuple[str, str]] = set()
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        attempts = source.get("attempts")
+        for attempt in attempts if isinstance(attempts, list) else []:
+            if isinstance(attempt, Mapping):
+                for field in ("requestId", "executionArn"):
+                    if isinstance(identifier := attempt.get(field), str) and identifier.strip():
+                        identities.add((field, identifier))
+        histories = source.get("histories")
+        for history in histories if isinstance(histories, list) else []:
+            if (
+                isinstance(history, Mapping)
+                and history.get("ownerCaseId") == case_id
+                and isinstance(arn := history.get("executionArn"), str)
+                and arn.strip()
+            ):
+                identities.add(("executionArn", arn))
+        retirement = source.get("retirement")
+        inventories = [
+            (source.get("resourcesCreated"), False),
+            (source.get("faultsCreated"), True),
+        ]
+        if isinstance(retirement, Mapping):
+            inventories.extend([(retirement.get("resources"), False), (retirement.get("faults"), True)])
+        for resources, faults in inventories:
+            for resource in resources if isinstance(resources, list) else []:
+                if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
+                    continue
+                kind = "fault" if faults else resource.get("kind")
+                if kind in ("invocation", "execution", "callback", "control", "fault") and resource["id"].strip():
+                    field = {"invocation": "requestId", "execution": "executionArn"}.get(kind, kind)
+                    identities.add((field, resource["id"]))
+    return identities
 
+
+def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
+    """Fail standalone evidence files that claim another case's work."""
     claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for result in results:
         identities = _ownership_claims(
@@ -686,9 +727,6 @@ async def collect_and_adjudicate(
                 result["status"] = "INFRASTRUCTURE_ERROR"
             result["errors"].append(f"Could not publish final case result: {exc}")
 
-    def validate_attempt(attempt: Mapping[str, Any]) -> None:
-        _dump_json(attempt, compact=True)
-
     skipped_results: list[dict[str, Any]] = []
     for scenario in manifest["scenarios"]:
         if "not_implemented" in scenario:
@@ -734,7 +772,6 @@ async def collect_and_adjudicate(
                 },
             ),
             on_result=write_result,
-            validate_attempt=validate_attempt,
         )
     except asyncio.CancelledError as cancelled:
         try:
@@ -829,7 +866,6 @@ def adjudicate_collected_evidence(
                 result["status"] = "INCOMPLETE_EVIDENCE"
             result["errors"].append(f"INCOMPLETE: malformed captured evidence: {error}")
         results.append(result)
-    _check_unique_ownership(results)
     return results
 
 
@@ -931,7 +967,9 @@ def run(argv: list[str] | None = None) -> None:
     input_source.add_argument(
         "--collected-evidence", type=Path, help="adjudicate a saved collected-evidence bundle without collecting"
     )
-    input_source.add_argument("--adapter", help="SDK-owned local module:factory; omit to validate retained evidence")
+    input_source.add_argument(
+        "--adapter", help="local module:factory for the trusted collection adapter; omit to validate retained evidence"
+    )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
