@@ -67,7 +67,7 @@ class _CoordinatorLoopContext:
     Every other attribute is the context's own.
     """
 
-    _LOOP_METHODS = frozenset({"record_attempt", "record_service_attempt", "update_attempt"})
+    _LOOP_METHODS = frozenset({"record_attempt", "record_service_attempt", "update_attempt", "withdraw_attempt"})
 
     def __init__(self, context: ScenarioContext, loop: asyncio.AbstractEventLoop) -> None:
         object.__setattr__(self, "_context", context)
@@ -151,6 +151,9 @@ class SharedAdapter:
         self.cases: dict[str, _Case] = {}
         self.prepared_clouds: dict[str, tuple[Cloud, str]] = {}
         self.preparation_workers: dict[str, asyncio.Task[tuple[Cloud, str]]] = {}
+        # Cases proven to have done no work before `start` failed and deleted
+        # them; `collect_partial` still gets called for these during cleanup.
+        self.no_work_cases: set[str] = set()
 
     async def prepare(self, profile: Profile) -> None:
         def verify() -> tuple[Cloud, str]:
@@ -257,14 +260,22 @@ class SharedAdapter:
             raise ProvisioningError("Case target is outside the owned deployment")
         owner = case_key(context.scenario.case_id)
         threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
-        cloud = await asyncio.to_thread(
-            self.cloud_factory,
-            self.deployment,
-            key,
-            artifacts_dir=self.artifacts_dir / "cases" / owner,
-            case_context=threaded,
-        )
-        driver = self.driver_factory(threaded, cloud)
+        try:
+            cloud = await asyncio.to_thread(
+                self.cloud_factory,
+                self.deployment,
+                key,
+                artifacts_dir=self.artifacts_dir / "cases" / owner,
+                case_context=threaded,
+            )
+            driver = self.driver_factory(threaded, cloud)
+        except Exception:
+            # Either Cloud itself failed to construct, or it did but the
+            # driver failed before this case was ever registered. Either way
+            # no case work (no service I/O, no driver.start) could have run
+            # yet, so collect_partial must skip this case too.
+            self.no_work_cases.add(context.scenario.case_id)
+            raise
         case = self.cases[context.scenario.case_id] = _Case(driver)
         try:
             await case.call(driver.start)
@@ -280,6 +291,7 @@ class SharedAdapter:
                 or not _only_undispatched_journals(cloud, context)
             ):
                 del self.cases[context.scenario.case_id]
+                self.no_work_cases.add(context.scenario.case_id)
             raise
 
     async def place(self, context: ScenarioContext) -> None:
@@ -301,6 +313,11 @@ class SharedAdapter:
 
     async def collect_partial(self, context: ScenarioContext) -> dict[str, Any]:
         """Retain a failed phase's facts before release, without awaiting cleanup."""
+        case_id = context.scenario.case_id
+        if case_id in self.no_work_cases and case_id not in self.cases:
+            # `start` already proved this case never did any work and deleted
+            # it; there is nothing to collect and no service call to make.
+            return {}
         case = self._case(context)
 
         def capture() -> dict[str, Any]:

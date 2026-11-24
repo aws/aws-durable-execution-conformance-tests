@@ -371,6 +371,39 @@ class ScenarioContext:
         """
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
 
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Remove a launch whose dispatch provably never happened.
+
+        Only the most recently journaled attempt can be withdrawn, and only
+        when it is still a bare driver-invoke launch: it has a launch
+        timestamp and none of a request ID, execution ARN or native
+        start/end time. Any attempt that may have reached the service must
+        stay visible to retirement, so a mismatch raises rather than
+        silently dropping it.
+        """
+        if not self._attempts or self._attempts[-1]["attemptId"] != attempt_id:
+            raise ValueError("Only the last journaled attempt can be withdrawn")
+        attempt = self._attempts[-1]
+        if (
+            attempt.get("source") != "driver-invoke"
+            or "launchedAtMs" not in attempt
+            or any(key in attempt for key in ("requestId", "executionArn", "nativeStartedAtMs", "nativeEndedAtMs"))
+        ):
+            raise ValueError("Only an undispatched driver launch can be withdrawn")
+        removed = self._attempts.pop()
+        if self._on_attempt is not None:
+            try:
+                self._on_attempt(self)
+            except BaseException:
+                # The durable sink may have already dropped the attempt from
+                # its journal before failing (e.g. an fsync after the write),
+                # so memory and the durable record can still disagree here.
+                # That is safe: Invoke never ran for this attempt, so keeping
+                # it visible in memory and failing closed by re-raising never
+                # hides a launch that may have dispatched.
+                self._attempts.append(removed)
+                raise
+
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
             raise ValueError("Attempt identities must be nonempty and unique")

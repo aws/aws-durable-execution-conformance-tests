@@ -772,6 +772,94 @@ def test_journaled_execution_cannot_be_rebound():
         context.update_attempt("launch", executionArn="execution-b")
 
 
+def test_withdraw_attempt_removes_undispatched_launch_and_reinvokes_sink():
+    publications = []
+    context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=lambda ctx: publications.append(ctx.attempts))
+    context.record_attempt("launch", source="driver-invoke")
+    assert publications[-1][0]["attemptId"] == "launch"
+    context.withdraw_attempt("launch")
+    assert context.attempts == []
+    assert publications[-1] == []
+
+
+def test_withdraw_attempt_restores_the_attempt_when_the_sink_fails():
+    calls: list[list[dict[str, Any]]] = []
+
+    def sink(ctx):
+        calls.append(copy.deepcopy(ctx.attempts))
+        if len(calls) > 1:
+            raise OSError("journal disk full")
+
+    context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=sink)
+    context.record_attempt("launch", source="driver-invoke")
+    assert len(calls) == 1
+    with pytest.raises(OSError, match="journal disk full"):
+        context.withdraw_attempt("launch")
+    # Memory must still agree with the durable journal, which never dropped
+    # the attempt either, since the sink raised before it could.
+    assert [item["attemptId"] for item in context.attempts] == ["launch"]
+
+
+def test_withdraw_attempt_runs_on_the_coordinator_loop_from_a_worker_thread():
+    import threading
+
+    from aws_durable_execution_conformance_tests.lmi.adapter import _CoordinatorLoopContext
+
+    async def exercise():
+        sink_threads: set[int] = set()
+
+        def sink(ctx):
+            sink_threads.add(threading.get_ident())
+
+        context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=sink)
+        context.record_attempt("launch", source="driver-invoke")
+        threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
+
+        def worker():
+            assert threading.current_thread() is not threading.main_thread()
+            threaded.withdraw_attempt("launch")
+
+        await asyncio.to_thread(worker)
+        assert sink_threads == {threading.get_ident()}
+        assert context.attempts == []
+
+    asyncio.run(exercise())
+
+
+def test_withdraw_attempt_refuses_a_non_last_attempt():
+    context = ScenarioContext("run", case("cohort", roles=("victim", "peer")), PROFILE)
+    context.record_attempt("first", role="victim", source="driver-invoke")
+    context.record_attempt("second", role="peer", source="driver-invoke")
+    with pytest.raises(ValueError, match="last journaled attempt"):
+        context.withdraw_attempt("first")
+    assert [item["attemptId"] for item in context.attempts] == ["first", "second"]
+
+
+def test_withdraw_attempt_refuses_a_non_driver_invoke_source():
+    context = ScenarioContext("run", case("one"), PROFILE)
+    context.record_attempt("launch", source="poller-replay")
+    with pytest.raises(ValueError, match="undispatched driver launch"):
+        context.withdraw_attempt("launch")
+    assert [item["attemptId"] for item in context.attempts] == ["launch"]
+
+
+def test_withdraw_attempt_refuses_an_attempt_with_native_identity():
+    context = ScenarioContext("run", case("one"), PROFILE)
+    context.record_attempt("launch", source="driver-invoke", requestId="request", executionArn="execution")
+    with pytest.raises(ValueError, match="undispatched driver launch"):
+        context.withdraw_attempt("launch")
+    assert [item["attemptId"] for item in context.attempts] == ["launch"]
+
+
+def test_withdraw_attempt_refuses_a_service_discovered_attempt():
+    context = ScenarioContext("run", case("one"), PROFILE)
+    context.record_attempt("launch", source="driver-invoke", requestId="original", executionArn="execution-a")
+    context.record_service_attempt("retry", original_request_id="original", execution_arn="execution-a", role="victim")
+    with pytest.raises(ValueError, match="undispatched driver launch"):
+        context.withdraw_attempt("retry")
+    assert [item["attemptId"] for item in context.attempts] == ["launch", "retry"]
+
+
 def test_multi_role_launches_require_immutable_role_and_per_role_order():
     context = ScenarioContext("run", case("cohort", roles=("victim", "peer")), PROFILE)
     with pytest.raises(ValueError, match="role"):

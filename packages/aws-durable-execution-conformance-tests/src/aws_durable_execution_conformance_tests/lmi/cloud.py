@@ -141,6 +141,10 @@ class Cloud:
         self.single_attempt_fences = client_factory is None
         self.verify_profile = verify_profile
         self.events = {}
+        # Set while a budget-expiry refresh has cached completed batches but
+        # skipped binding (binding from a partial read could bind a retry as
+        # the original). Cleared once a complete refresh binds successfully.
+        self.binding_deferred = False
         self.invocations = []
         self.rejected_markers: set[str] = set()
         self.gates = set()
@@ -443,7 +447,7 @@ class Cloud:
 
         def before_invoke():
             context = self.case_context
-            before = len(context.attempts) if context is not None else 0
+            recorded = False
             try:
                 if context is not None:
                     context.record_attempt(
@@ -454,14 +458,18 @@ class Cloud:
                         durableExecutionName=execution_name,
                         source="driver-invoke",
                     )
+                    recorded = True
                 self._save(relative, {**journal, "dispatchState": "SUBMITTED"})
-            except BaseException:
-                if (
-                    context is not None
-                    and len(context.attempts) == before + 1
-                    and context.attempts[-1].get("attemptId") == marker
-                ):
-                    context.attempts.pop()
+            except BaseException as error:
+                if context is not None and recorded:
+                    try:
+                        context.withdraw_attempt(marker)
+                    except BaseException as withdraw_error:
+                        # withdraw_attempt restores its own in-memory removal if the
+                        # durable sink rejects it, so the attempt stays journaled
+                        # either way; fail closed on the original error and note
+                        # the secondary failure rather than swallowing it.
+                        error.add_note(f"Failed to withdraw the undispatched attempt: {withdraw_error}")
                 raise
             journal["dispatchState"] = "SUBMITTED"
             self.invocations.append(item)
@@ -624,6 +632,15 @@ class Cloud:
             except Exception as error:
                 failures.append((marker, error))
 
+        if missing:
+            # Any newly discovered record can end up cached (self.events)
+            # before a later failure, of any kind, stops this refresh short
+            # of a complete bind. Defer as soon as there is something new to
+            # bind rather than only on the specific budget-expiry branch
+            # below; the deferral is cleared only once a complete,
+            # failure-free bind actually runs.
+            self.binding_deferred = True
+
         def read(key):
             self._check_read_budget(read_transport)
             response = read_transport.get_object(Bucket=self.manifest["bucket"], Key=key)
@@ -674,6 +691,7 @@ class Cloud:
                 self._bind_requests(events, {marker for marker, _ in failures})
             else:
                 self._bind_requests(events)
+                self.binding_deferred = False
         except CollectionError as error:
             failures.append(("", error))
         if failures:

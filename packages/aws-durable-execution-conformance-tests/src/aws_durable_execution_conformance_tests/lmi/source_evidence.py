@@ -235,13 +235,47 @@ def observation_exclusions(
     return excluded
 
 
+def _awaiting_bind(launch: Mapping[str, Any] | None, execution: Any) -> bool:
+    """True when ``launch`` could still legitimately bind ``execution``.
+
+    A launch ``_bind_requests`` already skipped as conflicting can never
+    become bound, so it is never merely "not yet bound". Otherwise a launch
+    awaits binding when it has no bound execution yet, or when it is already
+    bound to this same execution (and is just missing this one request from
+    ``native_requests``). A launch already bound to a *different* execution
+    is a real ownership mismatch, not a binding gap.
+    """
+    return (
+        launch is not None
+        and not launch.get("launch_conflict")
+        and isinstance(execution, str)
+        and bool(execution)
+        and (not launch.get("arn") or launch.get("arn") == execution)
+    )
+
+
 def ledger_seal_status(
     records: Sequence[Mapping[str, Any]],
     histories: Mapping[str, Sequence[Mapping[str, Any]]],
     launches: Sequence[Mapping[str, Any]],
     excluded: set[str],
+    *,
+    defer_unbound: bool = False,
 ) -> tuple[set[str], set[str], list[str]]:
-    """Return known requests, missing seals/boundaries and invalid identities or seals."""
+    """Return known requests, missing seals/boundaries and invalid identities or seals.
+
+    ``defer_unbound`` only applies to a sealed stream that is otherwise fully
+    consistent with an owned launch (matching identity fields, no foreign
+    service completion owner) but whose launch has not yet recorded this
+    request (no ``arn`` yet, or ``arn`` matches but the request is absent
+    from ``native_requests``). A budget-expiry refresh can cache such a
+    stream before binding runs (see ``Cloud.refresh``); treating that as
+    "missing" rather than an error avoids fencing a target for a gap that a
+    later complete refresh resolves on its own. Every other mismatch (no
+    matching launch, a launch already skipped as conflicting, a launch bound
+    to a different execution, a foreign completion owner or a genuine
+    identity mismatch) stays an error.
+    """
     streams = defaultdict(list)
     errors = []
     for record in records:
@@ -282,18 +316,32 @@ def ledger_seal_status(
         marker = wrapper.get("marker")
         arn = wrapper.get("execution")
         launch = by_marker.get(marker) if isinstance(marker, str) and marker else None
+        valid_arn = isinstance(arn, str) and bool(arn)
+        identity_matches = not any(
+            record.get(field) != wrapper.get(field)
+            for record in stream
+            for field in ("run", "commit", "caseId", "marker", "execution")
+        )
+        completion_consistent = completion_owners.get(request, arn) == arn
+        not_yet_bound = (
+            defer_unbound
+            and valid_arn
+            and identity_matches
+            and completion_consistent
+            and _awaiting_bind(launch, arn)
+            and launch is not None
+            and request not in launch.get("native_requests", ())
+        )
+        if not_yet_bound:
+            missing.add(request)
+            continue
         if (
             launch is None
-            or not isinstance(arn, str)
-            or not arn
+            or not valid_arn
             or launch.get("arn") != arn
             or request not in launch.get("native_requests", ())
-            or completion_owners.get(request, arn) != arn
-            or any(
-                record.get(field) != wrapper.get(field)
-                for record in stream
-                for field in ("run", "commit", "caseId", "marker", "execution")
-            )
+            or not completion_consistent
+            or not identity_matches
         ):
             errors.append(f"Native request {request} has inconsistent ledger, launch or service ownership")
             continue
@@ -901,7 +949,25 @@ class CaseSources:
                 None,
             )
             if item is None or request not in journal or request not in self.cloud.request_roles:
-                errors.append(f"Native request {request} was not bound to an original launch")
+                message = f"Native request {request} was not bound to an original launch"
+                if (
+                    _awaiting_bind(item, raw.get("execution"))
+                    and pending is not None
+                    and getattr(self.cloud, "binding_deferred", False) is True
+                ):
+                    # A budget-expiry refresh intentionally skips binding from a
+                    # partial read (binding early could bind a retry as the
+                    # original). While observation is still ongoing, that gap is
+                    # incomplete evidence, not a collection error; a later
+                    # complete refresh binds and drains the request. An unowned
+                    # marker (no launch at all, e.g. one `Cloud.start` removed
+                    # after a service rejection), a launch `_bind_requests`
+                    # already skipped as conflicting, or a launch already bound
+                    # to a *different* execution are never just "not yet bound" -
+                    # those stay errors regardless of the deferral.
+                    pending.append(message)
+                else:
+                    errors.append(message)
                 continue
             owned = [event for event in events if event.get("requestId") == request]
             boundaries = [event for event in owned if event.get("kind") in {"wrapper_return", "wrapper_raise"}]
@@ -1513,7 +1579,13 @@ def build_evidence(
     all_events, errors = sources.observations(pending=None if final else pending)
     events = [event for event in all_events if event["atMs"] <= ended] if frozen else all_events
     history_pending: list[str] = []
-    known, missing, seal_errors = ledger_seal_status(ledger, service, cloud.invocations, excluded)
+    known, missing, seal_errors = ledger_seal_status(
+        ledger,
+        service,
+        cloud.invocations,
+        excluded,
+        defer_unbound=(not final) and getattr(cloud, "binding_deferred", False) is True,
+    )
     errors.extend(seal_errors)
     # The service proves a physically undispatched request never reached a
     # handler, so it is exempt from the physical seal requirement; it still
