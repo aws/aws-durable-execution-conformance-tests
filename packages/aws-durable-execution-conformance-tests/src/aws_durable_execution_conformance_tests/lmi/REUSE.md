@@ -258,15 +258,19 @@ nonzero on failure. `setup` runs independently in the harness and cloud jobs.
 | `setup` | Install the SDK toolchain and shared core package from `.conformance`; verify the pin |
 | `harness` | Run binding tests and local SDK integration tests; write test diagnostics |
 | `build` | Build the tested SDK fixture ZIP and build manifest |
-| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration; write `manifest.json` to `$LMI_ARTIFACT_DIRECTORY` by passing that directory as `DeploymentManager`'s `artifacts`, or the step fails |
-| `run` | Execute all seven shared requirements and retain strict JSON/JUnit reports |
+| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration; deploy with the SDK's fixture binding on its `RuntimeDefinition`, which the deployment records as `fixtureBinding`; write `manifest.json` to `$LMI_ARTIFACT_DIRECTORY` by passing that directory as `DeploymentManager`'s `artifacts`, or the step fails |
+| `run` | Run `runner.run`, which collects all seven shared requirements with the built-in driver, and retain strict JSON/JUnit reports |
 | `collect` | Collect available runtime records and service history after success or failure |
 | `cleanup` | Release this run's controls and request stops for its identified executions |
 | `summary` | Print the retained report summary to stdout |
 
 `artifact-directory` defaults to `lmi_tests/artifacts`, also when the caller passes
 an empty value; it is exposed as `LMI_ARTIFACT_DIRECTORY`. Use a plain workspace
-path without glob characters, because the upload treats it as a pattern. The
+path without glob characters, because the upload treats it as a pattern. Make it an
+output-only subdirectory: once deployment holds the target fences, it moves
+everything already in that directory into an archive, except `build.json` and the
+deployment's own journal, lock and manifest, so keep the stage script and SDK code
+outside it; the default `lmi_tests/artifacts` satisfies this. The
 workflow uploads only that directory and skips hidden files and directories, so
 keep the `run` stage's case output, including its reports and
 `collected-evidence.json`, in a visible path inside it. Leave the SDK journal root
@@ -274,7 +278,6 @@ keep the `run` stage's case output, including its reports and
 directory, such as `standard/`, or another visible path inside that directory, so the journals are uploaded and cleanup can
 locate them in a downloaded copy. For direct CLI use, give each run a separate artifact
 directory and pass that same directory to build, deploy, run, collect, and cleanup.
-Deployment archives existing output only after it holds the target fences.
 Writers and cleanup use a nonblocking POSIX lock alongside each journal.
 Automatic recovery of an uncertain write requires the original artifact root,
 lock inode, and boot identity (Linux `boot_id` or macOS `kern.bootsessionuuid`).
@@ -307,8 +310,11 @@ at least the job's 155 minutes. Lambda compute stops a build after 15 minutes, a
 a runner that stops early skips collection and cleanup and leaves fences in place.
 
 Every invocation in one caller run shares `LMI_SHARED_RUN_ID`. The deployment
-bucket is scoped by region and stack name, so give each invocation in a run its
-own `stack-name`; invocations sharing a stack would also share run evidence.
+bucket is scoped by account, region and stack name, and the workflow names its
+uploaded artifacts by stack name, Lambda runtime and region, so give each
+invocation in a run that uses the same region its own `stack-name`, even across
+accounts; invocations sharing a stack would also share run evidence. Invocations in
+different regions can reuse a name.
 
 GitHub Actions concurrency serializes automation within the calling repository. The fixed
 `lmi-e2e-shared-capacity-provider` group covers deployment through cleanup and
@@ -317,12 +323,15 @@ repository; SDK repositories must use separately provisioned test capacity if
 they run at the same time. Direct CLI runs are not serialized with Actions.
 
 The driver also acquires persistent retirement fences on each qualified Lambda
-target, twice per run. Deployment holds one while it updates the stack and
-releases it once the update settles. Profile preparation (`prepare(profile)`, once
-per target) then acquires a new one, verifies the deployed configuration before
-admitting any case, and holds it through that target's cases. Its journal is
-`<case output>/<coverage profile>/source/configuration/<first 20 hex characters of
-the SHA-256 of the full qualified function ARN>-fence.json`; those 20 characters
+target, normally twice per run. Deployment holds one while it updates the stack and
+releases it once the update settles. The driver's profile preparation, once per
+target that has at least one case to run, then acquires a new one, verifies the deployed configuration before
+admitting any case, and holds it through that target's cases. A target whose cases
+are all declared not implemented is never prepared, so it has no profile fence or
+journal. For a prepared target, the profile fence's journal is
+`<sdk.artifacts_dir>/configuration/<first 20 hex characters of the SHA-256 of the
+full qualified function ARN>-fence.json`, by default under
+`<case output>/standard/source/`; those 20 characters
 begin the hash in the fence object's key below. Direct CLI runs can acquire
 the target between the two; within a calling repository, the workflow concurrency
 group serializes jobs across that gap. Each fence object is
@@ -336,7 +345,11 @@ roles do not need fence access. Only the owning run clears
 its fence, after it proves quiescence or that the case was never admitted. Failed
 retirement, or an interruption whose outcome cleanup cannot prove from this run's
 journals, leaves the fence in place. Later preparation and deployment reject the fenced
-target and report its exact S3 URI, even if its service executions are terminal.
+target and report its exact S3 URI when their S3 read finds the fence, even if its
+service executions are terminal. An earlier check can stop them first without a
+URI, such as the stack-status check (for example after `UPDATE_ROLLBACK_FAILED`) or
+an existing local deployment or profile journal; derive the key from the bucket and
+the ARN hash above whenever the error omits it.
 
 There is no recovery CLI for a retained fence. Reconcile it promptly: the
 deployment bucket expires `runs/` objects after one day, function logs and durable
@@ -349,17 +362,22 @@ and callbacks. Confirm that no runtime work remains and that the target
 artifact/configuration is correct. If the fenced run left a `deployment-update.json`
 journal, check its phase. A `PREPARED` journal never submitted an update. A
 `SETTLED` journal has a resolved update. To release its remaining fences, run the
-caller's `cleanup` stage against the downloaded artifact directory with the
-original `LMI_SHARED_RUN_ID`; re-running the workflow uses a new run ID and cannot.
-If any fence state in that journal is still `ACQUIRING`, treat the check as
-inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
+caller's `cleanup` stage against the downloaded artifact directory, loading the
+deployment with `deployment.load_cleanup_manifest(<downloaded artifact root>,
+<original LMI_SHARED_RUN_ID>)`. That call points cleanup at the downloaded journals;
+a raw manifest still names the original runner's absolute artifact path.
+Re-running the workflow uses a new run ID and cannot. Relocation works only when
+the journal is absent or `SETTLED` with no `ACQUIRING` fence state.
+`load_cleanup_manifest` refuses a `PREPARED` or `SUBMITTING` journal from a
+different root, so reconcile those at the original absolute artifact path or clear
+the fence manually after the checks below. If any fence state in a `SETTLED`
+journal is still `ACQUIRING`, treat the check as inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
 have reached `UPDATE_COMPLETE`, `UPDATE_ROLLBACK_COMPLETE` or a verified no-op;
-`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, the
-stack's latest status alone is not enough, because it can belong to an older
-request. Keep the fence unless the stack events show that no update is in progress
-and every update started after the fence's S3 `LastModified` time reached
-`UPDATE_COMPLETE` or `UPDATE_ROLLBACK_COMPLETE`, or other independent evidence
-shows that this run never submitted one. Delete the fence only with
+`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, keep the
+fence unless independent evidence shows that this run's own submission settled,
+was a verified no-op or was never made. The stack's latest status or visible
+events alone are not enough: they can belong to an older request, and a missing
+event does not prove that no update was submitted. Delete the fence only with
 a conditional request on the ETag you inspected, and keep it if any check is
 inconclusive. A terminal Lambda execution status alone does not prove retirement. Within a run, the coordinator still
 verifies case ownership, capacity, cancellation and retirement before reusing a
