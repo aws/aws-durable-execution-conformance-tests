@@ -1268,6 +1268,17 @@ def test_unused_profile_recovery_policy_matches_collection_and_adjudication_admi
         assert asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path)) == []
 
 
+def test_public_collection_refuses_the_shared_catalog_without_an_sdk_suite(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+
+    # A valid catalog plan: without the guard, the factory would run after the claim.
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(TypeError, match="SDK-owned suite"):
+        asyncio.run(collect_and_adjudicate(manifest(), audit_dir=tmp_path, suite=None, adapter_factory=load_adapter))  # type: ignore[arg-type]
+    load_adapter.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_collection_skips_the_adapter_when_every_case_is_not_implemented(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
