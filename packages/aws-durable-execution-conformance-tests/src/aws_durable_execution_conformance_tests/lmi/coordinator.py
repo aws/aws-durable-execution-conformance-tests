@@ -542,7 +542,11 @@ async def _bounded(
             "finishedAtMs": time.time() * 1000,
             "durationMs": (time.monotonic() - monotonic_started) * 1000,
         }
-        if not task.done():
+        if task.cancelled():
+            # A phase that ended in cancellation, even its own, may have left
+            # external work running, exactly like an interrupted one.
+            residual.append(task)
+        elif not task.done():
             task.cancel()
             residual.append(task)
             # Do not wait without a bound for a cancellation-resistant adapter.
@@ -619,9 +623,9 @@ async def run_scenarios(
         for case in scenarios
     }
     adapter_preparation_started: set[str] = set()
-    # Work that a cancelled case-phase adapter task started may still be running
-    # on any target, even after the task itself finished. A run with one reports
-    # no profile quiescent.
+    # Work that a timed-out or cancelled case-phase adapter task started may still
+    # be running on any target, even after the task itself finished. A run with
+    # one reports no profile quiescent.
     interrupted: list[list[asyncio.Task[Any]]] = []
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 

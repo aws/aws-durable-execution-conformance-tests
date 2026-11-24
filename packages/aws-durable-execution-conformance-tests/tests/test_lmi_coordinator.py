@@ -1265,10 +1265,18 @@ def test_adapter_operation_cancellation_does_not_abort_other_profiles():
                 await super().execute(context)
 
     other = replace(PROFILE, profile_id="other", resource_id="other-function")
-    results = run([case("cancelled"), case("healthy", profile=other)], CancellingAdapter(), profiles=(PROFILE, other))
+    adapter = CancellingAdapter()
+    scheduler = ResourceScheduler()
+    results = run(
+        [case("cancelled"), case("healthy", profile=other)], adapter, profiles=(PROFILE, other), scheduler=scheduler
+    )
     assert results[0].status == "INFRASTRUCTURE_ERROR"
     assert "RuntimeError: execution operation was cancelled" in results[0].errors
+    assert "A bounded phase was interrupted; residual work requires reconciliation" in results[0].errors
     assert results[1].status == "PASSED"
+    # The cancelled phase may have left work running, so no target is quiescent.
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert sorted(adapter.finished) == [("native-2", False), ("other", False)]
 
 
 def test_cancelled_drain_allows_case_retirement_and_finishes_profile():
