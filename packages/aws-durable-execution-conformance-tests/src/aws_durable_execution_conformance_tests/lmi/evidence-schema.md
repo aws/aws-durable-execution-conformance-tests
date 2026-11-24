@@ -391,7 +391,9 @@ may have multiple records for a case. The last record for the case contains its
 latest published attempts or outcome. A row with status `COLLECTED` awaits the
 verdict. After all targets are released or quarantined, the runner writes frozen
 observations and separate cleanup evidence to `collected-evidence.json`, reads
-the file back, and adjudicates it to produce the final report.
+the file back, and adjudicates it. `collect_and_adjudicate` returns the
+adjudicated results; the caller reports them with `build_report(manifest,
+results, suite=suite)` and `reporters.write_report`.
 
 A collection manifest may also set `scenarioConcurrency`, the most cases the run
 executes at once (default 8), and `budgets`, harness time limits in seconds:
@@ -429,20 +431,25 @@ wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
-`PASSED`. `collect_and_adjudicate` and a later `--collected-evidence` run judge
-the coordinator's captures with the same adjudication. Standalone
+`PASSED`. Collection and a later re-adjudication of its saved bundle judge the
+coordinator's captures with the same adjudication. Standalone
 evidence files listed in the manifest are validated as described below.
 
 ## Adjudication
 
-`collect_and_adjudicate` adjudicates its evidence as soon as it is collected. To
-adjudicate a saved bundle again without running any collection code, pass
-`--collected-evidence` to the CLI. This is a tool for debugging, for investigating a
-reported verdict, and for developing rules. It is not a verification step:
+`collect_and_adjudicate` adjudicates its evidence as soon as it is collected.
+A saved bundle can be adjudicated again without running any collection code.
+This is a tool for debugging, for investigating a reported verdict, and for
+developing rules. It is not a verification step. For the `lmi-lifecycle` suite,
+pass the bundle to the CLI with `--collected-evidence`:
 
 ```sh
 durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
 ```
+
+The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
+its bundle again in Python with `adjudicate_collected_evidence(manifest, bundle,
+suite=suite)` and reports it with `build_report(..., suite=suite)`.
 
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
 that it was not modified. Before recording `COLLECTED`, the coordinator checked

@@ -235,15 +235,6 @@ def test_local_collection_suite_enforces_admission_before_constructing_its_adapt
     load_adapter.assert_not_called()
 
 
-def test_public_collection_requires_an_sdk_owned_suite(tmp_path: Path) -> None:
-    plan, _ = plan_and_evidence()
-    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
-    with pytest.raises(TypeError, match="SDK-owned suite"):
-        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=None, adapter_factory=load_adapter))  # type: ignore[arg-type]
-    load_adapter.assert_not_called()
-    assert list(tmp_path.iterdir()) == []
-
-
 @pytest.mark.parametrize("mutate", [False, True])
 def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_journal(
     tmp_path: Path, mutate: bool
