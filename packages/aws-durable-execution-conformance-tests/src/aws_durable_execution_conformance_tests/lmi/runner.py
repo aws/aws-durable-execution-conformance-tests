@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections.abc import Callable, Mapping
@@ -122,6 +121,7 @@ def make_manifest(
 
 def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable, adapter_name: str) -> int:
     from aws_durable_execution_conformance_tests.lmi.app import (
+        _run_collection,
         build_report,
         collect_and_adjudicate,
         coverage_inventory,
@@ -153,7 +153,10 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         path = output / "manifest.json"
         save(path, plan)
         validated = load_manifest(path)
-        results = asyncio.run(
+        # Bound teardown like the CLI: the coordinator abandons adapter work
+        # that outlives its budget, and asyncio.run would wait for it without
+        # a bound, so a task that ignores cancellation would block the reports.
+        results = _run_collection(
             collect_and_adjudicate(
                 validated,
                 adapter_name,

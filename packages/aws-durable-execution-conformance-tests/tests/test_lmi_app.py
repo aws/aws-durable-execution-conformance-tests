@@ -849,6 +849,49 @@ def test_cli_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monk
     assert (output / "report.xml").is_file()
 
 
+def test_shared_runner_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monkeypatch, capsys):
+    from aws_durable_execution_conformance_tests.lmi import app, runner
+
+    cancellations: list[float] = []
+    leftovers: list[asyncio.Task[None]] = []
+
+    async def stubborn() -> None:
+        # Bounded so that a regression fails the timing check instead of hanging.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                cancellations.append(time.monotonic())
+
+    async def run_cases(*args: Any, **kwargs: Any) -> list[Any]:
+        # The coordinator abandons adapter work that outlives its harness budget.
+        leftovers.append(asyncio.get_running_loop().create_task(stubborn()))
+        return []
+
+    def plan(_deployment: Any, _coverage: str, _output: Path) -> dict[str, Any]:
+        return {**manifest(), "sdk": {"deployment": {"conformanceRevision": "conformance-commit"}}}
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
+    output = tmp_path / "out"
+    started = time.monotonic()
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        exit_code = runner.run({}, output, manifest_factory=plan, adapter_name="fixture:create")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, elapsed
+    assert exit_code == 1
+    assert cancellations, "the leftover task was never cancelled"
+    assert not leftovers[0].done()
+    assert "abandoned 1 task(s) that ignored cancellation" in capsys.readouterr().err
+    for coverage in runner.COVERAGE_PROFILES:
+        assert json.loads((output / coverage / "report.json").read_text())["ci"]["exit_code"] == 1
+        assert (output / coverage / "report.xml").is_file()
+
+
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_shutdown_cancels_tasks_started_while_others_unwind(monkeypatch, capsys, stubborn):
     from aws_durable_execution_conformance_tests.lmi import app
