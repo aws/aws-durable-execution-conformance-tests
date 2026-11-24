@@ -365,19 +365,26 @@ Collection runs the cases on AWS and records what happened. Adjudication then
 derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
-Write a manifest as described under [Manifest](#manifest), and use it with an
-adapter to run cases and collect evidence. The adapter module must be importable
-in the runner's Python environment. Its factory receives the admitted manifest
-and returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
-and `finish` for each profile that an active case uses, and `start`, `place`,
-`execute`, `collect`, `release`, and `retire` for each case. When every case is
-`not_implemented`, the runner does not load the adapter.
+Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
+manifest as described under
+[Manifest](#manifest). The CLI does not
+collect, so it never loads or runs collection code. Only SDK-owned suites
+collect through this API: the caller passes its `suite` definition and an
+`adapter_factory`. The factory receives a separate
+copy of the admitted manifest and returns an adapter implementing
+`lmi.coordinator.ScenarioAdapter`: `prepare` and `finish` for each profile that
+an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
+`retire` for each case. The factory is called only after the manifest is
+admitted and the audit directory is claimed, and never when every case is
+`not_implemented`.
 
-```sh
-durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-collection
+```python
+results = await collect_and_adjudicate(
+    manifest, audit_dir=Path("lmi-collection"), suite=suite, adapter_factory=create_adapter
+)
 ```
 
-Choose an empty output directory, and use a separate one for every run. The
+Choose an empty audit directory, and use a separate one for every run. The
 runner journals attempts to `attempts.jsonl` before dispatch and publishes case
 outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
 may have multiple records for a case. The last record for the case contains its
@@ -422,14 +429,14 @@ wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
-`PASSED`. A collection run with `--adapter` and a later `--collected-evidence`
-run judge the coordinator's captures with the same adjudication.
+`PASSED`. `collect_and_adjudicate` and a later `--collected-evidence` run judge
+the coordinator's captures with the same adjudication.
 
 ## Adjudication
 
-A collection run with `--adapter` adjudicates its evidence as soon as it is
-collected. To adjudicate a saved bundle again, without loading an adapter, pass
-`--collected-evidence`. This is a tool for debugging, for investigating a
+`collect_and_adjudicate` adjudicates its evidence as soon as it is collected. To
+adjudicate a saved bundle again without running any collection code, pass
+`--collected-evidence` to the CLI. This is a tool for debugging, for investigating a
 reported verdict, and for developing rules. It is not a verification step:
 
 ```sh

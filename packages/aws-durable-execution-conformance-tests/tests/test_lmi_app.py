@@ -10,6 +10,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -18,16 +19,15 @@ from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from runpy import run_path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.app import (
+    _collect_and_adjudicate,
     adjudicate_collected_evidence,
     build_report,
-    collect_and_adjudicate,
     load_manifest,
     run,
 )
@@ -40,6 +40,11 @@ from aws_durable_execution_conformance_tests.report import (
     ReportStatus,
     RunMetadata,
 )
+
+
+def _unused_adapter(manifest: dict[str, Any]) -> Any:
+    """Adapter factory for runs whose patched coordinator never calls the adapter."""
+    return object()
 
 
 def manifest():
@@ -321,12 +326,10 @@ def test_invalid_plan_is_rejected_before_loading_adapter(tmp_path, mutation):
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError):
         load_manifest(path)
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
-        load_adapter = adapter_imports.import_module
-        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
-        with pytest.raises(ValueError):
-            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-        load_adapter.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("Invalid manifest constructed an adapter"))
+    with pytest.raises(ValueError):
+        asyncio.run(_collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
 
 
 def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
@@ -415,9 +418,11 @@ def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reas
     path.write_text(json.dumps(plan))
     output = tmp_path / "out"
 
-    # Every case is a declared skip, so the runner never loads the adapter.
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text(json.dumps(coordinator_capture(plan, {})))
+
     with pytest.raises(SystemExit) as exc:
-        run(["--manifest", str(path), "--adapter", "unused_adapter:create", "--output", str(output)])
+        run(["--manifest", str(path), "--collected-evidence", str(collected), "--output", str(output)])
     assert exc.value.code == 1
     console = capsys.readouterr().out
     assert "Not implemented (declared SDK gap):" in console
@@ -500,9 +505,8 @@ def test_collection_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp
     from copy import deepcopy
     from pathlib import Path
     from runpy import run_path
-    from types import SimpleNamespace
 
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = fixtures["evidence"]()
@@ -572,8 +576,7 @@ def test_collection_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp
         assert received == plan
         return Adapter()
 
-    with patch.dict(sys.modules, {"fixture": SimpleNamespace(create=factory)}):
-        results = asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+    results = asyncio.run(_collect_and_adjudicate(plan, factory, audit_dir=tmp_path))
     expected_status = "PASSED" if failure is None else "INFRASTRUCTURE_ERROR"
     assert results[0]["status"] == expected_status, results
     assert finished == [failure in (None, "non-json")]
@@ -605,7 +608,7 @@ def test_collection_cli_uses_catalog_scheduling_and_persists_before_dispatch(tmp
         assert json.loads(_dump_json(adjudicate_collected_evidence(plan, captured))) == json.loads(_dump_json(results))
 
 
-def test_collection_cli_round_trips_through_collected_evidence(tmp_path, capsys):
+def test_collection_round_trips_through_cli_adjudication(tmp_path, capsys):
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
     value = fixtures["evidence"]()
     fixtures["complete_sdk_dispatches"](value)
@@ -650,9 +653,10 @@ def test_collection_cli_round_trips_through_collected_evidence(tmp_path, capsys)
             context.evidence["retirement"] = deepcopy(value["retirement"])
             return True
 
-    adapters = {"fixture": SimpleNamespace(create=lambda received: Adapter())}
-    with patch.dict(sys.modules, adapters), pytest.raises(SystemExit) as collected:
-        run(["--manifest", str(source), "--adapter", "fixture:create", "--output", str(collection)])
+    from aws_durable_execution_conformance_tests.lmi.app import _dump_json
+
+    admitted = load_manifest(source)
+    collected = asyncio.run(_collect_and_adjudicate(admitted, lambda received: Adapter(), audit_dir=collection))
     with pytest.raises(SystemExit) as adjudicated:
         run(
             [
@@ -666,13 +670,14 @@ def test_collection_cli_round_trips_through_collected_evidence(tmp_path, capsys)
         )
     capsys.readouterr()
 
-    outputs = {"attempts.jsonl", "results.jsonl", "collected-evidence.json", "evidence.json", "coverage.json"}
-    assert outputs | {"manifest.json", "report.json", "report.xml"} <= {path.name for path in collection.iterdir()}
-    results = json.loads((collection / "evidence.json").read_text())
+    journals = {"attempts.jsonl", "results.jsonl", "collected-evidence.json"}
+    assert journals | {"manifest.json"} <= {path.name for path in collection.iterdir()}
+    results = json.loads(_dump_json(collected))
     assert [row["status"] for row in results] == ["PASSED", "NOT_IMPLEMENTED"], results
+    # Replaying the saved bundle through the CLI reaches the same verdicts.
     assert json.loads((adjudication / "evidence.json").read_text()) == results
-    assert not outputs & {path.name for path in adjudication.iterdir()} - {"evidence.json", "coverage.json"}
-    assert adjudicated.value.code == collected.value.code
+    assert not journals & {path.name for path in adjudication.iterdir()}
+    assert adjudicated.value.code == build_report(admitted, collected).exit_code()
 
 
 @pytest.mark.parametrize("rollback_fails", [False, True])
@@ -787,7 +792,7 @@ def test_collection_persists_the_manifest_before_loading_the_adapter(tmp_path, m
         events.append(("fsync", os.fstat(descriptor).st_ino))
         real_fsync(descriptor)
 
-    def create(received: Any) -> object:
+    def create(received: Any) -> Any:
         events.append(("adapter", None))
         return object()
 
@@ -796,18 +801,15 @@ def test_collection_persists_the_manifest_before_loading_the_adapter(tmp_path, m
 
     monkeypatch.setattr(app.os, "fsync", fsync)
     monkeypatch.setattr(app, "_sync_directory", lambda path: events.append(("directory", path)))
-    with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=create)}),
-        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
-    ):
-        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+    with patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases):
+        asyncio.run(_collect_and_adjudicate(plan, create, audit_dir=tmp_path))
     loaded = events.index(("adapter", None))
     assert ("fsync", manifest_path.stat().st_ino) in events[:loaded], events
     synced = events.index(("fsync", manifest_path.stat().st_ino))
     assert ("directory", tmp_path) in events[synced:loaded], events
 
 
-def test_cli_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monkeypatch, capsys):
+def test_collection_returns_even_when_leftover_work_ignores_cancellation(tmp_path, monkeypatch, capsys):
     from aws_durable_execution_conformance_tests.lmi import app
 
     cancellations: list[float] = []
@@ -828,26 +830,102 @@ def test_cli_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monk
         return []
 
     monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
-    source = tmp_path / "manifest.json"
-    source.write_text(json.dumps(manifest()))
     output = tmp_path / "out"
     started = time.monotonic()
-    with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
-        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
-        pytest.raises(SystemExit) as exc,
-    ):
-        run(["--manifest", str(source), "--adapter", "fixture:create", "--output", str(output)])
+    with patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases):
+        results = app._run_collection(app._collect_and_adjudicate(manifest(), _unused_adapter, audit_dir=output))
     elapsed = time.monotonic() - started
 
     assert elapsed < 5, elapsed
-    assert exc.value.code == 1
     # Cancelled once by the drain, then abandoned; never re-cancelled every round.
     assert len(cancellations) == 1, cancellations
     assert not leftovers[0].done()
     assert "abandoned 1 task(s) that ignored cancellation" in capsys.readouterr().err
-    assert json.loads((output / "report.json").read_text())["ci"]["exit_code"] == 1
-    assert (output / "report.xml").is_file()
+    # The run still captures and adjudicates, so it can still be reported.
+    assert results == []
+    assert json.loads((output / "collected-evidence.json").read_text()) == []
+    assert build_report(manifest(), results).exit_code() == 1
+
+
+_BLOCKED_WORKER_CLI = """
+import sys
+import threading
+
+from aws_durable_execution_conformance_tests.lmi import app
+
+never = threading.Event()
+mode = sys.argv.pop(1)
+adjudicate = app.adjudicate_collected_evidence
+
+
+def blocking_adjudication(manifest, collected, **kwargs):
+    # Work this run started that never returns, holding a non-daemon thread.
+    threading.Thread(target=never.wait, name="blocked-worker").start()
+    if mode == "argument-error":
+        raise OSError("disk gone")
+    if mode == "crash":
+        raise RuntimeError("adjudication crashed")
+    return adjudicate(manifest, collected, **kwargs)
+
+
+app.adjudicate_collected_evidence = blocking_adjudication
+app.run(sys.argv[1:])
+"""
+
+
+@pytest.mark.parametrize(
+    ("mode", "code", "message"),
+    [("report", 1, "RESULTS:"), ("argument-error", 2, "disk gone"), ("crash", 1, "RuntimeError: adjudication crashed")],
+)
+def test_cli_exits_even_when_a_worker_thread_stays_blocked(tmp_path, mode, code, message):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
+    output = tmp_path / "out"
+    started = time.monotonic()
+    # Without a bounded exit, interpreter shutdown joins the worker forever.
+    arguments = [mode, "--manifest", str(source), "--collected-evidence", str(collected), "--output", str(output)]
+    completed = subprocess.run(
+        [sys.executable, "-c", _BLOCKED_WORKER_CLI, *arguments],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+        timeout=60,
+        check=False,
+    )
+    assert time.monotonic() - started < 30
+    assert completed.returncode == code, completed.stderr
+    assert "exiting without waiting for still-running threads: blocked-worker" in completed.stderr, completed.stderr
+    # The console report goes to stdout, which a pipe buffers until it is flushed.
+    assert message in (completed.stdout if mode == "report" else completed.stderr)
+    if mode == "report":
+        assert json.loads((output / "report.json").read_text())["ci"]["exit_code"] == 1
+        assert (output / "report.xml").is_file()
+
+
+@pytest.mark.parametrize("thread", ["none", "finished"])
+def test_cli_exit_is_unchanged_without_blocked_threads(tmp_path, monkeypatch, thread):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    adjudicate = app.adjudicate_collected_evidence
+
+    def adjudication(manifest: Any, collected: Any, **kwargs: Any) -> Any:
+        if thread == "finished":
+            worker = threading.Thread(target=lambda: None)
+            worker.start()
+            worker.join()
+        return adjudicate(manifest, collected, **kwargs)
+
+    monkeypatch.setattr(app, "adjudicate_collected_evidence", adjudication)
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
+    # The autouse guard fails the test if the run would end the process.
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(source), "--collected-evidence", str(collected), "--output", str(tmp_path / "out")])
+    assert exc.value.code == 1
 
 
 @pytest.mark.parametrize("stubborn", [False, True])
@@ -1015,8 +1093,7 @@ def test_failed_journal_directory_sync_aborts_the_append(tmp_path, monkeypatch):
         app._append_audit(tmp_path / "attempts.jsonl", {"first": True})
 
 
-@pytest.mark.parametrize("mode", ["collection", "adjudication"])
-def test_every_cli_mode_claims_the_output_directory_exclusively(tmp_path, monkeypatch, capsys, mode):
+def test_adjudication_claims_the_output_directory_exclusively(tmp_path, monkeypatch, capsys):
     source = tmp_path / "manifest.json"
     source.write_text(json.dumps(manifest()))
     output = tmp_path / "out"
@@ -1025,16 +1102,15 @@ def test_every_cli_mode_claims_the_output_directory_exclusively(tmp_path, monkey
     (output / "manifest.json").write_text(json.dumps(manifest()) + "\n")
     listing = Path.iterdir
     monkeypatch.setattr(Path, "iterdir", lambda path: iter(()) if path == output else listing(path))
-    selected = ["--adapter", "unused_module:factory"] if mode == "collection" else ["--collected-evidence", str(source)]
     with pytest.raises(SystemExit) as error:
-        run(["--manifest", str(source), "--output", str(output), *selected])
+        run(["--manifest", str(source), "--output", str(output), "--collected-evidence", str(source)])
     assert error.value.code == 2
     assert "manifest.json" in capsys.readouterr().err
     assert sorted(path.name for path in listing(output)) == ["manifest.json"]
 
 
 def test_collection_circular_case_evidence_does_not_abort_other_reports(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
     from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
 
     cyclic: list[Any] = []
@@ -1061,10 +1137,9 @@ def test_collection_circular_case_evidence_does_not_abort_other_reports(tmp_path
     plan = manifest()
     plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
     with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
     ):
-        results = asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+        results = asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
     assert [result["status"] for result in results] == ["INFRASTRUCTURE_ERROR", "INCOMPLETE_EVIDENCE"]
     assert "Could not serialize case evidence" in results[0]["errors"][0]
     rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
@@ -1074,9 +1149,8 @@ def test_collection_circular_case_evidence_does_not_abort_other_reports(tmp_path
 def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
     import asyncio
     from dataclasses import dataclass
-    from types import SimpleNamespace
 
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     @dataclass
     class Outcome:
@@ -1095,11 +1169,10 @@ def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
     plan = manifest()
     plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
     with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
         pytest.raises(asyncio.CancelledError),
     ):
-        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+        asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
     # Cases emitted before the cancellation still get adjudicated final rows.
     audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
     final = audit[-2:]
@@ -1111,7 +1184,7 @@ def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
 
 
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     async def cancelled(*args, **kwargs):
         raise asyncio.CancelledError
@@ -1120,11 +1193,10 @@ def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_pa
     skipped = dict(plan["scenarios"][1], not_implemented="skip reason")
     plan["scenarios"] = [plan["scenarios"][0], skipped]
     with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=cancelled),
         pytest.raises(asyncio.CancelledError),
     ):
-        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+        asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
     assert [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()] == [
         {
             "case_id": skipped["case_id"],
@@ -1136,13 +1208,32 @@ def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_pa
     ]
 
 
-def test_empty_adapter_option_is_rejected(tmp_path, capsys):
+@pytest.mark.parametrize("adapter", ["fixture:create", ""])
+def test_cli_does_not_accept_an_adapter(tmp_path, capsys, adapter):
     source = tmp_path / "manifest.json"
     source.write_text(json.dumps(manifest()))
-    with pytest.raises(SystemExit) as error:
-        run(["--manifest", str(source), "--output", str(tmp_path / "out"), "--adapter", ""])
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.adjudicate_collected_evidence") as adjudicate,
+        pytest.raises(SystemExit) as error,
+    ):
+        run(
+            [
+                "--manifest",
+                str(source),
+                "--collected-evidence",
+                str(collected),
+                "--output",
+                str(tmp_path / "out"),
+                "--adapter",
+                adapter,
+            ]
+        )
     assert error.value.code == 2
-    assert "--adapter must be a local Python module:factory" in capsys.readouterr().err
+    assert "unrecognized arguments: --adapter" in capsys.readouterr().err
+    adjudicate.assert_not_called()
+    assert not (tmp_path / "out").exists()
 
 
 def test_cli_requires_an_evidence_source(tmp_path, capsys):
@@ -1151,13 +1242,13 @@ def test_cli_requires_an_evidence_source(tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
         run(["--manifest", str(source), "--output", str(tmp_path / "out")])
     assert error.value.code == 2
-    assert "one of the arguments --collected-evidence --adapter is required" in capsys.readouterr().err
+    assert "the following arguments are required: --collected-evidence" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize("policy", [None, "reuse-worker", "replace-worker", "reuse"])
 def test_unused_profile_recovery_policy_matches_collection_and_adjudication_admission(tmp_path, policy):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     plan = manifest()
     plan["scenarios"] = []
@@ -1168,20 +1259,20 @@ def test_unused_profile_recovery_policy_matches_collection_and_adjudication_admi
         with pytest.raises(ValueError, match="Unknown recovery policy"):
             load_manifest(source)
         with pytest.raises(ValueError, match="Unknown recovery policy"):
-            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+            asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
     else:
         assert load_manifest(source) == plan
-        assert asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path)) == []
+        assert asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path)) == []
 
 
 def test_collection_skips_the_adapter_when_every_case_is_not_implemented(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     plan = manifest()
     plan["scenarios"] = [dict(row, not_implemented="fixture skip") for row in plan["scenarios"]]
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports:
-        results = asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    results = asyncio.run(_collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
     cases = [row["case_id"] for row in plan["scenarios"]]
     assert [(row["case_id"], row["status"]) for row in results] == [(case, "NOT_IMPLEMENTED") for case in cases]
     journal = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
@@ -1264,11 +1355,10 @@ def test_standard_deadline_cases_require_predeclared_budgets(tmp_path, requireme
     path.write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
         load_manifest(path)
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
-        load_adapter = adapter_imports.import_module
-        with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
-            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-        load_adapter.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(ValueError, match="scenario must declare behavior budgets"):
+        asyncio.run(_collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
@@ -1396,8 +1486,7 @@ def test_standard_collection_timing_budgets_preserve_the_admitted_snapshot(tmp_p
             received["scenarios"][0]["behavior_budgets"].update(value["budgets"])
         return Adapter()
 
-    with patch.dict("sys.modules", {"fixture": SimpleNamespace(create=factory)}):
-        result = asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))[0]
+    result = asyncio.run(_collect_and_adjudicate(plan, factory, audit_dir=tmp_path))[0]
     assert plan == original
     if source == "matching":
         assert result["status"] == "PASSED", result
@@ -1407,22 +1496,20 @@ def test_standard_collection_timing_budgets_preserve_the_admitted_snapshot(tmp_p
 
 
 def test_collection_audit_directory_is_claimed_before_adapter_load(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     (tmp_path / "collected-evidence.json").write_text("previous capture")
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
-        pytest.raises(ValueError, match="already contains lifecycle evidence"),
-    ):
-        asyncio.run(collect_and_adjudicate(manifest(), "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(ValueError, match="already contains lifecycle evidence"):
+        asyncio.run(_collect_and_adjudicate(manifest(), load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
     assert (tmp_path / "collected-evidence.json").read_text() == "previous capture"
     assert not (tmp_path / "attempts.jsonl").exists()
 
 
 @pytest.mark.parametrize("existing", ["different-manifest", "earlier-report"])
 def test_collection_refuses_a_used_directory_and_releases_its_claim(tmp_path, existing):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     plan = manifest()
     if existing == "different-manifest":
@@ -1435,12 +1522,10 @@ def test_collection_refuses_a_used_directory_and_releases_its_claim(tmp_path, ex
         (tmp_path / "evidence.json").write_text("[]")
         expected = "already contains lifecycle evidence"
     before = {path.name: path.read_text() for path in tmp_path.iterdir()}
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
-        pytest.raises(ValueError, match=expected),
-    ):
-        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(ValueError, match=expected):
+        asyncio.run(_collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
     assert {path.name: path.read_text() for path in tmp_path.iterdir()} == before
 
 
@@ -1492,12 +1577,10 @@ def test_collection_leaves_no_partial_manifest(tmp_path, monkeypatch, failure):
 
         monkeypatch.setattr(Path, "open", open_failing)
         expected = OSError
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
-        pytest.raises(expected),
-    ):
-        asyncio.run(app.collect_and_adjudicate(manifest(), "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(expected):
+        asyncio.run(app._collect_and_adjudicate(manifest(), load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
     assert list(tmp_path.iterdir()) == []
 
 
@@ -1508,30 +1591,25 @@ def test_failed_sync_of_a_supplied_manifest_releases_the_claim(tmp_path, monkeyp
     supplied = app._dump_json(app._validate_manifest(deepcopy(plan))) + "\n"
     (tmp_path / "manifest.json").write_text(supplied)
     _fail_file_fsync(monkeypatch, app)
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
-        pytest.raises(OSError, match="fsync failed"),
-    ):
-        asyncio.run(app.collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(OSError, match="fsync failed"):
+        asyncio.run(app._collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_not_called()
     # The caller's manifest stays; the run's output claim does not.
     assert [path.name for path in tmp_path.iterdir()] == ["manifest.json"]
     assert (tmp_path / "manifest.json").read_text() == supplied
 
 
 def test_collection_accepts_caller_owned_artifacts_beside_its_manifest(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+    from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
     plan = manifest()
     (tmp_path / "manifest.json").write_text(json.dumps(plan))
     (tmp_path / "sdk-artifacts").mkdir()
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
-        pytest.raises(RuntimeError, match="adapter loaded"),
-    ):
-        imports.import_module.side_effect = RuntimeError("adapter loaded")
-        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-    imports.import_module.assert_called_once()
+    load_adapter = MagicMock(side_effect=RuntimeError("adapter constructed"))
+    with pytest.raises(RuntimeError, match="adapter constructed"):
+        asyncio.run(_collect_and_adjudicate(plan, load_adapter, audit_dir=tmp_path))
+    load_adapter.assert_called_once()
 
 
 def test_adjudication_validates_manifest_admission():

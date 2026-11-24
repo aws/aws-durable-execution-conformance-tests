@@ -9,9 +9,9 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from runpy import run_path
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -233,19 +233,26 @@ def test_caller_owned_budget_binding_preserves_json_types(
         ("roles", ["victim"], "required cohort roles"),
     ],
 )
-def test_local_collection_suite_enforces_admission_before_adapter_import(
+def test_local_collection_suite_enforces_admission_before_constructing_its_adapter(
     tmp_path: Path, field: str, value: Any, reason: str
 ) -> None:
     plan, _ = plan_and_evidence()
     suite = definition()
     suite = replace(suite, cases=(replace(suite.cases[0], exclusive=True),))
     plan["scenarios"][0][field] = value
-    with patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as adapter_imports:
-        load_adapter = adapter_imports.import_module
-        load_adapter.side_effect = AssertionError("Invalid manifest imported an adapter")
-        with pytest.raises(ValueError, match=reason):
-            asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path, suite=suite))
-        load_adapter.assert_not_called()
+    load_adapter = MagicMock(side_effect=AssertionError("Invalid manifest constructed an adapter"))
+    with pytest.raises(ValueError, match=reason):
+        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=load_adapter))
+    load_adapter.assert_not_called()
+
+
+def test_public_collection_requires_an_sdk_owned_suite(tmp_path: Path) -> None:
+    plan, _ = plan_and_evidence()
+    load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
+    with pytest.raises(TypeError, match="SDK-owned suite"):
+        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=None, adapter_factory=load_adapter))  # type: ignore[arg-type]
+    load_adapter.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("mutate", [False, True])
@@ -291,15 +298,12 @@ def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_jo
         manifest["scenarios"][0]["behavior_budgets"]["settleMs"] = 10
         return Adapter()
 
-    with patch.dict("sys.modules", {"local_suite_adapter": SimpleNamespace(create=factory)}):
-        suite = definition()
-        suite = replace(
-            suite,
-            requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
-        )
-        results = asyncio.run(
-            collect_and_adjudicate(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite)
-        )
+    suite = definition()
+    suite = replace(
+        suite,
+        requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
+    )
+    results = asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=factory))
     assert plan == original
     if mutate:
         assert results[0]["status"] != "PASSED"
@@ -358,8 +362,9 @@ def test_local_collection_suite_declares_service_role_transitions(tmp_path: Path
         async def retire(self, context: Any) -> bool:
             return True
 
-    with patch.dict("sys.modules", {"local_suite_adapter": SimpleNamespace(create=lambda manifest: Adapter())}):
-        asyncio.run(collect_and_adjudicate(plan, "local_suite_adapter:create", audit_dir=tmp_path, suite=suite))
+    asyncio.run(
+        collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=lambda manifest: Adapter())
+    )
 
     journal = [json.loads(line) for line in (tmp_path / "attempts.jsonl").read_text().splitlines()]
     discovered = [row for entry in journal for row in entry["attempts"] if "discoveredAtMs" in row]
