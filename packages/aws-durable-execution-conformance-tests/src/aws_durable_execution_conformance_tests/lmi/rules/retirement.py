@@ -306,8 +306,8 @@ def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
 def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launches: bool = False) -> list[str]:
     """Audit a separate post-cleanup snapshot without accepting its behavior.
 
-    Failed cases may lack mandatory scenario roles, but every actual launch must
-    still be accounted for by the coordinator. This audit reuses common source
+    Failed cases may lack mandatory scenario roles, but every launch in the
+    snapshot must still settle. This audit reuses common source
     ownership, history shape and resource-inventory checks, then independently
     requires actual wrapper/task/request completion. Neither expected
     business outcomes nor cleanup-time recovery can turn the failed case green.

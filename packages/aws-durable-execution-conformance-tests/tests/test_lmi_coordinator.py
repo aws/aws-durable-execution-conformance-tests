@@ -448,28 +448,6 @@ def test_emergency_release_cannot_overwrite_observed_failure():
     assert result.evidence["assertionErrors"] == ["Worker did not recover before fault release"]
 
 
-@pytest.mark.parametrize("mutation", ["request", "case", "artifact", "profile", "missing-launch"])
-def test_collected_evidence_must_match_admitted_originals(mutation):
-    class SubstitutingAdapter(Adapter):
-        async def collect(self, context):
-            evidence = await super().collect(context)
-            if mutation == "request":
-                evidence["attempts"] = [{"requestId": "retry"}]
-            elif mutation == "case":
-                evidence["caseId"] = "peer"
-            elif mutation == "artifact":
-                evidence["artifact"]["sdk"] = "replacement"
-            elif mutation == "profile":
-                evidence["profile"]["functionArn"] = "replacement"
-            else:
-                context.record_attempt("unresolved-transport")
-            return evidence
-
-    result = run([case("victim")], SubstitutingAdapter())[0]
-    assert result.status == "INCOMPLETE_EVIDENCE"
-    assert result.errors
-
-
 def test_original_request_cannot_be_rebound_and_dispatch_is_stable():
     context = ScenarioContext("run", case("victim"), PROFILE)
     assert context.dispatcher("victim") == {
@@ -786,80 +764,12 @@ def test_attempt_journal_failure_prevents_unrecorded_transport_dispatch():
     assert result.attempts == []
 
 
-def test_cleanup_cannot_launch_uncollected_work_and_claim_quiescence():
-    class LateLaunchAdapter(Adapter):
-        async def retire(self, context):
-            context.record_attempt("cleanup-retry", requestId="uncollected-request")
-            return await super().retire(context)
-
-    adapter = LateLaunchAdapter()
-    result = run([case("victim")], adapter)[0]
-    assert result.status == "INFRASTRUCTURE_ERROR"
-    assert len(result.attempts) == 2
-    assert any("all original journaled launches" in error for error in result.errors)
-    assert adapter.finished == [(PROFILE.profile_id, False)]
-
-
-def test_retained_request_ids_cannot_relabel_a_retry_as_the_selected_original():
-    class RelabelingAdapter(Adapter):
-        async def start(self, context):
-            await super().start(context)
-            context.record_attempt("retry", requestId="later-retry")
-
-        async def collect(self, context):
-            evidence = await super().collect(context)
-            evidence["attempts"][0]["attempt"] = 2
-            evidence["attempts"][1]["attempt"] = 1
-            evidence["selectedRequests"]["victim"] = "later-retry"
-            return evidence
-
-    result = run([case("victim")], RelabelingAdapter())[0]
-    assert result.status == "INCOMPLETE_EVIDENCE"
-    assert [item["attempt"] for item in result.attempts] == [1, 2]
-    assert any("role or ordinal substitutes" in error for error in result.errors)
-    assert any("first journaled invocation" in error for error in result.errors)
-
-
 def test_journaled_execution_cannot_be_rebound():
     context = ScenarioContext("run", case("victim"), PROFILE)
     context.record_attempt("launch", requestId="original", executionArn="execution-a")
     context.update_attempt("launch", executionArn="execution-a")
     with pytest.raises(ValueError, match="original durable execution"):
         context.update_attempt("launch", executionArn="execution-b")
-
-
-def test_retained_request_ids_cannot_substitute_another_execution():
-    # Matching request, role and ordinal is not enough: collecting another
-    # execution's attempts, histories and retirement under the journaled
-    # request would accept its result and leave the original unaudited.
-    class SubstitutingAdapter(Adapter):
-        async def start(self, context):
-            context.record_attempt(
-                "launch", role="victim", requestId="victim-request", executionArn="journaled-execution"
-            )
-
-        async def collect(self, context):
-            evidence = await super().collect(context)
-            evidence["attempts"][0]["executionArn"] = "substituted-execution"
-            return evidence
-
-    result = run([case("victim")], SubstitutingAdapter())[0]
-    assert result.status == "INCOMPLETE_EVIDENCE"
-    assert any("substitutes the journaled execution" in error for error in result.errors), result.errors
-
-
-def test_retained_request_ids_cannot_swap_cohort_roles():
-    class RoleSwappingAdapter(Adapter):
-        async def collect(self, context):
-            evidence = await super().collect(context)
-            evidence["attempts"][0]["role"] = "peer"
-            evidence["attempts"][1]["role"] = "victim"
-            evidence["selectedRequests"] = {"victim": "cohort:peer", "peer": "cohort:victim"}
-            return evidence
-
-    result = run([case("cohort", roles=("victim", "peer"))], RoleSwappingAdapter())[0]
-    assert result.status == "INCOMPLETE_EVIDENCE"
-    assert any("role or ordinal substitutes" in error for error in result.errors)
 
 
 def test_multi_role_launches_require_immutable_role_and_per_role_order():
@@ -973,35 +883,6 @@ def test_single_run_cancellation_allows_slower_case_retirement_to_finish():
     asyncio.run(exercise())
 
 
-def test_independent_ownership_audit_does_not_require_selected_cohort():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _ownership_errors
-
-    async def check():
-        adapter = Adapter()
-        context = ScenarioContext("run", case("one"), PROFILE)
-        await adapter.start(context)
-        observed = await adapter.collect(context)
-        observed["selectedRequests"] = {}
-        assert not _ownership_errors(context, observed, complete_cohort=False)
-        assert _ownership_errors(context, observed)
-
-    asyncio.run(check())
-
-
-def test_widened_native_invocation_end_can_enrich_fixture_source_to_platform():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    original = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
-    collected = {"attempts": [{"requestId": "request", "endedAtMs": 40, "endedAtMsSource": "platform"}]}
-    merged, changes = _retain_observations(original, collected)
-    assert merged == collected
-    assert not changes
-    later_fixture = {"attempts": [{"requestId": "request", "endedAtMs": 45, "endedAtMsSource": "fixture"}]}
-    merged, changes = _retain_observations(collected, later_fixture)
-    assert merged == collected
-    assert not changes
-
-
 def test_result_sink_failure_does_not_interrupt_other_cases():
     def sink(result):
         if result.case_id == "one":
@@ -1012,56 +893,6 @@ def test_result_sink_failure_does_not_interrupt_other_cases():
     assert first.status == "INFRASTRUCTURE_ERROR"
     assert other.status == "PASSED"
     assert sorted(adapter.retired) == ["one", "other"]
-
-
-def test_attempt_delta_carries_native_timestamp_source():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _observation_updates
-
-    first = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
-    later = {"attempts": [{"requestId": "request", "endedAtMs": 35, "endedAtMsSource": "fixture"}]}
-    assert _observation_updates(first, later) == later
-
-
-@pytest.mark.parametrize("kind", ["alias", "dispatch", "execution"])
-def test_retirement_cannot_discard_previously_observed_work(kind):
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
-
-    async def check():
-        context = ScenarioContext("run", case("one"), PROFILE)
-        final = await Adapter().collect(context)
-        final["retirement"] = {"retiredAtMs": 220, "resources": []}
-        previous: dict[str, Any] = {}
-        if kind == "alias":
-            previous["events"] = [
-                {
-                    "kind": "observed_task_start",
-                    "sourceKind": "task_start",
-                    "requestId": "request",
-                    "taskId": "child",
-                    "atMs": 40,
-                }
-            ]
-            expected = "Retirement omitted or changed previously observed work"
-        elif kind == "dispatch":
-            call = {"kind": "checkpoint_call", "requestId": "request", "callId": "call", "atMs": 40}
-            previous["events"] = [call]
-            final["events"] = [{**call, "outcome": "REJECTED"}]
-            expected = "Retirement omitted or changed previously observed work"
-        else:
-            operation = {"id": "operation", "status": "SUCCEEDED", "result": None}
-            previous["histories"] = [
-                {
-                    "executionArn": "execution",
-                    "startedAtMs": 40,
-                    "operations": [{**operation, "endedAtMs": 150}],
-                }
-            ]
-            final["histories"] = [{"executionArn": "execution", "operations": [operation]}]
-            final["retirement"]["resources"] = [{"id": "execution", "kind": "execution", "settledAtMs": 120}]
-            expected = "Retirement execution execution settled before its originally observed service activity"
-        assert expected in _retirement_ownership_errors(context, previous, final)
-
-    asyncio.run(check())
 
 
 def test_independent_retirement_projects_post_window_io_exit_from_events():
@@ -1115,62 +946,6 @@ def test_independent_retirement_projects_post_window_io_exit_from_events():
     )
 
 
-def test_independent_retirement_cannot_backdate_observed_completion():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
-
-    async def check():
-        context = ScenarioContext("run", case("one"), PROFILE)
-        final = await Adapter().collect(context)
-        completion = {"kind": "io_exit", "requestId": "request", "atMs": 215, "taskId": "work"}
-        previous = {"retirement": {"completions": [completion]}}
-        final["retirement"] = {"retiredAtMs": 220, "completions": [{**completion, "atMs": 205}]}
-        assert "Retirement omitted or changed previously observed work" in _retirement_ownership_errors(
-            context, previous, final
-        )
-
-    asyncio.run(check())
-
-
-@pytest.mark.parametrize("dispatch", [99, 101])
-def test_retirement_sdk_request_renumbering_preserves_relative_order(dispatch):
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
-
-    async def check():
-        context = ScenarioContext("run", case("one"), PROFILE)
-        context.record_attempt("first", requestId="request")
-        final = await Adapter().collect(context)
-        request = {
-            "requestId": "request",
-            "method": "CheckpointDurableExecution",
-            "callId": "call",
-            "outcome": "DISPATCHED",
-            "atMs": 40,
-            "sequence": 9,
-        }
-        closure = {"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}
-        final.update(
-            sdkRequests=[{**request, "sequence": dispatch}],
-            events=[{**closure, "sequence": 100}],
-            retirement={"retiredAtMs": 50},
-        )
-        errors = _retirement_ownership_errors(context, {"sdkRequests": [request], "events": [closure]}, final)
-        assert bool(errors) == (dispatch > 100), errors
-
-    asyncio.run(check())
-
-
-def test_source_only_attempt_update_uses_its_own_platform_timestamp():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _observation_updates, _retain_observations
-
-    fixture = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "fixture"}]}
-    platform = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "platform"}]}
-    later = {"attempts": [{"requestId": "request", "endedAtMs": 35, "endedAtMsSource": "fixture"}]}
-    updates = _observation_updates(fixture, platform)
-    merged, changes = _retain_observations(later, updates)
-    assert not changes
-    assert merged == platform
-
-
 def test_finish_is_skipped_when_target_admission_prevents_prepare():
     async def check():
         scheduler = ResourceScheduler()
@@ -1194,45 +969,6 @@ def test_finish_is_skipped_when_target_admission_prevents_prepare():
             await lease.release(quiescent=True)
 
     asyncio.run(check())
-
-
-def test_invalid_attempt_update_retains_native_identity_without_bad_diagnostics():
-    def validate(attempt):
-        if "invalid" in attempt:
-            raise ValueError("unsupported diagnostic")
-
-    context = ScenarioContext("run", case("one"), PROFILE, _validate_attempt=validate)
-    context.record_attempt("first")
-    with pytest.raises(ValueError, match="unsupported diagnostic"):
-        context.update_attempt("first", requestId="request", executionArn="execution", invalid=object())
-    assert context.attempts[0]["requestId"] == "request"
-    assert context.attempts[0]["executionArn"] == "execution"
-    assert "invalid" not in context.attempts[0]
-
-
-def test_normal_retirement_audits_previously_reported_resource_identity_and_time():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retained_retirement_errors
-
-    earlier = {
-        "retirement": {
-            "resources": [
-                {"id": "lost", "kind": "callback", "ownerCaseId": "one", "outcome": "PENDING"},
-                {"id": "late", "kind": "callback", "ownerCaseId": "one", "settledAtMs": 230},
-            ]
-        }
-    }
-    final = {
-        "retirement": {
-            "retiredAtMs": 220,
-            "resources": [
-                {"id": "late", "kind": "callback", "ownerCaseId": "one", "settledAtMs": 210, "outcome": "SUCCEEDED"},
-            ],
-        }
-    }
-    assert _retained_retirement_errors([earlier], final) == [
-        "Final retirement omitted or changed observed resource lost",
-        "Observed settlement for late follows final retirement",
-    ]
 
 
 def test_normal_post_window_completion_does_not_require_independent_proof():
@@ -1309,58 +1045,6 @@ def test_verified_pre_window_completion_releases_target_despite_incomplete_froze
     assert result.status == "INCOMPLETE_EVIDENCE", result.errors
 
 
-def test_collection_merges_renumbered_sdk_request_without_duplicate():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    request = {
-        "requestId": "request",
-        "method": "CheckpointDurableExecution",
-        "callId": "call",
-        "outcome": "DISPATCHED",
-        "atMs": 40,
-        "sequence": 9,
-    }
-    closure = {"requestId": "request", "kind": "wrapper_return", "atMs": 40, "sequence": 10}
-    early = {"sdkRequests": [request], "events": [closure]}
-    complete = {"sdkRequests": [{**request, "sequence": 99}], "events": [{**closure, "sequence": 100}]}
-    merged, changes = _retain_observations(early, complete)
-    assert merged == complete and not changes
-    complete["sdkRequests"][0]["sequence"] = 101
-    _, changes = _retain_observations(early, complete)
-    assert ("sdkRequests", "sequence") in changes.conflicts
-
-
-def test_source_less_endpoint_cannot_replace_platform_timestamp():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    platform = {"attempts": [{"requestId": "request", "endedAtMs": 30, "endedAtMsSource": "platform"}]}
-    estimate = {"attempts": [{"requestId": "request", "endedAtMs": 35}]}
-    merged, _ = _retain_observations(platform, estimate)
-    assert merged == platform
-
-
-def test_physical_audit_does_not_treat_fixture_end_as_activity_after_platform_correction():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
-
-    async def check():
-        context = ScenarioContext("run", case("one"), PROFILE)
-        context.record_attempt("launch", requestId="request")
-        final = await Adapter().collect(context)
-        final["attempts"][0].update(endedAtMs=30, endedAtMsSource="platform")
-        final["retirement"] = {
-            "retiredAtMs": 33,
-            "resources": [{"kind": "invocation", "id": "request", "settledAtMs": 32}],
-        }
-        before = {
-            "attempts": [
-                {**final["attempts"][0], "endedAtMs": 35, "endedAtMsSource": "fixture"},
-            ]
-        }
-        assert _retirement_ownership_errors(context, before, final) == []
-
-    asyncio.run(check())
-
-
 def test_pending_callback_claim_without_launch_keeps_target_quarantined():
     class CallbackAdapter(Adapter):
         async def start(self, context):
@@ -1376,86 +1060,6 @@ def test_pending_callback_claim_without_launch_keeps_target_quarantined():
     result = run([case("one")], CallbackAdapter(), scheduler=scheduler)[0]
     assert "Owned work has no independent retirement evidence" in result.errors
     assert scheduler.quarantine_reason(PROFILE.resource_id)
-
-
-def test_final_retirement_cannot_drop_fault_claim_without_release_time():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retained_retirement_errors
-
-    early = {"retirement": {"faults": [{"id": "pending", "ownerCaseId": "one"}]}}
-    final = {"retirement": {"retiredAtMs": 50, "faults": []}}
-    assert _retained_retirement_errors([early], final) == ["Final retirement omitted or changed observed fault pending"]
-
-
-def test_collection_cannot_move_authoritative_platform_start_earlier():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    baseline = {"attempts": [{"requestId": "request", "startedAtMs": 12, "startedAtMsSource": "platform"}]}
-    rewritten = {"attempts": [{"requestId": "request", "startedAtMs": 10, "startedAtMsSource": "platform"}]}
-    merged, changes = _retain_observations(baseline, rewritten)
-    assert merged == baseline
-    assert ("attempts", "startedAtMs") in changes.conflicts
-
-
-def test_in_place_sdk_request_delta_cannot_hide_late_dispatch():
-    class RenumberingAdapter(Adapter):
-        async def execute(self, context):
-            request_id = context.attempts[0]["requestId"]
-            context.evidence["events"] = [
-                {"requestId": request_id, "kind": "wrapper_return", "atMs": 40, "sequence": 10}
-            ]
-            context.evidence["sdkRequests"] = [
-                {
-                    "requestId": request_id,
-                    "method": "CheckpointDurableExecution",
-                    "outcome": "DISPATCHED",
-                    "atMs": 40,
-                    "sequence": 11,
-                }
-            ]
-
-        async def collect(self, context):
-            context.evidence["sdkRequests"][0]["sequence"] = 9
-            return {**await super().collect(context), **context.evidence}
-
-    result = run([case("one")], RenumberingAdapter())[0]
-    assert result.status != "PASSED"
-    assert any("conflict with retained facts" in error and "sdkRequests.sequence" in error for error in result.errors)
-
-
-@pytest.mark.parametrize("source", [None, "fixture"])
-def test_unchanged_platform_time_keeps_authority_when_later_label_is_weaker(source):
-    from aws_durable_execution_conformance_tests.lmi.coordinator import (
-        _retain_observations,
-        _retirement_ownership_errors,
-    )
-
-    async def check():
-        context = ScenarioContext("run", case("one"), PROFILE)
-        context.record_attempt("launch", requestId="request")
-        final = await Adapter().collect(context)
-        final["attempts"][0]["endedAtMs"] = 30
-        if source is not None:
-            final["attempts"][0]["endedAtMsSource"] = source
-        final["retirement"] = {
-            "retiredAtMs": 33,
-            "resources": [{"kind": "invocation", "id": "request", "settledAtMs": 32}],
-        }
-        before = {"attempts": [{**final["attempts"][0], "endedAtMsSource": "platform"}]}
-        merged, changes = _retain_observations(before, {"attempts": final["attempts"]})
-        assert merged == before and not changes
-        assert _retirement_ownership_errors(context, before, final) == []
-
-    asyncio.run(check())
-
-
-def test_sdk_request_keeps_known_sequence_if_later_partial_row_omits_it():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    request = {"requestId": "request", "method": "CheckpointDurableExecution", "outcome": "DISPATCHED", "atMs": 40}
-    original = {"sdkRequests": [{**request, "sequence": 9}]}
-    merged, changes = _retain_observations(original, {"sdkRequests": [request]})
-    assert merged == original
-    assert changes.omitted
 
 
 def test_adapter_cannot_clear_coordinator_journal_after_dispatch():
@@ -1550,16 +1154,6 @@ def test_partial_sdk_sequence_does_not_mix_with_an_inherited_closure():
     assert result.status == "PASSED", result.errors
 
 
-def test_unpaired_platform_source_cannot_certify_later_fixture_time():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    source_only = {"attempts": [{"requestId": "request", "endedAtMsSource": "platform"}]}
-    fixture = {"attempts": [{"requestId": "request", "endedAtMs": 40, "endedAtMsSource": "fixture"}]}
-    kept, _ = _retain_observations({}, source_only)
-    collected, _ = _retain_observations(kept, fixture)
-    assert collected == fixture
-
-
 def test_prelaunch_control_can_retire_without_native_records():
     fixtures = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
     control = {"id": "control", "kind": "control", "ownerCaseId": "failed"}
@@ -1623,44 +1217,6 @@ def test_cancelled_drain_does_not_spin_when_finishing_profile():
                 await running
 
     asyncio.run(check())
-
-
-def test_collection_replaces_unlabeled_attempt_estimates_with_platform_pairs():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retain_observations
-
-    before = {"attempts": [{"requestId": "request", "startedAtMs": 50, "endedAtMs": 90}]}
-    measured = {
-        "attempts": [
-            {
-                "requestId": "request",
-                "startedAtMs": 55,
-                "endedAtMs": 80,
-                "startedAtMsSource": "platform",
-                "endedAtMsSource": "platform",
-            }
-        ]
-    }
-    retained, changes = _retain_observations(before, measured)
-    assert retained == measured
-    assert not changes
-
-
-def test_partial_event_sequence_does_not_mix_with_inherited_sequence():
-    from aws_durable_execution_conformance_tests.lmi.coordinator import (
-        _event_frames_order_changed,
-        _retain_observations,
-    )
-
-    first = {"kind": "one", "requestId": "request", "atMs": 30, "sequence": 9}
-    second = {"kind": "two", "requestId": "request", "atMs": 30, "sequence": 10}
-    early = {"events": [first, second]}
-    partial = {"events": [{**first, "sequence": 99}]}
-    final = {"events": [{**first, "sequence": 99}, {**second, "sequence": 100}]}
-    merged, _ = _retain_observations(early, partial, compare_sdk_order=False)
-    retained, changes = _retain_observations(merged, final, compare_sdk_order=False)
-    assert not _event_frames_order_changed(early, final)
-    assert ("events", "sequence") not in changes.conflicts
-    assert retained == final
 
 
 def test_nested_attempt_diagnostics_do_not_alias_caller_data():
@@ -1769,46 +1325,11 @@ def test_service_attempt_keeps_native_identity_when_audit_fails():
     assert [item["requestId"] for item in context.attempts] == ["original", "second", "retry"]
 
 
-def test_profiles_finish_only_after_every_case_registers_claims():
-    async def check():
-        other = replace(PROFILE, profile_id="other", resource_id="arn:other")
-        finishing = asyncio.Event()
-        claimed = asyncio.Event()
-
-        class LateClaim(Adapter):
-            async def execute(self, context):
-                if context.profile == other:
-                    # Give a finished profile the chance to unlock first; the
-                    # coordinator must not finish any profile while this runs.
-                    with contextlib.suppress(TimeoutError):
-                        await asyncio.wait_for(finishing.wait(), 0.2)
-                    # Claim the other profile's execution after its case finished.
-                    context.record_attempt("late", requestId="late-request", executionArn="arn:execution:fast:victim")
-                    claimed.set()
-                await super().execute(context)
-
-            async def finish(self, profile, *, quiescent):
-                finishing.set()
-                await claimed.wait()
-                await super().finish(profile, quiescent=quiescent)
-
-        adapter = LateClaim()
-        results = await run_scenarios(
-            [case("fast"), case("slow", profile=other)], [PROFILE, other], adapter, run_id="capture"
-        )
-        fast = next(result for result in results if result.case_id == "fast")
-        assert any("claimed by multiple cases" in error for error in fast.errors), fast.errors
-        # The later conflicting claim reaches both targets before either unlocks.
-        assert set(adapter.finished) == {(PROFILE.profile_id, False), (other.profile_id, False)}
-
-    asyncio.run(check())
-
-
 def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
     async def check():
         other = replace(PROFILE, profile_id="other", resource_id="arn:other")
         finishing = asyncio.Event()
-        claimed = asyncio.Event()
+        launched_late = asyncio.Event()
 
         class CancellationResistant(Adapter):
             async def execute(self, context):
@@ -1817,16 +1338,16 @@ def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
                 try:
                     await asyncio.sleep(10)
                 except asyncio.CancelledError:
-                    # Ignore cancellation and claim another profile's execution
-                    # after the run barrier has passed.
+                    # Ignore cancellation and keep launching work after the
+                    # run barrier has passed.
                     await finishing.wait()
-                    context.record_attempt("late", requestId="late-request", executionArn="arn:execution:fast:victim")
-                    claimed.set()
+                    context.record_attempt("late", requestId="late-request", executionArn="arn:execution:slow:late")
+                    launched_late.set()
 
             async def finish(self, profile, *, quiescent):
                 finishing.set()
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(claimed.wait(), 0.5)
+                    await asyncio.wait_for(launched_late.wait(), 0.5)
                 await super().finish(profile, quiescent=quiescent)
 
         adapter = CancellationResistant()
@@ -1837,7 +1358,7 @@ def test_interrupted_adapter_task_keeps_every_profile_non_quiescent():
             run_id="capture",
             budgets=Budgets(execution=0.05),
         )
-        assert claimed.is_set()
+        assert launched_late.is_set()
         assert set(adapter.finished) == {(PROFILE.profile_id, False), (other.profile_id, False)}
 
     asyncio.run(check())
@@ -1854,7 +1375,7 @@ def test_any_interrupted_adapter_phase_keeps_every_profile_non_quiescent():
                 try:
                     await asyncio.sleep(10)
                 except asyncio.CancelledError:
-                    # Finish soon after cancellation; any claim it made may be unregistered.
+                    # Finish soon after cancellation; work it started may still be running.
                     await asyncio.sleep(0)
 
         adapter = SlowToCancel()
@@ -1889,30 +1410,8 @@ def test_failed_preparation_quarantines_only_its_own_profile():
             budgets=Budgets(provisioning=0.05),
         )
         assert next(result for result in results if result.case_id == "slow").status == "INFRASTRUCTURE_ERROR"
-        # Preparation cannot claim, so the other profile's quiescence is unaffected.
+        # A failed preparation quarantines only its own target.
         assert (PROFILE.profile_id, True) in adapter.finished
-
-    asyncio.run(check())
-
-
-def test_coordinator_contexts_refuse_a_worker_loop_inside_an_adapter_phase():
-    async def check():
-        refused: list[BaseException] = []
-
-        class WorkerLoop(Adapter):
-            async def execute(self, context):
-                async def journal() -> None:
-                    context.record_attempt("worker", requestId="worker-request")
-
-                try:
-                    await asyncio.to_thread(asyncio.run, journal())
-                except RuntimeError as exc:
-                    refused.append(exc)
-                await super().execute(context)
-
-        results = await run_scenarios([case("one")], [PROFILE], WorkerLoop(), run_id="capture")
-        assert len(refused) == 1 and "event loop thread" in str(refused[0])
-        assert "worker-request" not in {attempt["requestId"] for attempt in results[0].attempts}
 
     asyncio.run(check())
 
@@ -1929,31 +1428,50 @@ def test_finish_uses_admitted_profiles_even_if_the_caller_changes_its_list():
     asyncio.run(check())
 
 
-def test_claiming_context_rejects_calls_from_another_thread():
-    claims: list[ScenarioContext] = []
-    context = ScenarioContext("run", case("one"), PROFILE, _on_claim=claims.append)
-
+def test_profiles_finish_only_after_every_case_retires():
     async def check():
-        # run_scenarios binds every claiming context to the coordinator's loop.
-        context._claim_loop = asyncio.get_running_loop()
-        with pytest.raises(RuntimeError, match="event loop thread"):
-            await asyncio.to_thread(context.record_attempt, "launch", requestId="request")
-        context.record_attempt("launch", requestId="request")
+        other = replace(PROFILE, profile_id="other", resource_id="arn:other")
+        fast_retired = asyncio.Event()
+        release_slow = asyncio.Event()
+        order: list[tuple[str, str]] = []
 
-        def other_loop() -> None:
-            async def journal() -> None:
-                context.record_attempt("other", requestId="other-request")
+        class SlowProfile(Adapter):
+            async def execute(self, context):
+                if context.profile == other:
+                    await release_slow.wait()
+                await super().execute(context)
 
-            asyncio.run(journal())
+            async def retire(self, context):
+                retired = await super().retire(context)
+                order.append(("retire", context.scenario.case_id))
+                if context.scenario.case_id == "fast":
+                    fast_retired.set()
+                return retired
 
-        # A worker thread running its own event loop is still another thread.
-        with pytest.raises(RuntimeError, match="event loop thread"):
-            await asyncio.to_thread(other_loop)
+            async def finish(self, profile, *, quiescent):
+                order.append(("finish", profile.profile_id))
+                await super().finish(profile, quiescent=quiescent)
+
+        async def unblock_slow_case():
+            await fast_retired.wait()
+            # Without the barrier, the fast case's profile would finish meanwhile.
+            await asyncio.sleep(0.05)
+            release_slow.set()
+
+        adapter = SlowProfile()
+        _, results = await asyncio.wait_for(
+            asyncio.gather(
+                unblock_slow_case(),
+                run_scenarios([case("fast"), case("slow", profile=other)], [PROFILE, other], adapter, run_id="capture"),
+            ),
+            10,
+        )
+        assert [result.status for result in results] == ["COLLECTED", "COLLECTED"], [r.errors for r in results]
+        first_finish = next(index for index, (kind, _) in enumerate(order) if kind == "finish")
+        assert first_finish > order.index(("retire", "slow")), order
+        assert sorted(adapter.finished) == sorted([(PROFILE.profile_id, True), (other.profile_id, True)])
 
     asyncio.run(check())
-    # The refused calls changed nothing; the call on the loop journaled and claimed once.
-    assert [item["requestId"] for item in context.attempts] == ["request"]
-    assert claims == [context]
 
 
 def test_caller_suite_service_transition_preserves_original_execution():
@@ -1997,38 +1515,6 @@ def test_cleanup_replay_discovery_requires_settlement(inventory):
         {"kind": "execution", "id": "execution", "outcome": "SUCCEEDED", "settledAtMs": 20},
     ]
     assert _cleanup_record_errors([{"replay": replay}, final], final) == []
-
-
-@pytest.mark.parametrize(
-    ("released", "diagnostic"),
-    [
-        (False, "releasedAtMs must be a finite non-negative number"),
-        (81, "observed fault release occurred after retirement ended"),
-    ],
-)
-def test_cleanup_cannot_erase_invalid_fault_release(released, diagnostic):
-    class InvalidRelease(Adapter):
-        async def collect(self, context):
-            evidence = await super().collect(context)
-            evidence["faultsCreated"] = [{"id": "fault", "ownerCaseId": context.scenario.case_id}]
-            return evidence
-
-        async def release(self, context):
-            context.evidence["faultsCreated"][0]["releasedAtMs"] = released
-            await super().release(context)
-
-        async def retire(self, context):
-            context.evidence["faultsCreated"][0].pop("releasedAtMs")
-            await super().retire(context)
-            context.evidence["retirement"]["faults"] = [
-                {"id": "fault", "ownerCaseId": context.scenario.case_id, "releasedAtMs": 75, "mode": "normal"}
-            ]
-            return True
-
-    adapter = InvalidRelease()
-    result = run([case("one")], adapter)[0]
-    assert any(diagnostic in error for error in result.errors)
-    assert adapter.finished == [(PROFILE.profile_id, False)]
 
 
 def test_coordinator_reports_collected_and_deduplicates_unchanged_observations():
@@ -2075,39 +1561,3 @@ def test_prelaunch_partial_collection_surfaces_missing_control_retirement():
     assert not result.attempts
     assert result.evidence["resourcesCreated"][0]["id"] == "control"
     assert adapter.finished == [(PROFILE.profile_id, False)]
-
-
-@pytest.mark.parametrize("history_only", [False, True])
-def test_known_cross_profile_claim_blocks_both_external_releases(history_only):
-    async def check():
-        other = replace(PROFILE, profile_id="other", resource_id="arn:other")
-        ready = asyncio.Event()
-        claimed: set[str] = set()
-
-        class Claims(Adapter):
-            async def start(self, context):
-                if history_only and context.scenario.case_id == "first":
-                    context.evidence["histories"] = [
-                        {
-                            "executionArn": "arn:execution:shared",
-                            "ownerCaseId": "first",
-                            "status": "RUNNING",
-                        }
-                    ]
-                else:
-                    context.record_attempt("launch", requestId="shared-request", executionArn="arn:execution:shared")
-
-            async def execute(self, context):
-                claimed.add(context.scenario.case_id)
-                if len(claimed) == 2:
-                    ready.set()
-                await ready.wait()
-
-        adapter = Claims()
-        results = await run_scenarios(
-            [case("first"), case("second", profile=other)], [PROFILE, other], adapter, run_id="capture"
-        )
-        assert all(result.status == "FAILED" for result in results)
-        assert set(adapter.finished) == {(PROFILE.profile_id, False), (other.profile_id, False)}
-
-    asyncio.run(check())

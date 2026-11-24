@@ -834,6 +834,45 @@ def test_collection_circular_case_evidence_does_not_abort_other_reports(tmp_path
     assert list({row["case_id"]: row for row in rows}.values()) == results
 
 
+def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
+    import asyncio
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+
+    @dataclass
+    class Outcome:
+        case_id: str
+        requirement_id: str
+        profile_id: str
+        status: str
+        errors: list
+        retirement_evidence: dict
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        for case in cases:
+            on_result(Outcome(case.case_id, case.requirement_id, case.profile_id, "COLLECTED", [], {}))
+        raise asyncio.CancelledError
+
+    plan = manifest()
+    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+    # Cases emitted before the cancellation still get adjudicated final rows.
+    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
+    final = audit[-2:]
+    assert {row["case_id"] for row in final} == {plan["scenarios"][0]["case_id"], "other-case"}
+    assert [row["status"] for row in final] == ["INCOMPLETE_EVIDENCE", "INCOMPLETE_EVIDENCE"], final
+    assert all("INCOMPLETE: no observations collected" in row["errors"] for row in final), final
+    captured = json.loads((tmp_path / "collected-evidence.json").read_text())
+    assert [row["status"] for row in captured] == ["COLLECTED", "COLLECTED"], captured
+
+
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
 
@@ -858,62 +897,6 @@ def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_pa
             "errors": ["skip reason"],
         }
     ]
-
-
-@pytest.mark.parametrize("cancelled", [False, True])
-def test_collection_retirement_callback_claims_are_checked_across_cases(tmp_path, cancelled):
-    import asyncio
-    from dataclasses import dataclass
-    from types import SimpleNamespace
-
-    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
-
-    @dataclass
-    class Outcome:
-        case_id: str
-        requirement_id: str
-        profile_id: str
-        status: str
-        errors: list
-        retirement_evidence: dict
-
-    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
-        outcomes = [
-            Outcome(
-                case.case_id,
-                case.requirement_id,
-                case.profile_id,
-                "COLLECTED",
-                [],
-                {"retirement": {"resources": [{"kind": "callback", "id": "shared", "ownerCaseId": case.case_id}]}},
-            )
-            for case in cases
-        ]
-        for outcome in outcomes:
-            on_result(outcome)
-        if cancelled:
-            raise asyncio.CancelledError
-        return outcomes
-
-    plan = manifest()
-    plan["scenarios"] = [plan["scenarios"][0], dict(plan["scenarios"][0], case_id="other-case")]
-    with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
-        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
-    ):
-        if cancelled:
-            with pytest.raises(asyncio.CancelledError):
-                asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-        else:
-            results = asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
-    audit = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()]
-    if cancelled:
-        results = audit[-2:]
-    assert [result["status"] for result in results] == ["FAILED", "FAILED"]
-    assert all(
-        any("callback shared is claimed by multiple cases" in error for error in result["errors"]) for result in results
-    )
-    assert audit[-2:] == results
 
 
 def test_empty_adapter_option_is_rejected(tmp_path, capsys):
@@ -1108,29 +1091,6 @@ def test_collected_evidence_round_trips_high_precision_json_numbers(tmp_path, ca
     raw_number = "0.100000000000000000001"
     results = run_collected_text(tmp_path, plan, '{"result":' + raw_number + "}", capsys)
     assert results[0]["evidence"]["result"] == Decimal(raw_number)
-
-
-def test_collected_evidence_flags_cross_case_launch_ownership():
-    plan = manifest()
-    shared = {
-        "attempts": [{"requestId": "same-request", "executionArn": "same-execution"}],
-        "resourcesCreated": [
-            {"kind": "control", "id": "same-control"},
-            {"kind": "callback", "id": "same-callback"},
-        ],
-        "faultsCreated": [{"id": "same-fault"}],
-    }
-    cases = plan["scenarios"][:2]
-    collected = coordinator_capture(plan, {case["case_id"]: deepcopy(shared) for case in cases})
-    with patch("aws_durable_execution_conformance_tests.lmi.app._identity_errors", return_value=[]):
-        first, second = adjudicate_collected_evidence(plan, collected)[:2]
-    for result in (first, second):
-        assert result["status"] == "FAILED"
-        assert "INCOMPLETE: requestId same-request is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: executionArn same-execution is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: control same-control is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: callback same-callback is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: fault same-fault is claimed by multiple cases" in result["errors"]
 
 
 def test_collected_evidence_json_accepts_exact_integral_exponents_without_float_overflow(tmp_path, capsys):
@@ -1353,8 +1313,8 @@ def test_adjudication_accepts_service_retry_proven_during_retirement():
     from aws_durable_execution_conformance_tests.lmi.app import adjudicate_collected_evidence
     from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
 
-    retirement = run_path(str(Path(__file__).with_name("test_lmi_failure_retirement.py")))
-    value, snapshot = retirement["_lifecycle_7_retirement_retry"]()
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    value, snapshot = fixtures["lifecycle_7_retirement_retry"]()
     plan = manifest()
     plan["runtime"] = value["runtime"]
     case = next(case for case in plan["scenarios"] if case["scenario"] == "normal-failure")

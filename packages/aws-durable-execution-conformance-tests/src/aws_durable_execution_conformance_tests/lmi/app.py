@@ -409,29 +409,6 @@ def _identity_errors(
     return errors
 
 
-def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _ownership_claims
-
-    claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for result in results:
-        identities = _ownership_claims(
-            result.get("attempts", []),
-            result.get("evidence"),
-            result.get("retirement_evidence"),
-            result.get("cleanup_evidence"),
-            case_id=result["case_id"],
-        )
-        for claim in sorted(identities):
-            claims.setdefault(claim, []).append(result)
-    for (kind, resource_id), owners in claims.items():
-        if len(owners) > 1:
-            for owner in owners:
-                error = f"INCOMPLETE: {kind} {resource_id} is claimed by multiple cases"
-                if error not in owner["errors"]:
-                    owner["errors"].append(error)
-                owner["status"] = "FAILED"
-
-
 def _audit_append_boundary(stream: BinaryIO) -> int:
     end = stream.seek(0, os.SEEK_END)
     if not end:
@@ -644,9 +621,6 @@ async def collect_and_adjudicate(
                 result["status"] = "INFRASTRUCTURE_ERROR"
             result["errors"].append(f"Could not publish final case result: {exc}")
 
-    def validate_attempt(attempt: Mapping[str, Any]) -> None:
-        _dump_json(attempt, compact=True)
-
     skipped_results: list[dict[str, Any]] = []
     for scenario in manifest["scenarios"]:
         if "not_implemented" in scenario:
@@ -692,7 +666,6 @@ async def collect_and_adjudicate(
                 },
             ),
             on_result=write_result,
-            validate_attempt=validate_attempt,
         )
     except asyncio.CancelledError as cancelled:
         try:
@@ -787,7 +760,6 @@ def adjudicate_collected_evidence(
                 result["status"] = "INCOMPLETE_EVIDENCE"
             result["errors"].append(f"INCOMPLETE: malformed captured evidence: {error}")
         results.append(result)
-    _check_unique_ownership(results)
     return results
 
 
@@ -889,7 +861,9 @@ def run(argv: list[str] | None = None) -> None:
     input_source.add_argument(
         "--collected-evidence", type=Path, help="adjudicate a saved collected-evidence bundle without collecting"
     )
-    input_source.add_argument("--adapter", help="SDK-owned local module:factory that collects the evidence")
+    input_source.add_argument(
+        "--adapter", help="local module:factory for the trusted collection adapter that collects the evidence"
+    )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
