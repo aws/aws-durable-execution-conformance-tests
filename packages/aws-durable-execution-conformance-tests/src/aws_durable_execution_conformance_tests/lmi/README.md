@@ -162,7 +162,9 @@ policy. Ordinary conformance retains its existing nonblocking gap policy.
 
 ## SDK adapter contract
 
-To run a deployment and fixtures, supply a trusted local `module:factory`:
+To run a deployment and fixtures, supply a trusted local `module:factory`. The
+coordinator records what the adapter reports without re-auditing it, so test an
+adapter as part of the harness; fixture observations it relays stay untrusted.
 
 ```bash
 durable-execution-conformance lmi-lifecycle --manifest manifest.json \
@@ -194,9 +196,10 @@ The adapter methods have distinct responsibilities:
    its peer in `place` and its recovery request in `execute`. When Lambda itself
    starts a resume or retry against an already journaled execution, record it with
    `record_service_attempt(request_id, original_request_id=..., execution_arn=...,
-   role=...)` as soon as the adapter discovers it; collection rejects observed
-   requests missing from the journal. The journal derives immutable retry ordinals
-   per role and binds each selected role to its first launched request. `place(context)` verifies
+   role=...)` as soon as the adapter discovers it; adjudication rejects frozen
+   observations that omit a journaled client launch. The journal derives
+   immutable retry ordinals per role, and `selectedRequests` names each role's
+   first launched request. `place(context)` verifies
    runtime identity and overlap, coordinating only this cohort's bounded barriers.
    `start` and `place` share the placement budget.
 3. `execute(context)` runs the fixture. `collect(context)` returns version 1
@@ -332,12 +335,14 @@ retains it as `ScenarioResult.retirement_evidence`; it never replaces the origin
 behavior evidence or removes its errors. Returning `True` from `retire` alone is
 insufficient to release a failed case's target.
 
-The independent retirement audit binds the final snapshot to the admitted
-artifact, target and every actual journaled launch. It requires terminal service
-execution histories, retained resource inventories, completed task/request
-intervals, source coverage, and actual invocation exit observations. Known
-resources cannot disappear between snapshots. Unknown launch identities, missing completion pairs, outstanding work, malformed evidence or
-interrupted controller work retain quarantine.
+The independent retirement audit requires the final snapshot to show terminal
+service execution histories, retained resource inventories, completed
+task/request intervals, source coverage, and actual invocation exit
+observations, and to settle the native owner of every SDK record seen in any
+snapshot. A journaled launch without an identified invocation request (unless
+the driver recorded a definite Invoke rejection for it), missing completion
+pairs, outstanding work, malformed evidence or interrupted controller work
+retain quarantine.
 
 The one exception is an invocation the service proves it rejected before any
 handler ran (`UNDISPATCHED`): an allowlisted `InvocationCompletedDetails.Error` on

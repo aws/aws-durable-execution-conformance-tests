@@ -419,7 +419,8 @@ class ScenarioDriver:
                 required=False,
             )
         except CollectionBudgetExpired:
-            # The coordinator still audits any retained observations and retirement.
+            # Adjudication still judges the retained observations, and the
+            # coordinator still audits retirement.
             pass
 
     def _collect_observation(self) -> bool:

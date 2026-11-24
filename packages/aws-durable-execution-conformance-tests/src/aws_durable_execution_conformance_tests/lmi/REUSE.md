@@ -92,10 +92,10 @@ requests. History for an execution still running at the cutoff is
 provisional. Observations that occurred after the behavior cutoff remain in
 raw artifacts and are checked during retirement. A later retry is omitted
 from frozen behavior only when Lambda history proves its native start was
-after the cutoff. The first attempt for each role and the full retirement
-journal remain subject to the normal ownership checks. A request killed before its
-seal can be written leaves the evidence incomplete and keeps the target
-fenced even if Lambda reports native completion.
+after the cutoff. The first attempt for each role is never omitted, and
+physical retirement still settles every deferred request. A request killed
+before its seal can be written leaves the evidence incomplete and keeps the
+target fenced even if Lambda reports native completion.
 
 The only exception to the seal rule above is physical retirement of a request
 the service proves it rejected before any handler ran: an allowlisted

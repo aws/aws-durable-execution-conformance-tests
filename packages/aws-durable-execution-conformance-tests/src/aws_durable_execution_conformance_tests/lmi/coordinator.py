@@ -7,6 +7,14 @@ Adapters own AWS calls and fixtures. The coordinator owns admission and keeps a
 case's lease through retirement, including time spent suspended or collecting
 traces. A scheduler is local to one event loop: adapters must also hold a
 cross-process deployment/run lock when persistent targets are shared by runs.
+
+The adapter, in production the shared AWS driver, is trusted: the coordinator
+records the adapter's own reports, such as launches, inventories and
+retirement, without re-auditing them against earlier snapshots, the launch
+journal, admission, or other cases. SDK fixture output that the adapter relays
+stays untrusted. Adjudication judges its behavior, and before the coordinator
+releases a target the retirement snapshot must establish physical retirement
+and settle the native owner of every SDK record seen in any snapshot.
 """
 
 from __future__ import annotations
@@ -22,36 +30,15 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
-    _CALL_METHODS,
     RECOVERY_POLICIES,
-    SCHEMA_VERSION,
-    TERMINAL_STATUSES,
     is_json_integer,
-    normalize_retirement_events,
-    retained_fault_releases,
     same_json,
     validate_observed_retirement,
     validate_retirement_evidence,
 )
-from aws_durable_execution_conformance_tests.lmi.rules.controls import controls_only_retirement, invoke_rejection_proven
-from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
-    active_pre_cutoff_errors,
-    active_retry_interval,
-    deferred_retirement_errors,
-    deferred_service_requests,
-    requests_after_cutoff,
-)
-from aws_durable_execution_conformance_tests.lmi.rules.retention import (
-    _OPERATION_TERMINAL_STATUSES,
-    _cleanup_record_errors,
-    _event_frames_order_changed,
-    _native_intervals,
-    _observation_updates,
-    _owned_record_enriches,
-    _retain_observations,
-    _sdk_closure_order_changed,
-    _sdk_frames_order_changed,
-)
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_service_requests, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors
 
 
 @dataclass(frozen=True)
@@ -235,18 +222,6 @@ class ResourceScheduler:
             resource.quarantine_reason = reason
             resource.condition.notify_all()
 
-    def _quarantine_claim_conflict(self, resource_id: str, reason: str) -> None:
-        # Attempt callbacks are synchronous. Block future admission immediately;
-        # wake queued owners once the resource condition can be acquired.
-        resource = self._resources[resource_id]
-        resource.quarantine_reason = reason
-
-        async def wake() -> None:
-            async with resource.condition:
-                resource.condition.notify_all()
-
-        asyncio.get_running_loop().create_task(wake())
-
     async def acquire(
         self,
         resource_id: str,
@@ -348,9 +323,6 @@ class ScenarioContext:
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
     _collection_deadline: float | None = field(default=None, init=False, repr=False, compare=False)
-    _on_claim: Callable[[ScenarioContext], None] | None = field(default=None, repr=False, kw_only=True)
-    _claim_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, kw_only=True)
-    _validate_attempt: Callable[[Mapping[str, Any]], None] | None = field(default=None, repr=False)
 
     @property
     def attempts(self) -> list[dict[str, Any]]:
@@ -397,20 +369,7 @@ class ScenarioContext:
         adapter must supply it. Ordinals are assigned in launch order per role;
         an explicit ``attempt`` must equal that next ordinal.
         """
-        self._require_coordinator_loop()
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
-
-    def _require_coordinator_loop(self) -> None:
-        # Claims quarantine targets through the scheduler, which belongs to the
-        # coordinator's event loop. Refuse another thread before changing state.
-        if self._on_claim is None:
-            return
-        try:
-            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is None or running is not self._claim_loop:
-            raise RuntimeError("Call ScenarioContext methods on the coordinator's event loop thread")
 
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
@@ -433,20 +392,16 @@ class ScenarioContext:
             timestamp_key: time.time() * 1000,
         }
         self._attempts.append(attempt)
+        if self._on_attempt is None:
+            return
         try:
-            if self._validate_attempt is not None:
-                self._validate_attempt(attempt)
-            if self._on_attempt is not None:
-                self._on_attempt(self)
+            self._on_attempt(self)
         except BaseException:
             # An undispatched launch can be rolled back. An already-running
             # service invocation must remain visible to retirement.
             if timestamp_key == "launchedAtMs":
                 self._attempts.pop()
             raise
-        finally:
-            if self._on_claim is not None:
-                self._on_claim(self)
 
     def record_service_attempt(
         self, request_id: str, *, original_request_id: str, execution_arn: str, role: str
@@ -457,7 +412,6 @@ class ScenarioContext:
         execution. Replay's resume role is distinct from its original victim;
         service retries otherwise retain the original role.
         """
-        self._require_coordinator_loop()
         original = next((item for item in self._attempts if item.get("requestId") == original_request_id), None)
         if (
             original is None
@@ -478,7 +432,6 @@ class ScenarioContext:
         )
 
     def update_attempt(self, attempt_id: str, **diagnostics: Any) -> None:
-        self._require_coordinator_loop()
         diagnostics = copy.deepcopy(diagnostics)
         for attempt in self._attempts:
             if attempt["attemptId"] == attempt_id:
@@ -500,20 +453,7 @@ class ScenarioContext:
                         raise ValueError(f"Cannot replace the original {label}")
                 if "attempt" in diagnostics:
                     diagnostics["attempt"] = int(diagnostics["attempt"])
-                try:
-                    if self._validate_attempt is not None:
-                        self._validate_attempt({**attempt, **diagnostics})
-                except Exception:
-                    for field_name in ("requestId", "executionArn"):
-                        value = diagnostics.get(field_name)
-                        if isinstance(value, str) and value.strip():
-                            attempt[field_name] = value
-                    if self._on_claim is not None:
-                        self._on_claim(self)
-                    raise
                 attempt.update(diagnostics)
-                if self._on_claim is not None:
-                    self._on_claim(self)
                 if self._on_attempt is not None:
                     self._on_attempt(self)
                 return
@@ -521,7 +461,11 @@ class ScenarioContext:
 
 
 class ScenarioAdapter(Protocol):
-    """SDK-owned fixture bridge; all methods must cooperate with cancellation.
+    """Trusted fixture bridge; all methods must cooperate with cancellation.
+
+    In production this is the shared AWS driver. The coordinator does not
+    re-audit the adapter's own reports, so their defects are caught by the
+    adapter's own tests. Fixture observations it relays remain untrusted.
 
     ``prepare`` must hold an external run/deployment lock if another process can
     use this persistent target. Retain that lock until every case has retired.
@@ -532,23 +476,24 @@ class ScenarioAdapter(Protocol):
     ``quiescent=True``; otherwise keep it. Fail fast, or wait well under the
     provisioning budget, on a lock another run holds.
     ``place`` must positively identify the cohort and release only its barriers.
-    ``collect`` returns observation evidence; ``release`` touches only this
+    ``collect`` returns every observation so far; ``release`` touches only this
     context's controls; ``retire`` writes final ``context.evidence['retirement']``
     and returns True only when all executions, retries, callbacks and late work
     are settled. ``finish`` releases external run ownership only when quiescent
     is True; otherwise it must preserve quarantine until external recovery.
     Every attempted launch is journaled before transport dispatch.
 
-    An optional ``collect_partial(context)`` captures a bounded read-only snapshot
-    after a non-cancelled phase failure, before fault release. It must not wait for
-    cleanup or invent missing observations. A case that failed before cleanup can release its lease
+    An optional ``collect_partial(context)`` returns a bounded read-only snapshot of
+    every observation so far after a non-cancelled phase failure, before fault
+    release; it replaces ``context.evidence``. It must not wait for cleanup or
+    invent missing observations. A case that failed before cleanup can release its lease
     only when ``retire`` additionally supplies ``context.retirement_evidence``:
     independently auditable post-cleanup facts. That snapshot never replaces the
     original behavior evidence or makes its result pass.
 
     Cleanup may discover additional owned work. Retain it on ``context.evidence``
     even when a cleanup method raises. The coordinator preserves each cleanup
-    phase's snapshots separately in ``ScenarioResult.cleanup_evidence``. A case
+    phase's snapshot separately in ``ScenarioResult.cleanup_evidence``. A case
     that passed observations may supply its complete physical retirement snapshot
     through the normal ``context.evidence`` path; cases already failing before cleanup require
     ``context.retirement_evidence``. All discovered work must be reconciled by
@@ -617,653 +562,6 @@ async def _bounded(
             task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
 
 
-def _controls_only_dispatch_reconciled(context: ScenarioContext, evidence: Mapping[str, Any]) -> bool:
-    retirement = evidence["retirement"]
-    launches = retirement.get("undispatchedLaunches")
-    if not isinstance(launches, list):
-        return False
-    rejected: dict[str, Mapping[str, Any]] = {}
-    for launch in launches:
-        if not isinstance(launch, Mapping):
-            return False
-        if invoke_rejection_proven(launch):
-            marker = launch.get("marker")
-            if not isinstance(marker, str) or marker in rejected:
-                return False
-            rejected[marker] = launch
-    if len(rejected) != len(context.attempts):
-        return False
-    for journaled in context.attempts:
-        marker = journaled.get("attemptId")
-        if not isinstance(marker, str) or marker not in rejected or not invoke_rejection_proven(journaled):
-            return False
-        launch = rejected.pop(marker)
-        if journaled.get("source") != "driver-invoke" or set(launch) != {
-            "marker",
-            "functionArn",
-            "durableExecutionName",
-            "dispatchState",
-            "retryAttempts",
-            "rejectionCode",
-        }:
-            return False
-        if any(key not in journaled or not same_json(journaled[key], value) for key, value in launch.items()):
-            return False
-    return not rejected
-
-
-def _ownership_errors(
-    context: ScenarioContext, evidence: Mapping[str, Any], *, complete_cohort: bool = True
-) -> list[str]:
-    expected = {
-        "runId": context.run_id,
-        "caseId": context.scenario.case_id,
-        "requirementId": context.scenario.requirement_id,
-    }
-    errors = [
-        f"Collected {name} does not match the admitted case"
-        for name, value in expected.items()
-        if evidence.get(name) != value
-    ]
-    profile = evidence.get("profile", {})
-    if not isinstance(profile, Mapping) or any(
-        profile.get(name) != value
-        for name, value in {
-            "functionArn": context.profile.resource_id,
-            "configurationDigest": context.profile.configuration_id,
-            "nativeConcurrency": context.profile.native_concurrency,
-        }.items()
-    ):
-        errors.append("Collected deployment profile does not match the leased target")
-    artifact = evidence.get("artifact", {})
-    if not isinstance(artifact, Mapping) or artifact.get("sdk") != context.profile.artifact_id:
-        errors.append("Collected SDK artifact does not match the deployed revision")
-    attempts = evidence.get("attempts")
-    if not complete_cohort and controls_only_retirement(evidence):
-        if (
-            attempts != []
-            or evidence.get("selectedRequests") != {}
-            or not _controls_only_dispatch_reconciled(context, evidence)
-        ):
-            errors.append("Controls-only retirement cannot reconcile the dispatch journal")
-        return errors
-    journaled_attempts = context.attempts
-    if complete_cohort:
-        excluded = requests_after_cutoff(journaled_attempts, evidence.get("observationEndedAtMs"))
-        journaled_attempts = [
-            item
-            for item in journaled_attempts
-            if not isinstance(request := item.get("requestId"), str) or request not in excluded
-        ]
-    else:
-        journaled_attempts = [
-            item
-            for item in journaled_attempts
-            if not (
-                invoke_rejection_proven(item)
-                and item.get("source") == "driver-invoke"
-                and item.get("functionArn") == context.profile.resource_id
-                and item.get("marker") == item.get("attemptId")
-                and isinstance(item.get("durableExecutionName"), str)
-                and bool(item["durableExecutionName"].strip())
-            )
-        ]
-    if not isinstance(attempts, list) or not all(isinstance(item, Mapping) for item in attempts):
-        errors.append("Collected invocation attempts are missing or malformed")
-    else:
-        collected = [item.get("requestId") for item in attempts]
-        recorded = [item.get("requestId") for item in journaled_attempts]
-        if (complete_cohort and not recorded) or any(not isinstance(item, str) or not item for item in recorded):
-            errors.append("Every launched attempt must retain an identified invocation request")
-        elif (
-            any(not isinstance(item, str) or not item for item in collected)
-            or set(collected) != set(recorded)
-            or len(collected) != len(recorded)
-            or len(set(recorded)) != len(recorded)
-        ):
-            errors.append("Collected attempts do not match all original journaled launches")
-        else:
-            journal = {item["requestId"]: item for item in journaled_attempts}
-            for item in attempts:
-                original = journal[item["requestId"]]
-                if (
-                    item.get("role") != original["role"]
-                    or not is_json_integer(item.get("attempt"))
-                    or item["attempt"] != original["attempt"]
-                ):
-                    errors.append(f"Collected role or ordinal substitutes journaled launch {item['requestId']}")
-                # Another execution's evidence under the journaled request would
-                # accept its result and leave the journaled execution unaudited.
-                if "executionArn" in original and item.get("executionArn") != original["executionArn"]:
-                    errors.append(f"Collected execution substitutes the journaled execution of {item['requestId']}")
-                if "nativeStartedAtMs" in original and item.get("startedAtMs") != original["nativeStartedAtMs"]:
-                    errors.append(f"Collected native start contradicts service history for {item['requestId']}")
-                if item.get("activeAtObservationEnd") is True:
-                    selected = evidence.get("selectedRequests")
-                    victim_id = selected.get("victim") if isinstance(selected, Mapping) else None
-                    victim = journal.get(victim_id, {}) if isinstance(victim_id, str) else {}
-                    if not complete_cohort or not active_retry_interval(
-                        original, evidence.get("observationEndedAtMs"), victim.get("executionArn")
-                    ):
-                        errors.append(
-                            f"Collected active retry lacks a verified service interval for {item['requestId']}"
-                        )
-                elif "nativeEndedAtMs" in original and item.get("endedAtMs") != original["nativeEndedAtMs"]:
-                    errors.append(f"Collected native end contradicts service history for {item['requestId']}")
-        selected = evidence.get("selectedRequests")
-        originals = {item["role"]: item.get("requestId") for item in journaled_attempts if item["attempt"] == 1}
-        if complete_cohort and (
-            not isinstance(selected, Mapping)
-            or set(selected) != set(originals)
-            or set(originals) != set(context.scenario.roles)
-            or any(selected.get(role) != request_id for role, request_id in originals.items())
-        ):
-            errors.append("Selected requests must be the first journaled invocation for every admitted role")
-    return errors
-
-
-def _retirement_ownership_errors(
-    context: ScenarioContext,
-    original: Mapping[str, Any],
-    final: Mapping[str, Any],
-    *,
-    compare_order: bool = True,
-) -> list[str]:
-    errors = _ownership_errors(context, final, complete_cohort=False)
-    if controls_only_retirement(final) and (
-        any(original.get(key, []) != [] for key in ("attempts", "events", "histories", "sdkRequests", "faultsCreated"))
-        or original.get("selectedRequests", {}) != {}
-        or "replay" in original
-    ):
-        errors.append("Controls-only retirement cannot replace retained runtime evidence")
-    if final.get("coverageProfile", "standard") != context.scenario.coverage_profile:
-        errors.append("Retirement coverageProfile changed the admitted case")
-    if "runtime" in original and not same_json(original["runtime"], final.get("runtime")):
-        errors.append("Retirement runtime differs from the original observations")
-    if "artifact" in original:
-        # Provisional observations may know only the deployed SDK revision.
-        # Completion can add metadata while keeping every known field intact.
-        original_artifact, final_artifact = original["artifact"], final.get("artifact")
-        if not isinstance(original_artifact, Mapping) or not isinstance(final_artifact, Mapping):
-            errors.append("Retirement artifact metadata must remain an object")
-        else:
-            for key, value in original_artifact.items():
-                if key not in final_artifact or not same_json(value, final_artifact[key]):
-                    errors.append(f"Retirement artifact.{key} differs from the original observations")
-    errors.extend(active_pre_cutoff_errors(original, final))
-    errors.extend(deferred_retirement_errors(original, final, undispatched=True))
-    original_attempts = original.get("attempts", [])
-    observed = final.get("attempts", [])
-    if not isinstance(original_attempts, list) or not isinstance(observed, list):
-        raise ValueError("Retirement invocation inventories must be lists")
-    indexed = {item.get("requestId"): item for item in observed if isinstance(item, Mapping)}
-    for attempt in original_attempts:
-        if not isinstance(attempt, Mapping):
-            raise ValueError("Original invocation inventory is malformed")
-        settled = indexed.get(attempt.get("requestId"), {})
-        # PENDING belongs to the suspended invocation; its resume has a new
-        # request ID and cannot replace that already observed native outcome.
-        for key in (
-            "executionArn",
-            "environmentId",
-            "workerId",
-            "processId",
-            "role",
-            "attempt",
-            "outcome",
-        ):
-            if key in attempt and attempt[key] != settled.get(key):
-                errors.append(f"Retirement changed an original invocation's {key}")
-        # Native completion can widen a provisional fixture-observed interval,
-        # but it cannot erase any part of the original observation window.
-        for key in ("startedAtMs", "endedAtMs"):
-            if key not in attempt:
-                continue
-            before, after = attempt[key], settled.get(key)
-            if any(
-                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
-                for value in (before, after)
-            ):
-                errors.append(f"Retirement cannot reconcile a malformed invocation {key}")
-            elif attempt.get(f"{key}Source") == "platform" and after != before:
-                errors.append(f"Retirement changed an authoritative invocation's {key}")
-            elif not (
-                attempt.get(f"{key}Source") in (None, "fixture") and settled.get(f"{key}Source") == "platform"
-            ) and ((key == "startedAtMs" and after > before) or (key == "endedAtMs" and after < before)):
-                errors.append(f"Retirement narrowed an original invocation's {key}")
-    for name, identifier, identity_fields in (
-        ("resourcesCreated", "id", ("kind", "ownerCaseId")),
-        ("faultsCreated", "id", ("ownerCaseId",)),
-        ("histories", "executionArn", ("ownerCaseId",)),
-    ):
-        before, after = original.get(name, []), final.get(name, [])
-        if not isinstance(before, list) or not isinstance(after, list):
-            raise ValueError("Retirement resource inventories must be lists")
-        for resource in before:
-            if (
-                not isinstance(resource, Mapping)
-                or not isinstance(resource.get(identifier), str)
-                or not resource[identifier].strip()
-            ):
-                errors.append(f"Original {name} entry requires a stable non-empty {identifier}")
-                continue
-            matched_resource = next(
-                (
-                    item
-                    for item in after
-                    if isinstance(item, Mapping)
-                    and identifier in item
-                    and same_json(resource[identifier], item[identifier])
-                ),
-                None,
-            )
-            # Provisional rows can lack ownership metadata; final completeness
-            # is checked independently. Explicit null and known values persist.
-            if matched_resource is None or any(
-                key in resource and (key not in matched_resource or not same_json(resource[key], matched_resource[key]))
-                for key in identity_fields
-            ):
-                errors.append(f"Retirement omitted or changed an original {name} entry")
-
-    # Cleanup may complete active work, but cannot rewrite already terminal
-    # service facts. Fixture expectations are separate behavioral evidence.
-    def preserve_history_fields(
-        before: Mapping[str, Any], after: Mapping[str, Any] | None, owner: str, fields: tuple[str, ...]
-    ) -> None:
-        if after is None:
-            errors.append(f"Retirement omitted {owner}")
-            return
-        for key in fields:
-            if key in before and (key not in after or not same_json(before[key], after[key])):
-                errors.append(f"Retirement changed {owner}.{key}")
-
-    final_histories = {
-        item.get("executionArn"): item for item in final.get("histories", []) if isinstance(item, Mapping)
-    }
-    execution_activity: dict[str, list[Any]] = {}
-    for history in original.get("histories", []):
-        if not isinstance(history, Mapping):
-            continue  # Already reported as an unidentified original inventory row.
-        arn = history.get("executionArn")
-        if not isinstance(arn, str) or not arn.strip():
-            continue
-        completed_history = final_histories.get(arn)
-        activity = execution_activity.setdefault(arn, [])
-        activity.extend(history.get(field) for field in ("startedAtMs", "endedAtMs"))
-        if history.get("status") in TERMINAL_STATUSES:
-            preserve_history_fields(
-                history, completed_history, f"terminal execution {arn}", ("status", "result", "error")
-            )
-        before_operations = history.get("operations", [])
-        after_operations = completed_history.get("operations", []) if completed_history is not None else []
-        if not isinstance(before_operations, list) or not isinstance(after_operations, list):
-            raise ValueError("Retirement operation inventories must be lists")
-        indexed_operations = {item.get("id"): item for item in after_operations if isinstance(item, Mapping)}
-        for operation in before_operations:
-            if not isinstance(operation, Mapping):
-                raise ValueError("Original operation inventory is malformed")
-            activity.extend(operation.get(field) for field in ("startedAtMs", "endedAtMs"))
-            operation_id = operation.get("id")
-            operation_fields: tuple[str, ...] = ("name", "type", "parentId")
-            owner = f"operation {operation_id} in {arn}"
-            if operation.get("status") in _OPERATION_TERMINAL_STATUSES:
-                operation_fields += ("status", "result", "error")
-                owner = f"terminal {owner}"
-            preserve_history_fields(operation, indexed_operations.get(operation_id), owner, operation_fields)
-    before_events, after_events = original.get("events", []), final.get("events", [])
-    if not isinstance(before_events, list) or not isinstance(after_events, list):
-        raise ValueError("Retirement observation inventories must be lists")
-    retirement = final.get("retirement")
-    completions = retirement.get("completions", []) if isinstance(retirement, Mapping) else []
-    if not isinstance(completions, list):
-        raise ValueError("Retirement completions must be a list")
-    earlier_retirement = original.get("retirement")
-    earlier_completions = earlier_retirement.get("completions", []) if isinstance(earlier_retirement, Mapping) else []
-    if not isinstance(earlier_completions, list):
-        raise ValueError("Previously observed retirement completions must be a list")
-    before_events = normalize_retirement_events([*before_events, *earlier_completions], errors)
-    after_events = normalize_retirement_events([*after_events, *completions], errors)
-    start_kinds = {
-        "task_start",
-        "io_start",
-        "checkpoint_call",
-        "poll_call",
-    }
-    fields = (
-        "kind",
-        "requestId",
-        "ownerRequestId",
-        "executionArn",
-        "atMs",
-        "taskId",
-        "callId",
-        "gateId",
-    )
-
-    # Completion facts and late activity are preserved as well as starts: a
-    # snapshot that drops them would audit less than was already observed.
-    preserved_kinds = start_kinds | {
-        "wrapper_enter",
-        "task_exit",
-        "io_exit",
-        "checkpoint_exit",
-        "poll_exit",
-        "wrapper_return",
-        "wrapper_raise",
-        "late_activity",
-    }
-
-    def event_identity(event: Mapping[str, Any]) -> dict[str, Any]:
-        identity = {key: event.get(key) for key in fields}
-        if event.get("kind") in _CALL_METHODS:
-            identity["outcome"] = event.get("outcome", "DISPATCHED")
-        if "observedDuringRequestId" in event:
-            identity["observedDuringRequestId"] = event["observedDuringRequestId"]
-        return identity
-
-    def preserved(events: list[Any]) -> list[dict[str, Any]]:
-        if any(not isinstance(event, Mapping) for event in events):
-            raise ValueError("Retirement observations must be objects")
-        return [event_identity(event) for event in events if event.get("kind") in preserved_kinds]
-
-    remaining_events = preserved(after_events)
-    for event in sorted(preserved(before_events), key=lambda item: item.get("observedDuringRequestId") is None):
-        match = next(
-            (index for index, item in enumerate(remaining_events) if _owned_record_enriches(event, item)), None
-        )
-        if match is None:
-            errors.append("Retirement omitted or changed previously observed work")
-        else:
-            remaining_events.pop(match)
-
-    def sequenced(events: list[Any]) -> dict[Any, list[tuple[int, dict[str, Any]]]]:
-        by_request: dict[Any, list[tuple[int, dict[str, Any]]]] = {}
-        for event in events:
-            if event.get("kind") not in preserved_kinds or "sequence" not in event:
-                continue
-            sequence = event["sequence"]
-            if not is_json_integer(sequence) or sequence < 0:
-                errors.append("Retirement cannot reconcile a malformed semantic sequence")
-                continue
-            by_request.setdefault(event.get("requestId"), []).append((int(sequence), event_identity(event)))
-        return by_request
-
-    # Sequence values can change when additional observations are collected.
-    # Preserve the known relative order, particularly at equal timestamps;
-    # partial events without sequence numbers do not yet establish that order.
-    if compare_order:
-        original_order, final_order = sequenced(before_events), sequenced(after_events)
-        for request_id, records in original_order.items():
-            if len({sequence for sequence, _ in records}) != len(records):
-                errors.append("Retirement cannot reconcile duplicate original semantic sequences")
-                continue
-            remaining_order = iter(sorted(final_order.get(request_id, []), key=lambda item: item[0]))
-            for _, identity in sorted(records, key=lambda item: item[0]):
-                if not any(_owned_record_enriches(identity, candidate) for _, candidate in remaining_order):
-                    errors.append("Retirement changed the semantic order of previously observed work")
-                    break
-    before_requests, after_requests = original.get("sdkRequests", []), final.get("sdkRequests", [])
-    if not isinstance(before_requests, list) or not isinstance(after_requests, list):
-        raise ValueError("Retirement SDK request inventories must be lists")
-    remaining = list(after_requests)
-    for request in sorted(
-        before_requests, key=lambda item: not isinstance(item, Mapping) or item.get("observedDuringRequestId") is None
-    ):
-        if not isinstance(request, Mapping):
-            raise ValueError("Original SDK request inventory is malformed")
-        match = next(
-            (index for index, item in enumerate(remaining) if _owned_record_enriches(request, item, event=True)), None
-        )
-        if match is None:
-            errors.append("Retirement omitted or changed a previously observed SDK request")
-        else:
-            settled_request = remaining.pop(match)
-            if compare_order and _sdk_closure_order_changed(request, settled_request, before_events, after_events):
-                errors.append("Retirement changed the semantic order of an SDK request and its closure")
-
-    def observed_time(value: Any) -> int | float | None:
-        if type(value) is int and value >= 0:
-            return value
-        if type(value) is float and math.isfinite(value) and value >= 0:
-            return value
-        return None
-
-    def latest_time(values: Sequence[Any]) -> int | float:
-        return max((time for value in values if (time := observed_time(value)) is not None), default=0)
-
-    # Audit settlement against the frozen observations as well as the final
-    # snapshot: even an otherwise valid snapshot cannot erase prior activity.
-    retirement = final.get("retirement")
-    settlements = retirement.get("resources", []) if isinstance(retirement, Mapping) else []
-    if not isinstance(settlements, list):
-        raise ValueError("Retirement settlements must be a list")
-    indexed_settlements = {
-        (item.get("kind"), item.get("id")): item.get("settledAtMs")
-        for item in settlements
-        if isinstance(item, Mapping) and isinstance(item.get("kind"), str) and isinstance(item.get("id"), str)
-    }
-    authoritative_admission: dict[str, int | float] = {}
-    for attempt in indexed.values():
-        arn = attempt.get("executionArn")
-        started = observed_time(attempt.get("startedAtMs"))
-        if isinstance(arn, str) and started is not None and attempt.get("startedAtMsSource") == "platform":
-            authoritative_admission[arn] = min(started, authoritative_admission.get(arn, started))
-    for history in original.get("histories", []):
-        if not isinstance(history, Mapping):
-            continue
-        arn = history.get("executionArn")
-        started = observed_time(history.get("startedAtMs"))
-        if isinstance(arn, str) and started is not None and started > authoritative_admission.get(arn, started):
-            errors.append(f"Retirement execution {arn} started after its first native admission")
-    for arn, times in execution_activity.items():
-        settled_at = observed_time(indexed_settlements.get(("execution", arn)))
-        if settled_at is None or settled_at < latest_time(times):
-            errors.append(f"Retirement execution {arn} settled before its originally observed service activity")
-    observed_invocation_ends = []
-    for attempt in original_attempts:
-        request_id = attempt.get("requestId")
-        final_attempt = indexed.get(request_id, {})
-        authoritative_end = (
-            attempt.get("endedAtMsSource") in (None, "fixture") and final_attempt.get("endedAtMsSource") == "platform"
-        )
-        activity = [] if authoritative_end else [attempt.get("endedAtMs")]
-        observed_invocation_ends.extend(activity)
-        activity.extend(
-            record.get("atMs")
-            for record in (*before_events, *before_requests)
-            if isinstance(record, Mapping) and record.get("requestId") == request_id
-        )
-        settled_at = observed_time(indexed_settlements.get(("invocation", request_id)))
-        if settled_at is None or settled_at < latest_time(activity):
-            errors.append("Retirement invocation settled before its originally observed activity")
-    observed = [record.get("atMs") for record in (*before_events, *before_requests)]
-    observed += observed_invocation_ends
-    observed.append(original.get("observationEndedAtMs"))
-    latest = latest_time(observed)
-    retired_at = retirement.get("retiredAtMs") if isinstance(retirement, Mapping) else None
-    if not isinstance(retired_at, (int, float)) or isinstance(retired_at, bool) or retired_at < latest:
-        errors.append("Retirement snapshot predates previously observed activity")
-    return errors
-
-
-def _cleanup_envelope_errors(sources: Sequence[Mapping[str, Any]], final: Mapping[str, Any]) -> list[str]:
-    """Retain supplied metadata errors and reconcile cumulative window coverage."""
-    findings: list[str] = []
-    observation_end: int | float = 0
-    watermarks: dict[str, int | float] = {}
-
-    def timestamp(value: Any, path: str) -> int | float | None:
-        try:
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
-                return value
-        except OverflowError:
-            pass
-        findings.append(f"INCOMPLETE: cleanup {path} must be a finite non-negative number")
-        return None
-
-    for source in sources:
-        if "schemaVersion" in source and (
-            not is_json_integer(source["schemaVersion"]) or source["schemaVersion"] != SCHEMA_VERSION
-        ):
-            findings.append(f"INCOMPLETE: cleanup unsupported schemaVersion; expected {SCHEMA_VERSION}")
-        if "observationEndedAtMs" in source:
-            end = timestamp(source["observationEndedAtMs"], "observationEndedAtMs")
-            if end is not None:
-                observation_end = max(observation_end, end)
-        if "collection" not in source:
-            continue
-        collection = source["collection"]
-        if not isinstance(collection, Mapping):
-            findings.append("INCOMPLETE: cleanup collection must be an object")
-            continue
-        if "watermarks" in collection:
-            supplied = collection["watermarks"]
-            if not isinstance(supplied, Mapping):
-                findings.append("INCOMPLETE: cleanup collection.watermarks must be an object")
-            else:
-                for name in ("lifecycle", "sdkRequests", "history"):
-                    if name in supplied:
-                        covered = timestamp(supplied[name], f"collection.watermarks.{name}")
-                        if covered is not None:
-                            watermarks[name] = max(watermarks.get(name, 0), covered)
-        if "evidenceUris" in collection:
-            references = collection["evidenceUris"]
-            if not isinstance(references, list) or any(not isinstance(uri, str) or not uri for uri in references):
-                findings.append("INCOMPLETE: cleanup collection.evidenceUris must be an array of non-empty strings")
-
-    # Partial snapshots may precede watermark completion or omit envelope fields.
-    # Every retained window still needs eventual collection coverage and a
-    # retirement that follows it, regardless of whether owned inventories changed.
-    for name, covered in watermarks.items():
-        if covered < observation_end:
-            findings.append(f"INCOMPLETE: cleanup {name} collection does not cover the retained observation window")
-    retirement = final.get("retirement")
-    if isinstance(retirement, Mapping) and "retiredAtMs" in retirement:
-        retired_at = timestamp(retirement["retiredAtMs"], "retirement.retiredAtMs")
-        if retired_at is not None and retired_at < observation_end:
-            findings.append("INCOMPLETE: cleanup retirement precedes a retained observation window")
-    return findings
-
-
-def _retained_retirement_errors(sources: Sequence[Mapping[str, Any]], final: Mapping[str, Any]) -> list[str]:
-    retirement = final.get("retirement")
-    retirement = retirement if isinstance(retirement, Mapping) else {}
-    retired_at = retirement.get("retiredAtMs")
-    resources = {
-        item["id"]: item
-        for item in retirement.get("resources", [])
-        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
-    }
-    terminal_outcomes = {
-        "invocation": ("QUIESCENT", "UNDISPATCHED"),
-        "execution": TERMINAL_STATUSES,
-        "callback": ("SUCCEEDED", "FAILED", "TIMED_OUT"),
-        "control": ("DELETED",),
-    }
-    faults = {
-        item["id"]: item
-        for item in retirement.get("faults", [])
-        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
-    }
-    events = normalize_retirement_events([*final.get("events", []), *retirement.get("completions", [])], [])
-    _, errors = retained_fault_releases([*sources, final], retired_at)
-    for source in sources:
-        earlier = source.get("retirement")
-        if not isinstance(earlier, Mapping):
-            continue
-        for row in earlier.get("resources", []):
-            if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
-                errors.append("Previously observed retirement resource lacks an identity")
-                continue
-            settled = resources.get(row["id"])
-            if settled is None or any(key in row and row[key] != settled.get(key) for key in ("kind", "ownerCaseId")):
-                errors.append(f"Final retirement omitted or changed observed resource {row['id']}")
-            elif (
-                settled.get("kind") in terminal_outcomes
-                and settled.get("outcome") not in terminal_outcomes[settled["kind"]]
-            ):
-                errors.append(f"Final retirement did not settle observed resource {row['id']}")
-            elif (
-                isinstance(kind := settled.get("kind"), str)
-                and row.get("outcome") in terminal_outcomes.get(kind, ())
-                and row["outcome"] != settled.get("outcome")
-            ):
-                errors.append(f"Final retirement changed the terminal outcome of observed resource {row['id']}")
-            at = row.get("settledAtMs")
-            if isinstance(at, (int, float)) and (not isinstance(retired_at, (int, float)) or at > retired_at):
-                errors.append(f"Observed settlement for {row['id']} follows final retirement")
-        for row in earlier.get("faults", []):
-            if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
-                errors.append("Previously observed retirement fault lacks an identity")
-                continue
-            released = faults.get(row["id"])
-            if (
-                released is None
-                or ("ownerCaseId" in row and row["ownerCaseId"] != released.get("ownerCaseId"))
-                or not isinstance(released.get("releasedAtMs"), (int, float))
-                or isinstance(released["releasedAtMs"], bool)
-            ):
-                errors.append(f"Final retirement omitted or changed observed fault {row['id']}")
-        remaining = list(events)
-        for completion in normalize_retirement_events(earlier.get("completions", []), errors):
-            match = next(
-                (
-                    index
-                    for index, event in enumerate(remaining)
-                    if _owned_record_enriches(completion, event, event=True)
-                ),
-                None,
-            )
-            if match is None:
-                errors.append("Retirement omitted or changed previously observed work completion")
-            else:
-                remaining.pop(match)
-    return list(dict.fromkeys(errors))
-
-
-def _ownership_claims(
-    journal: list[dict[str, Any]], evidence: Any, retirement: Any, cleanup: Any, *, case_id: str
-) -> set[tuple[str, str]]:
-    sources = [{"attempts": journal}, evidence, retirement]
-    if isinstance(cleanup, Mapping):
-        sources.extend(snapshot for phase in cleanup.values() if isinstance(phase, list) for snapshot in phase)
-    identities: set[tuple[str, str]] = set()
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        attempts = source.get("attempts")
-        for attempt in attempts if isinstance(attempts, list) else []:
-            if isinstance(attempt, Mapping):
-                for field in ("requestId", "executionArn"):
-                    if isinstance(identifier := attempt.get(field), str) and identifier.strip():
-                        identities.add((field, identifier))
-        histories = source.get("histories")
-        for history in histories if isinstance(histories, list) else []:
-            if (
-                isinstance(history, Mapping)
-                and history.get("ownerCaseId") == case_id
-                and isinstance(arn := history.get("executionArn"), str)
-                and arn.strip()
-            ):
-                identities.add(("executionArn", arn))
-        retirement = source.get("retirement")
-        inventories = [
-            (source.get("resourcesCreated"), False),
-            (source.get("faultsCreated"), True),
-        ]
-        if isinstance(retirement, Mapping):
-            inventories.extend([(retirement.get("resources"), False), (retirement.get("faults"), True)])
-        for resources, faults in inventories:
-            for resource in resources if isinstance(resources, list) else []:
-                if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
-                    continue
-                kind = "fault" if faults else resource.get("kind")
-                if kind in ("invocation", "execution", "callback", "control", "fault") and resource["id"].strip():
-                    field = {"invocation": "requestId", "execution": "executionArn"}.get(kind, kind)
-                    identities.add((field, resource["id"]))
-    return identities
-
-
 async def run_scenarios(
     scenarios: Sequence[Scenario],
     profiles: Sequence[Profile],
@@ -1275,7 +573,6 @@ async def run_scenarios(
     scheduler: ResourceScheduler | None = None,
     on_result: Callable[[ScenarioResult], None] | None = None,
     on_attempt: Callable[[ScenarioContext], None] | None = None,
-    validate_attempt: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> list[ScenarioResult]:
     """Prepare each profile once, then run compatible cases concurrently.
 
@@ -1290,11 +587,11 @@ async def run_scenarios(
     observations.
     Missing handlers, infrastructure failures and evidence gaps are never passes.
     ``scheduler`` serves this run only; sharing one across runs is not supported.
+    The adapter is trusted (see ``ScenarioAdapter``): results hold its newest
+    snapshots as reported.
     ``on_attempt`` is a synchronous durable journal sink called before transport
-    dispatch. ``validate_attempt`` checks each journaled or updated attempt
-    before ``on_attempt``. If it raises, an undispatched launch is rolled back, a
-    service-discovered attempt stays journaled, and a rejected update still binds
-    the request and execution identities it supplied. ``on_result`` receives case
+    dispatch. If it raises, an undispatched launch is rolled back and a
+    service-discovered attempt stays journaled. ``on_result`` receives case
     retirement and final profile-retirement updates, including cancelled cases;
     sinks should replace records by case ID.
     """
@@ -1307,43 +604,17 @@ async def run_scenarios(
         raise ValueError("Profiles must have unique identities and target resources")
     if len({case.case_id for case in scenarios}) != len(scenarios):
         raise ValueError("Case IDs must be unique within a run")
-    admission_identities: dict[str, dict[str, Any]] = {}
     for case in scenarios:
         if case.profile_id not in profile_map or case.slots > profile_map[case.profile_id].capacity:
             raise ValueError(f"Invalid profile or capacity budget for {case.case_id}")
-        profile = profile_map[case.profile_id]
-        deployment: dict[str, Any] = {
-            "functionArn": profile.resource_id,
-            "configurationDigest": profile.configuration_id,
-            "nativeConcurrency": profile.native_concurrency,
-        }
-        if profile.recovery_policy is not None:
-            deployment["recoveryPolicy"] = profile.recovery_policy
-        # Capture admission before adapter callbacks can replace context metadata.
-        admission_identities[case.case_id] = {
-            "runId": run_id,
-            "caseId": case.case_id,
-            "requirementId": case.requirement_id,
-            "coverageProfile": case.coverage_profile,
-            "artifact": {"sdk": profile.artifact_id},
-            "profile": deployment,
-        }
     for profile in profiles:
         leases.register(profile.resource_id, profile.capacity)
     if not callable(getattr(adapter, "finish", None)):
         raise ValueError("Adapter must implement finish(profile, *, quiescent) for cross-run ownership")
     leases.limit_concurrency(run_id, scenario_concurrency)
     completed: dict[str, ScenarioResult] = {}
-    trusted_observations: set[str] = set()
-    claim_owners: dict[tuple[str, str], set[str]] = {}
-    case_profiles = {case.case_id: case.profile_id for case in scenarios}
-    claim_conflicts: dict[str, set[str]] = {}
 
     def emit(result: ScenarioResult) -> ScenarioResult:
-        for error in sorted(claim_conflicts.get(result.case_id, ())):
-            if error not in result.errors:
-                result.errors.append(error)
-            result.status = "FAILED"
         completed[result.case_id] = result
         if on_result is not None:
             try:
@@ -1356,47 +627,14 @@ async def run_scenarios(
                     result.status = "INFRASTRUCTURE_ERROR"
         return result
 
-    def register_claims(case_id: str, claims: set[tuple[str, str]]) -> None:
-        for kind, resource_id in sorted(claims):
-            owners = claim_owners.setdefault((kind, resource_id), set())
-            if case_id in owners:
-                continue
-            owners.add(case_id)
-            if len(owners) == 1:
-                continue
-            error = f"INCOMPLETE: {kind} {resource_id} is claimed by multiple cases"
-            for owner in sorted(owners):
-                conflicts = claim_conflicts.setdefault(owner, set())
-                if error in conflicts:
-                    continue
-                conflicts.add(error)
-                target = profile_map[case_profiles[owner]].resource_id
-                leases._quarantine_claim_conflict(target, error)
-                if owner in completed:
-                    emit(completed[owner])
-
-    def record_attempt_claims(context: ScenarioContext) -> None:
-        register_claims(
-            context.scenario.case_id,
-            _ownership_claims(context.attempts, None, None, None, case_id=context.scenario.case_id),
-        )
-
     contexts = {
-        case.case_id: ScenarioContext(
-            run_id,
-            case,
-            profile_map[case.profile_id],
-            _on_attempt=on_attempt,
-            _on_claim=record_attempt_claims,
-            _validate_attempt=validate_attempt,
-            _claim_loop=asyncio.get_running_loop(),
-        )
+        case.case_id: ScenarioContext(run_id, case, profile_map[case.profile_id], _on_attempt=on_attempt)
         for case in scenarios
     }
     adapter_preparation_started: set[str] = set()
-    # A cancelled case-phase adapter task may have claimed any target, or still
-    # claim one later, even after it finished. A run with one reports no profile
-    # quiescent.
+    # Work that a cancelled case-phase adapter task started may still be running
+    # on any target, even after the task itself finished. A run with one reports
+    # no profile quiescent.
     interrupted: list[list[asyncio.Task[Any]]] = []
     prepared: dict[str, asyncio.Task[tuple[list[str], dict[str, dict[str, float]]]]] = {}
 
@@ -1404,8 +642,8 @@ async def run_scenarios(
         context = ScenarioContext(
             run_id, Scenario("deployment", "deployment", profile.profile_id, "deployment"), profile
         )
-        # Preparation has no claiming context, and a timed-out preparation
-        # leaves its own deployment lease non-quiescent, so it is not tracked.
+        # A timed-out preparation leaves its own deployment lease non-quiescent,
+        # so it is not tracked.
         residual: list[asyncio.Task[Any]] = []
 
         async def provision() -> None:
@@ -1427,75 +665,29 @@ async def run_scenarios(
 
     async def run_case(case: Scenario) -> ScenarioResult:
         context = contexts[case.case_id]
-        admitted_identity = admission_identities[case.case_id]
         residual: list[asyncio.Task[Any]] = []
         interrupted.append(residual)
         evidence: dict[str, Any] = {}
-        observation_baselines: list[dict[str, Any]] = []
+        observation_snapshots: list[dict[str, Any]] = []
         retirement_evidence: dict[str, Any] = {}
         cleanup_evidence: dict[str, list[dict[str, Any]]] = {}
         cleanup_changed = False
         collected_normally = False
         errors: list[str] = []
-        context_retention_failed = False
-        context_observations: dict[int, tuple[Any, dict[str, Any]]] = {}
         status = "COLLECTED"
         lease: Lease | None = None
         cancelled = False
 
-        def record_observations(snapshot: dict[str, Any]) -> set[tuple[str, ...]]:
-            if observation_baselines and same_json(observation_baselines[-1], snapshot):
-                return set()
-            register_claims(case.case_id, _ownership_claims([], snapshot, None, None, case_id=case.case_id))
-            order_conflicts: set[tuple[str, ...]] = {
-                (name, "sequence")
-                for name, order_changed in (
-                    ("sdkRequests", _sdk_frames_order_changed),
-                    ("events", _event_frames_order_changed),
-                )
-                if any(order_changed(previous, snapshot) for previous in observation_baselines)
-            }
-            # Use raw source orders, before delta extraction or inventory merging:
-            # merging disjoint fragments must not invent order between them.
-            observation_baselines.append(snapshot)
-            return order_conflicts
+        def observe(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+            """Freeze an adapter snapshot; adjudication compares their SDK observations."""
+            frozen = copy.deepcopy(dict(snapshot))
+            if frozen and not (observation_snapshots and same_json(observation_snapshots[-1], frozen)):
+                observation_snapshots.append(frozen)
+            return frozen
 
-        def retain_context(previous: dict[str, Any], provided: Any, phase: str) -> dict[str, Any]:
-            """Freeze known mappings without requiring provisional evidence to be complete."""
-            nonlocal context_retention_failed
-            retained = previous
-            sources = [provided]
-            if context.evidence is not provided:
-                sources.append(context.evidence)
-            for source in sources:
-                try:
-                    if not isinstance(source, Mapping):
-                        raise ValueError("Context observations must be an evidence object")
-                    previous_observation = context_observations.get(id(source))
-                    if previous_observation is not None and same_json(previous_observation[1], source):
-                        continue
-                    snapshot = copy.deepcopy(dict(source))
-                    order_conflicts = record_observations(snapshot) if snapshot else set()
-                    # Keep the object alive with its last snapshot: an unchanged
-                    # supplied object can legitimately predate newer context data.
-                    context_observations[id(source)] = (source, snapshot)
-                    updates = (
-                        snapshot
-                        if previous_observation is None
-                        else _observation_updates(previous_observation[1], snapshot)
-                    )
-                    retained, changes = _retain_observations(retained, updates, compare_sdk_order=False)
-                    changes.conflicts.update(order_conflicts)
-                    physical_conflicts = {path for path in changes.conflicts if path[:2] != ("replay", "sideEffects")}
-                    if physical_conflicts:
-                        paths = ", ".join(".".join(path) for path in sorted(physical_conflicts))
-                        diagnostic = f"Context observations conflict with retained facts ({phase}): {paths}"
-                        if diagnostic not in errors:
-                            errors.append(diagnostic)
-                except (Exception, asyncio.CancelledError) as exc:
-                    errors.append(f"Context observation retention ({phase}): {type(exc).__name__}: {exc}")
-                    context_retention_failed = True
-            return retained
+        def observe_context() -> None:
+            if isinstance(context.evidence, Mapping):
+                observe(context.evidence)
 
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
@@ -1560,64 +752,29 @@ async def run_scenarios(
 
             # Start and placement share a single budget: repeated placement
             # attempts cannot reset the clock or silently replace a cohort.
-            establishment_inputs: list[Any] = []
-
+            # Snapshot the context at every phase boundary, even after a failure.
             async def establish() -> None:
-                nonlocal evidence
-                for phase, operation in (("start", adapter.start), ("place", adapter.place)):
-                    provided = context.evidence
-                    establishment_inputs.append(provided)
-                    evidence = retain_context(evidence, provided, phase)
+                for operation in (adapter.start, adapter.place):
                     try:
                         await operation(context)
                     finally:
-                        evidence = retain_context(evidence, provided, phase)
+                        observe_context()
 
             try:
                 await _bounded(establish(), "placement", limits.placement, context, residual)
             finally:
-                # A bounded phase can return before a cancelled adapter settles.
-                # Capture discoveries already present on every supplied object.
-                for provided in establishment_inputs:
-                    evidence = retain_context(evidence, provided, "placement")
-            execution_input = context.evidence
-            evidence = retain_context(evidence, execution_input, "execution")
+                observe_context()
             try:
                 await _bounded(adapter.execute(context), "execution", limits.execution, context, residual)
             finally:
-                evidence = retain_context(evidence, execution_input, "execution")
-            collection_input = context.evidence
-            evidence = retain_context(evidence, collection_input, "collection")
+                observe_context()
             try:
                 collected = await _bounded(adapter.collect(context), "collection", limits.collection, context, residual)
             finally:
-                evidence = retain_context(evidence, collection_input, "collection")
-            if not isinstance(collected, Mapping):
-                raise ValueError("Adapter collection must return an evidence object")
-            order_conflicts = record_observations(copy.deepcopy(dict(collected)))
-            # Returned observations are newest, so valid sequence enrichment and
-            # monotonic completion win after all input-object discoveries survive.
-            evidence, changed = _retain_observations(evidence, collected, compare_sdk_order=False)
+                observe_context()
+            evidence = observe(collected)
             context.evidence = copy.deepcopy(evidence)
-            changed.conflicts.update(order_conflicts)
-            behavior_changes = {
-                path for path in changed.omitted | changed.conflicts if path[:2] == ("replay", "sideEffects")
-            }
-            changed.omitted.difference_update(behavior_changes)
-            changed.conflicts.difference_update(behavior_changes)
             collected_normally = True
-            ownership_errors = _ownership_errors(context, evidence)
-            if changed:
-                ownership_errors.append("Collection omitted or changed retained observations")
-            if context_retention_failed:
-                ownership_errors.append("Context did not retain trustworthy observations")
-            errors.extend(ownership_errors)
-            if errors:
-                status = "INCOMPLETE_EVIDENCE"
-            else:
-                trusted_observations.add(case.case_id)
-            if behavior_changes:
-                errors.append("INCOMPLETE: collection omitted or changed retained side-effect observations")
         except asyncio.CancelledError:
             status = "INFRASTRUCTURE_ERROR"
             errors.append("Scenario cancelled; retirement is still required")
@@ -1634,7 +791,6 @@ async def run_scenarios(
                 retired = False
                 physical_retirement_verified = False
                 cleanup_errors: list[str] = []
-                frozen_cleanup_identity: dict[str, Any] = {}
                 owned_inventories = (
                     "attempts",
                     "resourcesCreated",
@@ -1655,149 +811,57 @@ async def run_scenarios(
                         remaining.pop(match)
                     return bool(remaining)
 
-                def check_cleanup_identity(snapshot: Mapping[str, Any], phase: str) -> None:
-                    # Partial snapshots may omit metadata, but every supplied
-                    # identity must agree with admission and known observations.
-                    for key in ("runId", "caseId", "requirementId", "coverageProfile"):
-                        if key in snapshot and not same_json(snapshot[key], admitted_identity[key]):
-                            cleanup_errors.append(f"Cleanup {phase}: {key} differs from the admitted identity")
-                    if (
-                        "runtime" in snapshot
-                        and "runtime" in frozen_cleanup_identity
-                        and not same_json(snapshot["runtime"], frozen_cleanup_identity["runtime"])
-                    ):
-                        cleanup_errors.append(f"Cleanup {phase}: runtime differs from the observed identity")
-                    for section in ("artifact", "profile"):
-                        if section not in snapshot:
-                            continue
-                        supplied = snapshot[section]
-                        if not isinstance(supplied, Mapping):
-                            cleanup_errors.append(f"Cleanup {phase}: {section} must be an object")
-                            continue
-                        expected = (admitted_identity[section], frozen_cleanup_identity.get(section, {}))
-                        for key, value in supplied.items():
-                            if any(
-                                isinstance(fields, Mapping) and key in fields and not same_json(value, fields[key])
-                                for fields in expected
+                def retain_cleanup(phase: str) -> None:
+                    nonlocal cleanup_changed
+                    try:
+                        snapshot = copy.deepcopy(dict(context.evidence))
+                        cleanup_evidence[phase] = [snapshot]
+                        # The adapter's own collection failures invalidate
+                        # cleanup evidence even when no inventory changed.
+                        for index, message in enumerate(snapshot.get("collectionErrors", [])):
+                            cleanup_errors.append(f"Cleanup {phase}: collectionErrors[{index}]: {message}")
+                        for event in snapshot.get("events", []):
+                            # Events relay fixture output, which stays untrusted.
+                            if isinstance(event, Mapping) and event.get("kind") in (
+                                "observation_error",
+                                "control_error",
                             ):
                                 cleanup_errors.append(
-                                    f"Cleanup {phase}: {section}.{key} differs from the frozen identity"
+                                    f"Cleanup {phase}: {event['kind']} reports failed observation or control publication"
                                 )
-
-                def retain_cleanup(phase: str, retained: Any) -> None:
-                    nonlocal cleanup_changed
-                    # Retain the object handed to the adapter as well as its
-                    # replacement: additions made before assigning None or a
-                    # fresh snapshot must survive that replacement.
-                    sources = [retained]
-                    if context.evidence is not retained:
-                        sources.append(context.evidence)
-                    for source in sources:
-                        try:
-                            if not isinstance(source, Mapping):
-                                raise ValueError("Cleanup observations must remain an evidence object")
-                            snapshot = copy.deepcopy(dict(source))
-                            snapshots = cleanup_evidence.setdefault(phase, [])
-                            if not any(same_json(snapshot, previous) for previous in snapshots):
-                                snapshots.append(snapshot)
-                                register_claims(
-                                    case.case_id, _ownership_claims([], snapshot, None, None, case_id=case.case_id)
-                                )
-                                check_cleanup_identity(snapshot, phase)
-                                # Source failures invalidate cleanup evidence
-                                # even when ownership inventories did not change
-                                # or a later phase removes the diagnostics.
-                                source_errors = snapshot.get("collectionErrors", [])
-                                if not isinstance(source_errors, list):
-                                    cleanup_errors.append(
-                                        f"Cleanup {phase}: collectionErrors must be an array of non-empty strings"
-                                    )
-                                else:
-                                    for index, message in enumerate(source_errors):
-                                        if not isinstance(message, str) or not message.strip():
-                                            cleanup_errors.append(
-                                                f"Cleanup {phase}: collectionErrors[{index}] must be a non-empty string"
-                                            )
-                                        else:
-                                            cleanup_errors.append(
-                                                f"Cleanup {phase}: collectionErrors[{index}]: {message}"
-                                            )
-                                source_events = snapshot.get("events", [])
-                                if isinstance(source_events, list):
-                                    for event in source_events:
-                                        if isinstance(event, Mapping) and event.get("kind") in (
-                                            "observation_error",
-                                            "control_error",
-                                        ):
-                                            cleanup_errors.append(
-                                                f"Cleanup {phase}: {event['kind']} reports failed observation or control publication"
-                                            )
-                            cleanup_changed |= any(
-                                inventory_changed(evidence.get(name, []), snapshot.get(name, []))
-                                for name in owned_inventories
-                            )
-                        except (Exception, asyncio.CancelledError) as exc:
-                            cleanup_errors.append(f"Cleanup evidence retention ({phase}): {type(exc).__name__}: {exc}")
-
-                if not collected_normally:
-                    # Freeze context-held work before even a read-only collector
-                    # can mutate it, fail, or be cancelled.
-                    evidence = retain_context(evidence, context.evidence, "failure")
-                partial = getattr(adapter, "collect_partial", None)
-                if not collected_normally and not cancelled and not residual and callable(partial):
-                    partial_input = context.evidence
-                    partial_baseline = retain_context(evidence, partial_input, "partial collection")
-                    partial_captured: dict[str, Any] | None = None
-                    try:
-                        captured = await _bounded(
-                            partial(context), "partialCollection", limits.collection, context, residual
+                        cleanup_changed |= any(
+                            inventory_changed(evidence.get(name, []), snapshot.get(name, []))
+                            for name in owned_inventories
                         )
-                        if not isinstance(captured, Mapping):
-                            raise ValueError("Partial collection must return an evidence object")
-                        partial_captured = copy.deepcopy(dict(captured))
                     except (Exception, asyncio.CancelledError) as exc:
-                        errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
-                        cleanup_errors.append("Partial collection did not retain trustworthy observations")
-                    finally:
-                        # Preserve mutations to the supplied object even when
-                        # the collector replaced the attribute before returning.
-                        try:
-                            evidence = retain_context(partial_baseline, partial_input, "partial collection")
-                            if partial_captured is not None:
-                                partial_order_conflicts = record_observations(partial_captured)
-                                evidence, changed = _retain_observations(
-                                    evidence, partial_captured, compare_sdk_order=False
-                                )
-                                changed.conflicts.update(partial_order_conflicts)
-                                if changed:
-                                    errors.append("Partial collection omitted or changed retained observations")
-                        except (Exception, asyncio.CancelledError) as exc:
-                            errors.append(f"Partial context retention: {type(exc).__name__}: {exc}")
-                            cleanup_errors.append("Context did not retain trustworthy observations")
-                if context_retention_failed:
-                    cleanup_errors.append("Context did not retain trustworthy observations")
+                        cleanup_errors.append(f"Cleanup evidence retention ({phase}): {type(exc).__name__}: {exc}")
+
                 if not collected_normally:
-                    context.evidence = copy.deepcopy(evidence)
                     try:
-                        if evidence:
-                            errors.extend(_ownership_errors(context, evidence))
-                    except Exception as exc:
-                        errors.append(f"Context observation validation: {type(exc).__name__}: {exc}")
+                        evidence = observe(context.evidence)
+                    except (Exception, asyncio.CancelledError) as exc:
+                        errors.append(f"Context observations: {type(exc).__name__}: {exc}")
                         cleanup_errors.append("Context did not retain trustworthy observations")
-                try:
-                    frozen_cleanup_identity = copy.deepcopy(
-                        {key: evidence[key] for key in ("runtime", "artifact", "profile") if key in evidence}
-                    )
-                except (Exception, asyncio.CancelledError) as exc:
-                    cleanup_errors.append(f"Cleanup identity retention: {type(exc).__name__}: {exc}")
-                release_evidence = context.evidence
+                    partial = getattr(adapter, "collect_partial", None)
+                    if not cancelled and not residual and callable(partial):
+                        try:
+                            try:
+                                captured = await _bounded(
+                                    partial(context), "partialCollection", limits.collection, context, residual
+                                )
+                            finally:
+                                observe_context()
+                            evidence = observe(captured)
+                        except (Exception, asyncio.CancelledError) as exc:
+                            errors.append(f"Partial observation collection: {type(exc).__name__}: {exc}")
+                            cleanup_errors.append("Partial collection did not retain trustworthy observations")
+                    context.evidence = copy.deepcopy(evidence)
                 try:
                     await _bounded(adapter.release(context), "release", limits.release, context, residual)
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"fault release: {type(exc).__name__}: {exc}")
                 finally:
-                    retain_cleanup("release", release_evidence)
-                retire_evidence = context.evidence
+                    retain_cleanup("release")
                 try:
                     retired = (
                         await _bounded(adapter.retire(context), "retirement", limits.retirement, context, residual)
@@ -1808,27 +872,22 @@ async def run_scenarios(
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"retirement: {type(exc).__name__}: {exc}")
                 finally:
-                    retain_cleanup("retire", retire_evidence)
+                    retain_cleanup("retire")
                 # A timed-out adapter can continue sending requests despite
                 # task cancellation. Conservatively require explicit recovery.
                 if residual:
                     cleanup_errors.append("A bounded phase was interrupted; residual work requires reconciliation")
                 normal_retirement = evidence
                 try:
-                    if not isinstance(context.evidence, Mapping):
-                        raise ValueError("Cleanup observations must remain an evidence object")
-                    normal_retirement = (
-                        {**evidence, "retirement": copy.deepcopy(context.evidence["retirement"])}
-                        if evidence and not cleanup_changed and "retirement" in context.evidence
-                        else evidence
-                    )
+                    if evidence and not cleanup_changed and "retirement" in context.evidence:
+                        normal_retirement = {**evidence, "retirement": copy.deepcopy(context.evidence["retirement"])}
                 except (Exception, asyncio.CancelledError) as exc:
                     cleanup_errors.append(f"Cleanup evidence retention: {type(exc).__name__}: {exc}")
                 cleanup_snapshots = [item for snapshots in cleanup_evidence.values() for item in snapshots]
                 retirement_claims = any(
                     isinstance(retirement := frame.get("retirement"), Mapping)
                     and any(retirement.get(field) for field in ("resources", "faults", "completions"))
-                    for frame in [*observation_baselines, evidence, *cleanup_snapshots]
+                    for frame in [*observation_snapshots, evidence, *cleanup_snapshots]
                 )
                 owned_work = (
                     retirement_claims
@@ -1839,8 +898,8 @@ async def run_scenarios(
                         snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
-                # Adapter evidence is untrusted. A malformed deferral must fail
-                # retirement here; raising would skip the non-quiescent release.
+                # A failed deferral reconciliation must fail retirement here;
+                # raising would skip the non-quiescent release.
                 try:
                     journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
                     if journaled_late:
@@ -1863,53 +922,19 @@ async def run_scenarios(
                     cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
                     full_runtime_audit_required = True
                 supplied_retirement = context.retirement_evidence
-                if not isinstance(supplied_retirement, Mapping):
-                    cleanup_errors.append("Independent retirement snapshot must be an object")
                 if owned_work and (
                     status != "COLLECTED" or supplied_retirement or cleanup_changed or full_runtime_audit_required
                 ):
                     try:
-                        retirement_evidence = (
-                            copy.deepcopy(dict(supplied_retirement)) if isinstance(supplied_retirement, Mapping) else {}
-                        )
+                        retirement_evidence = copy.deepcopy(dict(supplied_retirement))
                         if not retirement_evidence and status == "COLLECTED" and cleanup_changed:
-                            if not isinstance(context.evidence, Mapping):
-                                raise ValueError("Normal cleanup did not retain a complete retirement snapshot")
                             retirement_evidence = copy.deepcopy(dict(context.evidence))
                         if not retirement_evidence:
                             work = "Launched work" if context.attempts else "Owned work"
                             cleanup_errors.append(f"{work} has no independent retirement evidence")
                         else:
-                            check_cleanup_identity(retirement_evidence, "retirement snapshot")
-                            observed_frames = [
-                                *observation_baselines,
-                                evidence,
-                                *cleanup_snapshots,
-                                retirement_evidence,
-                            ]
-                            native = _native_intervals(observed_frames)
-                            ownership_retirement = copy.deepcopy(retirement_evidence)
-                            for attempt in ownership_retirement.get("attempts", []):
-                                if not isinstance(attempt, dict) or not isinstance(attempt.get("requestId"), str):
-                                    continue
-                                for field, (measured_at, platform) in native.get(attempt["requestId"], {}).items():
-                                    if (
-                                        platform
-                                        and attempt.get(field) == measured_at
-                                        and attempt.get(f"{field}Source") in (None, "fixture")
-                                    ):
-                                        attempt[f"{field}Source"] = "platform"
-                            audit = [
-                                error
-                                for baseline in [*observation_baselines, evidence, *cleanup_snapshots]
-                                for error in _retirement_ownership_errors(
-                                    context, baseline, ownership_retirement, compare_order=baseline is not evidence
-                                )
-                            ]
-                            audit.extend(
-                                validate_retirement_evidence(
-                                    retirement_evidence, allow_no_launches=not context.attempts
-                                )
+                            audit = validate_retirement_evidence(
+                                retirement_evidence, allow_no_launches=not context.attempts
                             )
                             if audit:
                                 errors.extend(error for error in audit if error not in errors)
@@ -1918,36 +943,19 @@ async def run_scenarios(
                                 physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
-                # Envelope changes do not alter ownership inventories, but they
-                # still constrain the collection and retirement proof. Audit all
-                # raw snapshots so later corrections cannot erase malformed data.
-                for finding in _cleanup_envelope_errors(
-                    [*observation_baselines, evidence, *cleanup_snapshots, retirement_evidence],
-                    retirement_evidence or normal_retirement,
-                ):
-                    if finding not in cleanup_errors:
-                        cleanup_errors.append(finding)
+                # Every SDK record's native owner must be settled, including
+                # records that only a cleanup snapshot observed.
                 cleanup_errors.extend(
                     issue
                     for issue in _cleanup_record_errors(
-                        [*observation_baselines, evidence, *cleanup_snapshots, retirement_evidence],
+                        [*observation_snapshots, evidence, *cleanup_snapshots, retirement_evidence],
                         retirement_evidence or normal_retirement,
                     )
                     if issue.startswith("INCOMPLETE:")
                 )
-                try:
-                    cleanup_errors.extend(
-                        _retained_retirement_errors(
-                            [*observation_baselines, evidence, *cleanup_snapshots],
-                            retirement_evidence or normal_retirement,
-                        )
-                    )
-                except Exception as exc:
-                    cleanup_errors.append(f"Retirement observation reconciliation: {type(exc).__name__}: {exc}")
                 if owned_work and not physical_retirement_verified:
                     if evidence:
-                        audit = _ownership_errors(context, evidence, complete_cohort=False)
-                        audit.extend(validate_observed_retirement(normal_retirement))
+                        audit = validate_observed_retirement(normal_retirement)
                         errors.extend(error for error in audit if error not in errors)
                     else:
                         audit = ["Owned work has no captured retirement evidence"]
@@ -1956,17 +964,22 @@ async def run_scenarios(
                         cleanup_errors.append("Final retirement evidence did not establish quiescence")
                 if not retirement_evidence and normal_retirement is not evidence:
                     retirement_evidence = normal_retirement
+                # This reads only the coordinator's own journal: a dispatched
+                # launch whose invocation was never identified may still run,
+                # and no retirement snapshot can show that it ended. A launch
+                # the service definitely rejected never started.
+                if any(
+                    not attempt.get("requestId") and not invoke_rejection_proven(attempt)
+                    for attempt in context.attempts
+                ):
+                    cleanup_errors.append(
+                        "Every launched attempt must retain an identified invocation request before retirement"
+                    )
                 if cleanup_errors:
                     if status == "COLLECTED":
                         status = "INFRASTRUCTURE_ERROR"
                     errors.extend(cleanup_errors)
-                register_claims(
-                    case.case_id,
-                    _ownership_claims(
-                        context.attempts, evidence, retirement_evidence, cleanup_evidence, case_id=case.case_id
-                    ),
-                )
-                await lease.release(quiescent=retired and not cleanup_errors and case.case_id not in claim_conflicts)
+                await lease.release(quiescent=retired and not cleanup_errors)
         result = emit(
             ScenarioResult(
                 case.case_id,
@@ -1979,8 +992,8 @@ async def run_scenarios(
                 context.timings,
                 retirement_evidence=retirement_evidence,
                 cleanup_evidence=cleanup_evidence,
-                observation_evidence=observation_baselines,
-                trusted_observations=case.case_id in trusted_observations,
+                observation_evidence=observation_snapshots,
+                trusted_observations=collected_normally,
             )
         )
         if cancelled:
@@ -1993,9 +1006,8 @@ async def run_scenarios(
     finishing_profiles: set[asyncio.Task[Any]] = set()
 
     async def finish_profile(profile_id: str) -> None:
-        # Any case can register a claim that conflicts with another profile's
-        # target. Decide quiescence only after every case, in every profile,
-        # has registered its claims.
+        # Profiles finish only after every case in every profile, so a run lock
+        # that several targets share is released once (see ScenarioAdapter).
         await asyncio.gather(prepared[profile_id], *tasks, return_exceptions=True)
         if profile_id not in adapter_preparation_started:
             return

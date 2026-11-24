@@ -455,7 +455,7 @@ def test_preflight_value_error_does_not_retain_empty_case_but_keeps_a_prepared_i
 
 @pytest.mark.parametrize("reject", [False, True])
 def test_driver_threads_journal_on_the_coordinator_loop(tmp_path, monkeypatch, reject):
-    """The context refuses journal calls off its loop; the adapter's view marshals them."""
+    """The adapter's view runs worker-thread journal calls on the coordinator loop."""
     import threading
 
     from aws_durable_execution_conformance_tests.lmi import quarantine
@@ -492,7 +492,10 @@ def test_driver_threads_journal_on_the_coordinator_loop(tmp_path, monkeypatch, r
         def retire(self):
             return True
 
-    def validate_attempt(attempt):
+    sink_threads: set[threading.Thread] = set()
+
+    def on_attempt(context):
+        sink_threads.add(threading.current_thread())
         if reject:
             raise ValueError("journal refused the launch")
 
@@ -503,12 +506,13 @@ def test_driver_threads_journal_on_the_coordinator_loop(tmp_path, monkeypatch, r
     value = adapter(tmp_path)
     value.driver_factory = Driver  # type: ignore[assignment]
     (result,) = asyncio.run(
-        run_scenarios(
-            [case], [profile], value, run_id="run", scheduler=ResourceScheduler(), validate_attempt=validate_attempt
-        )
+        run_scenarios([case], [profile], value, run_id="run", scheduler=ResourceScheduler(), on_attempt=on_attempt)
     )
+    # Worker threads journal through the adapter's view, so the sink runs on the
+    # coordinator loop's thread.
+    assert sink_threads == {threading.main_thread()}
     if reject:
-        # The hook's failure reaches the worker before it dispatches anything.
+        # The journal sink's failure reaches the worker before it dispatches anything.
         assert calls == []
         assert result.attempts == []
         assert any("journal refused the launch" in error for error in result.errors), result.errors
