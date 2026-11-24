@@ -13,7 +13,8 @@ import json
 import math
 import os
 import sys
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Coroutine, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal, InvalidOperation
@@ -557,14 +558,28 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _sync_file(path: Path) -> None:
+    """Persist an existing file's contents and its directory entry."""
+    # Windows flushes only through a writable handle; POSIX also syncs read-only files.
+    descriptor = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _sync_directory(path.parent)
+
+
 def _write_new_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
-    """Create ``path`` exclusively with the manifest, leaving nothing on failure."""
+    """Create ``path`` exclusively and durably with the manifest, leaving nothing on failure."""
     document = _dump_json(manifest) + "\n"
     created = False
     try:
         with path.open("x") as stream:
             created = True
             stream.write(document)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _sync_directory(path.parent)
     except BaseException:
         if created:
             path.unlink(missing_ok=True)
@@ -690,12 +705,15 @@ async def collect_and_adjudicate(
     manifest_path = audit_dir / "manifest.json"
     # Claim this run's output before any adapter work, then bind the manifest
     # under that claim. Simultaneous callers targeting the same directory cannot
-    # interleave their journals or record another plan's manifest.
+    # interleave their journals or record another plan's manifest. The manifest
+    # is durable before the adapter loads, so a journaled dispatch never outlives
+    # the profile, resource, and artifact bindings it refers to.
     capture_path.touch(exist_ok=False)
     try:
         if manifest_path.exists():
             if not same_json(_read_json(manifest_path), manifest):
                 raise ValueError("audit directory contains a different manifest")
+            _sync_file(manifest_path)
         else:
             _write_new_manifest(manifest_path, manifest)
     except BaseException:
@@ -960,6 +978,56 @@ def build_report(
     return report
 
 
+# How long each teardown step may take once collection has returned.
+_RESIDUAL_TASK_GRACE_SECONDS = 30.0
+
+
+def _run_collection[T](main: Coroutine[Any, Any, T]) -> T:
+    """Run ``main`` like ``asyncio.run``, but bound every teardown step.
+
+    ``run_scenarios`` stops waiting for adapter work that outlives its harness
+    budget and quarantines the target instead. ``asyncio.run`` would cancel that
+    work at teardown and wait for it without a bound, so a task that suppresses
+    cancellation would keep the reports from being written.
+    """
+    runner = asyncio.Runner()
+    loop = runner.get_loop()
+    try:
+        return runner.run(main)
+    finally:
+        try:
+            _drain_leftover_tasks(loop)
+        finally:
+            # Runner.close() would wait for leftover tasks again, without a bound.
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    deadline = time.monotonic() + _RESIDUAL_TASK_GRACE_SECONDS
+    cancelled: set[asyncio.Task[Any]] = set()
+    while (pending := [task for task in asyncio.all_tasks(loop) if not task.done()]) and (
+        remaining := deadline - time.monotonic()
+    ) > 0:
+        # Cancel each task once; cancelling again would interrupt its cleanup.
+        for task in pending:
+            if task not in cancelled:
+                task.cancel()
+                cancelled.add(task)
+        # Rescan often, so tasks started while others unwind are cancelled too.
+        loop.run_until_complete(asyncio.wait(pending, timeout=min(remaining, 0.1)))
+    if pending:
+        print(
+            f"lmi-lifecycle: abandoned {len(pending)} task(s) that ignored cancellation at shutdown",
+            file=sys.stderr,
+        )
+    asyncgens = loop.create_task(loop.shutdown_asyncgens())
+    loop.run_until_complete(asyncio.wait((asyncgens,), timeout=_RESIDUAL_TASK_GRACE_SECONDS))
+    # The Runner's default loop is a BaseEventLoop, whose executor shutdown takes a bound.
+    if isinstance(loop, asyncio.BaseEventLoop):
+        loop.run_until_complete(loop.shutdown_default_executor(_RESIDUAL_TASK_GRACE_SECONDS))
+
+
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="durable-execution-conformance lmi-lifecycle", description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -981,7 +1049,7 @@ def run(argv: list[str] | None = None) -> None:
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
         results = (
-            asyncio.run(collect_and_adjudicate(manifest, args.adapter, audit_dir=args.output))
+            _run_collection(collect_and_adjudicate(manifest, args.adapter, audit_dir=args.output))
             if args.adapter is not None
             else adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
             if args.collected_evidence is not None
