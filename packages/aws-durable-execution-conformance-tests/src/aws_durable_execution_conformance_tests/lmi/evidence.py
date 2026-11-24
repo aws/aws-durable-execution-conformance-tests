@@ -33,6 +33,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import _WORK_INTER
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     COMPLETED_OPERATION_STATUSES,
     HISTORY_STATUSES,
+    RECOVERY_POLICIES,
     REQUIREMENT_IDS,
     RUNTIMES,
     SCHEMA_VERSION,
@@ -46,6 +47,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 __all__ = [
     "COMPLETED_OPERATION_STATUSES",
     "HISTORY_STATUSES",
+    "RECOVERY_POLICIES",
     "REQUIREMENT_IDS",
     "RUNTIMES",
     "SCHEMA_VERSION",
