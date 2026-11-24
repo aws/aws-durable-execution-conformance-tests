@@ -235,7 +235,10 @@ def test_manifest_rejects_evidence_files(tmp_path):
     plan["scenarios"][0]["evidence_file"] = "evidence.json"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    with pytest.raises(ValueError, match="evidence_file is not supported"):
+    with pytest.raises(
+        ValueError,
+        match="evidence_file is not supported; remove it, since cases are adjudicated only from coordinator captures",
+    ):
         load_manifest(path)
 
 

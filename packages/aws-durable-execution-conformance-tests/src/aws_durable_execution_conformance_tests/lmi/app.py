@@ -331,7 +331,9 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
         if "evidence_file" in scenario:
-            raise ValueError("evidence_file is not supported; collect evidence with --adapter")
+            raise ValueError(
+                "evidence_file is not supported; remove it, since cases are adjudicated only from coordinator captures"
+            )
         if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
             raise ValueError("not_implemented must be a string")
     return manifest
