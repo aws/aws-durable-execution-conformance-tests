@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""SDK-owned bridge to the pinned shared LMI scenario coordinator."""
+"""The shared AWS driver's bridge to the LMI scenario coordinator, which trusts what it reports."""
 
 from __future__ import annotations
 
@@ -61,9 +61,9 @@ class _CoordinatorLoopContext:
     """A ScenarioContext view for driver worker threads.
 
     The driver runs blocking service calls in worker threads, but a
-    ScenarioContext refuses journal and claim calls from any thread other than
-    the coordinator's event loop. This view runs those calls on that loop and
-    waits for them, so a journal failure still stops the dispatch that follows.
+    ScenarioContext and its journal sink belong to the coordinator's event
+    loop. This view runs journal calls on that loop and waits for them, so a
+    journal failure still stops the dispatch that follows.
     Every other attribute is the context's own.
     """
 
