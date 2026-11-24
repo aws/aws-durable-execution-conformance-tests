@@ -4,11 +4,15 @@
 """Strict coverage and explicit LMI selection cannot silently accept missing work."""
 
 import asyncio
+import contextlib
 import errno
 import json
 import os
 import re
+import stat
 import sys
+import threading
+import time
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from decimal import Decimal
@@ -767,6 +771,203 @@ def test_directory_fsync_ignores_only_unsupported_operation_errors(tmp_path, mon
     assert len(closed) == 1
 
 
+@pytest.mark.parametrize("exists", [False, True])
+def test_collection_persists_the_manifest_before_loading_the_adapter(tmp_path, monkeypatch, exists):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    plan = manifest()
+    manifest_path = tmp_path / "manifest.json"
+    if exists:
+        # A caller may supply the manifest without having synced it.
+        manifest_path.write_text(app._dump_json(app._validate_manifest(deepcopy(plan))) + "\n")
+    events: list[tuple[str, Any]] = []
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        events.append(("fsync", os.fstat(descriptor).st_ino))
+        real_fsync(descriptor)
+
+    def create(received: Any) -> object:
+        events.append(("adapter", None))
+        return object()
+
+    async def run_cases(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(app.os, "fsync", fsync)
+    monkeypatch.setattr(app, "_sync_directory", lambda path: events.append(("directory", path)))
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=create)}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        asyncio.run(collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+    loaded = events.index(("adapter", None))
+    assert ("fsync", manifest_path.stat().st_ino) in events[:loaded], events
+    synced = events.index(("fsync", manifest_path.stat().st_ino))
+    assert ("directory", tmp_path) in events[synced:loaded], events
+
+
+def test_cli_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monkeypatch, capsys):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    cancellations: list[float] = []
+    leftovers: list[asyncio.Task[None]] = []
+
+    async def stubborn() -> None:
+        # Bounded so that a regression fails the timing check instead of hanging.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                cancellations.append(time.monotonic())
+
+    async def run_cases(*args: Any, **kwargs: Any) -> list[Any]:
+        # The coordinator abandons adapter work that outlives its harness budget.
+        leftovers.append(asyncio.get_running_loop().create_task(stubborn()))
+        return []
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    output = tmp_path / "out"
+    started = time.monotonic()
+    with (
+        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(SystemExit) as exc,
+    ):
+        run(["--manifest", str(source), "--adapter", "fixture:create", "--output", str(output)])
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, elapsed
+    assert exc.value.code == 1
+    assert cancellations, "the leftover task was never cancelled"
+    assert not leftovers[0].done()
+    assert "abandoned 1 task(s) that ignored cancellation" in capsys.readouterr().err
+    assert json.loads((output / "report.json").read_text())["ci"]["exit_code"] == 1
+    assert (output / "report.xml").is_file()
+
+
+@pytest.mark.parametrize("stubborn", [False, True])
+def test_shutdown_cancels_tasks_started_while_others_unwind(monkeypatch, capsys, stubborn):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 2.0)
+    events: list[str] = []
+    tasks: list[asyncio.Task[None]] = []
+
+    async def late() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            events.append("late cancelled")
+            raise
+
+    async def unwinding() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # Cleanup may start more work, which must be cancelled as well.
+            tasks.append(asyncio.get_running_loop().create_task(late()))
+            await asyncio.sleep(0)
+            events.append("unwound")
+            raise
+
+    async def ignores_cancellation() -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(0.01)
+
+    async def main() -> str:
+        loop = asyncio.get_running_loop()
+        tasks.append(loop.create_task(unwinding()))
+        if stubborn:
+            tasks.append(loop.create_task(ignores_cancellation()))
+        await asyncio.sleep(0)
+        return "result"
+
+    started = time.monotonic()
+    assert app._run_collection(main()) == "result"
+    elapsed = time.monotonic() - started
+
+    assert events == ["unwound", "late cancelled"]
+    unwound, *others, started_late = tasks
+    assert unwound.done() and started_late.done()
+    assert [task.done() for task in others] == ([False] if stubborn else [])
+    warning = capsys.readouterr().err
+    if stubborn:
+        # The stubborn task holds the loop until the grace period ends, not longer.
+        assert 2.0 <= elapsed < 5, elapsed
+        assert "abandoned 1 task(s) that ignored cancellation" in warning
+    else:
+        assert elapsed < 1, elapsed
+        assert warning == ""
+
+
+def test_shutdown_bounds_async_generator_finalization(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
+    generators: list[Any] = []
+
+    async def slow_to_close() -> Any:
+        try:
+            yield 1
+        finally:
+            await asyncio.sleep(10)
+
+    async def main() -> str:
+        generators.append(slow_to_close())
+        await generators[0].__anext__()
+        return "result"
+
+    started = time.monotonic()
+    assert app._run_collection(main()) == "result"
+    assert time.monotonic() - started < 5
+
+
+def test_shutdown_bounds_the_default_executor(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
+    release = threading.Event()
+
+    async def main() -> str:
+        # A blocked executor thread is not a task, so only the executor shutdown can bound it.
+        asyncio.get_running_loop().run_in_executor(None, release.wait, 10)
+        return "result"
+
+    started = time.monotonic()
+    try:
+        with pytest.warns(RuntimeWarning, match="did not finish"):
+            assert app._run_collection(main()) == "result"
+        assert time.monotonic() - started < 5
+    finally:
+        release.set()
+
+
+def test_shutdown_closes_the_loop_even_when_interrupted(monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    def interrupted(loop: asyncio.AbstractEventLoop) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app, "_drain_leftover_tasks", interrupted)
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def main() -> None:
+        loops.append(asyncio.get_running_loop())
+
+    with pytest.raises(KeyboardInterrupt):
+        app._run_collection(main())
+    assert loops[0].is_closed()
+    # No closed loop is left behind as the thread's current loop.
+    with pytest.raises(RuntimeError):
+        asyncio.get_event_loop()
+
+
 def test_failed_journal_directory_sync_aborts_the_append(tmp_path, monkeypatch):
     from aws_durable_execution_conformance_tests.lmi import app
 
@@ -1207,17 +1408,43 @@ def test_collection_refuses_a_used_directory_and_releases_its_claim(tmp_path, ex
     assert {path.name: path.read_text() for path in tmp_path.iterdir()} == before
 
 
-@pytest.mark.parametrize("failure", ["serialization", "write"])
+def _fail_file_fsync(monkeypatch: pytest.MonkeyPatch, app: Any) -> None:
+    """Fail fsync for regular files only, leaving directory syncs intact."""
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EIO, "fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(app.os, "fsync", fsync)
+
+
+@pytest.mark.parametrize("failure", ["serialization", "write", "fsync", "directory-sync"])
 def test_collection_leaves_no_partial_manifest(tmp_path, monkeypatch, failure):
     from aws_durable_execution_conformance_tests.lmi import app
 
-    if failure == "serialization":
+    if failure == "fsync":
+        _fail_file_fsync(monkeypatch, app)
+        expected: type[Exception] = OSError
+    elif failure == "directory-sync":
+        real_sync = app._sync_directory
+
+        def sync(path: Path) -> None:
+            # Only the manifest's own directory entry fails to persist.
+            if path == tmp_path:
+                raise OSError(errno.EIO, "directory sync failed")
+            real_sync(path)
+
+        monkeypatch.setattr(app, "_sync_directory", sync)
+        expected = OSError
+    elif failure == "serialization":
 
         def fail(value, **kwargs):
             raise TypeError("not serializable")
 
         monkeypatch.setattr(app, "_dump_json", fail)
-        expected: type[Exception] = TypeError
+        expected = TypeError
     else:
         opened = Path.open
 
@@ -1236,6 +1463,24 @@ def test_collection_leaves_no_partial_manifest(tmp_path, monkeypatch, failure):
         asyncio.run(app.collect_and_adjudicate(manifest(), "fixture:create", audit_dir=tmp_path))
     imports.import_module.assert_not_called()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_sync_of_a_supplied_manifest_releases_the_claim(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    plan = manifest()
+    supplied = app._dump_json(app._validate_manifest(deepcopy(plan))) + "\n"
+    (tmp_path / "manifest.json").write_text(supplied)
+    _fail_file_fsync(monkeypatch, app)
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.app.importlib") as imports,
+        pytest.raises(OSError, match="fsync failed"),
+    ):
+        asyncio.run(app.collect_and_adjudicate(plan, "fixture:create", audit_dir=tmp_path))
+    imports.import_module.assert_not_called()
+    # The caller's manifest stays; the run's output claim does not.
+    assert [path.name for path in tmp_path.iterdir()] == ["manifest.json"]
+    assert (tmp_path / "manifest.json").read_text() == supplied
 
 
 def test_collection_accepts_caller_owned_artifacts_beside_its_manifest(tmp_path):
