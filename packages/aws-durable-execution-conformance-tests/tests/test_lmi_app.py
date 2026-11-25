@@ -1186,6 +1186,98 @@ def test_cancelled_collection_reports_a_failed_final_journal_append(tmp_path, mo
     assert notes == (expected[1:] + expected[:1] if skipped else expected), notes
 
 
+def test_cancelling_real_collection_reports_no_internal_failure(tmp_path, monkeypatch):
+    real_shield = asyncio.shield
+
+    def reporting_shield(inner: Any) -> Any:
+        # Python 3.14.6 (not 3.14.10) reports any exception a shielded future finishes with after its
+        # waiter was cancelled.
+        outer = real_shield(inner)
+
+        def waiter_done(waiter: Any) -> None:
+            if waiter.cancelled():
+
+                def report(finished: Any) -> None:
+                    if not finished.cancelled() and finished.exception() is not None:
+                        error = finished.exception()
+                        finished.get_loop().call_exception_handler(
+                            {"message": f"{type(error).__name__} exception in shielded future", "exception": error}
+                        )
+
+                inner.add_done_callback(report)
+
+        outer.add_done_callback(waiter_done)
+        return outer
+
+    monkeypatch.setattr(asyncio, "shield", reporting_shield)
+    calls: list[str] = []
+
+    async def main() -> list[str]:
+        executing = asyncio.Event()
+
+        class Adapter:
+            async def prepare(self, profile: Any) -> None:
+                pass
+
+            async def finish(self, profile: Any, *, quiescent: bool) -> None:
+                calls.append("finish")
+
+            async def start(self, context: Any) -> None:
+                pass
+
+            async def place(self, context: Any) -> None:
+                pass
+
+            async def execute(self, context: Any) -> None:
+                executing.set()
+                await asyncio.sleep(60)
+
+            async def collect(self, context: Any) -> dict[str, Any]:
+                return {}
+
+            async def release(self, context: Any) -> None:
+                pass
+
+            async def retire(self, context: Any) -> bool:
+                calls.append("retire")
+                return True
+
+        reported: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: reported.append(context["message"]))
+        plan = manifest()
+        plan["scenarios"] = plan["scenarios"][:1]
+        task = asyncio.create_task(_collect_and_adjudicate(plan, lambda _: Adapter(), audit_dir=tmp_path / "out"))
+        # Bounded, so a run that fails before `execute` fails the test instead of hanging it.
+        waiting = asyncio.ensure_future(executing.wait())
+        await asyncio.wait((task, waiting), timeout=5, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            waiting.cancel()
+            task.result()
+        assert executing.is_set(), "collection never reached execute"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return reported
+
+    # The requested cancellation still finishes retirement, and no internal failure is reported.
+    assert asyncio.run(main()) == []
+    assert calls == ["retire", "finish"]
+
+
+def test_relative_audit_directories_sync_every_ancestor(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    working = tmp_path / "new-working-directory"
+    working.mkdir()
+    monkeypatch.chdir(working)
+    synced: list[Path] = []
+    monkeypatch.setattr(app, "_sync_directory", synced.append)
+    app._make_durable_directory(Path("lmi-collection"))
+    # The working directory and every directory above it hold entries this run relies on.
+    assert synced == list((Path.cwd() / "lmi-collection").parents)
+
+
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 

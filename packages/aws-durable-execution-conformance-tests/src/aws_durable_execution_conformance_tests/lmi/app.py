@@ -620,6 +620,8 @@ def _make_durable_directory(path: Path) -> None:
     process can change must sync; one it cannot write, such as ``/``, cannot hold
     an entry this run created, so its sync is best effort.
     """
+    # A relative path's parents stop at "."; the directories above it need syncing too.
+    path = path.absolute()
     created = {directory for directory in (path, *path.parents) if not directory.exists()}
     path.mkdir(parents=True, exist_ok=True)
     for directory in (path, *path.parents):
