@@ -1014,17 +1014,30 @@ def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
 _hard_exit: Callable[[int], NoReturn] = os._exit
 
 
-def run(argv: list[str] | None = None) -> None:
-    """Run the CLI, then exit even if a thread started during the run is still alive.
+def _hard_exit_with_lingering_threads(lingering: list[threading.Thread], code: int) -> NoReturn:
+    names = ", ".join(thread.name for thread in lingering)
+    print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()
+    _hard_exit(code or 0)
+
+
+def _run_guarding_lingering_threads[T](body: Callable[[], T]) -> T:
+    """Run ``body``, then exit directly if it leaves a non-daemon thread alive.
 
     Interpreter shutdown joins every non-daemon thread without a bound. When a
-    non-daemon thread started during the run is still alive as the CLI finishes,
-    the process ends with the CLI's exit code without waiting for it. That path
-    skips atexit hooks.
+    non-daemon thread started while ``body`` ran is still alive once ``body``
+    returns or raises, the process cannot otherwise exit; it ends immediately
+    with ``body``'s result, or with the exit code its exception implies,
+    without waiting for that thread. That path skips atexit hooks.
+
+    Callers must resolve ``_hard_exit`` through this module at call time
+    (not import it directly), so tests can replace it for in-process runs.
     """
     existing = set(threading.enumerate())
     try:
-        _run(argv)
+        result = body()
     except BaseException as error:
         lingering = [
             thread
@@ -1041,12 +1054,27 @@ def run(argv: list[str] | None = None) -> None:
         else:
             traceback.print_exception(error)
             code = 130 if isinstance(error, KeyboardInterrupt) else 1
-        names = ", ".join(thread.name for thread in lingering)
-        print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
-        for stream in (sys.stdout, sys.stderr):
-            with contextlib.suppress(OSError, ValueError):
-                stream.flush()
-        _hard_exit(code or 0)
+        _hard_exit_with_lingering_threads(lingering, code or 0)
+    else:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if lingering:
+            _hard_exit_with_lingering_threads(lingering, result if isinstance(result, int) else 0)
+        return result
+
+
+def run(argv: list[str] | None = None) -> None:
+    """Run the CLI, then exit even if a thread started during the run is still alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started during the run is still alive as the CLI finishes,
+    the process ends with the CLI's exit code without waiting for it. That path
+    skips atexit hooks.
+    """
+    _run_guarding_lingering_threads(lambda: _run(argv))
 
 
 def _run(argv: list[str] | None) -> None:

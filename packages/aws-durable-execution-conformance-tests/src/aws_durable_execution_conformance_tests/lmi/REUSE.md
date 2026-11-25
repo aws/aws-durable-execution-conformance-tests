@@ -22,6 +22,12 @@ not code:
 | `runner.make_manifest` | Exact SDK artifact identity and conformance revision |
 | `runner.run`, `runner.cleanup`, `summary.summarize` | Deployment manifest, manifest factory, or run artifacts |
 
+`runner.run` is the SDK entry point for `raise SystemExit(runner.run(...))`
+(the Python SDK adoption below calls it this way). If a worker thread the
+run started is still alive once it returns, the process is terminated
+directly with the run's exit code, because interpreter shutdown would
+otherwise join that thread forever and the process would never exit.
+
 Construct a deployment manager with explicit SDK choices, for example:
 
 ```python
@@ -200,7 +206,10 @@ count per operation name (one entry each for `success`, `failure`, and `retry`
 by default); an entry with `values` expects one count per listed value. For
 each expected `(operation, value)` key, the first durable operation ID the
 driver observes owns that count; any other ID sharing the key, or a body whose
-key is not expected, gets zero. Operations without a configured name expect
+key is not expected, gets zero. One operation ID must report the same value on
+every attempt: an ID whose bodies report more than one key, or whose first body
+has an unexpected key, gets zero and owns no further key. Operations without a
+configured name expect
 zero effects. The shared runner compares actual checkpoints and outcomes. SDK
 hooks must observe the real public API and must not emulate an unsupported
 operation.
@@ -260,7 +269,9 @@ directory and pass that same directory to build, deploy, run, collect, and clean
 Deployment archives existing output only after it holds the target fences.
 Writers and cleanup use a nonblocking POSIX lock alongside each journal.
 Automatic recovery of an uncertain write requires the original artifact root,
-lock inode, and Linux boot identity. Keep the lock files with the journals.
+lock inode, and boot identity (Linux `boot_id` or macOS `kern.bootsessionuuid`).
+On a host with neither, deployment writes fail before they start. Keep the lock
+files with the journals.
 The shared workflow owns setup of driver Python,
 OIDC credentials and refreshes, account verification, deployment/test budgets,
 always-run collection/cleanup, artifact upload and the job summary. Cloud work

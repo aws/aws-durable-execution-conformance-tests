@@ -1548,8 +1548,9 @@ def _binding_replay_effect_policy(binding: FixtureBinding) -> ReplayEffectPolicy
     effect declares, or a single ``(operation, None)`` key when it declares none.
     For each key, the first durable operation ID observed owns its ``count``; any
     other ID sharing that key gets zero, and a body whose key is not expected also
-    gets zero. Keys with no owner are reported missing, named ``operation`` or
-    ``operation:value``.
+    gets zero. An operation ID whose bodies report more than one key, or whose
+    first body has an unexpected key, gets zero and owns no further key. Keys with
+    no owner are reported missing, named ``operation`` or ``operation:value``.
     """
     expected: dict[tuple[str, int | None], int] = {
         (effect.operation, value): effect.count
@@ -1561,15 +1562,27 @@ def _binding_replay_effect_policy(binding: FixtureBinding) -> ReplayEffectPolicy
     def policy(bodies: Sequence[Mapping[str, Any]]) -> tuple[dict[str, int], list[str]]:
         owners: dict[tuple[str, int | None], str] = {}
         allowances: dict[str, int] = {}
+        # Each ID's first body fixes the key (or None, for an unexpected key)
+        # it may ever own; a later body carrying a different or unexpected key
+        # cannot claim another key and instead zeroes the ID's allowance, so
+        # the count check reports a side-effect count mismatch.
+        first_keys: dict[str, tuple[str, int | None] | None] = {}
         for body in bodies:
             name, identity = body["operation"], body["operationId"]
             value = body.get("value") if name in valued_operations else None
             key = (name, value)
-            if (name in valued_operations and type(value) is not int) or key not in expected:
-                allowances.setdefault(identity, 0)
+            valid = not (name in valued_operations and type(value) is not int) and key in expected
+            if identity in first_keys:
+                # ``valid`` keeps the comparison type-strict: True and 1.0 equal 1.
+                if not valid or key != first_keys[identity]:
+                    allowances[identity] = 0
+                continue
+            first_keys[identity] = key if valid else None
+            if not valid:
+                allowances[identity] = 0
                 continue
             owner = owners.setdefault(key, identity)
-            allowances.setdefault(identity, expected[key] if identity == owner else 0)
+            allowances[identity] = expected[key] if identity == owner else 0
         missing = [
             f"{name}:{value}" if value is not None else name for name, value in expected if (name, value) not in owners
         ]

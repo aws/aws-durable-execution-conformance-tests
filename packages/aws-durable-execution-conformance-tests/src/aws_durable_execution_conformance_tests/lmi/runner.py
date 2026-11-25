@@ -120,51 +120,66 @@ def make_manifest(
 
 
 def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable) -> int:
-    from aws_durable_execution_conformance_tests.lmi.app import (
-        _run_collection,
-        build_report,
-        collect_and_adjudicate,
-        coverage_inventory,
-        load_manifest,
-    )
-    from aws_durable_execution_conformance_tests.reporters import (
-        render_console,
-        write_report,
-    )
+    """Run every coverage profile and return the combined exit code.
 
-    directory.mkdir(parents=True, exist_ok=True)
-    if any(directory.iterdir()):
-        raise ValueError("Shared run output must be empty; preserve prior attempts and failure evidence")
-    location = deployment.get("deploymentArtifactDirectory")
-    if isinstance(location, str) and location:
-        artifacts = Path(location).resolve()
-        output = directory.resolve()
-        recorded = output.relative_to(artifacts) if output.is_relative_to(artifacts) else output
-        save(artifacts / "case-output.json", {"runId": deployment["run"], "directory": str(recorded)})
-    exit_code = 0
-    for coverage in COVERAGE_PROFILES:
-        output = directory / coverage
-        output.mkdir()
-        plan = manifest_factory(deployment, coverage, output)
-        sdk = plan.get("sdk")
-        actual = sdk.get("deployment") if isinstance(sdk, Mapping) else None
-        _require_conformance_revision(actual.get("conformanceRevision") if isinstance(actual, Mapping) else None)
-        plan = sdk_plan_with_artifact_directory(output, plan)
-        path = output / "manifest.json"
-        save(path, plan)
-        validated = load_manifest(path)
-        # Bound teardown like the CLI: the coordinator abandons adapter work
-        # that outlives its budget, and asyncio.run would wait for it without
-        # a bound, so a task that ignores cancellation would block the reports.
-        results = _run_collection(collect_and_adjudicate(validated, audit_dir=output))
-        report = build_report(validated, results)
-        save(output / "evidence.json", results)
-        save(output / "coverage.json", coverage_inventory(validated))
-        print(render_console(report))
-        for format_name in ("json", "junit"):
-            write_report(report, format_name, str(output / "report"))
-        exit_code = max(exit_code, report.exit_code())
-    return exit_code
+    A blocked ``asyncio.to_thread`` worker started by the shared adapter can
+    outlive ``_run_collection``'s bounded teardown and hold a non-daemon
+    thread; interpreter shutdown would then join it forever. When such a
+    thread is still alive once this run finishes, the process is instead
+    terminated directly with this run's exit code (or with the exit code its
+    exception implies), because the interpreter could not otherwise exit.
+    That path skips atexit hooks.
+    """
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    def _body() -> int:
+        from aws_durable_execution_conformance_tests.lmi.app import (
+            _run_collection,
+            build_report,
+            collect_and_adjudicate,
+            coverage_inventory,
+            load_manifest,
+        )
+        from aws_durable_execution_conformance_tests.reporters import (
+            render_console,
+            write_report,
+        )
+
+        directory.mkdir(parents=True, exist_ok=True)
+        if any(directory.iterdir()):
+            raise ValueError("Shared run output must be empty; preserve prior attempts and failure evidence")
+        location = deployment.get("deploymentArtifactDirectory")
+        if isinstance(location, str) and location:
+            artifacts = Path(location).resolve()
+            output = directory.resolve()
+            recorded = output.relative_to(artifacts) if output.is_relative_to(artifacts) else output
+            save(artifacts / "case-output.json", {"runId": deployment["run"], "directory": str(recorded)})
+        exit_code = 0
+        for coverage in COVERAGE_PROFILES:
+            output = directory / coverage
+            output.mkdir()
+            plan = manifest_factory(deployment, coverage, output)
+            sdk = plan.get("sdk")
+            actual = sdk.get("deployment") if isinstance(sdk, Mapping) else None
+            _require_conformance_revision(actual.get("conformanceRevision") if isinstance(actual, Mapping) else None)
+            plan = sdk_plan_with_artifact_directory(output, plan)
+            path = output / "manifest.json"
+            save(path, plan)
+            validated = load_manifest(path)
+            # Bound teardown like the CLI: the coordinator abandons adapter work
+            # that outlives its budget, and asyncio.run would wait for it without
+            # a bound, so a task that ignores cancellation would block the reports.
+            results = _run_collection(collect_and_adjudicate(validated, audit_dir=output))
+            report = build_report(validated, results)
+            save(output / "evidence.json", results)
+            save(output / "coverage.json", coverage_inventory(validated))
+            print(render_console(report))
+            for format_name in ("json", "junit"):
+                write_report(report, format_name, str(output / "report"))
+            exit_code = max(exit_code, report.exit_code())
+        return exit_code
+
+    return app._run_guarding_lingering_threads(_body)
 
 
 def _recover_profile_fences(deployment, source, profiles, storage) -> list[str]:

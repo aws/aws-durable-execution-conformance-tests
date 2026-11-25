@@ -34,6 +34,7 @@ from aws_durable_execution_conformance_tests.lmi.source_evidence import (
     _binding_expected_outcome,
     _binding_replay_effect_policy,
     binding_evidence_builder,
+    replay_evidence,
 )
 
 from .support import RUNTIME
@@ -471,6 +472,66 @@ def test_derived_replay_policy_matches_pr931_on_owner_non_owner_and_missing_bodi
     assert derived_allowances == reference_allowances
     assert derived_missing == reference_missing
     assert reference_missing == ["retry", "item:3", "left", "right"]
+
+
+def _conflicting_values_binding() -> FixtureBinding:
+    """One operation, one value key, expecting count 2 for that key."""
+    return binding(replay_effects=(ReplayEffect(operation="item", count=2, values=(1,)),))
+
+
+@pytest.mark.parametrize("second", [2, True, 1.0])
+def test_binding_replay_effect_policy_zeroes_an_id_that_reports_a_different_value(second: Any):
+    # The same operation ID cannot own two different (or unexpected) keys: a
+    # later body with a different value must not be mistaken for a repeat of
+    # the first, so its allowance drops to 0 instead of silently keeping the
+    # first owned count. True and 1.0 compare equal to 1 in Python but are not
+    # the integer the binding declares.
+    bodies = [
+        {"operation": "item", "operationId": "x", "value": 1},
+        {"operation": "item", "operationId": "x", "value": second},
+    ]
+    allowances, missing = _binding_replay_effect_policy(_conflicting_values_binding())(bodies)
+    assert allowances == {"x": 0}
+    assert missing == []
+
+
+def test_binding_replay_effect_policy_keeps_an_id_that_repeats_its_value():
+    # The same key observed twice for the same ID is the valid case the fix
+    # must not regress: the ID keeps owning its expected count.
+    bodies = [
+        {"operation": "item", "operationId": "x", "value": 1},
+        {"operation": "item", "operationId": "x", "value": 1},
+    ]
+    allowances, missing = _binding_replay_effect_policy(_conflicting_values_binding())(bodies)
+    assert allowances == {"x": 2}
+    assert missing == []
+
+
+def test_conflicting_value_bodies_make_replay_evidence_report_a_side_effect_count_mismatch():
+    """End-to-end: one ID observed with two different values for one key is a
+    latent false pass without the fix (indistinguishable from a valid repeat).
+    The fix makes ``replay_evidence`` emit a real count/expectedCount mismatch,
+    which ``rules/replay.py`` reports as "side-effect count differs".
+    """
+    policy = _binding_replay_effect_policy(_conflicting_values_binding())
+    events: list[dict[str, Any]] = [
+        {"kind": "invocation_start", "requestId": "first", "executionArn": "execution"},
+        {"kind": "body", "requestId": "first", "operationId": "x", "operation": "item", "attempt": 1, "value": 1},
+        {"kind": "body", "requestId": "first", "operationId": "x", "operation": "item", "attempt": 2, "value": 2},
+    ]
+    histories = [{"executionArn": "execution", "operations": [{"id": "x", "name": "item"}]}]
+    replay = replay_evidence(
+        events,
+        histories,
+        {"victim": "first"},
+        expected_effects={"item": 2},
+        effect_policy=policy,
+    )
+    row = next(item for item in replay["sideEffects"] if item["operationId"] == "x")
+    assert (row["count"], row["expectedCount"]) == (2, 0)
+    # This is exactly the condition rules/replay.py flags as an ASSERTION
+    # finding ("side-effect count differs from the fixture's retry policy").
+    assert row["count"] != row["expectedCount"]
 
 
 @pytest.mark.parametrize(
