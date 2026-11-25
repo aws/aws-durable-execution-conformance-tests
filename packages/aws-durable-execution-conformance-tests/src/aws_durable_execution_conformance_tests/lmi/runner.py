@@ -175,7 +175,10 @@ def _recover_profile_fences(deployment, source, profiles, storage) -> list[str]:
         if not path.is_file():
             continue
         try:
-            with owner_lock(path) as owner:
+            # Recovery, not a new write: NOT_ADMITTED/RETIRED journals need only
+            # the flock. same_owner_lock's falsy check refuses an ACQUIRING
+            # record when no boot identity could be established here.
+            with owner_lock(path, require_boot_identity=False) as owner:
                 if not path.is_file():
                     continue
                 record = json.loads(path.read_text())
