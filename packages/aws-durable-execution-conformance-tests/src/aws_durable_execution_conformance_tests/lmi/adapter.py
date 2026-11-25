@@ -21,6 +21,7 @@ from aws_durable_execution_conformance_tests.lmi.configuration import configurat
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Profile,
     ScenarioContext,
+    _await_without_cancelling,
 )
 from aws_durable_execution_conformance_tests.lmi.errors import (
     CollectionBudgetExpired,
@@ -131,7 +132,7 @@ class _Case:
         try:
             # Keep the worker task alive on outer cancellation so retirement can
             # join the actual thread before issuing cleanup writes.
-            return await asyncio.shield(self.worker)
+            return await _await_without_cancelling(self.worker)
         except asyncio.CancelledError:
             self.driver.cloud.cancel()
             raise
@@ -139,7 +140,7 @@ class _Case:
     async def prepare_retirement(self) -> None:
         if self.worker is not None:
             try:
-                await asyncio.shield(self.worker)
+                await _await_without_cancelling(self.worker)
             except Exception:
                 # The coordinator retains the original phase error; this only
                 # confirms its service-call worker has really stopped.
@@ -265,7 +266,7 @@ class SharedAdapter:
         worker = asyncio.create_task(asyncio.to_thread(verify))
         self.preparation_workers[resource] = worker
         try:
-            self.prepared_clouds[resource] = await asyncio.shield(worker)
+            self.prepared_clouds[resource] = await _await_without_cancelling(worker)
         except asyncio.CancelledError:
             # Finish must still join the thread and recover a fence acquired
             # after the coordinator cancelled the provisioning phase.
@@ -444,7 +445,7 @@ class SharedAdapter:
         if worker is not None:
             # The provisioning phase already reports failures from this worker.
             with suppress(Exception):
-                self.prepared_clouds[resource] = await asyncio.shield(worker)
+                self.prepared_clouds[resource] = await _await_without_cancelling(worker)
             del self.preparation_workers[resource]
         prepared = self.prepared_clouds.get(resource)
         if prepared is None or not quiescent:

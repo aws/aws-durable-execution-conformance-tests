@@ -1563,6 +1563,115 @@ def test_cancelled_worker_is_joined_before_case_cleanup(monkeypatch, tmp_path):
     asyncio.run(exercise())
 
 
+def _reporting_shield(monkeypatch):
+    """Make ``asyncio.shield`` behave as on Python 3.14.6, which reports any exception a
+    shielded future finishes with after its waiter was cancelled."""
+    real_shield = asyncio.shield
+
+    def reporting_shield(inner: Any) -> Any:
+        outer = real_shield(inner)
+
+        def waiter_done(waiter: Any) -> None:
+            if waiter.cancelled():
+
+                def report(finished: Any) -> None:
+                    if not finished.cancelled() and finished.exception() is not None:
+                        error = finished.exception()
+                        finished.get_loop().call_exception_handler(
+                            {"message": f"{type(error).__name__} exception in shielded future", "exception": error}
+                        )
+
+                inner.add_done_callback(report)
+
+        outer.add_done_callback(waiter_done)
+        return outer
+
+    monkeypatch.setattr(asyncio, "shield", reporting_shield)
+
+
+def test_cancelled_case_worker_failure_is_not_reported_as_unhandled(monkeypatch, tmp_path):
+    _reporting_shield(monkeypatch)
+    entered, unblock = Event(), Event()
+
+    class Driver:
+        def __init__(self, context, cloud, **kwargs):
+            self.cloud = cloud
+
+        def start(self):
+            entered.set()
+            unblock.wait(2)
+            # The cancelled case's cloud refuses further work.
+            self.cloud.check_active()
+
+    monkeypatch.setattr(adapter_module, "ScenarioDriver", Driver)
+
+    async def exercise():
+        reported: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: reported.append(context["message"]))
+        value = adapter(tmp_path)
+        ctx = context()
+        starting = asyncio.create_task(value.start(ctx))
+        assert await asyncio.to_thread(entered.wait, 1)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        # A cancelled release must not leave a reporting waiter on the worker either.
+        releasing = asyncio.create_task(value.release(ctx))
+        await asyncio.sleep(0)
+        releasing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await releasing
+        unblock.set()
+        await value.release(ctx)
+        await asyncio.sleep(0)
+        return reported
+
+    assert asyncio.run(exercise()) == []
+
+
+def test_cancelled_preparation_failure_is_not_reported_as_unhandled(monkeypatch, tmp_path):
+    from aws_durable_execution_conformance_tests.lmi import quarantine
+
+    _reporting_shield(monkeypatch)
+    entered, unblock = Event(), Event()
+
+    def acquire(*args, **kwargs):
+        entered.set()
+        assert unblock.wait(2)
+        return "owned-token"
+
+    class InvalidCloud(FakeCloud):
+        def verify(self):
+            raise ProvisioningError("deployment drifted")
+
+    monkeypatch.setattr(quarantine, "acquire_fence", acquire)
+    monkeypatch.setattr(quarantine, "release_fence", lambda *args: None)
+
+    async def exercise():
+        reported: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: reported.append(context["message"]))
+        value = adapter(tmp_path, factory=InvalidCloud)
+        valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+        preparing = asyncio.create_task(value.prepare(valid))
+        assert await asyncio.to_thread(entered.wait, 1)
+        preparing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await preparing
+        # A cancelled finish must not leave a reporting waiter on the worker either.
+        finishing = asyncio.create_task(value.finish(valid, quiescent=True))
+        await asyncio.sleep(0)
+        finishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await finishing
+        unblock.set()
+        # Finish joins the preparation worker, whose verification failed after the cancellations.
+        await value.finish(valid, quiescent=True)
+        await asyncio.sleep(0)
+        return reported
+
+    assert asyncio.run(exercise()) == []
+
+
 class ScriptCloud:
     def __init__(self, native=1):
         self.concurrency = native
