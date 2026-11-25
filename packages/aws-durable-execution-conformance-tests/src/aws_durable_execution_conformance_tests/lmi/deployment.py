@@ -781,7 +781,10 @@ def recover_deployment_update(manifest, artifacts: Path, client_factory) -> str 
     journal = artifacts / "deployment-update.json"
     if not journal.is_file():
         return None
-    with owner_lock(journal) as owner:
+    # Recovery, not a new write: a SETTLED (or relocatable-settled) journal needs
+    # only the flock. same_owner_lock's falsy check refuses an uncertain record
+    # when no boot identity could be established here.
+    with owner_lock(journal, require_boot_identity=False) as owner:
         if not journal.is_file():
             return None
         return _recover_deployment_update(manifest, artifacts, client_factory, journal, owner)
