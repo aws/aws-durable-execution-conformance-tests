@@ -564,6 +564,18 @@ class ScenarioResult:
     trusted_observations: bool = field(default=False, kw_only=True)
 
 
+async def _await_without_cancelling[T](future: asyncio.Future[T]) -> T:
+    """Wait for ``future`` as ``asyncio.shield`` would, without its callbacks.
+
+    Cancelling the waiting task does not cancel ``future``. Some Python 3.14
+    releases report the exception a shielded future later finishes with, even an
+    expected ``CancelledError``, to the event loop's exception handler as an
+    unhandled failure; waiting with ``asyncio.wait`` registers no such callback.
+    """
+    await asyncio.wait((future,))
+    return future.result()
+
+
 async def _bounded(
     operation: Awaitable[Any], name: str, budget: float, context: ScenarioContext, residual: list[asyncio.Task[Any]]
 ) -> Any:
@@ -729,7 +741,7 @@ async def run_scenarios(
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
         try:
-            preparation_errors, preparation_timings = await asyncio.shield(prepared[case.profile_id])
+            preparation_errors, preparation_timings = await _await_without_cancelling(prepared[case.profile_id])
         except asyncio.CancelledError:
             # Waiting cases belong to the run's audit record even though they
             # never acquired a lease, so publish them before propagating.
@@ -1090,7 +1102,7 @@ async def run_scenarios(
         cancellation: asyncio.CancelledError | None = None
         while not finished.done():
             try:
-                await asyncio.shield(finished)
+                await _await_without_cancelling(finished)
             except asyncio.CancelledError as exc:
                 cancellation = exc
                 for task in tuple(finishing_profiles):
@@ -1102,7 +1114,8 @@ async def run_scenarios(
 
     draining = asyncio.create_task(drain_and_finish(), name="drain_and_finish")
     try:
-        outcomes = list(await asyncio.shield(case_results))
+        finished_cases = await _await_without_cancelling(case_results)
+        outcomes = list(finished_cases)
     finally:
         for task in (*tasks, *prepared.values()):
             # A case already in bounded cleanup must be allowed to retire.
@@ -1111,7 +1124,7 @@ async def run_scenarios(
         cancellation: asyncio.CancelledError | None = None
         while not draining.done():
             try:
-                await asyncio.shield(draining)
+                await _await_without_cancelling(draining)
             except asyncio.CancelledError as exc:
                 cancellation = exc
         if case_results.done() and not case_results.cancelled():

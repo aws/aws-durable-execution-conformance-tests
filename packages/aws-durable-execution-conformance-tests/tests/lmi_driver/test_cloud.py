@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 import hashlib
 import io
 import json
@@ -698,9 +701,11 @@ def test_full_collection_captures_acknowledged_execution_without_ledger(driver, 
         "TooManyRequestsException",
         "DurableExecutionAlreadyStartedException",
         "ExpiredTokenException",
+        "ServiceException",
     ],
 )
 def test_invoke_rejection_only_clears_intent_without_retries(driver, retries, code, tmp_path):
+    rejected = code != "ServiceException" and retries == 0
     driver.lam.invoke = Mock(
         side_effect=ClientError(
             {
@@ -720,8 +725,8 @@ def test_invoke_rejection_only_clears_intent_without_retries(driver, retries, co
         assert driver.run_invocations()[0] == []
         driver.lam.list_durable_executions_by_function.assert_not_called()
     else:
-        assert state == ("REJECTED" if retries == 0 else "SUBMITTED")
-    assert bool(driver.invocations) is (retries != 0)
+        assert state == ("REJECTED" if rejected else "SUBMITTED")
+    assert bool(driver.invocations) is not rejected
 
 
 def test_settlement_retries_visibility_independently_of_peer(driver):
@@ -1109,6 +1114,42 @@ def test_in_flight_read_after_collection_deadline_still_requires_outer_reconcili
     asyncio.run(exercise())
 
 
+def test_bounded_sets_collection_deadline_only_for_collection_phases():
+    import asyncio
+    import time
+
+    from aws_durable_execution_conformance_tests.lmi.coordinator import PhaseTimeout, _bounded
+
+    from .test_shared_partial_evidence import context
+
+    async def exercise():
+        budget = 0.3
+        for phase in ("collection", "partialCollection", "lease"):
+            ctx = context()
+            captured: dict[str, Any] = {}
+
+            async def op(ctx=ctx, captured=captured):
+                captured["deadline"] = ctx._collection_deadline
+
+            started = time.monotonic()
+            residual: list[asyncio.Task[Any]] = []
+            await _bounded(op(), phase, budget, ctx, residual)
+            if phase in {"collection", "partialCollection"}:
+                assert captured["deadline"] is not None
+                assert started < captured["deadline"] < started + budget
+            else:
+                assert captured["deadline"] is None
+            assert ctx._collection_deadline is None
+
+        ctx = context()
+        residual = []
+        with pytest.raises(PhaseTimeout):
+            await _bounded(asyncio.sleep(10), "collection", 0.05, ctx, residual)
+        assert ctx._collection_deadline is None
+
+    asyncio.run(exercise())
+
+
 def test_full_collection_refuses_foreign_service_input_despite_current_ledger(driver):
     target = driver.manifest["functions"]["c1"]
     arn = target + "/durable-execution/old/id"
@@ -1199,6 +1240,46 @@ def test_s3_refresh_retains_completed_batch_and_preserves_budget_expiry(driver):
     driver._read_transport = Mock(return_value=driver.s3)
     driver.refresh(markers=[])
     assert driver.binding_deferred is False
+
+
+def test_s3_refresh_budget_expiry_marks_every_marker_with_unread_keys_incomplete(driver):
+    # One marker fails a read in the first batch, and the budget expires
+    # before the second batch, which holds the rest of the other marker's
+    # keys. Binding must skip both markers, not bind "two" from a partial read.
+    listings = {
+        "runs/unit/events/one/": [f"runs/unit/events/one/{i}.json" for i in range(6)],
+        "runs/unit/events/two/": [f"runs/unit/events/two/{i}.json" for i in range(4)],
+    }
+    driver.s3.get_paginator.return_value.paginate.side_effect = lambda *, Prefix, **_: [
+        {"Contents": [{"Key": key} for key in listings[Prefix]], "IsTruncated": False}
+    ]
+
+    def read(*, Key, **_):
+        if Key == "runs/unit/events/one/3.json":
+            raise ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+        marker, name = Key.split("/")[-2:]
+        record = {
+            "run": "unit",
+            "commit": "commit",
+            "marker": marker,
+            "request": f"{marker}-request",
+            "phase": "WRAPPER_ENTER",
+            "time": 1,
+            "sequence": int(name.split(".")[0]),
+        }
+        return {"Body": io.BytesIO(json.dumps(record).encode())}
+
+    driver.s3.get_object.side_effect = read
+    driver._read_transport = Mock(
+        side_effect=[driver.s3, driver.s3, driver.s3, module.CollectionBudgetExpired("remaining collection margin")]
+    )
+    incomplete = []
+    driver._bind_requests = Mock(side_effect=lambda events, markers=None: incomplete.append(markers))
+    with pytest.raises(CollectionError):
+        driver.refresh(markers=["one", "two"])
+    assert driver.s3.get_object.call_count == 8
+    assert incomplete == [{"one", "two"}]
+    assert driver.binding_deferred is True
 
 
 def _single_key_wrapper_enter(driver, *, marker="one", request="req-0", execution="execution-arn"):

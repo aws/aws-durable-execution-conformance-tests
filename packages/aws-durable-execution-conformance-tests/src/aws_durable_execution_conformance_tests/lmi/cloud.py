@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Bounded real-service driver using the repository's cloud runner."""
 
@@ -165,7 +166,6 @@ class Cloud:
         self._history_lock = Lock()
         self._retiring = False
         self.request_roles: dict[str, str] = {}
-        self.request_launches: dict[str, str] = {}
         self.raw_histories: dict[str, list[dict[str, Any]]] = {}
         self.terminal_histories: set[str] = set()
         self.execution_results: dict[str, dict[str, Any]] = {}
@@ -387,7 +387,6 @@ class Cloud:
                 )
             item["native_requests"].append(event["request"])
             self.request_roles[event["request"]] = role
-            self.request_launches[event["request"]] = launch_id
 
     def verify(self):
         if self.manifest.get("concurrencies") != CONCURRENCIES or set(self.manifest["functions"]) != set(CONCURRENCIES):
@@ -686,7 +685,11 @@ class Cloud:
                     try:
                         read_transport = self._read_transport("s3", self.s3)
                     except CollectionBudgetExpired as error:
-                        failures.append(("", error))
+                        # Every marker with an unread key is incomplete, so
+                        # binding cannot treat its partial read as complete.
+                        failures.extend(
+                            (marker, error) for marker in dict.fromkeys(missing[key] for key in keys[start:])
+                        )
                         break
                     pending = {key: readers.submit(read, key) for key in keys[start : start + 8]}
                     for key, future in pending.items():

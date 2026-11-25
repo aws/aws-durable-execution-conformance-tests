@@ -795,8 +795,8 @@ def test_withdraw_attempt_restores_the_attempt_when_the_sink_fails():
     assert len(calls) == 1
     with pytest.raises(OSError, match="journal disk full"):
         context.withdraw_attempt("launch")
-    # Memory must still agree with the durable journal, which never dropped
-    # the attempt either, since the sink raised before it could.
+    # Memory keeps the attempt even though the sink may already have
+    # recorded its removal.
     assert [item["attemptId"] for item in context.attempts] == ["launch"]
 
 

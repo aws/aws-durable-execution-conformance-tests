@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """Explicit test fixture policies; no language SDK is needed by the shared harness."""
 
 from functools import partial

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """The shared transport has no dependency on a language SDK's testing library."""
 
 import io
