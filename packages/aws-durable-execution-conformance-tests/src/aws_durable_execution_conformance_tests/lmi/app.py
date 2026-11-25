@@ -31,7 +31,6 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     EvidenceValidator,
     is_json_integer,
     same_json,
-    validate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
@@ -331,11 +330,12 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         if "coverage_profile" in scenario:
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
-        if "not_implemented" in scenario:
-            if not isinstance(scenario["not_implemented"], str):
-                raise ValueError("not_implemented must be a string")
-            if scenario.get("evidence_file"):
-                raise ValueError("a scenario cannot declare both evidence_file and not_implemented")
+        if "evidence_file" in scenario:
+            raise ValueError(
+                "evidence_file is not supported; remove it, since cases are adjudicated only from coordinator captures"
+            )
+        if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
+            raise ValueError("not_implemented must be a string")
     return manifest
 
 
@@ -351,14 +351,6 @@ def load_collected_evidence(path: Path) -> Any:
     collection reads its own capture back before adjudicating it.
     """
     return _read_json(path)
-
-
-def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
-    if evidence.get("coverageProfile", "standard") != "standard":
-        return ["INCOMPLETE: unknown evidence coverage profile"]
-    if phase not in ("observations", "final"):
-        return ["INCOMPLETE: unknown evidence validation phase"]
-    return validate_evidence(evidence, phase="observations" if phase == "observations" else "final")
 
 
 def _identity_errors(
@@ -383,8 +375,8 @@ def _identity_errors(
         errors.append("INCOMPLETE: evidence coverageProfile does not match the admitted run")
     profile = next(profile for profile in manifest["profiles"] if profile["profile_id"] == scenario["profile_id"])
     definition = _case_definition(manifest, scenario, profile, suite)
-    # A manifest may declare roles beyond the requirement's defaults, and
-    # retained evidence must cover every declared role for every suite.
+    # A manifest may declare roles beyond the requirement's defaults. Collected
+    # evidence must cover the declared role set for every suite.
     declared = set(scenario.get("roles", definition.roles))
     selected_roles = evidence.get("selectedRequests")
     if not isinstance(selected_roles, Mapping) or set(selected_roles) != declared:
@@ -432,102 +424,6 @@ def _identity_errors(
     if profile.get("recovery_policy") is not None and observed.get("recoveryPolicy") != profile["recovery_policy"]:
         errors.append("INCOMPLETE: observed recovery policy does not match the declared profile")
     return errors
-
-
-def evidence_results(
-    manifest: Mapping[str, Any], base: Path, *, suite: SuiteDefinition | None = None
-) -> list[dict[str, Any]]:
-    _required(manifest, suite)
-    results = []
-    for scenario in manifest["scenarios"]:
-        result: dict[str, Any] = {
-            "case_id": scenario["case_id"],
-            "requirement_id": scenario["requirement_id"],
-            "profile_id": scenario["profile_id"],
-        }
-        if "not_implemented" in scenario:
-            result.update(status="NOT_IMPLEMENTED", errors=[scenario["not_implemented"]])
-        elif not scenario.get("evidence_file"):
-            result.update(status="INCOMPLETE_EVIDENCE", errors=["INCOMPLETE: missing evidence_file"])
-        else:
-            try:
-                evidence = _read_json(base / scenario["evidence_file"])
-                if not isinstance(evidence, dict):
-                    raise ValueError("evidence must be an object")
-                errors = _identity_errors(manifest, scenario, evidence, suite=suite) + list(
-                    (suite.validator if suite else validate)(evidence)
-                )
-                result.update(evidence=evidence, errors=errors, status="FAILED" if errors else "PASSED")
-            except (OSError, ValueError, TypeError) as exc:
-                result.update(status="INCOMPLETE_EVIDENCE", errors=[f"INCOMPLETE: {exc}"])
-        results.append(result)
-    _check_unique_ownership(results)
-    return results
-
-
-def _ownership_claims(
-    journal: list[dict[str, Any]], evidence: Any, retirement: Any, cleanup: Any, *, case_id: str
-) -> set[tuple[str, str]]:
-    sources = [{"attempts": journal}, evidence, retirement]
-    if isinstance(cleanup, Mapping):
-        sources.extend(snapshot for phase in cleanup.values() if isinstance(phase, list) for snapshot in phase)
-    identities: set[tuple[str, str]] = set()
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        attempts = source.get("attempts")
-        for attempt in attempts if isinstance(attempts, list) else []:
-            if isinstance(attempt, Mapping):
-                for field in ("requestId", "executionArn"):
-                    if isinstance(identifier := attempt.get(field), str) and identifier.strip():
-                        identities.add((field, identifier))
-        histories = source.get("histories")
-        for history in histories if isinstance(histories, list) else []:
-            if (
-                isinstance(history, Mapping)
-                and history.get("ownerCaseId") == case_id
-                and isinstance(arn := history.get("executionArn"), str)
-                and arn.strip()
-            ):
-                identities.add(("executionArn", arn))
-        retirement = source.get("retirement")
-        inventories = [
-            (source.get("resourcesCreated"), False),
-            (source.get("faultsCreated"), True),
-        ]
-        if isinstance(retirement, Mapping):
-            inventories.extend([(retirement.get("resources"), False), (retirement.get("faults"), True)])
-        for resources, faults in inventories:
-            for resource in resources if isinstance(resources, list) else []:
-                if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
-                    continue
-                kind = "fault" if faults else resource.get("kind")
-                if kind in ("invocation", "execution", "callback", "control", "fault") and resource["id"].strip():
-                    field = {"invocation": "requestId", "execution": "executionArn"}.get(kind, kind)
-                    identities.add((field, resource["id"]))
-    return identities
-
-
-def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
-    """Fail standalone evidence files that claim another case's work."""
-    claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for result in results:
-        identities = _ownership_claims(
-            result.get("attempts", []),
-            result.get("evidence"),
-            result.get("retirement_evidence"),
-            result.get("cleanup_evidence"),
-            case_id=result["case_id"],
-        )
-        for claim in sorted(identities):
-            claims.setdefault(claim, []).append(result)
-    for (kind, resource_id), owners in claims.items():
-        if len(owners) > 1:
-            for owner in owners:
-                error = f"INCOMPLETE: {kind} {resource_id} is claimed by multiple cases"
-                if error not in owner["errors"]:
-                    owner["errors"].append(error)
-                owner["status"] = "FAILED"
 
 
 def _audit_append_boundary(stream: BinaryIO) -> int:
@@ -1125,7 +1021,8 @@ def _run(argv: list[str] | None) -> None:
     parser.add_argument(
         "--collected-evidence",
         type=Path,
-        help="adjudicate a saved collected-evidence bundle; omit to validate retained evidence files",
+        required=True,
+        help="adjudicate a saved collected-evidence bundle",
     )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
@@ -1137,11 +1034,7 @@ def _run(argv: list[str] | None) -> None:
         # Every mode claims the directory with an exclusive manifest write, so
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
-        results = (
-            adjudicate_collected_evidence(manifest, load_collected_evidence(args.collected_evidence))
-            if args.collected_evidence is not None
-            else evidence_results(manifest, args.manifest.parent)
-        )
+        results = adjudicate_collected_evidence(manifest, load_collected_evidence(args.collected_evidence))
         report = build_report(manifest, results)
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))

@@ -26,8 +26,8 @@ import pytest
 
 from aws_durable_execution_conformance_tests.lmi.app import (
     _collect_and_adjudicate,
+    adjudicate_collected_evidence,
     build_report,
-    evidence_results,
     load_manifest,
     run,
 )
@@ -81,6 +81,61 @@ def manifest():
             for req, definition in requirements("lifecycle").items()
         ],
     }
+
+
+def coordinator_capture(plan, evidence_by_case):
+    """Return a coordinator-shaped capture with one row per admitted case."""
+    rows = []
+    for case in plan["scenarios"]:
+        row = {"case_id": case["case_id"], "requirement_id": case["requirement_id"], "profile_id": case["profile_id"]}
+        if "not_implemented" in case:
+            row.update(status="NOT_IMPLEMENTED", errors=[case["not_implemented"]])
+        elif case["case_id"] in evidence_by_case:
+            evidence = evidence_by_case[case["case_id"]]
+            row.update(
+                status="COLLECTED",
+                errors=[],
+                evidence=evidence,
+                retirement_evidence=deepcopy(evidence),
+                cleanup_evidence={},
+                observation_evidence=[],
+                attempts=[],
+            )
+        else:
+            row.update(status="INCOMPLETE_EVIDENCE", errors=["INCOMPLETE: no observations collected"])
+        rows.append(row)
+    return rows
+
+
+def run_collected_text(directory, plan, raw_evidence, capsys):
+    """Adjudicate a one-case capture whose evidence is raw JSON text through the CLI.
+
+    Returns the published results, or the CLI's error output if it rejected the run.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (case,) = plan["scenarios"]
+    row = {
+        "case_id": case["case_id"],
+        "requirement_id": case["requirement_id"],
+        "profile_id": case["profile_id"],
+        "status": "COLLECTED",
+        "errors": [],
+        "retirement_evidence": {},
+        "cleanup_evidence": {},
+        "observation_evidence": [],
+        "attempts": [],
+    }
+    collected = directory / "collected-evidence.json"
+    collected.write_text(json.dumps([row])[:-2] + ', "evidence": ' + raw_evidence + "}]")
+    source = directory / "manifest.json"
+    source.write_text(json.dumps(plan))
+    output = directory / "out"
+    with pytest.raises(SystemExit) as exc:
+        run(["--manifest", str(source), "--collected-evidence", str(collected), "--output", str(output)])
+    captured = capsys.readouterr()
+    if exc.value.code == 2:
+        return captured.err
+    return json.loads((output / "evidence.json").read_text(), parse_float=Decimal)
 
 
 def passed_results(plan):
@@ -175,12 +230,15 @@ def test_manifest_default_profiles_are_independent_of_order(tmp_path):
     assert load_manifest(path) == plan
 
 
-def test_manifest_rejects_not_implemented_with_evidence(tmp_path):
+def test_manifest_rejects_evidence_files(tmp_path):
     plan = manifest()
-    plan["scenarios"][0].update(not_implemented="unavailable", evidence_file="evidence.json")
+    plan["scenarios"][0]["evidence_file"] = "evidence.json"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    with pytest.raises(ValueError, match="cannot declare both evidence_file and not_implemented"):
+    with pytest.raises(
+        ValueError,
+        match="evidence_file is not supported; remove it, since cases are adjudicated only from coordinator captures",
+    ):
         load_manifest(path)
 
 
@@ -286,20 +344,16 @@ def test_valid_plan_can_exceed_native_invocation_concurrency(tmp_path):
 
 
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
-def test_evidence_file_rejects_nonfinite_json_numbers(tmp_path, literal):
+def test_collected_evidence_rejects_nonfinite_json_numbers(tmp_path, capsys, literal):
     plan = manifest()
-    plan["scenarios"][0]["evidence_file"] = "evidence.json"
-    (tmp_path / "evidence.json").write_text('{"result": [' + literal + "]}")
-    result = evidence_results(plan, tmp_path)[0]
-    assert result["status"] == "INCOMPLETE_EVIDENCE"
-    assert result["errors"] == ["INCOMPLETE: JSON numbers must be finite"]
-    assert "evidence" not in result
+    plan["scenarios"] = plan["scenarios"][:1]
+    errors = run_collected_text(tmp_path, plan, '{"result": [' + literal + "]}", capsys)
+    assert "JSON numbers must be finite" in errors
 
 
-def test_evidence_cannot_be_substituted_between_cases_or_artifacts(tmp_path):
+def test_evidence_cannot_be_substituted_between_cases_or_artifacts():
     plan = manifest()
     case = plan["scenarios"][0]
-    case["evidence_file"] = "evidence.json"
     evidence = {
         "caseId": "other-case",
         "runId": "other-run",
@@ -308,24 +362,17 @@ def test_evidence_cannot_be_substituted_between_cases_or_artifacts(tmp_path):
         "profile": {"functionArn": "other-function"},
         "artifact": {"sdk": "other-commit"},
     }
-    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
-    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
-        result = evidence_results(plan, tmp_path)[0]
-    assert result["status"] == "FAILED"
-    assert any("artifact" in error for error in result["errors"])
-    assert any("caseId" in error for error in result["errors"])
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {case["case_id"]: evidence}))[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE", result["errors"]
+    assert "INCOMPLETE: evidence SDK artifact does not match the deployed revision" in result["errors"]
+    assert "INCOMPLETE: evidence caseId does not match the admitted case" in result["errors"]
 
 
-def test_retained_evidence_must_cover_every_declared_cohort_role(tmp_path):
-    """A manifest may declare roles beyond the requirement's defaults.
-
-    Collection rejects an incomplete cohort through the coordinator's ownership
-    check, so retained evidence must be held to the same declared role set.
-    """
+def test_collected_evidence_must_cover_every_declared_cohort_role():
+    """A manifest may declare roles beyond the requirement's defaults."""
     plan = manifest()
     case = next(item for item in plan["scenarios"] if item["scenario"] == "native-overlap")
     plan["scenarios"] = [case]
-    case["evidence_file"] = "evidence.json"
     case["roles"] = ["victim", "peer", "spare"]
     profile = next(item for item in plan["profiles"] if item["profile_id"] == case["profile_id"])
     evidence = {
@@ -341,15 +388,12 @@ def test_retained_evidence_must_cover_every_declared_cohort_role(tmp_path):
         "artifact": {"sdk": profile["artifact_id"]},
         "selectedRequests": {"victim": "request-1", "peer": "request-2"},
     }
-    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
-    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
-        result = evidence_results(plan, tmp_path)[0]
-    assert result["status"] == "FAILED"
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {case["case_id"]: evidence}))[0]
+    assert result["status"] != "PASSED"
     assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
     evidence["selectedRequests"]["spare"] = "request-3"
-    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
-    with patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]):
-        assert evidence_results(plan, tmp_path)[0]["status"] == "PASSED"
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {case["case_id"]: evidence}))[0]
+    assert not any("declared cohort role" in error for error in result["errors"]), result["errors"]
 
 
 def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
@@ -357,8 +401,10 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
     plan["scenarios"] = []
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
     with pytest.raises(SystemExit) as exc:
-        run(["--manifest", str(path), "--output", str(tmp_path / "out")])
+        run(["--manifest", str(path), "--collected-evidence", str(collected), "--output", str(tmp_path / "out")])
     assert exc.value.code == 1
     report = json.loads((tmp_path / "out/report.json").read_text())
     assert report["summary"]["uncovered"] == 7
@@ -375,8 +421,11 @@ def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reas
     path.write_text(json.dumps(plan))
     output = tmp_path / "out"
 
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text(json.dumps(coordinator_capture(plan, {})))
+
     with pytest.raises(SystemExit) as exc:
-        run(["--manifest", str(path), "--output", str(output)])
+        run(["--manifest", str(path), "--collected-evidence", str(collected), "--output", str(output)])
     assert exc.value.code == 1
     console = capsys.readouterr().out
     assert "Not implemented (declared SDK gap):" in console
@@ -1047,8 +1096,7 @@ def test_failed_journal_directory_sync_aborts_the_append(tmp_path, monkeypatch):
         app._append_audit(tmp_path / "attempts.jsonl", {"first": True})
 
 
-@pytest.mark.parametrize("mode", ["collected-evidence", "evidence-files"])
-def test_every_cli_mode_claims_the_output_directory_exclusively(tmp_path, monkeypatch, capsys, mode):
+def test_adjudication_claims_the_output_directory_exclusively(tmp_path, monkeypatch, capsys):
     source = tmp_path / "manifest.json"
     source.write_text(json.dumps(manifest()))
     output = tmp_path / "out"
@@ -1057,9 +1105,8 @@ def test_every_cli_mode_claims_the_output_directory_exclusively(tmp_path, monkey
     (output / "manifest.json").write_text(json.dumps(manifest()) + "\n")
     listing = Path.iterdir
     monkeypatch.setattr(Path, "iterdir", lambda path: iter(()) if path == output else listing(path))
-    selected = ["--collected-evidence", str(source)] if mode == "collected-evidence" else []
     with pytest.raises(SystemExit) as error:
-        run(["--manifest", str(source), "--output", str(output), *selected])
+        run(["--manifest", str(source), "--output", str(output), "--collected-evidence", str(source)])
     assert error.value.code == 2
     assert "manifest.json" in capsys.readouterr().err
     assert sorted(path.name for path in listing(output)) == ["manifest.json"]
@@ -1307,14 +1354,37 @@ def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_pa
 def test_cli_does_not_accept_an_adapter(tmp_path, capsys, adapter):
     source = tmp_path / "manifest.json"
     source.write_text(json.dumps(manifest()))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
     with (
-        patch("aws_durable_execution_conformance_tests.lmi.app.evidence_results") as evidence_files,
+        patch("aws_durable_execution_conformance_tests.lmi.app.adjudicate_collected_evidence") as adjudicate,
         pytest.raises(SystemExit) as error,
     ):
-        run(["--manifest", str(source), "--output", str(tmp_path / "out"), "--adapter", adapter])
+        run(
+            [
+                "--manifest",
+                str(source),
+                "--collected-evidence",
+                str(collected),
+                "--output",
+                str(tmp_path / "out"),
+                "--adapter",
+                adapter,
+            ]
+        )
     assert error.value.code == 2
     assert "unrecognized arguments: --adapter" in capsys.readouterr().err
-    evidence_files.assert_not_called()
+    adjudicate.assert_not_called()
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_requires_an_evidence_source(tmp_path, capsys):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    with pytest.raises(SystemExit) as error:
+        run(["--manifest", str(source), "--output", str(tmp_path / "out")])
+    assert error.value.code == 2
+    assert "the following arguments are required: --collected-evidence" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
 
 
@@ -1365,12 +1435,14 @@ def test_collection_skips_the_adapter_when_every_case_is_not_implemented(tmp_pat
 def test_output_reuse_preserves_previous_run(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest()))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
     output = tmp_path / "out"
     output.mkdir()
     original = output / "evidence.json"
     original.write_text("retained original evidence")
     with pytest.raises(SystemExit) as error:
-        run(["--manifest", str(path), "--output", str(output)])
+        run(["--manifest", str(path), "--collected-evidence", str(collected), "--output", str(output)])
     assert error.value.code == 2
     assert original.read_text() == "retained original evidence"
 
@@ -1395,7 +1467,6 @@ def timed_plan(requirement: int) -> tuple[dict[str, Any], dict[str, Any]]:
     case = plan["scenarios"][0]
     case.update(
         case_id=value["caseId"],
-        evidence_file="evidence.json",
         behavior_budgets=deepcopy(value["budgets"]),
         roles=list(value["selectedRequests"]),
         slots=2,
@@ -1416,12 +1487,11 @@ def test_standard_extension_budget_binding_preserves_json_types(tmp_path, requir
     value["budgets"]["extensionAllowance"] = observed
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
     admitted = load_manifest(path)
 
-    result = evidence_results(admitted, tmp_path)[0]
+    result = adjudicate_collected_evidence(admitted, coordinator_capture(admitted, {value["caseId"]: value}))[0]
 
-    assert result["status"] == ("PASSED" if matches else "FAILED")
+    assert result["status"] == ("PASSED" if matches else "INCOMPLETE_EVIDENCE"), result["errors"]
     if not matches:
         assert any("behavior budgets" in error for error in result["errors"])
 
@@ -1452,131 +1522,64 @@ def test_standard_evidence_cannot_weaken_declared_timing_budgets(tmp_path, requi
         plan["scenarios"][0]["behavior_budgets"][tightened] = 0.5
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    result = evidence_results(load_manifest(path), tmp_path)[0]
-    assert result["status"] == ("PASSED" if tightened is None else "FAILED"), result
+    admitted = load_manifest(path)
+    result = adjudicate_collected_evidence(admitted, coordinator_capture(admitted, {value["caseId"]: value}))[0]
+    assert result["status"] == ("PASSED" if tightened is None else "INCOMPLETE_EVIDENCE"), result
     if tightened is not None:
         assert any("behavior budgets" in error for error in result["errors"])
 
 
 @pytest.mark.parametrize("requirement", [3, 4])
-@pytest.mark.parametrize(("released", "expected_status"), [(230, "FAILED"), (215, "PASSED")])
-def test_evidence_file_final_validation_rejects_observed_fault_release_after_retirement(
-    tmp_path, requirement, released, expected_status
-):
+@pytest.mark.parametrize(("released", "expected_status"), [(230, "INCOMPLETE_EVIDENCE"), (215, "PASSED")])
+def test_final_validation_rejects_observed_fault_release_after_retirement(requirement, released, expected_status):
     plan, value = timed_plan(requirement)
     value["faultsCreated"][0]["releasedAtMs"] = released
     assert value["retirement"]["retiredAtMs"] == 220
     assert value["retirement"]["faults"][0]["releasedAtMs"] == 210
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(plan))
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
 
-    result = evidence_results(load_manifest(path), tmp_path)[0]
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {value["caseId"]: value}))[0]
 
     assert result["status"] == expected_status
-    assert result["errors"] == (
-        ["INCOMPLETE: observed fault release occurred after retirement ended"] if released == 230 else []
+    assert ("INCOMPLETE: observed fault release occurred after retirement ended" in result["errors"]) == (
+        released == 230
     )
+    if released == 215:
+        assert result["errors"] == []
 
 
 @pytest.mark.parametrize("omit_declared", [False, True])
-def test_evidence_file_budget_binding_permits_extensions_but_requires_declared_keys(tmp_path, omit_declared):
+def test_budget_binding_permits_extensions_but_requires_declared_keys(omit_declared):
     plan, value = timed_plan(3)
     plan["scenarios"][0]["behavior_budgets"]["extraBudget"] = 1
     value["budgets"]["adapterMetadata"] = None
     if not omit_declared:
         value["budgets"]["extraBudget"] = 1
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path)[0]
-    assert result["status"] == ("FAILED" if omit_declared else "PASSED"), result["errors"]
+    result = adjudicate_collected_evidence(plan, coordinator_capture(plan, {value["caseId"]: value}))[0]
+    assert result["status"] == ("INCOMPLETE_EVIDENCE" if omit_declared else "PASSED"), result["errors"]
 
 
-def test_evidence_file_preserves_large_integral_decimal_values(tmp_path):
+def test_collected_evidence_preserves_large_integral_decimal_values(tmp_path, capsys):
     plan = manifest()
-    plan["scenarios"][0]["evidence_file"] = "evidence.json"
-    (tmp_path / "evidence.json").write_text('{"result":9007199254740993.0}')
-    result = evidence_results(plan, tmp_path)[0]
-    assert result["evidence"]["result"] == 9007199254740993
+    plan["scenarios"] = plan["scenarios"][:1]
+    results = run_collected_text(tmp_path, plan, '{"result":9007199254740993.0}', capsys)
+    assert results[0]["evidence"]["result"] == 9007199254740993
 
 
-def test_evidence_file_round_trips_high_precision_json_numbers(tmp_path):
+def test_collected_evidence_round_trips_high_precision_json_numbers(tmp_path, capsys):
     plan = manifest()
-    plan["scenarios"][0]["evidence_file"] = "raw.json"
+    plan["scenarios"] = plan["scenarios"][:1]
     raw_number = "0.100000000000000000001"
-    raw = tmp_path / "raw.json"
-    raw.write_text('{"result":' + raw_number + "}")
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(plan))
-    output = tmp_path / "out"
-    with pytest.raises(SystemExit):
-        run(["--manifest", str(path), "--output", str(output)])
-    results = json.loads((output / "evidence.json").read_text(), parse_float=Decimal)
+    results = run_collected_text(tmp_path, plan, '{"result":' + raw_number + "}", capsys)
     assert results[0]["evidence"]["result"] == Decimal(raw_number)
 
 
-def test_evidence_file_flags_cross_case_launch_ownership(tmp_path):
+def test_collected_evidence_json_accepts_exact_integral_exponents_without_float_overflow(tmp_path, capsys):
     plan = manifest()
-    for index, case in enumerate(plan["scenarios"][:2]):
-        case["evidence_file"] = f"evidence-{index}.json"
-        (tmp_path / case["evidence_file"]).write_text(
-            json.dumps(
-                {
-                    "attempts": [{"requestId": "same-request", "executionArn": "same-execution"}],
-                    "resourcesCreated": [
-                        {"kind": "control", "id": "same-control"},
-                        {"kind": "callback", "id": "same-callback"},
-                    ],
-                    "faultsCreated": [{"id": "same-fault"}],
-                }
-            )
-        )
-    with (
-        patch("aws_durable_execution_conformance_tests.lmi.app._identity_errors", return_value=[]),
-        patch("aws_durable_execution_conformance_tests.lmi.app.validate", return_value=[]),
-    ):
-        first, second = evidence_results(plan, tmp_path)[:2]
-    for result in (first, second):
-        assert result["status"] == "FAILED"
-        assert "INCOMPLETE: requestId same-request is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: executionArn same-execution is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: control same-control is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: callback same-callback is claimed by multiple cases" in result["errors"]
-        assert "INCOMPLETE: fault same-fault is claimed by multiple cases" in result["errors"]
-
-
-def test_evidence_file_run_does_not_overwrite_concurrent_output_claim(tmp_path, monkeypatch):
-    plan_path = tmp_path / "manifest.json"
-    plan_path.write_text(json.dumps(manifest()))
-    output = tmp_path / "out"
-    winner = output / "manifest.json"
-    original_iterdir = type(output).iterdir
-
-    def raced_iterdir(path):
-        if path == output:
-            winner.write_text("winning run")
-            return iter(())
-        return original_iterdir(path)
-
-    monkeypatch.setattr(type(output), "iterdir", raced_iterdir)
-    with pytest.raises(SystemExit) as error:
-        run(["--manifest", str(plan_path), "--output", str(output)])
-    assert error.value.code == 2
-    assert winner.read_text() == "winning run"
-
-
-def test_evidence_file_json_accepts_exact_integral_exponents_without_float_overflow(tmp_path):
-    plan = manifest()
-    plan["scenarios"][0]["evidence_file"] = "evidence.json"
-    path = tmp_path / "evidence.json"
-    path.write_text('{"result":1e400}')
-    assert evidence_results(plan, tmp_path)[0]["evidence"]["result"] == 10**400
-    path.write_text('{"result":0e9999}')
-    assert evidence_results(plan, tmp_path)[0]["evidence"]["result"] == 0
-    path.write_text('{"result":1e9999}')
-    assert evidence_results(plan, tmp_path)[0]["errors"] == [
-        "INCOMPLETE: JSON integral number exceeds the supported digit limit"
-    ]
+    plan["scenarios"] = plan["scenarios"][:1]
+    assert run_collected_text(tmp_path / "large", plan, '{"result":1e400}', capsys)[0]["evidence"]["result"] == 10**400
+    assert run_collected_text(tmp_path / "zero", plan, '{"result":0e9999}', capsys)[0]["evidence"]["result"] == 0
+    errors = run_collected_text(tmp_path / "huge", plan, '{"result":1e9999}', capsys)
+    assert "JSON integral number exceeds the supported digit limit" in errors
 
 
 def test_manifest_rejects_whitespace_only_extra_role(tmp_path):

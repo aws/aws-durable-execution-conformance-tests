@@ -21,7 +21,6 @@ from aws_durable_execution_conformance_tests.lmi.app import (
     build_report,
     collect_and_adjudicate,
     coverage_inventory,
-    evidence_results,
     load_collected_evidence,
     load_manifest,
 )
@@ -99,11 +98,28 @@ def plan_and_evidence() -> tuple[dict[str, Any], dict[str, Any]]:
                 "profile_id": "c2",
                 "scenario": value["scenario"],
                 "behavior_budgets": deepcopy(value["sdkPolicy"]["budgets"]),
-                "evidence_file": "evidence.json",
             }
         ],
     }
     return plan, value
+
+
+def adjudicate(plan: dict[str, Any], value: dict[str, Any], suite: SuiteDefinition) -> list[dict[str, Any]]:
+    """Adjudicate a coordinator-shaped capture of the plan's single case."""
+    (case,) = plan["scenarios"]
+    row = {
+        "case_id": case["case_id"],
+        "requirement_id": case["requirement_id"],
+        "profile_id": case["profile_id"],
+        "status": "COLLECTED",
+        "errors": [],
+        "evidence": deepcopy(value),
+        "retirement_evidence": deepcopy(value),
+        "cleanup_evidence": {},
+        "observation_evidence": [],
+        "attempts": [],
+    }
+    return adjudicate_collected_evidence(plan, [row], suite=suite)
 
 
 def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog(tmp_path: Path) -> None:
@@ -114,17 +130,15 @@ def test_local_rules_require_an_explicit_definition_and_do_not_enter_the_catalog
         load_manifest(path)
     assert load_manifest(path, suite=definition()) == plan
     assert LOCAL_ID not in requirements("lifecycle", runtime="javascript")
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    results = evidence_results(plan, tmp_path, suite=definition())
-    assert results[0]["status"] == "PASSED"
+    results = adjudicate(plan, value, definition())
+    assert results[0]["status"] == "PASSED", results[0]["errors"]
     report = build_report(plan, results, suite=definition())
     assert report.exit_code() == 0
     assert report.run.suites == ["sdk-checks"]
     assert coverage_inventory(plan, suite=definition())["missing"] == []
     assert build_report(plan, [], suite=definition()).exit_code() == 1
     value["sdkObserved"] = False
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    assert evidence_results(plan, tmp_path, suite=definition())[0]["status"] == "FAILED"
+    assert adjudicate(plan, value, definition())[0]["status"] == "FAILED"
 
 
 @pytest.mark.parametrize("entry_point", ["manifest", "coverage", "report"])
@@ -145,7 +159,7 @@ def test_suite_rejects_a_mandatory_case_missing_from_its_requirement_catalog(tmp
 
 
 @pytest.mark.parametrize("role_source", ["manifest", "suite"])
-def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
+def test_local_collected_evidence_must_cover_every_declared_cohort_role(tmp_path: Path, role_source: str) -> None:
     plan, value = plan_and_evidence()
     suite = definition()
     roles = ("victim", "peer", "spare")
@@ -156,10 +170,8 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
     assert load_manifest(path, suite=suite) == plan
-    evidence_path = tmp_path / "evidence.json"
-    evidence_path.write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
-    assert result["status"] == "FAILED"
+    result = adjudicate(plan, value, suite)[0]
+    assert result["status"] == "INCOMPLETE_EVIDENCE"
 
     assert any("declared cohort role" in error for error in result["errors"]), result["errors"]
 
@@ -169,8 +181,7 @@ def test_local_retained_evidence_must_cover_every_declared_cohort_role(tmp_path:
     value["selectedRequests"]["spare"] = spare["requestId"]
     fixtures["refresh_histories"](value)
     fixtures["record_owned_resources"](value)
-    evidence_path.write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
+    result = adjudicate(plan, value, suite)[0]
     assert result["status"] == "PASSED", result["errors"]
 
 
@@ -205,13 +216,12 @@ def test_caller_owned_budget_binding_preserves_json_types(
     value["sdkPolicy"]["budgets"]["allowance"] = observed
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(plan))
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
     suite = definition()
     admitted = load_manifest(path, suite=suite)
 
-    results = evidence_results(admitted, tmp_path, suite=suite)
+    results = adjudicate(admitted, value, suite)
 
-    assert results[0]["status"] == ("PASSED" if matches else "FAILED")
+    assert results[0]["status"] == ("PASSED" if matches else "INCOMPLETE_EVIDENCE"), results[0]["errors"]
     if not matches:
         assert any("behavior budgets" in error for error in results[0]["errors"])
     assert build_report(admitted, results, suite=suite).exit_code() == (0 if matches else 1)
@@ -505,14 +515,13 @@ def test_suite_slots_reject_overlap_without_shadowing_disjoint_exact_slot(tmp_pa
 
 
 @pytest.mark.parametrize("observed", [None, 10, 1000])
-def test_suite_without_policy_key_binds_top_level_budgets(tmp_path: Path, observed: int | None) -> None:
+def test_suite_without_policy_key_binds_top_level_budgets(observed: int | None) -> None:
     plan, value = plan_and_evidence()
     suite = replace(definition(), evidence_policy_key=None)
     if observed is not None:
         value["budgets"] = {"settleMs": observed, "allowance": 0}
-    (tmp_path / "evidence.json").write_text(json.dumps(value))
-    result = evidence_results(plan, tmp_path, suite=suite)[0]
-    assert result["status"] == ("PASSED" if observed == 10 else "FAILED")
+    result = adjudicate(plan, value, suite)[0]
+    assert result["status"] == ("PASSED" if observed == 10 else "INCOMPLETE_EVIDENCE"), result["errors"]
     if observed != 10:
         assert result["errors"] == ["INCOMPLETE: observed behavior budgets do not match the declared case budgets"]
 

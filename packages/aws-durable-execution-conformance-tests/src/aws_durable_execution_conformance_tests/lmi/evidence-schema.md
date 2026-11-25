@@ -367,7 +367,7 @@ conformance; adjudication never contacts AWS.
 
 Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
 manifest as described under
-[Standalone evidence files](#standalone-evidence-files). The CLI does not
+[Manifest](#manifest). The CLI does not
 collect, so it never loads or runs collection code. Only SDK-owned suites
 collect through this API: the caller passes its `suite` definition and an
 `adapter_factory`. The factory receives a separate
@@ -440,8 +440,7 @@ wait well under the provisioning budget.
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
 `PASSED`. Collection and a later re-adjudication of its saved bundle judge the
-coordinator's captures with the same adjudication. Standalone
-evidence files listed in the manifest are validated as described below.
+coordinator's captures with the same adjudication.
 
 ## Adjudication
 
@@ -480,15 +479,14 @@ retirement snapshot that passes `validate_retirement_evidence`. Adjudication
 does not verify collection integrity otherwise, so a hand-edited bundle can
 receive a wrong verdict.
 
-## Standalone evidence files
+## Manifest
 
-Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
---output output` with an empty output directory. The runner reads the evidence
-files the manifest lists. Under strict coverage, failed, missing, uncovered, and
-`not_implemented` cases all produce a nonzero exit status.
+A manifest admits the run's target profiles and cases. Under strict coverage,
+failed, missing, uncovered, and `not_implemented` cases all produce a nonzero
+exit status.
 
-An inventory with two default profiles and no evidence cases looks like this.
-The runner reports all mandatory cases as uncovered until cases are added.
+An inventory with two default profiles and no cases looks like this. The runner
+reports all mandatory cases as uncovered until cases are added.
 
 ```json
 {
@@ -536,5 +534,5 @@ to `worker_recovered`. The evidence must
 report each declared budget with the same value. If the profile declares
 `recovery_policy`, it must match evidence `profile.recoveryPolicy`.
 
-Set `evidence_file` to the retained JSON path relative to the manifest. For
-an unavailable fixture, use `not_implemented` with an optional reason instead.
+For an unavailable fixture, declare `not_implemented` with an optional reason.
+The runner reports the case without dispatching it.
