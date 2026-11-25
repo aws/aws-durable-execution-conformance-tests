@@ -10,7 +10,14 @@ from typing import Any
 from .runtime import MEMORY_GIB_PER_VCPU, RuntimeDefinition
 
 
-def configuration_identity(deployment: Mapping[str, Any], key: str, runtime: RuntimeDefinition) -> str:
+def configuration_identity(deployment: Mapping[str, Any], key: str) -> str:
+    """Hash the actual deployed configuration, including the recorded fixture binding.
+
+    The runtime model is derived from the deployment manifest itself
+    (``RuntimeDefinition.from_manifest``), never passed in separately, so the
+    identity always reflects what was actually recorded at ``deploy()`` time.
+    """
+    runtime = RuntimeDefinition.from_manifest(deployment)
     fields = (
         "runtime",
         "role",
@@ -31,5 +38,6 @@ def configuration_identity(deployment: Mapping[str, Any], key: str, runtime: Run
         memoryGiBPerVCpu=MEMORY_GIB_PER_VCPU,
         handler=runtime.handler,
         scaling={"MinExecutionEnvironments": 1, "MaxExecutionEnvironments": 1},
+        fixtureBinding=runtime.binding.to_manifest(),
     )
     return "sha256:" + hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()

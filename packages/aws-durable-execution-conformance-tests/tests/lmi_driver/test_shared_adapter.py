@@ -33,7 +33,7 @@ from aws_durable_execution_conformance_tests.lmi.errors import (
     ProvisioningError,
 )
 
-from .support import FIXTURES, ScenarioDriver, build_evidence, configuration_identity
+from .support import FIXTURES, RUNTIME, ScenarioDriver, build_evidence, configuration_identity
 
 run_and_adjudicate = run_path(str(Path(__file__).parents[1] / "test_lmi_coordinator.py"))["run_and_adjudicate"]
 
@@ -66,6 +66,7 @@ def context(
 
 def deployment():
     return {
+        **RUNTIME.to_manifest(),
         "functions": {"c1": FUNCTION, "c2": FUNCTION + "-c2"},
         "concurrencies": {"c1": 1, "c2": 2},
         "region": "us-west-2",
@@ -302,13 +303,12 @@ class FakeCloud:
 
 def adapter(tmp_path, *, factory=FakeCloud):
     return adapter_module.SharedAdapter(
-        {"sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}},
+        {"runtime": "python", "sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}},
         evidence_builder=lambda context, cloud, *, phase: {
             "retirement": {"owner": context.scenario.case_id, "phase": phase}
         },
         cloud_factory=factory,
         driver_factory=partial(adapter_module.ScenarioDriver, runtime="python", fixtures=FIXTURES),
-        configuration_identity=configuration_identity,
     )
 
 

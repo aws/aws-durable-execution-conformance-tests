@@ -43,23 +43,22 @@ def make_manifest(
     coverage: str,
     directory: Path,
     *,
-    runtime: str,
     artifact_id: str,
     conformance_revision: str,
-    configuration_identity: Callable[[Mapping[str, Any], str], str],
-    recovery_policy: str = "reuse-worker",
 ) -> dict[str, Any]:
+    from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
     from aws_durable_execution_conformance_tests.lmi.matrix import required_cases
+    from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
 
     if coverage not in COVERAGE_PROFILES:
         raise ValueError("Unknown shared coverage profile")
-    if recovery_policy not in {"reuse-worker", "replace-worker"}:
-        raise ValueError("Unknown worker recovery policy")
     _require_conformance_revision(conformance_revision)
     actual = deepcopy(dict(deployment))
     actual["conformanceRevision"] = conformance_revision
     if not artifact_id:
         raise ValueError("An exact SDK artifact identity is required")
+    runtime = actual["runtimeModel"]
+    recovery_policy = RuntimeDefinition.from_manifest(actual).binding.recovery_policy
     profiles = [
         {
             "profile_id": key,
@@ -119,7 +118,10 @@ def make_manifest(
     }
 
 
-def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable, adapter_name: str) -> int:
+_BUILT_IN_ADAPTER = "aws_durable_execution_conformance_tests.lmi.adapter:SharedAdapter"
+
+
+def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable) -> int:
     from aws_durable_execution_conformance_tests.lmi.app import (
         _run_collection,
         build_report,
@@ -159,7 +161,7 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         results = _run_collection(
             collect_and_adjudicate(
                 validated,
-                adapter_name,
+                _BUILT_IN_ADAPTER,
                 audit_dir=output,
             )
         )

@@ -1204,7 +1204,7 @@ def test_shared_run_rejects_missing_revision_before_admission(tmp_path, monkeypa
     monkeypatch.setattr(app, "collect_and_adjudicate", admission)
     output = tmp_path / "output"
     with pytest.raises(ValueError, match="verified conformanceRevision"):
-        run({}, output, manifest_factory=factory, adapter_name="unused:adapter")
+        run({}, output, manifest_factory=factory)
     factory.assert_called_once()
     admission.assert_not_called()
 

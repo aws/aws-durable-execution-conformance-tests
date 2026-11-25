@@ -877,10 +877,12 @@ def test_shared_runner_reports_even_when_leftover_work_ignores_cancellation(tmp_
     output = tmp_path / "out"
     started = time.monotonic()
     with (
-        patch.dict("sys.modules", {"fixture": SimpleNamespace(create=lambda _: object())}),
+        # runner.run always uses the built-in SharedAdapter now; stub its
+        # construction instead of the old module:factory sys.modules trick.
+        patch("aws_durable_execution_conformance_tests.lmi.adapter.SharedAdapter", lambda _manifest: object()),
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
     ):
-        exit_code = runner.run({}, output, manifest_factory=plan, adapter_name="fixture:create")
+        exit_code = runner.run({}, output, manifest_factory=plan)
     elapsed = time.monotonic() - started
 
     assert elapsed < 5, elapsed

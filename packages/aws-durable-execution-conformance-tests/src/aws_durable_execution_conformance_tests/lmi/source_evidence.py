@@ -41,6 +41,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     is_json_integer,
     same_checkpoint,
 )
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding
 from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
 
 SOURCE_PROTOCOL_VERSION = 2
@@ -1517,6 +1518,93 @@ def _public_suspension_histories(
     if mode == "callback":
         inherit_wait_for_callback_event_names(history)
     return suspension_resumptions([row for row in ledger if row.get("execution") == victim_arn], history, mode)
+
+
+def _binding_expected_outcome(binding: FixtureBinding, item: Mapping[str, Any], scenario: str) -> dict[str, Any]:
+    """Expected service outcome, keyed on the catalog scenario and role.
+
+    Conformance-owned: never derived from an SDK fixture name, only from the
+    catalog scenario the shared driver admitted and the launch's cohort role.
+    """
+    role = item.get("role")
+    if scenario == "normal-failure" and role == "victim":
+        return {
+            "status": "FAILED",
+            "error": {"type": binding.failure_error_type, "message": "expected:" + item["marker"]},
+        }
+    if scenario in {"deadline-during-step", "peer-recovery"} and role == "victim":
+        # This fixture asserts native deadline/retry behavior. Its logical
+        # execution may still be active or may finish after normal release.
+        return {"allowedStatuses": ["RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"]}
+    return {"status": "SUCCEEDED", "result": item["marker"]}
+
+
+def _binding_replay_effect_policy(binding: FixtureBinding) -> ReplayEffectPolicy:
+    """Generalize the standard ``replay_effects`` rule over an arbitrary binding.
+
+    Builds one expected ``(operation, value)`` key per ``values`` entry a replay
+    effect declares, or a single ``(operation, None)`` key when it declares none.
+    For each key, the first durable operation ID observed owns its ``count``; any
+    other ID sharing that key gets zero, and a body whose key is not expected also
+    gets zero. Keys with no owner are reported missing, named ``operation`` or
+    ``operation:value``.
+    """
+    expected: dict[tuple[str, int | None], int] = {
+        (effect.operation, value): effect.count
+        for effect in binding.replay_effects
+        for value in (effect.values if effect.values is not None else (None,))
+    }
+    valued_operations = {effect.operation for effect in binding.replay_effects if effect.values is not None}
+
+    def policy(bodies: Sequence[Mapping[str, Any]]) -> tuple[dict[str, int], list[str]]:
+        owners: dict[tuple[str, int | None], str] = {}
+        allowances: dict[str, int] = {}
+        for body in bodies:
+            name, identity = body["operation"], body["operationId"]
+            value = body.get("value") if name in valued_operations else None
+            key = (name, value)
+            if (name in valued_operations and type(value) is not int) or key not in expected:
+                allowances.setdefault(identity, 0)
+                continue
+            owner = owners.setdefault(key, identity)
+            allowances.setdefault(identity, expected[key] if identity == owner else 0)
+        missing = [
+            f"{name}:{value}" if value is not None else name for name, value in expected if (name, value) not in owners
+        ]
+        return allowances, missing
+
+    return policy
+
+
+def binding_evidence_builder(binding: FixtureBinding, runtime: str) -> Callable[..., dict[str, Any]]:
+    """Build an ``evidence_builder(context, cloud, *, phase)`` driven by a FixtureBinding.
+
+    Replaces the SDK-supplied ``expected_outcome``/``worker_identity`` callbacks and
+    the replay-effect policy with rules derived purely from the binding, keyed on
+    the catalog scenario and role rather than any SDK fixture name.
+    """
+    expected_replay_effects = {effect.operation: effect.count for effect in binding.replay_effects}
+    replay_effect_policy = _binding_replay_effect_policy(binding)
+
+    def expected_outcome(item: Mapping[str, Any], scenario: str) -> dict[str, Any]:
+        return _binding_expected_outcome(binding, item, scenario)
+
+    def worker_identity(raw: Mapping[str, Any]) -> str:
+        return raw[binding.worker_identity]
+
+    def builder(context: ScenarioContext, cloud: Cloud, *, phase: str = "observations") -> dict[str, Any]:
+        return build_evidence(
+            context,
+            cloud,
+            runtime=runtime,
+            expected_outcome=expected_outcome,
+            worker_identity=worker_identity,
+            phase=phase,
+            expected_replay_effects=expected_replay_effects,
+            replay_effect_policy=replay_effect_policy,
+        )
+
+    return builder
 
 
 def build_evidence(

@@ -132,14 +132,23 @@ class RunnerClient:
 
 class Cloud:
     def __init__(
-        self, manifest, configuration=None, *, artifacts_dir, verify_profile, case_context=None, client_factory=None
+        self,
+        manifest,
+        configuration=None,
+        *,
+        artifacts_dir,
+        verify_profile=None,
+        case_context=None,
+        client_factory=None,
     ):
         self.manifest = manifest
         self.configuration = configuration
         factory = client_factory or client
         self.lam, self.s3, self.logs = (factory(service, manifest["region"]) for service in ("lambda", "s3", "logs"))
         self.single_attempt_fences = client_factory is None
-        self.verify_profile = verify_profile
+        # A missing explicit verifier defaults to the shared profile checks,
+        # bound to the runtime recorded in this deployment's own manifest.
+        self.verify_profile = verify_profile if verify_profile is not None else self._default_verify_profile
         self.events = {}
         # Set while a budget-expiry refresh has cached completed batches but
         # skipped binding (binding from a partial read could bind a retry as
@@ -170,6 +179,12 @@ class Cloud:
         if case_context is not None:
             owner = case_key(case_context.scenario.case_id)
             self.control_prefix = f"runs/{manifest['run']}/cases/{owner}/control/"
+
+    def _default_verify_profile(self, config, scaling, manifest, key) -> None:
+        from aws_durable_execution_conformance_tests.lmi.deployment import verify_profile
+        from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+
+        verify_profile(RuntimeDefinition.from_manifest(manifest), config, scaling, manifest, key)
 
     def _remaining_collection_time(self) -> float | None:
         deadline = getattr(self.case_context, "_collection_deadline", None)

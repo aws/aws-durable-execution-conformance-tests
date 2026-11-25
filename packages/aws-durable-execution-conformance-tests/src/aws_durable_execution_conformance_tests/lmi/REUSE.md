@@ -8,25 +8,31 @@ not this driver.
 
 ## SDK-owned bindings
 
+`SharedAdapter`, `ScenarioDriver`, `build_evidence`, `configuration_identity` and
+`ScenarioAdapter` are internal to this driver; they change freely without SDK edits.
+An SDK's only contract with the shared collector is data, not code:
+
 | Shared API | SDK supplies |
 | --- | --- |
-| `runtime.RuntimeDefinition` | Runtime model (`python`, `java`, `javascript`), handler, architecture, memory |
+| `runtime.RuntimeDefinition` | Runtime model (`python`, `java`, `javascript`), handler, architecture, memory, `binding` |
+| `runtime.FixtureBinding` | The data-only mapping of its deployed fixture onto the shared catalog (below) |
 | `deployment.DeploymentManager` | Runtime definition, stack owner tag, artifact directory, ZIP path, bucket prefix |
-| `cloud.Cloud` | Deployment manifest, artifacts directory, `verify_profile=manager.verify` |
-| `scenarios.ScenarioDriver` | Runtime model, fixture-name mapping, and optional callback encoder |
-| `source_evidence.build_evidence` | Runtime model, expected-outcome callback and observed worker-identity callback |
-| `adapter.SharedAdapter` | Cloud, scenario-driver and evidence factories; configuration-identity callback |
-| `runner.make_manifest` | Exact SDK artifact identity and conformance revision; runtime/configuration callback |
-| `runner.run`, `runner.cleanup`, `summary.summarize` | Manifest/adapter factory or run artifacts |
+| `runner.make_manifest` | Exact SDK artifact identity and conformance revision |
+| `runner.run`, `runner.cleanup`, `summary.summarize` | Deployment manifest, manifest factory, or run artifacts |
 
 Construct a deployment manager with explicit SDK choices, for example:
 
 ```python
 from pathlib import Path
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
-from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 
-runtime = RuntimeDefinition("javascript", "index.handler", architecture="arm64")
+runtime = RuntimeDefinition(
+    "javascript",
+    "index.handler",
+    architecture="arm64",
+    binding=FixtureBinding.load(Path(__file__).parent / "binding.json"),
+)
 manager = DeploymentManager(
     runtime=runtime,
     owner="javascript-sdk-lmi-e2e",
@@ -43,15 +49,71 @@ It reads `AWS_REGION`, `TEST_ACCOUNT_ID`, `CAPACITY_PROVIDER_ARN`, and
 Other SDKs pass their own artifact hash to `make_manifest`. The controller keeps
 the bucket private before upload, verifies the actual published configuration,
 waits for earlier executions before updates, and retains persistent resources.
+It records the runtime (including the binding) into the deployment manifest
+under `fixtureBinding`, next to `runtimeModel`, `handler`, `architecture` and
+`memorySize`; `make_manifest` copies that recorded deployment into
+`plan["sdk"]["deployment"]` and includes the binding in each profile's
+`configuration_id`.
 
-Map the seven scenario keys plus `peer`, `recovery`, and `warm` to your fixture
-entry points. The shared driver passes the fixture name in `scenario`, the
-catalog name in `sharedScenario`, and preserves `run`, `caseId`, `marker`, role,
-control prefix, gates, and behavior budgets. Fixtures return their marker on
-success; the normal-failure fixture throws a language-appropriate error.
-`expected_outcome(item, scenario)` describes expected service outcomes, never
-observed facts. `worker_identity(raw)` returns the actual worker identity from
-the SDK's source record (a Python process, JVM worker, or Node.js worker).
+### `FixtureBinding`
+
+A checked-in JSON file (`FixtureBinding.load(path)`) data-only binding maps the
+SDK's deployed fixture onto the shared catalog. Parsing fails closed: unknown
+fields or values are rejected. The Python SDK's binding, for example:
+
+```json
+{
+  "bindingVersion": 1,
+  "fixtures": {
+    "native-overlap": "barrier",
+    "normal-return": "success",
+    "deadline-during-step": "deadline",
+    "peer-recovery": "deadline",
+    "suspension-retry": "replay",
+    "warm-reuse": "warm-owner",
+    "normal-failure": "failure",
+    "peer": "barrier",
+    "recovery": "barrier",
+    "warm": "warm-probe"
+  },
+  "failureErrorType": "ValueError",
+  "workerIdentity": "process",
+  "suspension": "callback",
+  "callbackPayload": "marker",
+  "recoveryPolicy": "reuse-worker",
+  "replayEffects": [
+    { "operation": "success", "count": 1 },
+    { "operation": "failure", "count": 1 },
+    { "operation": "retry", "count": 2 },
+    { "operation": "item", "count": 1, "values": [1, 2, 3] },
+    { "operation": "left", "count": 1 },
+    { "operation": "right", "count": 1 }
+  ]
+}
+```
+
+- `fixtures` maps the seven catalog scenario keys plus `peer`, `recovery`, and
+  `warm` to fixture entry points; a missing key yields `NOT_IMPLEMENTED` at run
+  time, as today. The shared driver passes the mapped fixture name in
+  `scenario`, the catalog name in `sharedScenario`, and preserves `run`,
+  `caseId`, `marker`, role, control prefix, gates, and behavior budgets.
+  Fixtures return their marker on success; the normal-failure fixture throws a
+  language-appropriate error named by `failureErrorType`.
+- `workerIdentity` (`process` or `worker`) selects the field of the SDK's
+  source record holding its actual worker identity (a Python process, JVM
+  worker, or Node.js worker).
+- `suspension` (`callback`, default, or `wait`) and `callbackPayload`
+  (`marker`, default UTF-8 marker bytes, or `json-marker`, the marker
+  JSON-encoded) describe how the suspension-retry fixture suspends and how its
+  callback result is encoded.
+- `recoveryPolicy` (`reuse-worker`, default, or `replace-worker`) is recorded
+  on every profile and carried through to evidence.
+- `replayEffects` lists expected replay side-effect counts per durable
+  operation name; an entry with `values` expects one count per listed value
+  (e.g. the Python SDK's `item` fixture, keyed by map item), otherwise one
+  count for every durable operation using that name. Expected service outcome,
+  worker identity, and replay-effect ownership are all derived from this
+  binding by the shared driver; they are never SDK code.
 
 Each logical launch derives a stable, 64-character `DurableExecutionName` from
 its run, configuration, case, and marker. The driver records this name before
@@ -122,23 +184,24 @@ still requires the terminal event and matching native completions.
 
 Replay fixtures use stable operation names `success`, `failure`, `retry`, and
 callback `completion`; their body records retain operation IDs and attempts.
-The callback payload defaults to UTF-8 marker bytes. A fixture using JSON or
-another serializer can pass its encoder as `callback_encoder` to
-`ScenarioDriver`. A fixture that suspends through a durable timer passes
-`suspension_mode="wait"`. The driver awaits the execution result and requires
-the same wait operation's service history to span a PENDING decision and a
-later native invocation. Callback fixtures send the response only after the
-native request that registered the outstanding callback has returned PENDING.
-Record replay body effects in `CONFORMANCE` observations
-with their durable operation IDs. When the fixture also publishes raw `BODY`
-rows, the driver cross-checks them by native request, operation name, and
-attempt. The standard fixture expects one effect each for `success` and
-`failure` and two for `retry`. A binding with different fixture behavior
-can use `expected_replay_effects` in `build_evidence` to set counts per
-operation name. The count applies separately to each matching durable
-operation ID. Operations without a configured name expect zero effects. The shared runner compares actual checkpoints
-and outcomes. SDK hooks must
-observe the real public API and must not emulate an unsupported operation.
+The binding's `callbackPayload` selects the callback encoding (UTF-8 marker
+bytes, or the marker JSON-encoded). A fixture that suspends through a durable
+timer sets the binding's `suspension` to `wait`. The driver awaits the
+execution result and requires the same wait operation's service history to
+span a PENDING decision and a later native invocation. Callback fixtures send
+the response only after the native request that registered the outstanding
+callback has returned PENDING. Record replay body effects in `CONFORMANCE`
+observations with their durable operation IDs. When the fixture also
+publishes raw `BODY` rows, the driver cross-checks them by native request,
+operation name, and attempt. The binding's `replayEffects` sets the expected
+count per operation name (one entry each for `success`, `failure`, and `retry`
+by default); an entry with `values` expects one count per listed value. For
+each expected `(operation, value)` key, the first durable operation ID the
+driver observes owns that count; any other ID sharing the key, or a body whose
+key is not expected, gets zero. Operations without a configured name expect
+zero effects. The shared runner compares actual checkpoints and outcomes. SDK
+hooks must observe the real public API and must not emulate an unsupported
+operation.
 
 Control records and service history remain separate from injected faults. The
 case 4 driver admits the original peer halfway through the victim's timeout,

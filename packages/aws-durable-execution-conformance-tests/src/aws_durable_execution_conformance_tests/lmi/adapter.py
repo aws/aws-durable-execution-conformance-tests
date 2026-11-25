@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.artifacts import case_key, owner_lock, save
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
+from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Profile,
     ScenarioContext,
@@ -25,7 +26,27 @@ from aws_durable_execution_conformance_tests.lmi.errors import (
     CollectionError,
     ProvisioningError,
 )
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
+from aws_durable_execution_conformance_tests.lmi.source_evidence import binding_evidence_builder
+
+# "marker": UTF-8 marker bytes (today's str.encode). "json-marker": the marker
+# string JSON-encoded before being sent as the callback payload.
+_CALLBACK_ENCODERS: dict[str, Callable[[str], bytes]] = {
+    "marker": str.encode,
+    "json-marker": lambda marker: json.dumps(marker).encode(),
+}
+
+
+def _binding_driver_factory(binding: FixtureBinding, runtime: str) -> Callable[..., ScenarioDriver]:
+    """Build a ``driver_factory(context, cloud, **options)`` driven by a FixtureBinding."""
+
+    def factory(context: ScenarioContext, cloud: Cloud, **options: Any) -> ScenarioDriver:
+        options.setdefault("callback_encoder", _CALLBACK_ENCODERS[binding.callback_payload])
+        options.setdefault("suspension_mode", binding.suspension)
+        return ScenarioDriver(context, cloud, runtime=runtime, fixtures=dict(binding.fixtures), **options)
+
+    return factory
 
 
 def _only_undispatched_journals(cloud: Cloud, context: ScenarioContext) -> bool:
@@ -129,25 +150,36 @@ class _Case:
 
 
 class SharedAdapter:
-    """Each shared case has one Cloud, worker, control namespace and evidence sink."""
+    """Each shared case has one Cloud, worker, control namespace and evidence sink.
+
+    ``cloud_factory``, ``driver_factory`` and ``evidence_builder`` are internal test
+    seams only: production code always builds them from the plan's own
+    ``sdk.deployment`` runtime/fixture binding, never from an SDK-supplied override.
+    """
 
     def __init__(
         self,
         manifest: Mapping[str, Any],
         *,
-        evidence_builder: EvidenceBuilder,
-        cloud_factory: Callable[..., Cloud],
-        driver_factory: Callable[..., ScenarioDriver],
-        configuration_identity: Callable[[Mapping[str, Any], str], str],
+        evidence_builder: EvidenceBuilder | None = None,
+        cloud_factory: Callable[..., Cloud] | None = None,
+        driver_factory: Callable[..., ScenarioDriver] | None = None,
     ) -> None:
         self.manifest = deepcopy(dict(manifest))
         self.sdk = self.manifest["sdk"]
         self.deployment = self.sdk["deployment"]
         self.artifacts_dir = Path(self.sdk["artifacts_dir"])
+        self.cloud_factory = cloud_factory or Cloud
+        # Only derive the binding (and parse the deployment's runtime) when a
+        # built-in default is actually needed; test seams that already supply
+        # both factories never require a real, binding-carrying deployment.
+        if evidence_builder is None or driver_factory is None:
+            binding = RuntimeDefinition.from_manifest(self.deployment).binding
+            runtime_name = self.manifest["runtime"]
+            evidence_builder = evidence_builder or binding_evidence_builder(binding, runtime_name)
+            driver_factory = driver_factory or _binding_driver_factory(binding, runtime_name)
         self.evidence_builder = evidence_builder
-        self.cloud_factory = cloud_factory
         self.driver_factory = driver_factory
-        self.configuration_identity = configuration_identity
         self.cases: dict[str, _Case] = {}
         self.prepared_clouds: dict[str, tuple[Cloud, str]] = {}
         self.preparation_workers: dict[str, asyncio.Task[tuple[Cloud, str]]] = {}
@@ -162,7 +194,7 @@ class SharedAdapter:
             key = next(key for key, arn in self.deployment["functions"].items() if arn == profile.resource_id)
             if self.deployment["concurrencies"][key] != profile.native_concurrency:
                 raise ProvisioningError("Native concurrency differs from the shared profile")
-            if profile.configuration_id != self.configuration_identity(self.deployment, key):
+            if profile.configuration_id != configuration_identity(self.deployment, key):
                 raise ProvisioningError("Shared configuration identity differs from the deployed fixture")
             cloud = self.cloud_factory(self.deployment, key, artifacts_dir=self.artifacts_dir / "configuration")
             from .quarantine import FenceRetryUncertain, acquire_fence, release_fence
