@@ -151,10 +151,15 @@ class Cloud:
         # bound to the runtime recorded in this deployment's own manifest.
         self.verify_profile = verify_profile if verify_profile is not None else self._default_verify_profile
         self.events = {}
-        # Set while a budget-expiry refresh has cached completed batches but
-        # skipped binding (binding from a partial read could bind a retry as
-        # the original). Cleared once a complete refresh binds successfully.
+        # Set whenever a refresh caches new ledger records; cleared only after
+        # a successful bind while no marker is incomplete (binding from a
+        # partial read could bind a retry as the original).
         self.binding_deferred = False
+        # Markers whose most recent covering refresh left their listing or
+        # reads incomplete. A marker is removed once a refresh that covers it
+        # reads everything; until then binding skips it, even in refreshes of
+        # other markers (see `refresh`/`_bind_requests`).
+        self._incomplete_markers: set[str] = set()
         self.invocations = []
         self.rejected_markers: set[str] = set()
         self.gates = set()
@@ -607,6 +612,7 @@ class Cloud:
                 raise CollectionError("A shared case cannot read another case's marker")
         root = f"runs/{self.manifest['run']}/events/"
         prefixes = {f"{root}{marker}/": marker for marker in markers} if markers else {root: ""}
+        in_scope_markers = set(prefixes.values())
         missing: dict[str, str] = {}
         failures: list[tuple[str, Exception]] = []
         for prefix, marker in prefixes.items():
@@ -682,6 +688,15 @@ class Cloud:
                             self.events[key] = future.result()
                         except Exception as error:
                             failures.append((missing[key], error))
+        # A marker is incomplete for binding purposes whenever this call's own
+        # listing or any of its reads failed or went unread (including the
+        # budget-expiry attribution above and the all-budget early raise
+        # below). It is only cleared once its own listing and every one of
+        # its reads succeed in a call that actually covers it; a marker left
+        # out of this call's scope keeps whatever status it already had.
+        failed_markers = {marker for marker, _ in failures} & in_scope_markers
+        self._incomplete_markers |= failed_markers
+        self._incomplete_markers -= in_scope_markers - failed_markers
         events = list(self.events.values())
         budget_errors = [error for _, error in failures if isinstance(error, CollectionBudgetExpired)]
         if budget_errors and all(isinstance(error, CollectionBudgetExpired) for _, error in failures):
@@ -690,10 +705,12 @@ class Cloud:
             raise budget_errors[0]
         self.check_active()
         try:
-            if failures:
-                self._bind_requests(events, {marker for marker, _ in failures})
-            else:
-                self._bind_requests(events)
+            # Bind over the whole event cache, but always skip every marker
+            # this or any earlier call left incomplete: a cached retry for a
+            # still-incomplete marker must never be bound as its original
+            # request just because an unrelated marker's refresh succeeded.
+            self._bind_requests(events, self._incomplete_markers)
+            if not self._incomplete_markers:
                 self.binding_deferred = False
         except CollectionError as error:
             failures.append(("", error))
