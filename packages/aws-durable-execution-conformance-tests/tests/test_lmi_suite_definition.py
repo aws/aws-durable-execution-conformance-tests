@@ -362,16 +362,20 @@ def test_public_collection_reports_and_replays_against_the_admitted_manifest(tmp
     assert build_report(replay_manifest, replayed, suite=suite).exit_code() == 0
 
 
-def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_raises(tmp_path: Path) -> None:
+@pytest.mark.parametrize("raised", [RuntimeError, asyncio.CancelledError])
+def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_raises(
+    tmp_path: Path, raised: type[BaseException]
+) -> None:
     from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
 
     plan, value = plan_and_evidence()
     case = plan["scenarios"][0]
     calls: list[str] = []
+    original: list[asyncio.CancelledError] = []
 
     def crashing_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
         calls.append(phase)
-        raise RuntimeError("validator crashed")
+        raise raised("validator crashed")
 
     suite = replace(definition(), validator=crashing_validator)
 
@@ -388,7 +392,8 @@ def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_ra
                 timings={},
             )
         )
-        raise asyncio.CancelledError
+        original.append(asyncio.CancelledError("run cancelled"))
+        raise original[0]
 
     with (
         patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
@@ -396,7 +401,10 @@ def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_ra
     ):
         asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=lambda _: object()))  # type: ignore[arg-type,return-value]
     assert calls, "the suite validator never ran"
-    assert any("validator crashed" in note for note in getattr(cancelled.value, "__notes__", [])), cancelled.value
+    # The run's own cancellation reaches the caller, carrying the validator's error.
+    assert cancelled.value.args == ("run cancelled",), cancelled.value
+    notes = getattr(cancelled.value, "__notes__", [])
+    assert any(f"{raised.__name__}: validator crashed" in note for note in notes), notes
     # The capture taken before adjudication failed is still on disk.
     assert json.loads((tmp_path / "collected-evidence.json").read_text())[0]["status"] == "COLLECTED"
 

@@ -1186,6 +1186,53 @@ def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
     assert [row["status"] for row in captured] == ["COLLECTED", "COLLECTED"], captured
 
 
+@pytest.mark.parametrize("skipped", [False, True])
+def test_cancelled_collection_reports_a_failed_final_journal_append(tmp_path, monkeypatch, skipped):
+    from dataclasses import dataclass
+
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    @dataclass
+    class Outcome:
+        case_id: str
+        requirement_id: str
+        profile_id: str
+        status: str
+        errors: list
+        retirement_evidence: dict
+
+    failing = {"journal": False}
+    append = app._append_audit_row
+
+    def flaky_append(path: Path, document: str) -> None:
+        # A declared skip's row fails before the run; every final row fails after the cancellation.
+        if path.name == "results.jsonl" and (failing["journal"] or "NOT_IMPLEMENTED" in document):
+            raise OSError("disk full")
+        append(path, document)
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        for case in cases:
+            on_result(Outcome(case.case_id, case.requirement_id, case.profile_id, "COLLECTED", [], {}))
+        # The final verdict rows cannot be journaled after the cancellation.
+        failing["journal"] = True
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app, "_append_audit_row", flaky_append)
+    plan = manifest()
+    plan["scenarios"] = plan["scenarios"][:2] if skipped else plan["scenarios"][:1]
+    if skipped:
+        plan["scenarios"][1]["not_implemented"] = "fixture skip"
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(asyncio.CancelledError) as cancelled,
+    ):
+        asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
+    notes = getattr(cancelled.value, "__notes__", [])
+    expected = [f"{case['case_id']}: Could not publish final case result: disk full" for case in plan["scenarios"]]
+    # The skipped case's failure is recorded before the run, and each failure is reported once.
+    assert notes == (expected[1:] + expected[:1] if skipped else expected), notes
+
+
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 

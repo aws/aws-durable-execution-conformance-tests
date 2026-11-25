@@ -411,16 +411,16 @@ target capacity (300), `placement` for `start` and `place` (120), `execution`
 `retire` and each target's `finish` (120). These bound the harness, not SDK
 cleanup or delivery.
 
-Collection trusts its adapter, the shared AWS driver. The coordinator records
-the driver's own reports, such as launches, inventories and retirement, without
-auditing them against earlier snapshots, its launch journal, the admitted case,
-or other cases, so driver defects are caught by the driver's own tests. SDK
-fixture output that the driver relays stays untrusted. The rules judge its
-behavior, and before a target is reused collection requires the driver's
-retirement snapshot to establish physical retirement and to settle the native
-owner of every SDK record seen in any snapshot. A journaled launch without an
-identified invocation request also keeps its target quarantined, because no
-snapshot can show that it ended.
+Collection trusts its adapter, here the SDK-owned suite's own collector. The
+coordinator records the adapter's own reports, such as launches, inventories and
+retirement, without auditing them against earlier snapshots, its launch journal,
+the admitted case, or other cases, so adapter defects are caught by the
+adapter's own tests. SDK fixture output that the adapter relays stays untrusted.
+The rules judge its behavior, and before a target is reused collection requires
+the adapter's retirement snapshot to establish physical retirement and to settle
+the native owner of every SDK record seen in any snapshot. A journaled launch
+without an identified invocation request also keeps its target quarantined,
+because no snapshot can show that it ended.
 
 Collection holds each target through physical retirement of its own cases. It
 finishes profiles only after every case in the run has ended its retirement
@@ -465,7 +465,7 @@ which reads exact decimals the way collection does. It then adjudicates with
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
 that it was not modified. Before recording `COLLECTED`, the coordinator checked
 that the case's work settled; like the coordinator, adjudication trusts what the
-driver reported. Adjudication judges behavior again with the current rules, but
+adapter reported. Adjudication judges behavior again with the current rules, but
 it keeps the recorded collection status and the facts only collection observed.
 Pass the collection's own `manifest.json`. Adjudication re-checks only the
 collection facts its verdict rules use: each case's identity against that
