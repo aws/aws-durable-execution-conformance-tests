@@ -118,9 +118,6 @@ def make_manifest(
     }
 
 
-_BUILT_IN_ADAPTER = "aws_durable_execution_conformance_tests.lmi.adapter:SharedAdapter"
-
-
 def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable) -> int:
     from aws_durable_execution_conformance_tests.lmi.app import (
         _run_collection,
@@ -158,13 +155,7 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         # Bound teardown like the CLI: the coordinator abandons adapter work
         # that outlives its budget, and asyncio.run would wait for it without
         # a bound, so a task that ignores cancellation would block the reports.
-        results = _run_collection(
-            collect_and_adjudicate(
-                validated,
-                _BUILT_IN_ADAPTER,
-                audit_dir=output,
-            )
-        )
+        results = _run_collection(collect_and_adjudicate(validated, audit_dir=output))
         report = build_report(validated, results)
         save(output / "evidence.json", results)
         save(output / "coverage.json", coverage_inventory(validated))

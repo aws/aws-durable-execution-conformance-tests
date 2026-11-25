@@ -344,6 +344,39 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
     return _validate_manifest(_read_json(path), suite=suite)
 
 
+def _require_shared_catalog_run(manifest: Mapping[str, Any]) -> None:
+    """Validate a built-in shared-collector run before claiming the audit directory.
+
+    Checked here, never inside the adapter, so a malformed plan never reaches
+    construction: ``sdk.deployment`` carries a valid runtime and fixture binding
+    (``RuntimeDefinition.from_manifest``), its ``runtimeModel`` matches the
+    admitted plan's ``runtime``, its ``conformanceRevision`` is verified, and
+    ``sdk.artifacts_dir`` (which ``SharedAdapter`` requires) is a non-empty
+    string.
+    """
+    from aws_durable_execution_conformance_tests.lmi.runner import _require_conformance_revision
+    from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+
+    sdk = manifest.get("sdk")
+    if not isinstance(sdk, Mapping):
+        raise ValueError("A shared catalog run requires sdk.deployment")
+    deployment = sdk.get("deployment")
+    if not isinstance(deployment, Mapping):
+        raise ValueError("A shared catalog run requires sdk.deployment")
+    try:
+        runtime = RuntimeDefinition.from_manifest(deployment)
+    except (KeyError, ValueError) as error:
+        raise ValueError(
+            f"A shared catalog run requires a valid deployment runtime and fixture binding: {error}"
+        ) from error
+    if runtime.name != manifest.get("runtime"):
+        raise ValueError("Deployment runtimeModel does not match the admitted plan runtime")
+    _require_conformance_revision(deployment.get("conformanceRevision"))
+    artifacts_dir = sdk.get("artifacts_dir")
+    if not isinstance(artifacts_dir, str) or not artifacts_dir:
+        raise ValueError("A shared catalog run requires sdk.artifacts_dir")
+
+
 def _identity_errors(
     manifest: Mapping[str, Any],
     scenario: Mapping[str, Any],
@@ -566,16 +599,34 @@ async def collect_and_adjudicate(
     manifest: Mapping[str, Any],
     *,
     audit_dir: Path,
-    suite: SuiteDefinition,
-    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+    suite: SuiteDefinition | None = None,
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter] | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect an SDK-owned suite with the SDK's own collector, then adjudicate it.
+    """Collect catalog or SDK-owned evidence, then adjudicate it.
 
-    Only SDK-owned suites collect through this API. ``adapter_factory`` receives a
-    separate copy of the admitted manifest. It is called only after the manifest
-    is validated and ``audit_dir`` is claimed, and never when every case is
-    declared not implemented.
+    ``suite`` and ``adapter_factory`` are given together, for an SDK-owned suite
+    collected with the SDK's own collector: ``adapter_factory`` receives a
+    separate copy of the admitted manifest and is called only after the
+    manifest is validated and ``audit_dir`` is claimed, and never when every
+    case is declared not implemented. (An SDK-owned suite that wants the
+    catalog's own scenarios can pass a factory that builds the shared driver
+    itself.)
+
+    With neither, this collects the ``lmi-lifecycle`` catalog itself, using the
+    built-in driver derived from ``manifest["sdk"]["deployment"]``'s fixture
+    binding. That requires a verified ``conformanceRevision`` and a deployment
+    whose runtime fields, fixture binding and ``runtimeModel`` agree with the
+    plan's ``runtime``, all checked before the audit directory is claimed.
+
+    Passing only one of ``suite``/``adapter_factory`` is rejected.
     """
+    if suite is None and adapter_factory is None:
+        _require_shared_catalog_run(manifest)
+        from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
+
+        return await _collect_and_adjudicate(manifest, SharedAdapter, audit_dir=audit_dir)
+    if suite is None or adapter_factory is None:
+        raise TypeError("collect_and_adjudicate requires suite and adapter_factory together, or neither")
     if not isinstance(suite, SuiteDefinition):
         raise TypeError("collect_and_adjudicate requires an SDK-owned suite definition")
     return await _collect_and_adjudicate(manifest, adapter_factory, audit_dir=audit_dir, suite=suite)
@@ -995,31 +1046,48 @@ def run(argv: list[str] | None = None) -> None:
 def _run(argv: list[str] | None) -> None:
     parser = argparse.ArgumentParser(
         prog="durable-execution-conformance lmi-lifecycle",
-        description="Adjudicate LMI lifecycle evidence with strict coverage.",
+        description="Collect or adjudicate LMI lifecycle evidence with strict coverage.",
     )
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--collect",
+        action="store_true",
+        help="collect the lmi-lifecycle catalog with the built-in shared driver",
+    )
+    source.add_argument(
         "--collected-evidence",
         type=Path,
-        required=True,
-        help="adjudicate a saved collected-evidence bundle",
+        help="adjudicate a saved collected-evidence bundle without collecting",
     )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
+        if args.collect:
+            # Check the shared plan before touching the output directory: the
+            # exclusive manifest write below claims it, and normalization may
+            # create the SDK artifact directory.
+            _require_shared_catalog_run(manifest)
         _make_durable_directory(args.output)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
         sdk = manifest.get("sdk")
-        if args.adapter and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
+        if args.collect and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
             from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_plan_with_artifact_directory
 
             manifest = sdk_plan_with_artifact_directory(args.output, manifest)
         # Every mode claims the directory with an exclusive manifest write, so
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
-        results = adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
+        # Replay never normalizes paths, imports SDK code or contacts AWS;
+        # only --collect runs the built-in collector, through the same bounded
+        # teardown as a direct collect_and_adjudicate call.
+        results = (
+            _run_collection(collect_and_adjudicate(manifest, audit_dir=args.output))
+            if args.collect
+            else adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
+        )
         report = build_report(manifest, results)
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))

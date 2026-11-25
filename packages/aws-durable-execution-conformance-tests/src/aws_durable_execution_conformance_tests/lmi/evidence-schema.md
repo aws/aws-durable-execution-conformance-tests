@@ -448,22 +448,40 @@ conformance; adjudication never contacts AWS.
 
 Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
 manifest as described under
-[Manifest](#manifest). The CLI does not
-collect, so it never loads or runs collection code. Only SDK-owned suites
-collect through this API: the caller passes its `suite` definition and an
-`adapter_factory`. The factory receives a separate
-copy of the admitted manifest and returns an adapter implementing
-`lmi.coordinator.ScenarioAdapter`: `prepare` and `finish` for each profile that
-an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
-`retire` for each case. The factory is called only after the manifest is
-admitted and the audit directory is claimed, and never when every case is
-`not_implemented`.
+[Manifest](#manifest). `suite` and `adapter_factory` are given together, for an
+SDK-owned suite collected with the SDK's own collector; passing only one of
+them is rejected with `TypeError` before anything is validated, claimed or
+constructed. The factory receives a separate copy of the admitted manifest and
+returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
+and `finish` for each profile that an active case uses, and `start`, `place`,
+`execute`, `collect`, `release`, and `retire` for each case. It is called only
+after the manifest is admitted and the audit directory is claimed, and never
+when every case is `not_implemented`. (An SDK-owned suite that wants the
+catalog's own scenarios can pass a factory that builds the shared driver
+itself.)
 
 ```python
 results = await collect_and_adjudicate(
     manifest, audit_dir=Path("lmi-collection"), suite=suite, adapter_factory=create_adapter
 )
 ```
+
+With neither `suite` nor `adapter_factory`, `collect_and_adjudicate` collects
+the `lmi-lifecycle` catalog itself, with the built-in shared driver derived
+from `sdk.deployment`'s fixture binding (see [REUSE.md](REUSE.md)). That
+requires a verified `conformanceRevision` and a deployment whose runtime
+fields, fixture binding and `runtimeModel` agree with the manifest's
+`runtime`, all checked before the audit directory is claimed. The CLI's
+`--collect` flag uses this path:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collect --output lmi-collection
+```
+
+The CLI gives leftover tasks and executor threads a bounded grace period after
+collection returns, then exits with its exit code without waiting for threads
+it started (skipping atexit hooks); adapters must finish their own cleanup in
+`retire` and `finish`, since nothing joins a thread they leave running.
 
 Choose an empty audit directory, and use a separate one for every run. The
 runner journals attempts to `attempts.jsonl` before dispatch and publishes case
@@ -474,7 +492,8 @@ verdict. After all targets are released or quarantined, the runner writes frozen
 observations and separate cleanup evidence to `collected-evidence.json`, reads
 the file back, and adjudicates it. `collect_and_adjudicate` returns the
 adjudicated results; the caller reports them with `build_report(manifest,
-results, suite=suite)` and `reporters.write_report`.
+results, suite=suite)` and `reporters.write_report`, as the CLI does for
+`--collect`.
 
 A collection manifest may also set `scenarioConcurrency`, the most cases the run
 executes at once (default 8), and `budgets`, harness time limits in seconds:
@@ -529,9 +548,12 @@ pass the bundle to the CLI with `--collected-evidence`:
 durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
 ```
 
-The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
-its bundle again in Python with `adjudicate_collected_evidence(manifest, bundle,
-suite=suite)` and reports it with `build_report(..., suite=suite)`.
+Whether collecting with `--collect` or re-adjudicating with
+`--collected-evidence`, the CLI admits only the `lmi-lifecycle` catalog; replay
+never normalizes paths, imports SDK code or contacts AWS. An SDK-owned suite
+adjudicates its bundle again in Python with
+`adjudicate_collected_evidence(manifest, bundle, suite=suite)` and reports it
+with `build_report(..., suite=suite)`.
 
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
 that it was not modified. Before recording `COLLECTED`, the coordinator checked
