@@ -36,6 +36,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_observed_retirement,
     validate_retirement_evidence,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors
 
 
@@ -320,6 +321,7 @@ class ScenarioContext:
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
     _lease: Lease | None = field(default=None, repr=False)
     _on_attempt: Callable[[ScenarioContext], None] | None = field(default=None, repr=False)
+    _collection_deadline: float | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def attempts(self) -> list[dict[str, Any]]:
@@ -367,6 +369,39 @@ class ScenarioContext:
         an explicit ``attempt`` must equal that next ordinal.
         """
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
+
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Remove a launch whose dispatch provably never happened.
+
+        Only the most recently journaled attempt can be withdrawn, and only
+        when it is still a bare driver-invoke launch: it has a launch
+        timestamp and none of a request ID, execution ARN or native
+        start/end time. Any attempt that may have reached the service must
+        stay visible to retirement, so a mismatch raises rather than
+        silently dropping it.
+        """
+        if not self._attempts or self._attempts[-1]["attemptId"] != attempt_id:
+            raise ValueError("Only the last journaled attempt can be withdrawn")
+        attempt = self._attempts[-1]
+        if (
+            attempt.get("source") != "driver-invoke"
+            or "launchedAtMs" not in attempt
+            or any(key in attempt for key in ("requestId", "executionArn", "nativeStartedAtMs", "nativeEndedAtMs"))
+        ):
+            raise ValueError("Only an undispatched driver launch can be withdrawn")
+        removed = self._attempts.pop()
+        if self._on_attempt is not None:
+            try:
+                self._on_attempt(self)
+            except BaseException:
+                # The durable sink may have already dropped the attempt from
+                # its journal before failing (e.g. an fsync after the write),
+                # so memory and the durable record can still disagree here.
+                # That is safe: Invoke never ran for this attempt, so keeping
+                # it visible in memory and failing closed by re-raising never
+                # hides a launch that may have dispatched.
+                self._attempts.append(removed)
+                raise
 
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
@@ -540,6 +575,9 @@ async def _bounded(
 ) -> Any:
     started = time.time() * 1000
     monotonic_started = time.monotonic()
+    if name in {"collection", "partialCollection"}:
+        # Leave the worker time to return its retained evidence before the watchdog.
+        context._collection_deadline = monotonic_started + budget - min(0.1, budget / 10)
     task = asyncio.ensure_future(operation)
     try:
         done, _ = await asyncio.wait((task,), timeout=budget)
@@ -549,6 +587,8 @@ async def _bounded(
             raise RuntimeError(f"{name} operation was cancelled")
         return task.result()
     finally:
+        if name in {"collection", "partialCollection"}:
+            context._collection_deadline = None
         context.timings[name] = {
             "startedAtMs": started,
             "finishedAtMs": time.time() * 1000,
@@ -944,8 +984,12 @@ async def run_scenarios(
                     retirement_evidence = normal_retirement
                 # This reads only the coordinator's own journal: a dispatched
                 # launch whose invocation was never identified may still run,
-                # and no retirement snapshot can show that it ended.
-                if any(not attempt.get("requestId") for attempt in context.attempts):
+                # and no retirement snapshot can show that it ended. A launch
+                # the service definitely rejected never started.
+                if any(
+                    not attempt.get("requestId") and not invoke_rejection_proven(attempt)
+                    for attempt in context.attempts
+                ):
                     cleanup_errors.append(
                         "Every launched attempt must retain an identified invocation request before retirement"
                     )
