@@ -44,10 +44,6 @@ run_and_adjudicate = run_path(str(Path(__file__).parents[1] / "test_lmi_coordina
         (False, "active-unsealed", None),
         (False, "active-no-completion", None),
         (False, "active-bad-final", None),
-        # Collection compares the independent retirement snapshot with the
-        # frozen observations; adjudication relies on those checks.
-        (False, "active-changed-outcome", None),
-        (False, "active-changed-coverage", None),
         (False, None, "status"),
         (False, None, "stop-response"),
     ],
@@ -271,11 +267,6 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
             if late_retry == "active-bad-final":
                 retry = next(row for row in context.retirement_evidence["attempts"] if row["requestId"] == "late-retry")
                 retry["endedAtMs"] = 100200
-            elif late_retry == "active-changed-outcome":
-                victim = next(row for row in context.retirement_evidence["attempts"] if row["requestId"] == "native")
-                victim["outcome"] = "SUCCEEDED"
-            elif late_retry == "active-changed-coverage":
-                context.retirement_evidence["coverageProfile"] = "sdk-regression"
             retirement = context.retirement_evidence["retirement"]
             owned = {resource["id"] for resource in context.evidence["resourcesCreated"]}
             context.evidence["retirement"] = {
@@ -292,10 +283,6 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
         assert scheduler.quarantine_reason(target), result.errors
         if late_retry == "active-bad-final":
             assert any("actual service completion" in error for error in result.errors)
-        elif late_retry == "active-changed-outcome":
-            assert "Retirement changed an original invocation's outcome" in result.errors, result.errors
-        elif late_retry == "active-changed-coverage":
-            assert "Retirement coverageProfile changed the admitted case" in result.errors, result.errors
         else:
             assert all("activeAtObservationEnd" not in row for row in result.evidence["attempts"])
         return
@@ -408,7 +395,6 @@ def test_coordinator_preserves_running_cutoff_without_releasing_fault(
 
 
 def test_deferred_undispatched_rejection_never_satisfies_the_deferred_obligation(tmp_path):
-    from aws_durable_execution_conformance_tests.lmi.coordinator import _retirement_ownership_errors
     from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_retirement_errors
 
     from .support import build_evidence as normalize
@@ -428,24 +414,12 @@ def test_deferred_undispatched_rejection_never_satisfies_the_deferred_obligation
     assert settlement["outcome"] == "UNDISPATCHED"
     assert settlement["startedAtMs"] == 1100
 
-    # Physical retirement settles it, and the deferred obligation and the
-    # coordinator's full ownership audit accept that settlement.
-    assert deferred_retirement_errors(frozen, final, undispatched=True) == []
-    assert _retirement_ownership_errors(ctx, frozen, final) == []
+    # Physical retirement, the audit collection runs, settles it.
+    assert validate_retirement_evidence(final) == []
 
     # Requirement 1 still holds: behavior never accepts the settlement for the
     # deferred obligation, and the final document reports it incomplete.
     assert deferred_retirement_errors(frozen, final) == ["Retirement omitted deferred service request rejected"]
     assert any(
         "service rejected native request rejected before its handler ran" in error for error in validate_evidence(final)
-    )
-
-    # A settlement that cannot prove it started after the cutoff fails the
-    # physical deferred check, exactly like a late service retry would.
-    not_after_cutoff = deepcopy(final)
-    tampered = next(item for item in not_after_cutoff["retirement"]["resources"] if item["id"] == "rejected")
-    tampered["startedAtMs"] = frozen["observationEndedAtMs"]
-    assert any(
-        "did not prove deferred service request rejected started after the cutoff" in error
-        for error in deferred_retirement_errors(frozen, not_after_cutoff, undispatched=True)
     )

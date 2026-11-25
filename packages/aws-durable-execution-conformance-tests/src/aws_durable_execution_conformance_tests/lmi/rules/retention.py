@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import copy
 import math
-from collections import Counter, deque
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -165,87 +165,6 @@ def _retain_operation_entries(previous: list[Any], current: list[Any]) -> tuple[
                     retained[match][key] = copy.deepcopy(value)
                     changes.omitted.add(("replay", "operationExecutions"))
     return retained, changes
-
-
-def _observation_updates(
-    previous: Mapping[str, Any], current: Mapping[str, Any], path: tuple[str, ...] = ()
-) -> dict[str, Any]:
-    """Extract new facts without replaying stale fields from a supplied object."""
-    updates: dict[str, Any] = {}
-    for key, value in current.items():
-        if key in previous and same_json(previous[key], value):
-            continue
-        atomic = path == ("expectedHistories",) or (path in _OUTCOME_RECORD_PATHS and key in ("result", "error"))
-        if key not in previous or atomic:
-            updates[key] = copy.deepcopy(value)
-        elif isinstance(previous[key], Mapping) and isinstance(value, Mapping):
-            nested = _observation_updates(previous[key], value, (*path, key))
-            if nested:
-                updates[key] = nested
-        elif isinstance(previous[key], list) and isinstance(value, list) and (*path, key) in _OBSERVATION_IDENTITIES:
-            identity = _OBSERVATION_IDENTITIES[(*path, key)]
-            previous_counts = Counter(
-                record[identity]
-                for record in previous[key]
-                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
-            )
-            current_counts = Counter(
-                record[identity]
-                for record in value
-                if isinstance(record, Mapping) and isinstance(record.get(identity), str)
-            )
-            if any(current_counts[identifier] > count for identifier, count in previous_counts.items()):
-                # A lone extra occurrence would merge back into the known row.
-                # Preserve this inventory's full multiplicity and facts instead.
-                updates[key] = copy.deepcopy(value)
-                continue
-            remaining = list(previous[key])
-            records = []
-            for record in value:
-                match = next(
-                    (
-                        index
-                        for index, item in enumerate(remaining)
-                        if isinstance(record, Mapping)
-                        and isinstance(record.get(identity), str)
-                        and isinstance(item, Mapping)
-                        and record[identity] == item.get(identity)
-                    ),
-                    None,
-                )
-                if match is None:
-                    records.append(copy.deepcopy(record))
-                    continue
-                prior = remaining.pop(match)
-                nested = _observation_updates(prior, record, (*path, key))
-                if nested:
-                    nested[identity] = record[identity]
-                    if (*path, key) == ("attempts",):
-                        for time_field in ("startedAtMs", "endedAtMs"):
-                            source_field = f"{time_field}Source"
-                            if time_field in nested or source_field in nested:
-                                for field_name in (time_field, source_field):
-                                    if field_name in record:
-                                        nested[field_name] = record[field_name]
-                    if (
-                        (*path, key) in _OUTCOME_RECORD_PATHS
-                        and {"status", "result", "error"} & nested.keys()
-                        and "status" in record
-                    ):
-                        nested["status"] = record["status"]
-                        # Status can make an unchanged outcome immutable. Carry
-                        # present values (including null), but not removed fields.
-                        for outcome in ("result", "error"):
-                            if outcome in record:
-                                nested[outcome] = copy.deepcopy(record[outcome])
-                    records.append(nested)
-            if records:
-                updates[key] = records
-        else:
-            # Unkeyed lists stay whole: operationExecutions can contain multiple
-            # body occurrences with the same request/operation identities.
-            updates[key] = copy.deepcopy(value)
-    return updates
 
 
 def _retain_observations(
@@ -511,11 +430,6 @@ def _sdk_frames_order_changed(before: Mapping[str, Any], after: Mapping[str, Any
         if isinstance(candidate, Mapping)
         if _owned_record_enriches(request, candidate, event=True)
     )
-
-
-def _event_frames_order_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
-    _, changes = _retain_observations({"events": before.get("events", [])}, {"events": after.get("events", [])})
-    return ("events", "sequence") in changes.conflicts
 
 
 def _native_intervals(

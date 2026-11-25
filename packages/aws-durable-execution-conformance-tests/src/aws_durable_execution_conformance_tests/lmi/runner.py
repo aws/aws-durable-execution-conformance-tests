@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections.abc import Callable, Mapping
@@ -44,23 +43,22 @@ def make_manifest(
     coverage: str,
     directory: Path,
     *,
-    runtime: str,
     artifact_id: str,
     conformance_revision: str,
-    configuration_identity: Callable[[Mapping[str, Any], str], str],
-    recovery_policy: str = "reuse-worker",
 ) -> dict[str, Any]:
+    from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
     from aws_durable_execution_conformance_tests.lmi.matrix import required_cases
+    from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
 
     if coverage not in COVERAGE_PROFILES:
         raise ValueError("Unknown shared coverage profile")
-    if recovery_policy not in {"reuse-worker", "replace-worker"}:
-        raise ValueError("Unknown worker recovery policy")
     _require_conformance_revision(conformance_revision)
     actual = deepcopy(dict(deployment))
     actual["conformanceRevision"] = conformance_revision
     if not artifact_id:
         raise ValueError("An exact SDK artifact identity is required")
+    runtime = actual["runtimeModel"]
+    recovery_policy = RuntimeDefinition.from_manifest(actual).binding.recovery_policy
     profiles = [
         {
             "profile_id": key,
@@ -120,8 +118,9 @@ def make_manifest(
     }
 
 
-def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable, adapter_name: str) -> int:
+def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable) -> int:
     from aws_durable_execution_conformance_tests.lmi.app import (
+        _run_collection,
         build_report,
         collect_and_adjudicate,
         coverage_inventory,
@@ -153,13 +152,10 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         path = output / "manifest.json"
         save(path, plan)
         validated = load_manifest(path)
-        results = asyncio.run(
-            collect_and_adjudicate(
-                validated,
-                adapter_name,
-                audit_dir=output,
-            )
-        )
+        # Bound teardown like the CLI: the coordinator abandons adapter work
+        # that outlives its budget, and asyncio.run would wait for it without
+        # a bound, so a task that ignores cancellation would block the reports.
+        results = _run_collection(collect_and_adjudicate(validated, audit_dir=output))
         report = build_report(validated, results)
         save(output / "evidence.json", results)
         save(output / "coverage.json", coverage_inventory(validated))

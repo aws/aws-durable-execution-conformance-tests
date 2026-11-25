@@ -151,9 +151,7 @@ def active_pre_cutoff_errors(original: Mapping[str, Any], final: Mapping[str, An
     return errors
 
 
-def deferred_retirement_errors(
-    original: Mapping[str, Any], final: Mapping[str, Any], *, undispatched: bool = False
-) -> list[str]:
+def deferred_retirement_errors(original: Mapping[str, Any], final: Mapping[str, Any]) -> list[str]:
     obligations = deferred_service_requests(original)
     if not obligations:
         return []
@@ -165,21 +163,6 @@ def deferred_retirement_errors(
         for attempt in attempts
         if isinstance(attempt, Mapping) and isinstance(attempt.get("requestId"), str)
     }
-    if undispatched:
-        retirement = final.get("retirement")
-        resources = retirement.get("resources") if isinstance(retirement, Mapping) else None
-        if isinstance(resources, list):
-            for item in resources:
-                if (
-                    isinstance(item, Mapping)
-                    and item.get("kind") == "invocation"
-                    and item.get("outcome") == "UNDISPATCHED"
-                    and isinstance(item.get("id"), str)
-                    and item["id"] not in indexed
-                ):
-                    # Physical retirement only; proven undispatched still never
-                    # satisfies a deferred obligation for behavior purposes.
-                    indexed[item["id"]] = item
     cutoff = original.get("observationEndedAtMs")
     errors = []
     for request, arn in obligations.items():
