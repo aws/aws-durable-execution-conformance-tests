@@ -769,6 +769,9 @@ async def _collect_and_adjudicate(
         _, document = _result_for_audit(raw)
         publish(result.case_id, document)
 
+    # Final journal failures, kept so a cancelled run can still report them.
+    publication_errors: list[str] = []
+
     def publish_final(result: dict[str, Any], document: str) -> None:
         if publications.get(result["case_id"]) == document:
             return
@@ -777,7 +780,9 @@ async def _collect_and_adjudicate(
         except OSError as exc:
             if result["status"] in ("PASSED", "NOT_IMPLEMENTED"):
                 result["status"] = "INFRASTRUCTURE_ERROR"
-            result["errors"].append(f"Could not publish final case result: {exc}")
+            message = f"Could not publish final case result: {exc}"
+            result["errors"].append(message)
+            publication_errors.append(f"{result['case_id']}: {message}")
 
     skipped_results: list[dict[str, Any]] = []
     for scenario in manifest["scenarios"]:
@@ -827,12 +832,17 @@ async def _collect_and_adjudicate(
     except asyncio.CancelledError as cancelled:
         try:
             reconcile_results(emitted.values())
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             # Adjudication can run an SDK-owned suite's validator, which may raise
-            # anything; the cancellation must still reach the caller.
+            # anything, even CancelledError; this cancellation must still reach the
+            # caller. Reconciliation never awaits, so no new cancellation lands here.
             cancelled.add_note(
                 f"Could not adjudicate and journal the cancelled run's evidence: {type(error).__name__}: {error}"
             )
+        # The cancelled run returns no results, so journal failures surface only here,
+        # once each even when a declared skip's row failed again during reconciliation.
+        for message in dict.fromkeys(publication_errors):
+            cancelled.add_note(message)
         raise
     return reconcile_results(outcomes)
 
