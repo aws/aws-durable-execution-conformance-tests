@@ -104,6 +104,16 @@ def sdk_artifact_directory(coverage_directory: Path, plan: Mapping[str, Any], *,
     return path
 
 
+def sdk_plan_with_artifact_directory(directory: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+    root = sdk_artifact_directory(directory, plan, live=True)
+    root.mkdir(parents=True, exist_ok=True)
+    sdk = {**plan.get("sdk", {}), "artifacts_dir": str(root)}
+    sdk.pop("artifacts_dir_relative", None)
+    if root.is_relative_to(base := directory.resolve()):
+        sdk["artifacts_dir_relative"] = str(root.relative_to(base))
+    return {**plan, "sdk": sdk}
+
+
 def saved_case_plans(directory: Path, run_id: str) -> list[tuple[Path, dict[str, Any]]]:
     """Read direct CLI output or coverage-partitioned shared runner output."""
     direct = directory / "manifest.json"

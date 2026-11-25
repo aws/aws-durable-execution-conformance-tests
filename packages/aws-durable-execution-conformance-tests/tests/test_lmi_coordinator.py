@@ -800,6 +800,32 @@ def test_withdraw_attempt_restores_the_attempt_when_the_sink_fails():
     assert [item["attemptId"] for item in context.attempts] == ["launch"]
 
 
+def test_withdraw_attempt_runs_on_the_coordinator_loop_from_a_worker_thread():
+    import threading
+
+    from aws_durable_execution_conformance_tests.lmi.adapter import _CoordinatorLoopContext
+
+    async def exercise():
+        sink_threads: set[int] = set()
+
+        def sink(ctx):
+            sink_threads.add(threading.get_ident())
+
+        context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=sink)
+        context.record_attempt("launch", source="driver-invoke")
+        threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
+
+        def worker():
+            assert threading.current_thread() is not threading.main_thread()
+            threaded.withdraw_attempt("launch")
+
+        await asyncio.to_thread(worker)
+        assert sink_threads == {threading.get_ident()}
+        assert context.attempts == []
+
+    asyncio.run(exercise())
+
+
 def test_withdraw_attempt_refuses_a_non_last_attempt():
     context = ScenarioContext("run", case("cohort", roles=("victim", "peer")), PROFILE)
     context.record_attempt("first", role="victim", source="driver-invoke")
@@ -1031,6 +1057,51 @@ def test_finish_is_skipped_when_target_admission_prevents_prepare():
             await lease.release(quiescent=True)
 
     asyncio.run(check())
+
+
+def test_undispatched_settlement_does_not_satisfy_a_prior_frames_native_owner_reference():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _cleanup_record_errors
+
+    earlier = {
+        "attempts": [{"requestId": "rejected", "executionArn": "execution"}],
+        "events": [
+            {
+                "requestId": "rejected",
+                "ownerRequestId": "rejected",
+                "executionArn": "execution",
+                "kind": "task_start",
+                "atMs": 10,
+            }
+        ],
+    }
+    final: dict[str, Any] = {
+        "attempts": [{"requestId": "rejected", "executionArn": "execution"}],
+        "retirement": {
+            "resources": [
+                {
+                    "kind": "invocation",
+                    "id": "rejected",
+                    "outcome": "UNDISPATCHED",
+                    "settledAtMs": 20,
+                    "executionArn": "execution",
+                    "serviceErrorType": "TooManyRequestsException",
+                    "sourceEventId": 4,
+                    "startedAtMs": 5,
+                },
+                {"kind": "execution", "id": "execution", "outcome": "SUCCEEDED", "settledAtMs": 20},
+            ]
+        },
+    }
+    # A proven UNDISPATCHED settlement still needs QUIESCENT and a bound
+    # attempt to satisfy an earlier frame's raw reference to the same request;
+    # an earlier or later ledger row contradicts the undispatched proof.
+    assert any(
+        "native owner rejected is not settled" in error for error in _cleanup_record_errors([earlier, final], final)
+    )
+    quiescent_final = copy.deepcopy(final)
+    quiescent_resource = next(item for item in quiescent_final["retirement"]["resources"] if item["id"] == "rejected")
+    quiescent_resource["outcome"] = "QUIESCENT"
+    assert _cleanup_record_errors([earlier, quiescent_final], quiescent_final) == []
 
 
 def test_normal_post_window_completion_does_not_require_independent_proof():

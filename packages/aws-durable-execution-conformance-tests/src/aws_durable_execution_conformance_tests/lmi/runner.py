@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Reusable manifest construction and run-scoped cleanup."""
+"""Reusable manifest, strict report execution and run-scoped cleanup."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .artifacts import (
     save,
     saved_case_plans,
     sdk_artifact_directory,
+    sdk_plan_with_artifact_directory,
 )
 from .catalog import COVERAGE_PROFILES
 from .cloud import find_execution_by_name, require_execution_name, require_ledger_launch
@@ -116,6 +117,54 @@ def make_manifest(
             "artifacts_dir": str(directory.resolve() / "source"),
         },
     }
+
+
+def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Callable) -> int:
+    from aws_durable_execution_conformance_tests.lmi.app import (
+        _run_collection,
+        build_report,
+        collect_and_adjudicate,
+        coverage_inventory,
+        load_manifest,
+    )
+    from aws_durable_execution_conformance_tests.reporters import (
+        render_console,
+        write_report,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    if any(directory.iterdir()):
+        raise ValueError("Shared run output must be empty; preserve prior attempts and failure evidence")
+    location = deployment.get("deploymentArtifactDirectory")
+    if isinstance(location, str) and location:
+        artifacts = Path(location).resolve()
+        output = directory.resolve()
+        recorded = output.relative_to(artifacts) if output.is_relative_to(artifacts) else output
+        save(artifacts / "case-output.json", {"runId": deployment["run"], "directory": str(recorded)})
+    exit_code = 0
+    for coverage in COVERAGE_PROFILES:
+        output = directory / coverage
+        output.mkdir()
+        plan = manifest_factory(deployment, coverage, output)
+        sdk = plan.get("sdk")
+        actual = sdk.get("deployment") if isinstance(sdk, Mapping) else None
+        _require_conformance_revision(actual.get("conformanceRevision") if isinstance(actual, Mapping) else None)
+        plan = sdk_plan_with_artifact_directory(output, plan)
+        path = output / "manifest.json"
+        save(path, plan)
+        validated = load_manifest(path)
+        # Bound teardown like the CLI: the coordinator abandons adapter work
+        # that outlives its budget, and asyncio.run would wait for it without
+        # a bound, so a task that ignores cancellation would block the reports.
+        results = _run_collection(collect_and_adjudicate(validated, audit_dir=output))
+        report = build_report(validated, results)
+        save(output / "evidence.json", results)
+        save(output / "coverage.json", coverage_inventory(validated))
+        print(render_console(report))
+        for format_name in ("json", "junit"):
+            write_report(report, format_name, str(output / "report"))
+        exit_code = max(exit_code, report.exit_code())
+    return exit_code
 
 
 def _recover_profile_fences(deployment, source, profiles, storage) -> list[str]:

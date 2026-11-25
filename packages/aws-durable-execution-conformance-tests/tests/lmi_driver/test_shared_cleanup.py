@@ -361,6 +361,31 @@ def test_offline_profile_recovery_honors_custom_root_and_receipt(tmp_path, state
     assert storage.delete_object.call_count == int(released)
 
 
+def test_run_persists_relative_binding_source_as_absolute(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    working_directory = tmp_path / "original-cwd"
+    working_directory.mkdir()
+    monkeypatch.chdir(working_directory)
+    binding_source = working_directory / "journals"
+    output = tmp_path / "run-output"
+
+    def factory(*_):
+        return {"runId": "run", "sdk": {"deployment": {"conformanceRevision": "commit"}, "artifacts_dir": "journals"}}
+
+    def stop_before_runtime(path):
+        assert json.loads(path.read_text())["sdk"]["artifacts_dir"] == str(binding_source)
+        assert binding_source.is_dir()
+        raise RuntimeError("stop before runtime")
+
+    monkeypatch.setattr(app, "load_manifest", stop_before_runtime)
+    with pytest.raises(RuntimeError, match="stop before runtime"):
+        shared.run({"run": "run"}, output, manifest_factory=factory)
+    monkeypatch.chdir(tmp_path)
+    plan = json.loads((output / "standard/manifest.json").read_text())
+    assert shared.sdk_artifact_directory(output / "standard", plan) == binding_source
+
+
 def test_cleanup_uses_relocated_direct_cli_manifest(tmp_path):
     target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
     arn = target + "/durable-execution/name/id"

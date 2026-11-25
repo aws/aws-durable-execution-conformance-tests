@@ -26,9 +26,13 @@ from aws_durable_execution_conformance_tests.lmi.rules import recovery as recove
 from aws_durable_execution_conformance_tests.lmi.rules import replay as replay_rules
 from aws_durable_execution_conformance_tests.lmi.rules import retirement as retirement_rules
 from aws_durable_execution_conformance_tests.lmi.rules import warm_reuse as warm_reuse_rules
-from aws_durable_execution_conformance_tests.lmi.rules.engine import establish, retire
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import cutoff_obligations
+from aws_durable_execution_conformance_tests.lmi.rules.engine import audit_cutoff, establish, retire
 from aws_durable_execution_conformance_tests.lmi.rules.reconcile import ReconcileView
-from aws_durable_execution_conformance_tests.lmi.rules.replay import _side_effect_observation_errors
+from aws_durable_execution_conformance_tests.lmi.rules.replay import (
+    _side_effect_observation_errors,
+    cleanup_replay_projection_errors,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 
 
@@ -221,6 +225,9 @@ def _evaluate_capture(
                 observation_snapshots=observation_evidence,
             )
         )
+        for frame in [*frames, retirement_snapshot]:
+            if isinstance(replay := frame.get("replay"), Mapping):
+                findings.extend(cleanup_replay_projection_errors(replay))
 
         raw_retirement = retirement_evidence.get("retirement")
         if isinstance(raw_retirement, Mapping):
@@ -277,6 +284,7 @@ def _evaluate_capture(
                 if completions or "completions" in retirement:
                     retirement["completions"] = completions
             final_evidence["retirement"] = retirement
+        _, deferred = cutoff_obligations(evidence)
         observed_attempts = evidence.get("attempts")
         observed_requests = {
             attempt["requestId"]
@@ -287,6 +295,7 @@ def _evaluate_capture(
             "launchedAtMs" in attempt
             and isinstance(attempt.get("requestId"), str)
             and attempt["requestId"] not in observed_requests
+            and attempt["requestId"] not in deferred
             for attempt in attempts
         ):
             findings.append("INCOMPLETE: frozen observations do not cover all client-journaled launches")
@@ -301,6 +310,9 @@ def _evaluate_capture(
                 findings.extend(retire(established, copy.deepcopy(final_evidence)))
         elif validator is not None:
             findings.extend(validator(copy.deepcopy(final_evidence), phase="final"))
+        # Collection records retries active at the cutoff and requests deferred
+        # past it; only the independent retirement evidence can prove them.
+        findings.extend(audit_cutoff(evidence, retirement_evidence))
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError):
         findings.append("INCOMPLETE: malformed captured evidence")
     return observation_findings, list(dict.fromkeys(findings)), final_evidence

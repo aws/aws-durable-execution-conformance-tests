@@ -1,18 +1,27 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Data-only fixture binding: parsing, round-tripping, fail-closed validation and identity coverage."""
+"""Data-only fixture binding: parsing, identity coverage, and derived rules.
+
+Golden equivalence against the Python SDK's #931 shared binding is checked by
+re-implementing its ``expected_outcome`` and ``replay_effects`` as fixed
+reference copies here (never importing the downloaded reference files), and
+comparing their output against the conformance-owned, binding-derived rules.
+"""
 
 import hashlib
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.configuration import MEMORY_GIB_PER_VCPU, configuration_identity
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioContext
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
 from aws_durable_execution_conformance_tests.lmi.errors import ProvisioningError
 from aws_durable_execution_conformance_tests.lmi.runtime import (
@@ -21,9 +30,14 @@ from aws_durable_execution_conformance_tests.lmi.runtime import (
     ReplayEffect,
     RuntimeDefinition,
 )
+from aws_durable_execution_conformance_tests.lmi.source_evidence import (
+    _binding_expected_outcome,
+    _binding_replay_effect_policy,
+    binding_evidence_builder,
+)
 
 from .support import RUNTIME
-from .test_shared_adapter import deployment
+from .test_shared_adapter import FUNCTION, deployment
 
 FIXTURES = {
     "native-overlap": "barrier",
@@ -216,7 +230,7 @@ def test_derived_identity_equals_the_same_hash_built_from_an_explicit_runtime_an
 
 
 # ---------------------------------------------------------------------------
-# The profile verifier is derived from the plan.
+# Verifier, driver and evidence are derived from the plan.
 # ---------------------------------------------------------------------------
 
 
@@ -233,6 +247,230 @@ def test_cloud_default_verify_profile_uses_the_shared_verifier(tmp_path):
     bad = {**config, "Handler": "wrong.handler"}
     with pytest.raises(ProvisioningError):
         cloud.verify_profile(bad, scaling, manifest, "c1")
+
+
+def test_shared_adapter_default_driver_factory_uses_the_binding(tmp_path):
+    plan = {"runtime": "python", "sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}}
+    value = SharedAdapter(plan)
+    assert value.cloud_factory is Cloud
+    context = ScenarioContext(
+        "run",
+        Scenario("case", "lmi-lifecycle-1", "c1", "normal-return", roles=("victim",), coverage_profile="standard"),
+        Profile("c1", FUNCTION, 1, 1, "sdk", "config"),
+    )
+    driver = value.driver_factory(context, SimpleNamespace())
+    assert driver.fixtures == dict(RUNTIME.binding.fixtures)
+    assert driver.suspension_mode == "callback"
+    assert driver.callback_encoder("marker-value") == b"marker-value"
+
+
+def test_shared_adapter_default_driver_factory_honors_json_marker_callback_payload(tmp_path):
+    custom = {
+        **deployment(),
+        "fixtureBinding": {**deployment()["fixtureBinding"], "callbackPayload": "json-marker", "suspension": "wait"},
+    }
+    plan = {"runtime": "python", "sdk": {"deployment": custom, "artifacts_dir": str(tmp_path)}}
+    value = SharedAdapter(plan)
+    context = ScenarioContext(
+        "run",
+        Scenario("case", "lmi-lifecycle-1", "c1", "normal-return", roles=("victim",), coverage_profile="standard"),
+        Profile("c1", FUNCTION, 1, 1, "sdk", "config"),
+    )
+    driver = value.driver_factory(context, SimpleNamespace())
+    assert driver.suspension_mode == "wait"
+    assert driver.callback_encoder("marker-value") == json.dumps("marker-value").encode()
+
+
+@pytest.mark.parametrize("worker_identity_field,expected_value", [("process", "p-1"), ("worker", "w-1")])
+def test_binding_evidence_builder_wires_expected_outcome_worker_identity_and_replay_effects(
+    monkeypatch, worker_identity_field, expected_value
+):
+    from aws_durable_execution_conformance_tests.lmi import source_evidence
+
+    captured = {}
+
+    def fake_build_evidence(context, cloud, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(source_evidence, "build_evidence", fake_build_evidence)
+    builder = binding_evidence_builder(binding(worker_identity=worker_identity_field), "python")
+    builder(object(), object(), phase="final")
+    assert captured["runtime"] == "python"
+    assert captured["phase"] == "final"
+    assert captured["worker_identity_key"] == worker_identity_field
+    assert captured["expected_outcome"]({"role": "victim", "marker": "m"}, "normal-failure") == {
+        "status": "FAILED",
+        "error": {"type": "ValueError", "message": "expected:m"},
+    }
+    assert captured["worker_identity"]({"process": "p-1", "worker": "w-1"}) == expected_value
+    assert captured["expected_replay_effects"] == {"success": 1, "failure": 1, "retry": 2}
+
+
+def test_build_evidence_passes_the_worker_identity_key_to_case_sources():
+    from unittest.mock import patch
+
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence
+
+    from .test_shared_partial_evidence import context
+
+    cloud: Any = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        observation_ended_at=2,
+        events={},
+        raw_histories={},
+        control_records=[],
+        invocations=[],
+        source_uris=set(),
+        _save=lambda *args: None,
+    )
+    captured = {}
+
+    def fake_capture(ctx, cld, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            observations=lambda **_: ([], []),
+            histories=lambda **_: ([], {}, []),
+            attempts=lambda _, **kwargs: ([], {}, []),
+        )
+
+    with patch(
+        "aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", side_effect=fake_capture
+    ):
+        build_evidence(
+            context(),
+            cloud,
+            runtime="python",
+            expected_outcome=lambda item, scenario: {"status": "SUCCEEDED"},
+            worker_identity=lambda raw: raw["worker"],
+            worker_identity_key="worker",
+        )
+    assert captured["worker_identity_key"] == "worker"
+
+
+# ---------------------------------------------------------------------------
+# Golden equivalence with Python SDK PR #931's hard-coded expected_outcome and
+# replay_effects (re-implemented here as fixed reference copies; never
+# imported from the downloaded reference files).
+# ---------------------------------------------------------------------------
+
+_PR931_FIXTURES = {
+    "native-overlap": "barrier",
+    "normal-return": "success",
+    "deadline-during-step": "deadline",
+    "peer-recovery": "deadline",
+    "suspension-retry": "replay",
+    "warm-reuse": "warm-owner",
+    "normal-failure": "failure",
+    "peer": "barrier",
+    "recovery": "barrier",
+    "warm": "warm-probe",
+}
+_PR931_BINDING = FixtureBinding(
+    fixtures=_PR931_FIXTURES,
+    failure_error_type="ValueError",
+    worker_identity="process",
+    replay_effects=(
+        ReplayEffect(operation="success", count=1),
+        ReplayEffect(operation="failure", count=1),
+        ReplayEffect(operation="retry", count=2),
+        ReplayEffect(operation="item", count=1, values=(1, 2, 3)),
+        ReplayEffect(operation="left", count=1),
+        ReplayEffect(operation="right", count=1),
+    ),
+)
+
+
+def _reference_expected_outcome(item, scenario):
+    """Fixed copy of Python SDK #931's ``shared_evidence.expected_outcome``."""
+    fixture = item.get("payload", {}).get("scenario")
+    if fixture == "failure":
+        return {
+            "status": "FAILED",
+            "error": {
+                "type": "ValueError",
+                "message": "expected:" + item["marker"],
+            },
+        }
+    elif fixture == "deadline":
+        return {
+            "allowedStatuses": [
+                "RUNNING",
+                "SUCCEEDED",
+                "FAILED",
+                "TIMED_OUT",
+                "STOPPED",
+            ]
+        }
+    else:
+        return {"status": "SUCCEEDED", "result": item["marker"]}
+
+
+def _reference_replay_effects(bodies: list[dict[str, Any]]) -> tuple[dict[str, int], list[str]]:
+    """Fixed copy of Python SDK #931's ``shared_evidence.replay_effects``."""
+    owners: dict[tuple[str, int | None], str] = {}
+    allowances: dict[str, int] = {}
+    expected = {
+        (name, item): count
+        for name, count in {"success": 1, "failure": 1, "retry": 2, "item": 1, "left": 1, "right": 1}.items()
+        for item in ((1, 2, 3) if name == "item" else (None,))
+    }
+    for body in bodies:
+        name, identity = body["operation"], body["operationId"]
+        item = body.get("value") if name == "item" else None
+        key = (name, item)
+        if (name == "item" and type(item) is not int) or key not in expected:
+            allowances.setdefault(identity, 0)
+            continue
+        owner = owners.setdefault(key, identity)
+        allowances.setdefault(identity, expected[key] if identity == owner else 0)
+    missing = [f"item:{item}" if name == "item" else name for name, item in expected if (name, item) not in owners]
+    return allowances, missing
+
+
+# Every catalog scenario/role launch the shared driver makes with #931's
+# fixtures map: (catalog scenario, role, fixture name the driver would pass
+# to Cloud.start for that role).
+_PR931_LAUNCHES = [
+    ("native-overlap", "victim", _PR931_FIXTURES["native-overlap"]),
+    ("native-overlap", "peer", _PR931_FIXTURES["native-overlap"]),
+    ("normal-return", "victim", _PR931_FIXTURES["normal-return"]),
+    ("deadline-during-step", "victim", _PR931_FIXTURES["deadline-during-step"]),
+    ("peer-recovery", "victim", _PR931_FIXTURES["peer-recovery"]),
+    ("peer-recovery", "peer", _PR931_FIXTURES["peer"]),
+    ("peer-recovery", "recovery", _PR931_FIXTURES["recovery"]),
+    ("suspension-retry", "victim", _PR931_FIXTURES["suspension-retry"]),
+    ("warm-reuse", "victim", _PR931_FIXTURES["warm-reuse"]),
+    ("warm-reuse", "warm", _PR931_FIXTURES["warm"]),
+    ("normal-failure", "victim", _PR931_FIXTURES["normal-failure"]),
+]
+
+
+@pytest.mark.parametrize("scenario,role,fixture_name", _PR931_LAUNCHES)
+def test_derived_expected_outcome_matches_pr931_for_every_catalog_launch(scenario, role, fixture_name):
+    item = {"role": role, "marker": "marker-value", "payload": {"scenario": fixture_name}}
+    derived = _binding_expected_outcome(_PR931_BINDING, item, scenario)
+    reference = _reference_expected_outcome(item, scenario)
+    assert derived == reference
+
+
+def test_derived_replay_policy_matches_pr931_on_owner_non_owner_and_missing_bodies():
+    bodies: list[dict[str, Any]] = [
+        {"operation": "success", "operationId": "s1"},
+        {"operation": "success", "operationId": "s2"},  # non-owner: same key, later identity
+        {"operation": "failure", "operationId": "f1"},
+        {"operation": "unexpected", "operationId": "u1"},  # unexpected operation
+        {"operation": "item", "operationId": "i1", "value": 1},
+        {"operation": "item", "operationId": "i1b", "value": 1},  # non-owner for value 1
+        {"operation": "item", "operationId": "i2", "value": 2},
+        {"operation": "item", "operationId": "ibad", "value": "not-an-int"},  # non-int item value
+        # "retry", "left", "right" and item value 3 are intentionally absent -> missing
+    ]
+    reference_allowances, reference_missing = _reference_replay_effects(bodies)
+    derived_allowances, derived_missing = _binding_replay_effect_policy(_PR931_BINDING)(bodies)
+    assert derived_allowances == reference_allowances
+    assert derived_missing == reference_missing
+    assert reference_missing == ["retry", "item:3", "left", "right"]
 
 
 @pytest.mark.parametrize(

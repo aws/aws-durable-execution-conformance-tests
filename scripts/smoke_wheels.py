@@ -79,6 +79,7 @@ def main() -> None:
                 f"lmi-lifecycle-{index}" for index in range(1, 8)
             }
         for name in (
+            "adapter",
             "artifacts",
             "cloud",
             "configuration",
@@ -88,7 +89,10 @@ def main() -> None:
             "quarantine",
             "runner",
             "runtime",
+            "scenarios",
             "service",
+            "source_evidence",
+            "summary",
         ):
             module = importlib.import_module(f"aws_durable_execution_conformance_tests.lmi.{name}")
             assert Path(module.__file__).is_relative_to(target)
