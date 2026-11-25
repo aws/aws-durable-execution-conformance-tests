@@ -42,6 +42,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     is_json_integer,
     same_json,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.values import _dump_json as _dump_json
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 
 __all__ = [

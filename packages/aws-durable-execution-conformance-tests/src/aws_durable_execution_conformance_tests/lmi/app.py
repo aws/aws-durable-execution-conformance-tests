@@ -29,6 +29,7 @@ from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, CO
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
     EvidenceValidator,
+    _dump_json,
     is_json_integer,
     same_json,
 )
@@ -189,34 +190,6 @@ def _finite_json_float(raw: str) -> int | float | Decimal:
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(), parse_float=_finite_json_float, parse_constant=_finite_json_float)
-
-
-def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
-    """Write retained JSON without rounding exact decimal payloads."""
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError("JSON numbers must be finite")
-        return str(value)
-    if not isinstance(value, (dict, list, tuple)) or not value:
-        return json.dumps(value, allow_nan=False)
-    inner = "" if compact else "\n" + "  " * (depth + 1)
-    outer = "" if compact else "\n" + "  " * depth
-    if isinstance(value, dict):
-        keys: set[str] = set()
-        items = []
-        for key, item in value.items():
-            if not isinstance(key, str):
-                if key is not None and not isinstance(key, (bool, int, float)):
-                    raise ValueError("JSON object keys must be strings or scalar JSON values")
-                key = json.dumps(key, allow_nan=False)
-            if key in keys:
-                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
-            keys.add(key)
-            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
-        return "{" + inner + ("," + inner).join(items) + outer + "}"
-    return (
-        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
-    )
 
 
 def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:

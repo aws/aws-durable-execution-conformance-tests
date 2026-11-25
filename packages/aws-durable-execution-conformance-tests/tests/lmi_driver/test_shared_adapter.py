@@ -1892,6 +1892,97 @@ def test_wait_only_suspension_selects_native_timer_proof(durable_wait):
     assert ("finish", "victim", "SUCCEEDED") in cloud.actions
 
 
+def _carryover_ledger_and_history(*, wakeup_at, waking_event_type, name=None):
+    """Three sequential invocations: A (0-1, PENDING at 0.9), B (2-3, PENDING at
+    2.9, another operation's retry), C (starts at 6). A wait or callback started
+    during A can only be recognized as waking C if it survives, as outstanding,
+    past B's own PENDING decision.
+    """
+    ledger = [
+        {"phase": "WRAPPER_ENTER", "request": "A"},
+        {"phase": "WRAPPER_ENTER", "request": "B"},
+        {"phase": "WRAPPER_ENTER", "request": "C"},
+        {"phase": "WRAPPER_RETURN", "status": "PENDING", "time": 0.9, "request": "A"},
+        {"phase": "WRAPPER_RETURN", "status": "PENDING", "time": 2.9, "request": "B"},
+    ]
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "A", "StartTimestamp": 0, "EndTimestamp": 1},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "B", "StartTimestamp": 2, "EndTimestamp": 3},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "C", "StartTimestamp": 6, "EndTimestamp": 7},
+        },
+        {
+            "EventType": waking_event_type + "Started",
+            "Id": "timer",
+            "EventTimestamp": 0.5,
+            **({"Name": name} if name else {}),
+        },
+        {"EventType": waking_event_type + "Succeeded", "Id": "timer", "EventTimestamp": wakeup_at},
+    ]
+    return ledger, history
+
+
+def test_suspension_resumptions_carries_outstanding_wait_across_intermediate_decision():
+    from aws_durable_execution_conformance_tests.lmi.observations import suspension_resumptions
+
+    ledger, history = _carryover_ledger_and_history(wakeup_at=5, waking_event_type="Wait")
+    assert suspension_resumptions(ledger, history, "wait") == {"C": {"timer"}}
+
+
+def test_suspension_resumptions_carries_outstanding_callback_across_intermediate_decision():
+    from aws_durable_execution_conformance_tests.lmi.observations import suspension_resumptions
+
+    ledger, history = _carryover_ledger_and_history(wakeup_at=5, waking_event_type="Callback", name="completion")
+    assert suspension_resumptions(ledger, history, "callback") == {"C": {"timer"}}
+
+
+def test_suspension_resumptions_rejects_wait_from_a_request_that_never_went_pending():
+    from aws_durable_execution_conformance_tests.lmi.observations import suspension_resumptions
+
+    ledger: list[dict[str, Any]] = [
+        {"phase": "WRAPPER_ENTER", "request": "X"},
+        {"phase": "WRAPPER_ENTER", "request": "Y"},
+        {"phase": "WRAPPER_ENTER", "request": "Z"},
+        # X never returns PENDING: it is not a decision window at all.
+        {"phase": "WRAPPER_RETURN", "status": "PENDING", "time": 2.9, "request": "Y"},
+    ]
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "X", "StartTimestamp": 0, "EndTimestamp": 1},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "Y", "StartTimestamp": 2, "EndTimestamp": 3},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "Z", "StartTimestamp": 6, "EndTimestamp": 7},
+        },
+        # Started during X's run (0-1), which never went PENDING.
+        {"EventType": "WaitStarted", "Id": "timer", "EventTimestamp": 0.5},
+        # Completes between Y's PENDING decision (2.9) and Z's start (6), which
+        # would otherwise satisfy the completion window for Y's decision.
+        {"EventType": "WaitSucceeded", "Id": "timer", "EventTimestamp": 5},
+    ]
+    assert suspension_resumptions(ledger, history, "wait") == {}
+
+
+def test_suspension_resumptions_rejects_wakeup_completing_after_resume_started():
+    from aws_durable_execution_conformance_tests.lmi.observations import suspension_resumptions
+
+    # Completes at 6.5, after C (the resume) already started at 6.
+    ledger, history = _carryover_ledger_and_history(wakeup_at=6.5, waking_event_type="Wait")
+    assert suspension_resumptions(ledger, history, "wait") == {}
+
+
 def test_each_case_has_independent_artifact_namespace(monkeypatch, tmp_path):
     class Driver:
         def __init__(self, context, cloud, **kwargs):
