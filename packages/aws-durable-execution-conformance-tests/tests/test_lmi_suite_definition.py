@@ -11,7 +11,7 @@ from pathlib import Path
 from runpy import run_path
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -21,11 +21,13 @@ from aws_durable_execution_conformance_tests.lmi.app import (
     build_report,
     collect_and_adjudicate,
     coverage_inventory,
+    load_collected_evidence,
     load_manifest,
 )
 from aws_durable_execution_conformance_tests.lmi.catalog import requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement
+from aws_durable_execution_conformance_tests.lmi.rules.values import same_json
 
 LOCAL_ID = "sdk-check-1"
 
@@ -301,6 +303,102 @@ def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_jo
         assert any("budgets" in error for error in results[0]["errors"])
     else:
         assert results[0]["status"] == "PASSED", results[0]["errors"]
+
+
+def test_public_collection_reports_and_replays_against_the_admitted_manifest(tmp_path: Path) -> None:
+    plan, value = plan_and_evidence()
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
+    # An integral float is valid JSON for an integer; only admission normalizes it.
+    plan["profiles"][1]["native_concurrency"] = 2.0
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    assert '"native_concurrency": 2.0' in source.read_text()
+    suite = definition()
+    admitted = load_manifest(source, suite=suite)
+    assert type(admitted["profiles"][1]["native_concurrency"]) is int
+
+    class Adapter:
+        async def prepare(self, profile: Any) -> None:
+            pass
+
+        async def finish(self, profile: Any, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: Any) -> None:
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context: Any) -> None:
+            pass
+
+        async def execute(self, context: Any) -> None:
+            pass
+
+        async def collect(self, context: Any) -> dict[str, Any]:
+            return deepcopy(value)
+
+        async def release(self, context: Any) -> None:
+            pass
+
+        async def retire(self, context: Any) -> bool:
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    audit_dir = tmp_path / "collection"
+    results = asyncio.run(
+        collect_and_adjudicate(admitted, audit_dir=audit_dir, suite=suite, adapter_factory=lambda manifest: Adapter())
+    )
+    assert [result["status"] for result in results] == ["PASSED"], results
+    report = build_report(admitted, results, suite=suite)
+    assert report.summary()["passed"] == 1
+    assert report.exit_code() == 0
+
+    # Re-adjudicating the saved bundle in Python, as documented, reaches the same verdicts and report.
+    replay_manifest = load_manifest(audit_dir / "manifest.json", suite=suite)
+    bundle = load_collected_evidence(audit_dir / "collected-evidence.json")
+    replayed = adjudicate_collected_evidence(replay_manifest, bundle, suite=suite)
+    assert same_json(replayed, results), (replayed, results)
+    assert build_report(replay_manifest, replayed, suite=suite).exit_code() == 0
+
+
+def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_raises(tmp_path: Path) -> None:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
+
+    plan, value = plan_and_evidence()
+    case = plan["scenarios"][0]
+    calls: list[str] = []
+
+    def crashing_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        calls.append(phase)
+        raise RuntimeError("validator crashed")
+
+    suite = replace(definition(), validator=crashing_validator)
+
+    async def run_cases(cases: Any, profiles: Any, adapter: Any, *, on_result: Any, **kwargs: Any) -> list[Any]:
+        on_result(
+            ScenarioResult(
+                case_id=case["case_id"],
+                requirement_id=case["requirement_id"],
+                profile_id=case["profile_id"],
+                status="COLLECTED",
+                errors=[],
+                evidence=deepcopy(value),
+                attempts=list(value["attempts"]),
+                timings={},
+            )
+        )
+        raise asyncio.CancelledError
+
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(asyncio.CancelledError) as cancelled,
+    ):
+        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=lambda _: object()))  # type: ignore[arg-type,return-value]
+    assert calls, "the suite validator never ran"
+    assert any("validator crashed" in note for note in getattr(cancelled.value, "__notes__", [])), cancelled.value
+    # The capture taken before adjudication failed is still on disk.
+    assert json.loads((tmp_path / "collected-evidence.json").read_text())[0]["status"] == "COLLECTED"
 
 
 @pytest.mark.parametrize("declared", [False, True])
