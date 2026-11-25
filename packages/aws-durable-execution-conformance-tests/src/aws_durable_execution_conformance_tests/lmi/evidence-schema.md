@@ -446,26 +446,35 @@ Collection runs the cases on AWS and records what happened. Adjudication then
 derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
-Write a manifest as described under [Manifest](#manifest), and use it with an
-adapter to run cases and collect evidence. The adapter module must be importable
-in the runner's Python environment. Its factory receives the admitted manifest
-and returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
-and `finish` for each profile that an active case uses, and `start`, `place`,
-`execute`, `collect`, `release`, and `retire` for each case. When every case is
-`not_implemented`, the runner does not load the adapter.
+Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
+manifest as described under
+[Manifest](#manifest). The CLI does not
+collect, so it never loads or runs collection code. Only SDK-owned suites
+collect through this API: the caller passes its `suite` definition and an
+`adapter_factory`. The factory receives a separate
+copy of the admitted manifest and returns an adapter implementing
+`lmi.coordinator.ScenarioAdapter`: `prepare` and `finish` for each profile that
+an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
+`retire` for each case. The factory is called only after the manifest is
+admitted and the audit directory is claimed, and never when every case is
+`not_implemented`.
 
-```sh
-durable-execution-conformance lmi-lifecycle --manifest manifest.json --adapter my_adapter:create --output lmi-collection
+```python
+results = await collect_and_adjudicate(
+    manifest, audit_dir=Path("lmi-collection"), suite=suite, adapter_factory=create_adapter
+)
 ```
 
-Choose an empty output directory, and use a separate one for every run. The
+Choose an empty audit directory, and use a separate one for every run. The
 runner journals attempts to `attempts.jsonl` before dispatch and publishes case
 outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
 may have multiple records for a case. The last record for the case contains its
 latest published attempts or outcome. A row with status `COLLECTED` awaits the
 verdict. After all targets are released or quarantined, the runner writes frozen
 observations and separate cleanup evidence to `collected-evidence.json`, reads
-the file back, and adjudicates it to produce the final report.
+the file back, and adjudicates it. `collect_and_adjudicate` returns the
+adjudicated results; the caller reports them with `build_report(manifest,
+results, suite=suite)` and `reporters.write_report`.
 
 A collection manifest may also set `scenarioConcurrency`, the most cases the run
 executes at once (default 8), and `budgets`, harness time limits in seconds:
@@ -505,19 +514,24 @@ wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
-`PASSED`. A collection run with `--adapter` and a later `--collected-evidence`
-run judge the coordinator's captures with the same adjudication.
+`PASSED`. Collection and a later re-adjudication of its saved bundle judge the
+coordinator's captures with the same adjudication.
 
 ## Adjudication
 
-A collection run with `--adapter` adjudicates its evidence as soon as it is
-collected. To adjudicate a saved bundle again, without loading an adapter, pass
-`--collected-evidence`. This is a tool for debugging, for investigating a
-reported verdict, and for developing rules. It is not a verification step:
+`collect_and_adjudicate` adjudicates its evidence as soon as it is collected.
+A saved bundle can be adjudicated again without running any collection code.
+This is a tool for debugging, for investigating a reported verdict, and for
+developing rules. It is not a verification step. For the `lmi-lifecycle` suite,
+pass the bundle to the CLI with `--collected-evidence`:
 
 ```sh
 durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
 ```
+
+The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
+its bundle again in Python with `adjudicate_collected_evidence(manifest, bundle,
+suite=suite)` and reports it with `build_report(..., suite=suite)`.
 
 Adjudication trusts the bundle: it assumes that the coordinator wrote it and
 that it was not modified. Before recording `COLLECTED`, the coordinator checked
