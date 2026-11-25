@@ -409,7 +409,10 @@ def test_cli_writes_blocking_reports_for_empty_coverage(tmp_path):
     report = json.loads((tmp_path / "out/report.json").read_text())
     assert report["summary"]["uncovered"] == 7
     assert report["ci"]["exit_code"] == 1
-    assert (tmp_path / "out/report.xml").is_file()
+    junit = ET.parse(tmp_path / "out/report.xml").getroot()
+    assert junit.attrib["tests"] == junit.attrib["failures"] == "7"
+    assert junit.attrib["skipped"] == "0"
+    assert all(testcase.find("failure") is not None for testcase in junit.findall("testcase"))
 
 
 @pytest.mark.parametrize("reason", ["", "handler unavailable"])
@@ -442,13 +445,15 @@ def test_cli_reports_not_implemented_with_optional_reason(tmp_path, capsys, reas
     assert report["ci"]["exit_code"] == 1
     assert all(entry["status"] == "NOT_IMPLEMENTED" for entry in report["results"])
 
+    # Required gaps block the strict exit code, so JUnit must not show them as skipped.
     junit = ET.parse(output / "report.xml").getroot()
-    assert junit.attrib["tests"] == junit.attrib["skipped"] == "7"
-    assert junit.attrib["failures"] == "0"
+    assert junit.attrib["tests"] == junit.attrib["failures"] == "7"
+    assert junit.attrib["skipped"] == "0"
     for testcase in junit.findall("testcase"):
-        skipped = testcase.find("skipped")
-        assert skipped is not None
-        assert skipped.attrib["message"].startswith("NOT_IMPLEMENTED")
+        assert testcase.find("skipped") is None
+        failure = testcase.find("failure")
+        assert failure is not None
+        assert failure.attrib["message"].startswith("NOT_IMPLEMENTED")
 
 
 def test_dispatch_is_opt_in():

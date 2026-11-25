@@ -174,6 +174,50 @@ def test_junit_maps_failed_to_failure_and_rest_to_skipped() -> None:
     assert by_name["8-9"].find("skipped") is not None
 
 
+@pytest.mark.parametrize("fail_on", [FAIL_ON_FAILED, FAIL_ON_FAILED_UNCOVERED, FAIL_ON_STRICT])
+def test_junit_failures_follow_the_exit_code_policy(fail_on: str) -> None:
+    report = Report(
+        run=RunMetadata(name="run", template="t.yaml", region="us-west-2"),
+        entries=[
+            ReportEntry(id="8-1", suite="parallel", status=ReportStatus.PASSED),
+            ReportEntry(id="8-2", suite="parallel", status=ReportStatus.FAILED, errors=["boom"]),
+            # FAILED stays a failure even when optional, although it does not block.
+            ReportEntry(id="8-3", suite="parallel", status=ReportStatus.FAILED, is_optional=True),
+            ReportEntry(id="8-13", suite="parallel", status=ReportStatus.NOT_IMPLEMENTED, reason="pct rejected"),
+            ReportEntry(id="8-14", suite="parallel", status=ReportStatus.NOT_IMPLEMENTED, is_optional=True),
+            ReportEntry(id="8-9", suite="parallel", status=ReportStatus.UNCOVERED, errors=["no example"]),
+            ReportEntry(id="8-10", suite="parallel", status=ReportStatus.UNCOVERED, is_optional=True),
+            ReportEntry(id="8-11", suite="parallel", status=ReportStatus.OPTIONAL_FAILED, errors=["soft"]),
+        ],
+        fail_on=fail_on,
+    )
+
+    root = ET.fromstring(render_junit(report))
+
+    blocking = {"8-2"}
+    if fail_on in (FAIL_ON_FAILED_UNCOVERED, FAIL_ON_STRICT):
+        blocking.add("8-9")
+    if fail_on == FAIL_ON_STRICT:
+        blocking.add("8-13")
+    failed = blocking | {"8-3"}
+    by_name = {testcase.attrib["name"]: testcase for testcase in root.findall("testcase")}
+    for name, testcase in by_name.items():
+        assert (testcase.find("failure") is not None) == (name in failed), name
+        assert (testcase.find("skipped") is not None) == (name not in failed and name != "8-1"), name
+    assert report.blocking_count() == len(blocking)
+    assert root.attrib["failures"] == str(len(failed))
+    assert root.attrib["skipped"] == str(len(by_name) - 1 - len(failed))
+    if fail_on == FAIL_ON_STRICT:
+        failure = by_name["8-13"].find("failure")
+        assert failure is not None
+        assert failure.attrib["message"] == "NOT_IMPLEMENTED: pct rejected"
+    if "8-9" in blocking:
+        failure = by_name["8-9"].find("failure")
+        assert failure is not None
+        assert failure.attrib["message"] == "UNCOVERED"
+        assert failure.text == "no example"
+
+
 def test_junit_classname_encodes_language_and_suite() -> None:
     root = ET.fromstring(render_junit(_report()))
     tc = root.find("testcase")

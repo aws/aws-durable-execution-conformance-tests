@@ -4,9 +4,10 @@
 """Report writers: render a :class:`Report` as console text, JSON, or JUnit XML.
 
 All writers are pure functions of a ``Report`` (plus, for the file variants, a
-path). Non-blocking statuses (OPTIONAL_FAILED / NOT_IMPLEMENTED / UNCOVERED) map
-to JUnit ``<skipped>`` so CI renders them yellow, not red; only FAILED maps to
-``<failure>``.
+path). FAILED always maps to JUnit ``<failure>``; so does every other entry that
+blocks CI under the report's ``fail_on`` policy, so a blocking gap never looks
+skipped. Other non-passing statuses map to ``<skipped>`` so CI renders them
+yellow, not red.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from aws_durable_execution_conformance_tests.report import Report, ReportStatus
+from aws_durable_execution_conformance_tests.report import Report, ReportEntry, ReportStatus
 
 # Console glyphs per status.
 _GLYPH: dict[ReportStatus, str] = {
@@ -95,9 +96,7 @@ def render_github_summary(report: Report) -> str:
         ),
     ]
 
-    blocking_entries = [
-        entry for entry in report.entries if entry.status in report.blocking_statuses() and not entry.optional
-    ]
+    blocking_entries = [entry for entry in report.entries if report.is_blocking(entry)]
     if not blocking_entries:
         lines.extend(["", "No blocking test failures."])
         return "\n".join(lines)
@@ -127,17 +126,24 @@ def render_junit(report: Report) -> str:
     """Render the report as JUnit XML.
 
     One ``<testcase>`` per requirement (``classname`` = suite, ``name`` = id).
-    FAILED -> ``<failure>``; every other non-passing status -> ``<skipped>`` with
-    a reason/message so CI shows it as skipped rather than failed.
+    FAILED, even when optional, and any other entry that blocks under
+    ``fail_on`` -> ``<failure>``; every other non-passing status ->
+    ``<skipped>`` with a reason/message so CI shows it as skipped rather than
+    failed.
     """
     summary = report.summary()
+
+    def fails(entry: ReportEntry) -> bool:
+        return entry.status == ReportStatus.FAILED or report.is_blocking(entry)
+
+    failures = sum(1 for entry in report.entries if fails(entry))
     testsuite = ET.Element(
         "testsuite",
         {
             "name": report.run.name,
             "tests": str(summary["total"]),
-            "failures": str(summary["failed"]),
-            "skipped": str(summary["optional_failed"] + summary["not_implemented"] + summary["uncovered"]),
+            "failures": str(failures),
+            "skipped": str(summary["total"] - summary["passed"] - failures),
             "time": f"{report.run.duration_seconds:.3f}",
         },
     )
@@ -176,9 +182,9 @@ def render_junit(report: Report) -> str:
             failure.text = "\n".join(entry.errors)
         elif entry.status != ReportStatus.PASSED:
             message = f"{entry.status.value}: {entry.reason}" if entry.reason else entry.status.value
-            skipped = ET.SubElement(testcase, "skipped", {"message": message})
+            element = ET.SubElement(testcase, "failure" if fails(entry) else "skipped", {"message": message})
             if entry.errors:
-                skipped.text = "\n".join(entry.errors)
+                element.text = "\n".join(entry.errors)
 
         # Mirror the description into system-out for reporters that surface
         # console output but not <properties>.

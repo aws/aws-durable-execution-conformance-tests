@@ -168,10 +168,13 @@ class Report:
         """Statuses that block CI under the current ``fail_on`` policy."""
         return _BLOCKING_BY_POLICY.get(self.fail_on, frozenset({ReportStatus.FAILED}))
 
+    def is_blocking(self, entry: ReportEntry) -> bool:
+        """True when ``entry`` blocks CI: a blocking status on a non-optional entry."""
+        return entry.status in self.blocking_statuses() and not entry.optional
+
     def blocking_count(self) -> int:
         """Number of entries whose status blocks CI."""
-        blocking = self.blocking_statuses()
-        return sum(1 for entry in self.entries if entry.status in blocking and not entry.optional)
+        return sum(1 for entry in self.entries if self.is_blocking(entry))
 
     def exit_code(self) -> int:
         """Process exit code: 1 if any blocking entry exists, else 0."""
