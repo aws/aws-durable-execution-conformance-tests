@@ -2,26 +2,33 @@
 # SPDX-License-Identifier: Apache-2.0
 """Caller-owned suites reuse infrastructure without joining the shared catalog."""
 
+import asyncio
 import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from runpy import run_path
+from types import MappingProxyType
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.app import (
     SuiteDefinition,
+    adjudicate_collected_evidence,
     build_report,
+    collect_and_adjudicate,
     coverage_inventory,
     evidence_results,
+    load_collected_evidence,
     load_manifest,
 )
 from aws_durable_execution_conformance_tests.lmi.catalog import requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement
+from aws_durable_execution_conformance_tests.lmi.rules.values import same_json
 
 LOCAL_ID = "sdk-check-1"
 
@@ -208,6 +215,252 @@ def test_caller_owned_budget_binding_preserves_json_types(
     if not matches:
         assert any("behavior budgets" in error for error in results[0]["errors"])
     assert build_report(admitted, results, suite=suite).exit_code() == (0 if matches else 1)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("exclusive", False, "exclusive resource ownership"),
+        ("slots", 1, "required cohort"),
+        ("roles", ["victim"], "required cohort roles"),
+    ],
+)
+def test_local_collection_suite_enforces_admission_before_constructing_its_adapter(
+    tmp_path: Path, field: str, value: Any, reason: str
+) -> None:
+    plan, _ = plan_and_evidence()
+    suite = definition()
+    suite = replace(suite, cases=(replace(suite.cases[0], exclusive=True),))
+    plan["scenarios"][0][field] = value
+    load_adapter = MagicMock(side_effect=AssertionError("Invalid manifest constructed an adapter"))
+    with pytest.raises(ValueError, match=reason):
+        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=load_adapter))
+    load_adapter.assert_not_called()
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_local_collection_suite_preserves_budget_snapshot_and_before_dispatch_journal(
+    tmp_path: Path, mutate: bool
+) -> None:
+    plan, value = plan_and_evidence()
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
+    if mutate:
+        plan["scenarios"][0]["behavior_budgets"]["settleMs"] = 5
+    original = deepcopy(plan)
+
+    class Adapter:
+        async def prepare(self, profile: Any) -> None:
+            pass
+
+        async def finish(self, profile: Any, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: Any) -> None:
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+                assert attempt["requestId"] in (tmp_path / "attempts.jsonl").read_text()
+
+        async def place(self, context: Any) -> None:
+            pass
+
+        async def execute(self, context: Any) -> None:
+            pass
+
+        async def collect(self, context: Any) -> dict[str, Any]:
+            return deepcopy(value)
+
+        async def release(self, context: Any) -> None:
+            pass
+
+        async def retire(self, context: Any) -> bool:
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    def factory(manifest: dict[str, Any]) -> Adapter:
+        manifest["scenarios"][0]["behavior_budgets"]["settleMs"] = 10
+        return Adapter()
+
+    suite = definition()
+    suite = replace(
+        suite,
+        requirements=MappingProxyType({key: MappingProxyType(row) for key, row in suite.requirements.items()}),
+    )
+    results = asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=factory))
+    assert plan == original
+    if mutate:
+        assert results[0]["status"] != "PASSED"
+        assert any("budgets" in error for error in results[0]["errors"])
+    else:
+        assert results[0]["status"] == "PASSED", results[0]["errors"]
+
+
+def test_public_collection_reports_and_replays_against_the_admitted_manifest(tmp_path: Path) -> None:
+    plan, value = plan_and_evidence()
+    fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
+    fixtures["complete_sdk_dispatches"](value)
+    # An integral float is valid JSON for an integer; only admission normalizes it.
+    plan["profiles"][1]["native_concurrency"] = 2.0
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    assert '"native_concurrency": 2.0' in source.read_text()
+    suite = definition()
+    admitted = load_manifest(source, suite=suite)
+    assert type(admitted["profiles"][1]["native_concurrency"]) is int
+
+    class Adapter:
+        async def prepare(self, profile: Any) -> None:
+            pass
+
+        async def finish(self, profile: Any, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: Any) -> None:
+            for attempt in value["attempts"]:
+                context.record_attempt(attempt["requestId"], role=attempt["role"], requestId=attempt["requestId"])
+
+        async def place(self, context: Any) -> None:
+            pass
+
+        async def execute(self, context: Any) -> None:
+            pass
+
+        async def collect(self, context: Any) -> dict[str, Any]:
+            return deepcopy(value)
+
+        async def release(self, context: Any) -> None:
+            pass
+
+        async def retire(self, context: Any) -> bool:
+            context.evidence["retirement"] = deepcopy(value["retirement"])
+            return True
+
+    audit_dir = tmp_path / "collection"
+    results = asyncio.run(
+        collect_and_adjudicate(admitted, audit_dir=audit_dir, suite=suite, adapter_factory=lambda manifest: Adapter())
+    )
+    assert [result["status"] for result in results] == ["PASSED"], results
+    report = build_report(admitted, results, suite=suite)
+    assert report.summary()["passed"] == 1
+    assert report.exit_code() == 0
+
+    # Re-adjudicating the saved bundle in Python, as documented, reaches the same verdicts and report.
+    replay_manifest = load_manifest(audit_dir / "manifest.json", suite=suite)
+    bundle = load_collected_evidence(audit_dir / "collected-evidence.json")
+    replayed = adjudicate_collected_evidence(replay_manifest, bundle, suite=suite)
+    assert same_json(replayed, results), (replayed, results)
+    assert build_report(replay_manifest, replayed, suite=suite).exit_code() == 0
+
+
+@pytest.mark.parametrize("raised", [RuntimeError, asyncio.CancelledError])
+def test_cancelled_collection_keeps_its_cancellation_when_the_suite_validator_raises(
+    tmp_path: Path, raised: type[BaseException]
+) -> None:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioResult
+
+    plan, value = plan_and_evidence()
+    case = plan["scenarios"][0]
+    calls: list[str] = []
+    original: list[asyncio.CancelledError] = []
+
+    def crashing_validator(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
+        calls.append(phase)
+        raise raised("validator crashed")
+
+    suite = replace(definition(), validator=crashing_validator)
+
+    async def run_cases(cases: Any, profiles: Any, adapter: Any, *, on_result: Any, **kwargs: Any) -> list[Any]:
+        on_result(
+            ScenarioResult(
+                case_id=case["case_id"],
+                requirement_id=case["requirement_id"],
+                profile_id=case["profile_id"],
+                status="COLLECTED",
+                errors=[],
+                evidence=deepcopy(value),
+                attempts=list(value["attempts"]),
+                timings={},
+            )
+        )
+        original.append(asyncio.CancelledError("run cancelled"))
+        raise original[0]
+
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(asyncio.CancelledError) as cancelled,
+    ):
+        asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=lambda _: object()))  # type: ignore[arg-type,return-value]
+    assert calls, "the suite validator never ran"
+    # The run's own cancellation reaches the caller, carrying the validator's error.
+    assert cancelled.value.args == ("run cancelled",), cancelled.value
+    notes = getattr(cancelled.value, "__notes__", [])
+    assert any(f"{raised.__name__}: validator crashed" in note for note in notes), notes
+    # The capture taken before adjudication failed is still on disk.
+    assert json.loads((tmp_path / "collected-evidence.json").read_text())[0]["status"] == "COLLECTED"
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_local_collection_suite_declares_service_role_transitions(tmp_path: Path, declared: bool) -> None:
+    plan, value = plan_and_evidence()
+    suite = definition()
+    if declared:
+        suite = replace(suite, service_role_transitions={LOCAL_ID: frozenset({("victim", "peer")})})
+    victim = value["attempts"][0]
+    outcomes: list[str] = []
+
+    class Adapter:
+        async def prepare(self, profile: Any) -> None:
+            pass
+
+        async def finish(self, profile: Any, *, quiescent: bool) -> None:
+            pass
+
+        async def start(self, context: Any) -> None:
+            context.record_attempt(
+                victim["requestId"],
+                role=victim["role"],
+                requestId=victim["requestId"],
+                executionArn=victim["executionArn"],
+            )
+            try:
+                context.record_service_attempt(
+                    "request-continued",
+                    original_request_id=victim["requestId"],
+                    execution_arn=victim["executionArn"],
+                    role="peer",
+                )
+            except ValueError as error:
+                outcomes.append(str(error))
+            else:
+                outcomes.append("journaled")
+
+        async def place(self, context: Any) -> None:
+            pass
+
+        async def execute(self, context: Any) -> None:
+            pass
+
+        async def collect(self, context: Any) -> dict[str, Any]:
+            return deepcopy(value)
+
+        async def release(self, context: Any) -> None:
+            pass
+
+        async def retire(self, context: Any) -> bool:
+            return True
+
+    asyncio.run(
+        collect_and_adjudicate(plan, audit_dir=tmp_path, suite=suite, adapter_factory=lambda manifest: Adapter())
+    )
+
+    journal = [json.loads(line) for line in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    discovered = [row for entry in journal for row in entry["attempts"] if "discoveredAtMs" in row]
+    if declared:
+        assert outcomes == ["journaled"]
+        assert [(row["requestId"], row["role"]) for row in discovered] == [("request-continued", "peer")]
+    else:
+        assert outcomes == ["Service attempt role does not match its original invocation"]
+        assert discovered == []
 
 
 @pytest.mark.parametrize("reserved", ["profile", "report", "requirement"])

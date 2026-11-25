@@ -1,25 +1,38 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Validate retained LMI lifecycle evidence with strict coverage."""
+"""Collect LMI lifecycle evidence and adjudicate it, with strict coverage."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
+import errno
 import json
 import math
+import os
 import sys
-from collections.abc import Mapping
+import threading
+import time
+import traceback
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
-from aws_durable_execution_conformance_tests.lmi.evidence import EvidenceValidator, is_json_integer, same_json
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    RECOVERY_POLICIES,
+    EvidenceValidator,
+    is_json_integer,
+    same_json,
+    validate_evidence,
+)
 from aws_durable_execution_conformance_tests.lmi.matrix import CaseRequirement, missing_cases, required_cases
 from aws_durable_execution_conformance_tests.report import (
     FAIL_ON_STRICT,
@@ -29,6 +42,9 @@ from aws_durable_execution_conformance_tests.report import (
     RunMetadata,
 )
 from aws_durable_execution_conformance_tests.reporters import render_console, write_report
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioAdapter
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,7 @@ class SuiteDefinition:
     validator: EvidenceValidator
     evidence_policy_key: str | None = None
     nonnegative_budgets: frozenset[str] = frozenset()
+    service_role_transitions: Mapping[str, frozenset[tuple[str, str]]] = field(default_factory=dict)
 
 
 def _check_suite(manifest: Mapping[str, Any], suite: SuiteDefinition) -> None:
@@ -175,7 +192,7 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(), parse_float=_finite_json_float, parse_constant=_finite_json_float)
 
 
-def _dump_json(value: Any, depth: int = 0) -> str:
+def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
     """Write retained JSON without rounding exact decimal payloads."""
     if isinstance(value, Decimal):
         if not value.is_finite():
@@ -183,17 +200,28 @@ def _dump_json(value: Any, depth: int = 0) -> str:
         return str(value)
     if not isinstance(value, (dict, list, tuple)) or not value:
         return json.dumps(value, allow_nan=False)
-    inner = "\n" + "  " * (depth + 1)
-    outer = "\n" + "  " * depth
+    inner = "" if compact else "\n" + "  " * (depth + 1)
+    outer = "" if compact else "\n" + "  " * depth
     if isinstance(value, dict):
-        items = [f"{json.dumps(key)}: {_dump_json(item, depth + 1)}" for key, item in value.items()]
+        keys: set[str] = set()
+        items = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                if key is not None and not isinstance(key, (bool, int, float)):
+                    raise ValueError("JSON object keys must be strings or scalar JSON values")
+                key = json.dumps(key, allow_nan=False)
+            if key in keys:
+                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
+            keys.add(key)
+            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
         return "{" + inner + ("," + inner).join(items) + outer + "}"
-    return "[" + inner + ("," + inner).join(_dump_json(item, depth + 1) for item in value) + outer + "]"
+    return (
+        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
+    )
 
 
-def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
-    manifest = _read_json(path)
     if (
         not isinstance(manifest, dict)
         or not is_json_integer(manifest.get("schemaVersion"))
@@ -207,7 +235,7 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         raise ValueError(f"capabilityProfile must be one of {CAPABILITIES}")
     if not isinstance(manifest.get("runId"), str) or not manifest["runId"].strip():
         raise ValueError("runId must be a non-empty string")
-    # Resolve the profile before any adapter import, deployment or admission.
+    # Resolve the profile before any adapter is constructed, deployed or admitted.
     _required(manifest, suite)
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) < 2:
@@ -220,6 +248,8 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
         for key in ("profile_id", "resource_id", "artifact_id", "configuration_id"):
             if not isinstance(profile.get(key), str) or not profile[key].strip():
                 raise ValueError(f"profile.{key} must be a non-empty string")
+        if (policy := profile.get("recovery_policy")) is not None and policy not in RECOVERY_POLICIES:
+            raise ValueError("Unknown recovery policy")
         if profile["profile_id"] in ids or profile["resource_id"] in resources:
             raise ValueError("profile IDs and function resources must be unique")
         ids.add(profile["profile_id"])
@@ -309,9 +339,21 @@ def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[s
     return manifest
 
 
-def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
-    from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
+def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
+    """Load a manifest using the same admission rules as direct collection runs."""
+    return _validate_manifest(_read_json(path), suite=suite)
 
+
+def load_collected_evidence(path: Path) -> Any:
+    """Read a saved ``collected-evidence.json`` with the JSON rules collection uses.
+
+    Exact decimals stay ``Decimal`` and non-finite numbers are rejected, as when
+    collection reads its own capture back before adjudicating it.
+    """
+    return _read_json(path)
+
+
+def validate(evidence: Mapping[str, Any], *, phase: str = "final") -> list[str]:
     if evidence.get("coverageProfile", "standard") != "standard":
         return ["INCOMPLETE: unknown evidence coverage profile"]
     if phase not in ("observations", "final"):
@@ -419,34 +461,478 @@ def evidence_results(
             except (OSError, ValueError, TypeError) as exc:
                 result.update(status="INCOMPLETE_EVIDENCE", errors=[f"INCOMPLETE: {exc}"])
         results.append(result)
-    claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for result in results:
-        case_evidence = result.get("evidence", {})
-        attempts = case_evidence.get("attempts", [])
-        identities = {
-            (field, attempt[field])
-            for attempt in (attempts if isinstance(attempts, list) else [])
-            if isinstance(attempt, Mapping)
-            for field in ("requestId", "executionArn")
-            if isinstance(attempt.get(field), str) and attempt[field].strip()
-        }
-        for collection in ("resourcesCreated", "faultsCreated"):
-            resources = case_evidence.get(collection, [])
-            if not isinstance(resources, list):
-                continue
-            for resource in resources:
+    _check_unique_ownership(results)
+    return results
+
+
+def _ownership_claims(
+    journal: list[dict[str, Any]], evidence: Any, retirement: Any, cleanup: Any, *, case_id: str
+) -> set[tuple[str, str]]:
+    sources = [{"attempts": journal}, evidence, retirement]
+    if isinstance(cleanup, Mapping):
+        sources.extend(snapshot for phase in cleanup.values() if isinstance(phase, list) for snapshot in phase)
+    identities: set[tuple[str, str]] = set()
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        attempts = source.get("attempts")
+        for attempt in attempts if isinstance(attempts, list) else []:
+            if isinstance(attempt, Mapping):
+                for field in ("requestId", "executionArn"):
+                    if isinstance(identifier := attempt.get(field), str) and identifier.strip():
+                        identities.add((field, identifier))
+        histories = source.get("histories")
+        for history in histories if isinstance(histories, list) else []:
+            if (
+                isinstance(history, Mapping)
+                and history.get("ownerCaseId") == case_id
+                and isinstance(arn := history.get("executionArn"), str)
+                and arn.strip()
+            ):
+                identities.add(("executionArn", arn))
+        retirement = source.get("retirement")
+        inventories = [
+            (source.get("resourcesCreated"), False),
+            (source.get("faultsCreated"), True),
+        ]
+        if isinstance(retirement, Mapping):
+            inventories.extend([(retirement.get("resources"), False), (retirement.get("faults"), True)])
+        for resources, faults in inventories:
+            for resource in resources if isinstance(resources, list) else []:
                 if not isinstance(resource, Mapping) or not isinstance(resource.get("id"), str):
                     continue
-                kind = "fault" if collection == "faultsCreated" else resource.get("kind")
-                if kind in ("callback", "control", "fault") and resource["id"].strip():
-                    identities.add((kind, resource["id"]))
+                kind = "fault" if faults else resource.get("kind")
+                if kind in ("invocation", "execution", "callback", "control", "fault") and resource["id"].strip():
+                    field = {"invocation": "requestId", "execution": "executionArn"}.get(kind, kind)
+                    identities.add((field, resource["id"]))
+    return identities
+
+
+def _check_unique_ownership(results: list[dict[str, Any]]) -> None:
+    """Fail standalone evidence files that claim another case's work."""
+    claims: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for result in results:
+        identities = _ownership_claims(
+            result.get("attempts", []),
+            result.get("evidence"),
+            result.get("retirement_evidence"),
+            result.get("cleanup_evidence"),
+            case_id=result["case_id"],
+        )
         for claim in sorted(identities):
             claims.setdefault(claim, []).append(result)
-    for (field, resource_id), owners in claims.items():
+    for (kind, resource_id), owners in claims.items():
         if len(owners) > 1:
             for owner in owners:
-                owner["errors"].append(f"INCOMPLETE: {field} {resource_id} is claimed by multiple cases")
+                error = f"INCOMPLETE: {kind} {resource_id} is claimed by multiple cases"
+                if error not in owner["errors"]:
+                    owner["errors"].append(error)
                 owner["status"] = "FAILED"
+
+
+def _audit_append_boundary(stream: BinaryIO) -> int:
+    end = stream.seek(0, os.SEEK_END)
+    if not end:
+        return 0
+    stream.seek(end - 1)
+    if stream.read(1) == b"\n":
+        return end
+
+    # Repair a partial tail left by an earlier write whose rollback failed.
+    offset = end
+    while offset:
+        start = max(0, offset - 8192)
+        stream.seek(start)
+        last_newline = stream.read(offset - start).rfind(b"\n")
+        if last_newline >= 0:
+            offset = start + last_newline + 1
+            break
+        offset = start
+    stream.truncate(offset)
+    return offset
+
+
+def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
+    """Persist before dispatch; sink failure must abort the launch."""
+    _append_audit_row(path, _dump_json(record, compact=True))
+
+
+def _sync_directory(path: Path) -> None:
+    """Persist a directory's entries, such as a newly created journal file."""
+    if os.name == "nt":
+        return  # Windows cannot open a directory for fsync.
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        # Some filesystems cannot fsync a directory at all; nothing more is possible.
+        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def _sync_file(path: Path) -> None:
+    """Persist an existing file's contents and its directory entry."""
+    # Windows flushes only through a writable handle; POSIX also syncs read-only files.
+    descriptor = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _sync_directory(path.parent)
+
+
+def _write_new_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
+    """Create ``path`` exclusively and durably with the manifest, leaving nothing on failure."""
+    document = _dump_json(manifest) + "\n"
+    created = False
+    try:
+        with path.open("x") as stream:
+            created = True
+            stream.write(document)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _sync_directory(path.parent)
+    except BaseException:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
+
+
+# Files an earlier collection or adjudication wrote into an output directory.
+_RUN_OUTPUTS = (
+    "attempts.jsonl",
+    "results.jsonl",
+    "collected-evidence.json",
+    "evidence.json",
+    "coverage.json",
+    "report.json",
+    "report.xml",
+)
+
+
+def _make_durable_directory(path: Path) -> None:
+    """Create a directory and persist every entry on its path.
+
+    Every ancestor is synced, not only those created now, so a directory that an
+    earlier failed attempt created still gets a durable name. A directory this
+    process can change must sync; one it cannot write, such as ``/``, cannot hold
+    an entry this run created, so its sync is best effort.
+    """
+    # A relative path's parents stop at "."; the directories above it need syncing too.
+    path = path.absolute()
+    created = {directory for directory in (path, *path.parents) if not directory.exists()}
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in (path, *path.parents):
+        if directory.parent == directory:
+            break
+        try:
+            _sync_directory(directory.parent)
+        except OSError:
+            if directory in created or os.access(directory.parent, os.W_OK):
+                raise
+
+
+def _append_audit_row(path: Path, document: str) -> None:
+    row = (document + "\n").encode("utf-8")
+    with path.open("a+b", buffering=0) as stream:
+        try:
+            boundary = _audit_append_boundary(stream)
+        except OSError as exc:
+            raise OSError(f"Could not repair audit record boundary in {path}") from exc
+        try:
+            if stream.write(row) != len(row):
+                raise OSError(f"Short audit write to {path}")
+        except OSError as exc:
+            try:
+                stream.truncate(boundary)
+            except OSError as repair_error:
+                repair_error.add_note(f"Failed to restore audit record boundary in {path}")
+                raise repair_error from exc
+            raise
+        # A complete row remains a possible durable claim if sync raises.
+        os.fsync(stream.fileno())
+    # A row is durable only once the journal's name is. Sync on every append so
+    # a failed earlier sync cannot leave a later row authorizing dispatch.
+    _sync_directory(path.parent)
+
+
+def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    try:
+        return result, _dump_json(result, compact=True)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        fallback = {
+            "case_id": result["case_id"],
+            "requirement_id": result["requirement_id"],
+            "profile_id": result["profile_id"],
+            "status": "INFRASTRUCTURE_ERROR" if result["status"] in ("PASSED", "COLLECTED") else result["status"],
+            "errors": [*result["errors"], f"Could not serialize case evidence: {exc}"],
+        }
+    return fallback, _dump_json(fallback, compact=True)
+
+
+async def collect_and_adjudicate(
+    manifest: Mapping[str, Any],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition,
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+) -> list[dict[str, Any]]:
+    """Collect an SDK-owned suite with the SDK's own collector, then adjudicate it.
+
+    Only SDK-owned suites collect through this API. ``adapter_factory`` receives a
+    separate copy of the admitted manifest. It is called only after the manifest
+    is validated and ``audit_dir`` is claimed, and never when every case is
+    declared not implemented.
+    """
+    if not isinstance(suite, SuiteDefinition):
+        raise TypeError("collect_and_adjudicate requires an SDK-owned suite definition")
+    return await _collect_and_adjudicate(manifest, adapter_factory, audit_dir=audit_dir, suite=suite)
+
+
+async def _collect_and_adjudicate(
+    manifest: Mapping[str, Any],
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition | None = None,
+) -> list[dict[str, Any]]:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import (
+        Budgets,
+        Profile,
+        Scenario,
+        ScenarioResult,
+        run_scenarios,
+    )
+
+    # Validation keeps its own snapshot. Adapter and Scenario objects must not
+    # be able to change the expected budgets, profile, or coverage after admission.
+    if suite is not None:
+        suite = replace(suite, requirements={key: deepcopy(dict(row)) for key, row in suite.requirements.items()})
+    manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
+    profiles = [
+        Profile(**{item.name: profile[item.name] for item in fields(Profile) if item.name in profile})
+        for profile in manifest["profiles"]
+    ]
+    active = [scenario for scenario in manifest["scenarios"] if "not_implemented" not in scenario]
+    profile_map = {profile["profile_id"]: profile for profile in manifest["profiles"]}
+    scenarios = []
+    for scenario in active:
+        definition = _case_definition(manifest, scenario, profile_map[scenario["profile_id"]], suite)
+        configured = deepcopy({item.name: scenario[item.name] for item in fields(Scenario) if item.name in scenario})
+        configured.setdefault("exclusive", definition.exclusive)
+        configured.setdefault("slots", definition.minimum_native_concurrency)
+        configured.setdefault("roles", list(definition.roles))
+        configured["coverage_profile"] = manifest.get("coverageProfile", "standard")
+        configured["service_role_transitions"] = (
+            frozenset(suite.service_role_transitions.get(scenario["requirement_id"], ())) if suite else frozenset()
+        )
+        scenarios.append(Scenario(**configured))
+    _make_durable_directory(audit_dir)
+    result_journal = audit_dir / "results.jsonl"
+    attempt_journal = audit_dir / "attempts.jsonl"
+    capture_path = audit_dir / "collected-evidence.json"
+    # A manifest and caller-owned artifacts may precede collection; the outputs of
+    # an earlier collection or adjudication may not.
+    # Look names up in the filesystem, which may ignore case, and count dangling links.
+    if any(os.path.lexists(audit_dir / name) for name in _RUN_OUTPUTS):
+        raise ValueError("audit directory already contains lifecycle evidence")
+    manifest_path = audit_dir / "manifest.json"
+    # Claim this run's output before any adapter work, then bind the manifest
+    # under that claim. Simultaneous callers targeting the same directory cannot
+    # interleave their journals or record another plan's manifest. The manifest
+    # is durable before the adapter loads, so a journaled dispatch never outlives
+    # the profile, resource, and artifact bindings it refers to.
+    capture_path.touch(exist_ok=False)
+    try:
+        if manifest_path.exists():
+            if not same_json(_read_json(manifest_path), manifest):
+                raise ValueError("audit directory contains a different manifest")
+            _sync_file(manifest_path)
+        else:
+            _write_new_manifest(manifest_path, manifest)
+    except BaseException:
+        capture_path.unlink(missing_ok=True)
+        raise
+    publications: dict[str, str] = {}
+    emitted: dict[str, ScenarioResult] = {}
+
+    def publish(case_id: str, document: str) -> None:
+        _append_audit_row(result_journal, document)
+        publications[case_id] = document
+
+    def result_fields(result: ScenarioResult) -> dict[str, Any]:
+        return {item.name: getattr(result, item.name) for item in fields(result)}
+
+    def write_result(result: ScenarioResult) -> None:
+        emitted[result.case_id] = result
+        raw = result_fields(result)
+        _, document = _result_for_audit(raw)
+        publish(result.case_id, document)
+
+    # Final journal failures, kept so a cancelled run can still report them.
+    publication_errors: list[str] = []
+
+    def publish_final(result: dict[str, Any], document: str) -> None:
+        if publications.get(result["case_id"]) == document:
+            return
+        try:
+            publish(result["case_id"], document)
+        except OSError as exc:
+            if result["status"] in ("PASSED", "NOT_IMPLEMENTED"):
+                result["status"] = "INFRASTRUCTURE_ERROR"
+            message = f"Could not publish final case result: {exc}"
+            result["errors"].append(message)
+            publication_errors.append(f"{result['case_id']}: {message}")
+
+    skipped_results: list[dict[str, Any]] = []
+    for scenario in manifest["scenarios"]:
+        if "not_implemented" in scenario:
+            skipped = {
+                "case_id": scenario["case_id"],
+                "requirement_id": scenario["requirement_id"],
+                "profile_id": scenario["profile_id"],
+                "status": "NOT_IMPLEMENTED",
+                "errors": [scenario["not_implemented"]],
+            }
+            publish_final(skipped, _dump_json(skipped, compact=True))
+            skipped_results.append(skipped)
+
+    def reconcile_results(outcomes: Iterable[ScenarioResult]) -> list[dict[str, Any]]:
+        results = [_result_for_audit(result_fields(outcome))[0] for outcome in outcomes]
+        results.extend(skipped_results)
+        capture_path.write_text(_dump_json(results) + "\n")
+        results = adjudicate_collected_evidence(manifest, _read_json(capture_path), suite=suite)
+        for index, result in enumerate(results):
+            results[index], document = _result_for_audit(result)
+            publish_final(results[index], document)
+        return results
+
+    if not scenarios:
+        return reconcile_results(())
+    adapter = adapter_factory(deepcopy(manifest))
+    try:
+        outcomes = await run_scenarios(
+            scenarios,
+            profiles,
+            adapter,
+            run_id=manifest["runId"],
+            scenario_concurrency=manifest.get("scenarioConcurrency", 8),
+            budgets=Budgets(**manifest.get("budgets", {})),
+            on_attempt=lambda context: _append_audit(
+                attempt_journal,
+                {
+                    "runId": context.run_id,
+                    "caseId": context.scenario.case_id,
+                    "profileId": context.profile.profile_id,
+                    "attempts": context.attempts,
+                },
+            ),
+            on_result=write_result,
+        )
+    except asyncio.CancelledError as cancelled:
+        try:
+            reconcile_results(emitted.values())
+        except (Exception, asyncio.CancelledError) as error:
+            # Adjudication can run an SDK-owned suite's validator, which may raise
+            # anything, even CancelledError; this cancellation must still reach the
+            # caller. Reconciliation never awaits, so no new cancellation lands here.
+            cancelled.add_note(
+                f"Could not adjudicate and journal the cancelled run's evidence: {type(error).__name__}: {error}"
+            )
+        # The cancelled run returns no results, so journal failures surface only here,
+        # once each even when a declared skip's row failed again during reconciliation.
+        for message in dict.fromkeys(publication_errors):
+            cancelled.add_note(message)
+        raise
+    return reconcile_results(outcomes)
+
+
+def adjudicate_collected_evidence(
+    manifest: Mapping[str, Any],
+    collected: Any,
+    *,
+    suite: SuiteDefinition | None = None,
+) -> list[dict[str, Any]]:
+    """Adjudicate captured cases without an adapter or an acquired target."""
+    from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence
+
+    if not isinstance(collected, list):
+        raise ValueError("collected evidence must be an array of case results")
+    manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
+    expected = {case["case_id"]: case for case in manifest["scenarios"]}
+    results = []
+    for raw in collected:
+        if (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("case_id"), str)
+            or not isinstance(raw.get("errors"), list)
+            or not all(isinstance(error, str) for error in raw["errors"])
+        ):
+            raise ValueError("collected evidence must contain case result objects with errors")
+        case = expected.get(raw.get("case_id"))
+        if case is None:
+            raise ValueError("collected evidence contains an unadmitted case")
+        if raw.get("status") not in (
+            "COLLECTED",
+            "FAILED",
+            "INFRASTRUCTURE_ERROR",
+            "INCOMPLETE_EVIDENCE",
+            "NOT_IMPLEMENTED",
+        ):
+            raise ValueError("collected case has an invalid collection status")
+        if raw.get("profile_id") != case["profile_id"] or raw.get("requirement_id") != case["requirement_id"]:
+            raise ValueError("collected case does not match its manifest identity")
+        if "not_implemented" in case and raw["status"] not in ("NOT_IMPLEMENTED", "INFRASTRUCTURE_ERROR"):
+            raise ValueError("collected evidence conflicts with a manifest-declared skip")
+        result = deepcopy(raw)
+        evidence = result.get("evidence")
+        if result["status"] == "COLLECTED" and not evidence:
+            result["status"] = "INCOMPLETE_EVIDENCE"
+            result["errors"].append("INCOMPLETE: no observations collected")
+        try:
+            if evidence:
+                if not isinstance(evidence, Mapping):
+                    raise ValueError("case observations must be an object")
+                findings = _identity_errors(manifest, case, evidence, suite=suite)
+                retirement = result.get("retirement_evidence", {})
+                cleanup = result.get("cleanup_evidence", {})
+                observations = result.get("observation_evidence", [])
+                attempts = result.get("attempts")
+                if (
+                    not isinstance(retirement, Mapping)
+                    or not isinstance(cleanup, Mapping)
+                    or any(
+                        not isinstance(frames, list) or not all(isinstance(frame, Mapping) for frame in frames)
+                        for frames in cleanup.values()
+                    )
+                ):
+                    raise ValueError("case retirement and cleanup observations must use the capture envelope")
+                if not isinstance(observations, list) or not all(isinstance(frame, Mapping) for frame in observations):
+                    raise ValueError("raw case observations must be an array of objects")
+                if not isinstance(attempts, list) or not all(isinstance(attempt, Mapping) for attempt in attempts):
+                    raise ValueError("recorded attempts must be an array of objects")
+                collection_errors = [finding for finding in findings if finding.startswith("INCOMPLETE:")]
+                behavior_findings = [finding for finding in findings if not finding.startswith("INCOMPLETE:")]
+                result["status"], result["errors"], _ = adjudicate_evidence(
+                    result["status"],
+                    list(dict.fromkeys([*result["errors"], *collection_errors])),
+                    evidence,
+                    trusted_observations=result.get("trusted_observations") is True and not collection_errors,
+                    observation_findings=behavior_findings,
+                    retirement_evidence=retirement,
+                    cleanup_evidence=cleanup,
+                    observation_evidence=observations,
+                    attempts=attempts,
+                    validator=suite.validator if suite else None,
+                    standard=manifest.get("coverageProfile", "standard") == "standard",
+                )
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+            if result["status"] == "COLLECTED":
+                result["status"] = "INCOMPLETE_EVIDENCE"
+            result["errors"].append(f"INCOMPLETE: malformed captured evidence: {error}")
+        results.append(result)
     return results
 
 
@@ -541,20 +1027,121 @@ def build_report(
     return report
 
 
+# How long each teardown step may take once collection has returned.
+_RESIDUAL_TASK_GRACE_SECONDS = 30.0
+
+
+def _run_collection[T](main: Coroutine[Any, Any, T]) -> T:
+    """Run ``main`` like ``asyncio.run``, but bound every teardown step.
+
+    ``run_scenarios`` stops waiting for adapter work that outlives its harness
+    budget and quarantines the target instead. ``asyncio.run`` would cancel that
+    work at teardown and wait for it without a bound, so a task that suppresses
+    cancellation would keep the reports from being written.
+    """
+    runner = asyncio.Runner()
+    loop = runner.get_loop()
+    try:
+        return runner.run(main)
+    finally:
+        try:
+            _drain_leftover_tasks(loop)
+        finally:
+            # Runner.close() would wait for leftover tasks again, without a bound.
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    deadline = time.monotonic() + _RESIDUAL_TASK_GRACE_SECONDS
+    cancelled: set[asyncio.Task[Any]] = set()
+    while (pending := [task for task in asyncio.all_tasks(loop) if not task.done()]) and (
+        remaining := deadline - time.monotonic()
+    ) > 0:
+        # Cancel each task once; cancelling again would interrupt its cleanup.
+        for task in pending:
+            if task not in cancelled:
+                task.cancel()
+                cancelled.add(task)
+        # Rescan often, so tasks started while others unwind are cancelled too.
+        loop.run_until_complete(asyncio.wait(pending, timeout=min(remaining, 0.1)))
+    if pending:
+        print(
+            f"lmi-lifecycle: abandoned {len(pending)} task(s) that ignored cancellation at shutdown",
+            file=sys.stderr,
+        )
+    asyncgens = loop.create_task(loop.shutdown_asyncgens())
+    loop.run_until_complete(asyncio.wait((asyncgens,), timeout=_RESIDUAL_TASK_GRACE_SECONDS))
+    # The Runner's default loop is a BaseEventLoop, whose executor shutdown takes a bound.
+    if isinstance(loop, asyncio.BaseEventLoop):
+        loop.run_until_complete(loop.shutdown_default_executor(_RESIDUAL_TASK_GRACE_SECONDS))
+
+
+# Ends the process without running interpreter shutdown; replaced in tests.
+_hard_exit: Callable[[int], NoReturn] = os._exit
+
+
 def run(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="durable-execution-conformance lmi-lifecycle", description=__doc__)
+    """Run the CLI, then exit even if a thread started during the run is still alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started during the run is still alive as the CLI finishes,
+    the process ends with the CLI's exit code without waiting for it. That path
+    skips atexit hooks.
+    """
+    existing = set(threading.enumerate())
+    try:
+        _run(argv)
+    except BaseException as error:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if not lingering:
+            raise
+        if isinstance(error, SystemExit):
+            code = error.code
+            if code is not None and not isinstance(code, int):
+                print(code, file=sys.stderr)
+                code = 1
+        else:
+            traceback.print_exception(error)
+            code = 130 if isinstance(error, KeyboardInterrupt) else 1
+        names = ", ".join(thread.name for thread in lingering)
+        print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
+        _hard_exit(code or 0)
+
+
+def _run(argv: list[str] | None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="durable-execution-conformance lmi-lifecycle",
+        description="Adjudicate LMI lifecycle evidence with strict coverage.",
+    )
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--collected-evidence",
+        type=Path,
+        help="adjudicate a saved collected-evidence bundle; omit to validate retained evidence files",
+    )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
-        args.output.mkdir(parents=True, exist_ok=True)
+        _make_durable_directory(args.output)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
-        serialized_manifest = _dump_json(manifest) + "\n"
-        with (args.output / "manifest.json").open("x") as output:
-            output.write(serialized_manifest)
-        results = evidence_results(manifest, args.manifest.parent)
+        # Every mode claims the directory with an exclusive manifest write, so
+        # simultaneous runs cannot both pass the emptiness check and publish.
+        _write_new_manifest(args.output / "manifest.json", manifest)
+        results = (
+            adjudicate_collected_evidence(manifest, load_collected_evidence(args.collected_evidence))
+            if args.collected_evidence is not None
+            else evidence_results(manifest, args.manifest.parent)
+        )
         report = build_report(manifest, results)
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))

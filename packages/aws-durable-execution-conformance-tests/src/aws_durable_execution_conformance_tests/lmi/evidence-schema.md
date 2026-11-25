@@ -354,7 +354,7 @@ A retry `body` event for the retried operation identifies a declared attempt by
 with retry order and precede or coincide with the recorded operation completion.
 Completed step bodies likewise cannot follow their recorded completion.
 
-The offline reader preserves precise fractional values in checkpoint payloads
+Adjudication preserves precise fractional values in checkpoint payloads
 and extension fields. Python callers may receive a `Decimal` for fractions that
 cannot round-trip as floats. Timings and budgets still use the runner's finite
 clock precision.
@@ -365,16 +365,62 @@ Collection runs the cases on AWS and records what happened. Adjudication then
 derives the verdict from that record alone. Collection never decides
 conformance; adjudication never contacts AWS.
 
-Collection trusts its adapter, the shared AWS driver. The coordinator records
-the driver's own reports, such as launches, inventories and retirement, without
-auditing them against earlier snapshots, its launch journal, the admitted case,
-or other cases, so driver defects are caught by the driver's own tests. SDK
-fixture output that the driver relays stays untrusted. The rules judge its
-behavior, and before a target is reused collection requires the driver's
-retirement snapshot to establish physical retirement and to settle the native
-owner of every SDK record seen in any snapshot. A journaled launch without an
-identified invocation request also keeps its target quarantined, because no
-snapshot can show that it ended.
+Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
+manifest as described under
+[Standalone evidence files](#standalone-evidence-files). The CLI does not
+collect, so it never loads or runs collection code. Only SDK-owned suites
+collect through this API: the caller passes its `suite` definition and an
+`adapter_factory`. The factory receives a separate
+copy of the admitted manifest and returns an adapter implementing
+`lmi.coordinator.ScenarioAdapter`: `prepare` and `finish` for each profile that
+an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
+`retire` for each case. The factory is called only after the manifest is
+admitted and the audit directory is claimed, and never when every case is
+`not_implemented`.
+
+Load the manifest with `load_manifest(path, suite=suite)`, which applies the same
+admission and normalization as collection, and use that admitted manifest for
+collection and reporting alike. A manifest that was not admitted can misreport
+coverage: an integral `2.0` concurrency, for example, is normalized only by
+admission.
+
+```python
+manifest = load_manifest(Path("manifest.json"), suite=suite)
+results = await collect_and_adjudicate(
+    manifest, audit_dir=Path("lmi-collection"), suite=suite, adapter_factory=create_adapter
+)
+report = build_report(manifest, results, suite=suite)
+```
+
+Choose an empty audit directory, and use a separate one for every run. The
+runner journals attempts to `attempts.jsonl` before dispatch and publishes case
+outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
+may have multiple records for a case. The last record for the case contains its
+latest published attempts or outcome. A row with status `COLLECTED` awaits the
+verdict. After all targets are released or quarantined, the runner writes frozen
+observations and separate cleanup evidence to `collected-evidence.json`, reads
+the file back, and adjudicates it. `collect_and_adjudicate` returns the
+adjudicated results; the caller reports them against the admitted manifest with
+`build_report(manifest, results, suite=suite)` and `reporters.write_report`.
+
+A collection manifest may also set `scenarioConcurrency`, the most cases the run
+executes at once (default 8), and `budgets`, harness time limits in seconds:
+`provisioning` for each target's `prepare` (default 300), `lease` for waiting on
+target capacity (300), `placement` for `start` and `place` (120), `execution`
+(300), `collection` (120), `release` (30), and `retirement` for each case's
+`retire` and each target's `finish` (120). These bound the harness, not SDK
+cleanup or delivery.
+
+Collection trusts its adapter, here the SDK-owned suite's own collector. The
+coordinator records the adapter's own reports, such as launches, inventories and
+retirement, without auditing them against earlier snapshots, its launch journal,
+the admitted case, or other cases, so adapter defects are caught by the
+adapter's own tests. SDK fixture output that the adapter relays stays untrusted.
+The rules judge its behavior, and before a target is reused collection requires
+the adapter's retirement snapshot to establish physical retirement and to settle
+the native owner of every SDK record seen in any snapshot. A journaled launch
+without an identified invocation request also keeps its target quarantined,
+because no snapshot can show that it ended.
 
 Collection holds each target through physical retirement of its own cases. It
 finishes profiles only after every case in the run has ended its retirement
@@ -393,13 +439,52 @@ wait well under the provisioning budget.
 
 The coordinator only collects evidence and decides whether a target can be
 reused. Its `run_scenarios` API returns collection statuses and never reports
-`PASSED`.
+`PASSED`. Collection and a later re-adjudication of its saved bundle judge the
+coordinator's captures with the same adjudication. Standalone
+evidence files listed in the manifest are validated as described below.
 
-## Offline lifecycle runner
+## Adjudication
+
+`collect_and_adjudicate` adjudicates its evidence as soon as it is collected.
+A saved bundle can be adjudicated again without running any collection code.
+This is a tool for debugging, for investigating a reported verdict, and for
+developing rules. It is not a verification step. For the `lmi-lifecycle` suite,
+pass the bundle to the CLI with `--collected-evidence`:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
+```
+
+The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
+its bundle again in Python. It loads the collection's own manifest with
+`load_manifest(Path("lmi-collection/manifest.json"), suite=suite)` and the bundle
+with `load_collected_evidence(Path("lmi-collection/collected-evidence.json"))`,
+which reads exact decimals the way collection does. It then adjudicates with
+`adjudicate_collected_evidence(manifest, bundle, suite=suite)` and reports with
+`build_report(manifest, results, suite=suite)`.
+
+Adjudication trusts the bundle: it assumes that the coordinator wrote it and
+that it was not modified. Before recording `COLLECTED`, the coordinator checked
+that the case's work settled; like the coordinator, adjudication trusts what the
+adapter reported. Adjudication judges behavior again with the current rules, but
+it keeps the recorded collection status and the facts only collection observed.
+Pass the collection's own `manifest.json`. Adjudication re-checks only the
+collection facts its verdict rules use: each case's identity against that
+manifest, launch coverage, and the retirement proof behind the lifecycle 2/7
+allowance. The frozen observations must include
+every client launch the journal records (`launchedAtMs`): cleanup can journal a
+new client launch after observations froze, and the coordinator still records
+`COLLECTED`, so adjudication reports that case incomplete. A service-initiated
+attempt (`discoveredAtMs`) may be absent. The lifecycle 2/7 allowance requires a
+retirement snapshot that passes `validate_retirement_evidence`. Adjudication
+does not verify collection integrity otherwise, so a hand-edited bundle can
+receive a wrong verdict.
+
+## Standalone evidence files
 
 Run `durable-execution-conformance lmi-lifecycle --manifest manifest.json
---output output` with an empty output directory. The runner reads existing
-evidence. Under strict coverage, failed, missing, uncovered, and
+--output output` with an empty output directory. The runner reads the evidence
+files the manifest lists. Under strict coverage, failed, missing, uncovered, and
 `not_implemented` cases all produce a nonzero exit status.
 
 An inventory with two default profiles and no evidence cases looks like this.
