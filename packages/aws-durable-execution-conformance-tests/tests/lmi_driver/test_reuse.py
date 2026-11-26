@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """Deployment, placement and manifest APIs accept every supported runtime model."""
 
 from copy import deepcopy

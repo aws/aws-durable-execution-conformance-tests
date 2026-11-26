@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Normalize observed SDK/service evidence for the pinned shared validator.
 
@@ -642,6 +643,7 @@ class CaseSources:
     raw: tuple[Mapping[str, Any], ...]
     expected_outcome: Callable[[Mapping[str, Any], str], Mapping[str, Any]]
     worker_identity: Callable[[Mapping[str, Any]], str]
+    worker_identity_key: str = "process"
 
     @classmethod
     def capture(
@@ -917,7 +919,7 @@ class CaseSources:
                 or not request.strip()
                 or not all(
                     isinstance(raw.get(key), str) and raw[key]
-                    for key in ("marker", "execution", "environment", "process")
+                    for key in ("marker", "execution", "environment", "process", self.worker_identity_key)
                 )
                 or not _valid_timestamp(raw.get("time"))
             ):
@@ -1599,6 +1601,7 @@ def binding_evidence_builder(binding: FixtureBinding, runtime: str) -> Callable[
             runtime=runtime,
             expected_outcome=expected_outcome,
             worker_identity=worker_identity,
+            worker_identity_key=binding.worker_identity,
             phase=phase,
             expected_replay_effects=expected_replay_effects,
             replay_effect_policy=replay_effect_policy,
@@ -1614,6 +1617,7 @@ def build_evidence(
     runtime: str,
     expected_outcome: Callable[[Mapping[str, Any], str], Mapping[str, Any]],
     worker_identity: Callable[[Mapping[str, Any]], str],
+    worker_identity_key: str = "process",
     phase: str = "observations",
     expected_replay_effects: Mapping[str, int] | None = None,
     replay_effect_policy: ReplayEffectPolicy | None = None,
@@ -1661,7 +1665,12 @@ def build_evidence(
     ):
         control_only = _undispatched_launches(context, cloud)
     sources = CaseSources.capture(
-        context, cloud, raw=ledger, expected_outcome=expected_outcome, worker_identity=worker_identity
+        context,
+        cloud,
+        raw=ledger,
+        expected_outcome=expected_outcome,
+        worker_identity=worker_identity,
+        worker_identity_key=worker_identity_key,
     )
     pending: list[str] = []
     all_events, errors = sources.observations(pending=None if final else pending)

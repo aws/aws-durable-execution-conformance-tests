@@ -8,9 +8,11 @@ not this driver.
 
 ## SDK-owned bindings
 
-`SharedAdapter`, `ScenarioDriver`, `build_evidence`, `configuration_identity` and
-`ScenarioAdapter` are internal to this driver; they change freely without SDK edits.
-An SDK's only contract with the shared collector is data, not code:
+`SharedAdapter`, `ScenarioDriver`, `build_evidence` and `configuration_identity`
+are internal to this driver; they change freely without SDK edits.
+`ScenarioAdapter` is internal for catalog runs; SDK-owned suites implement it for
+their own collector. An SDK's only contract with the shared collector is data,
+not code:
 
 | Shared API | SDK supplies |
 | --- | --- |
@@ -110,8 +112,8 @@ fields or values are rejected. The Python SDK's binding, for example:
   on every profile and carried through to evidence.
 - `replayEffects` lists expected replay side-effect counts per durable
   operation name; an entry with `values` expects one count per listed value
-  (e.g. the Python SDK's `item` fixture, keyed by map item), otherwise one
-  count for every durable operation using that name. Expected service outcome,
+  (e.g. the Python SDK's `item` fixture, keyed by map item), otherwise a single
+  count, owned by the first durable operation ID using that name. Expected service outcome,
   worker identity, and replay-effect ownership are all derived from this
   binding by the shared driver; they are never SDK code.
 

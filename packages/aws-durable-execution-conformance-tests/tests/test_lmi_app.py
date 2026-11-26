@@ -884,7 +884,11 @@ def test_cli_exits_even_when_a_worker_thread_stays_blocked(tmp_path, mode, code,
     # --collect validates the shared plan before claiming the output, so the
     # manifest carries a valid deployment; app.collect_and_adjudicate is then
     # replaced wholesale by the blocking fake.
-    source.write_text(json.dumps(_valid_shared_catalog_plan()))
+    plan = _valid_shared_catalog_plan()
+    # --collect resolves a relative artifacts_dir against the working
+    # directory; keep the subprocess's artifacts inside tmp_path.
+    plan["sdk"]["artifacts_dir"] = str(tmp_path / "artifacts")
+    source.write_text(json.dumps(plan))
     output = tmp_path / "out"
     started = time.monotonic()
     # Without a bounded exit, interpreter shutdown joins the worker forever.
@@ -1244,6 +1248,145 @@ def test_cancelled_collection_still_adjudicates_emitted_cases(tmp_path):
     assert [row["status"] for row in captured] == ["COLLECTED", "COLLECTED"], captured
 
 
+@pytest.mark.parametrize("skipped", [False, True])
+def test_cancelled_collection_reports_a_failed_final_journal_append(tmp_path, monkeypatch, skipped):
+    from dataclasses import dataclass
+
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    @dataclass
+    class Outcome:
+        case_id: str
+        requirement_id: str
+        profile_id: str
+        status: str
+        errors: list
+        retirement_evidence: dict
+
+    failing = {"journal": False}
+    append = app._append_audit_row
+
+    def flaky_append(path: Path, document: str) -> None:
+        # A declared skip's row fails before the run; every final row fails after the cancellation.
+        if path.name == "results.jsonl" and (failing["journal"] or "NOT_IMPLEMENTED" in document):
+            raise OSError("disk full")
+        append(path, document)
+
+    async def run_cases(cases, profiles, adapter, *, on_result, **kwargs):
+        for case in cases:
+            on_result(Outcome(case.case_id, case.requirement_id, case.profile_id, "COLLECTED", [], {}))
+        # The final verdict rows cannot be journaled after the cancellation.
+        failing["journal"] = True
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app, "_append_audit_row", flaky_append)
+    plan = manifest()
+    plan["scenarios"] = plan["scenarios"][:2] if skipped else plan["scenarios"][:1]
+    if skipped:
+        plan["scenarios"][1]["not_implemented"] = "fixture skip"
+    with (
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+        pytest.raises(asyncio.CancelledError) as cancelled,
+    ):
+        asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path))
+    notes = getattr(cancelled.value, "__notes__", [])
+    expected = [f"{case['case_id']}: Could not publish final case result: disk full" for case in plan["scenarios"]]
+    # The skipped case's failure is recorded before the run, and each failure is reported once.
+    assert notes == (expected[1:] + expected[:1] if skipped else expected), notes
+
+
+def test_cancelling_real_collection_reports_no_internal_failure(tmp_path, monkeypatch):
+    real_shield = asyncio.shield
+
+    def reporting_shield(inner: Any) -> Any:
+        # Python 3.14.6 (not 3.14.10) reports any exception a shielded future finishes with after its
+        # waiter was cancelled.
+        outer = real_shield(inner)
+
+        def waiter_done(waiter: Any) -> None:
+            if waiter.cancelled():
+
+                def report(finished: Any) -> None:
+                    if not finished.cancelled() and finished.exception() is not None:
+                        error = finished.exception()
+                        finished.get_loop().call_exception_handler(
+                            {"message": f"{type(error).__name__} exception in shielded future", "exception": error}
+                        )
+
+                inner.add_done_callback(report)
+
+        outer.add_done_callback(waiter_done)
+        return outer
+
+    monkeypatch.setattr(asyncio, "shield", reporting_shield)
+    calls: list[str] = []
+
+    async def main() -> list[str]:
+        executing = asyncio.Event()
+
+        class Adapter:
+            async def prepare(self, profile: Any) -> None:
+                pass
+
+            async def finish(self, profile: Any, *, quiescent: bool) -> None:
+                calls.append("finish")
+
+            async def start(self, context: Any) -> None:
+                pass
+
+            async def place(self, context: Any) -> None:
+                pass
+
+            async def execute(self, context: Any) -> None:
+                executing.set()
+                await asyncio.sleep(60)
+
+            async def collect(self, context: Any) -> dict[str, Any]:
+                return {}
+
+            async def release(self, context: Any) -> None:
+                pass
+
+            async def retire(self, context: Any) -> bool:
+                calls.append("retire")
+                return True
+
+        reported: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: reported.append(context["message"]))
+        plan = manifest()
+        plan["scenarios"] = plan["scenarios"][:1]
+        task = asyncio.create_task(_collect_and_adjudicate(plan, lambda _: Adapter(), audit_dir=tmp_path / "out"))
+        # Bounded, so a run that fails before `execute` fails the test instead of hanging it.
+        waiting = asyncio.ensure_future(executing.wait())
+        await asyncio.wait((task, waiting), timeout=5, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            waiting.cancel()
+            task.result()
+        assert executing.is_set(), "collection never reached execute"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return reported
+
+    # The requested cancellation still finishes retirement, and no internal failure is reported.
+    assert asyncio.run(main()) == []
+    assert calls == ["retire", "finish"]
+
+
+def test_relative_audit_directories_sync_every_ancestor(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    working = tmp_path / "new-working-directory"
+    working.mkdir()
+    monkeypatch.chdir(working)
+    synced: list[Path] = []
+    monkeypatch.setattr(app, "_sync_directory", synced.append)
+    app._make_durable_directory(Path("lmi-collection"))
+    # The working directory and every directory above it hold entries this run relies on.
+    assert synced == list((Path.cwd() / "lmi-collection").parents)
+
+
 def test_predeclared_skip_is_journaled_even_when_active_work_is_cancelled(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import _collect_and_adjudicate
 
@@ -1419,6 +1562,8 @@ def _valid_shared_catalog_plan() -> dict[str, Any]:
             "verified conformanceRevision",
         ),
         (lambda plan: plan["sdk"].pop("artifacts_dir"), r"sdk\.artifacts_dir"),
+        # The helper's relative artifacts_dir: cleanup could never resolve it.
+        (lambda plan: None, r"absolute sdk\.artifacts_dir"),
     ],
 )
 def test_public_collection_rejects_an_invalid_shared_catalog_plan_before_claiming(tmp_path, mutate, match):

@@ -554,6 +554,8 @@ def _make_durable_directory(path: Path) -> None:
     process can change must sync; one it cannot write, such as ``/``, cannot hold
     an entry this run created, so its sync is best effort.
     """
+    # A relative path's parents stop at "."; the directories above it need syncing too.
+    path = path.absolute()
     created = {directory for directory in (path, *path.parents) if not directory.exists()}
     path.mkdir(parents=True, exist_ok=True)
     for directory in (path, *path.parents):
@@ -617,20 +619,28 @@ async def collect_and_adjudicate(
     collected with the SDK's own collector: ``adapter_factory`` receives a
     separate copy of the admitted manifest and is called only after the
     manifest is validated and ``audit_dir`` is claimed, and never when every
-    case is declared not implemented. (An SDK-owned suite that wants the
-    catalog's own scenarios can pass a factory that builds the shared driver
-    itself.)
+    case is declared not implemented. (An SDK-owned suite may wrap the
+    internal shared driver in its own factory, but ``SharedAdapter`` carries
+    no compatibility guarantee.)
 
     With neither, this collects the ``lmi-lifecycle`` catalog itself, using the
     built-in driver derived from ``manifest["sdk"]["deployment"]``'s fixture
-    binding. That requires a verified ``conformanceRevision`` and a deployment
+    binding. That requires a verified ``conformanceRevision``, a deployment
     whose runtime fields, fixture binding and ``runtimeModel`` agree with the
-    plan's ``runtime``, all checked before the audit directory is claimed.
+    plan's ``runtime``, and an absolute ``sdk.artifacts_dir``, all checked
+    before the audit directory is claimed.
 
     Passing only one of ``suite``/``adapter_factory`` is rejected.
     """
     if suite is None and adapter_factory is None:
         _require_shared_catalog_run(manifest)
+        if not Path(manifest["sdk"]["artifacts_dir"]).is_absolute():
+            # Cleanup resolves saved journals only from an absolute path. The
+            # CLI's --collect and runner.run normalize a relative one first.
+            raise ValueError(
+                "A shared catalog run requires an absolute sdk.artifacts_dir; "
+                "resolve it with sdk_plan_with_artifact_directory"
+            )
         from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
 
         return await _collect_and_adjudicate(manifest, SharedAdapter, audit_dir=audit_dir)
@@ -721,6 +731,9 @@ async def _collect_and_adjudicate(
         _, document = _result_for_audit(raw)
         publish(result.case_id, document)
 
+    # Final journal failures, kept so a cancelled run can still report them.
+    publication_errors: list[str] = []
+
     def publish_final(result: dict[str, Any], document: str) -> None:
         if publications.get(result["case_id"]) == document:
             return
@@ -729,7 +742,9 @@ async def _collect_and_adjudicate(
         except OSError as exc:
             if result["status"] in ("PASSED", "NOT_IMPLEMENTED"):
                 result["status"] = "INFRASTRUCTURE_ERROR"
-            result["errors"].append(f"Could not publish final case result: {exc}")
+            message = f"Could not publish final case result: {exc}"
+            result["errors"].append(message)
+            publication_errors.append(f"{result['case_id']}: {message}")
 
     skipped_results: list[dict[str, Any]] = []
     for scenario in manifest["scenarios"]:
@@ -779,12 +794,17 @@ async def _collect_and_adjudicate(
     except asyncio.CancelledError as cancelled:
         try:
             reconcile_results(emitted.values())
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             # Adjudication can run an SDK-owned suite's validator, which may raise
-            # anything; the cancellation must still reach the caller.
+            # anything, even CancelledError; this cancellation must still reach the
+            # caller. Reconciliation never awaits, so no new cancellation lands here.
             cancelled.add_note(
                 f"Could not adjudicate and journal the cancelled run's evidence: {type(error).__name__}: {error}"
             )
+        # The cancelled run returns no results, so journal failures surface only here,
+        # once each even when a declared skip's row failed again during reconciliation.
+        for message in dict.fromkeys(publication_errors):
+            cancelled.add_note(message)
         raise
     return reconcile_results(outcomes)
 

@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Data-only fixture binding: parsing, identity coverage, and derived rules.
 
@@ -280,7 +281,10 @@ def test_shared_adapter_default_driver_factory_honors_json_marker_callback_paylo
     assert driver.callback_encoder("marker-value") == json.dumps("marker-value").encode()
 
 
-def test_binding_evidence_builder_wires_expected_outcome_worker_identity_and_replay_effects(monkeypatch):
+@pytest.mark.parametrize("worker_identity_field,expected_value", [("process", "p-1"), ("worker", "w-1")])
+def test_binding_evidence_builder_wires_expected_outcome_worker_identity_and_replay_effects(
+    monkeypatch, worker_identity_field, expected_value
+):
     from aws_durable_execution_conformance_tests.lmi import source_evidence
 
     captured = {}
@@ -290,16 +294,58 @@ def test_binding_evidence_builder_wires_expected_outcome_worker_identity_and_rep
         return {}
 
     monkeypatch.setattr(source_evidence, "build_evidence", fake_build_evidence)
-    builder = binding_evidence_builder(binding(), "python")
+    builder = binding_evidence_builder(binding(worker_identity=worker_identity_field), "python")
     builder(object(), object(), phase="final")
     assert captured["runtime"] == "python"
     assert captured["phase"] == "final"
+    assert captured["worker_identity_key"] == worker_identity_field
     assert captured["expected_outcome"]({"role": "victim", "marker": "m"}, "normal-failure") == {
         "status": "FAILED",
         "error": {"type": "ValueError", "message": "expected:m"},
     }
-    assert captured["worker_identity"]({"process": "p-1", "worker": "w-1"}) == "p-1"
+    assert captured["worker_identity"]({"process": "p-1", "worker": "w-1"}) == expected_value
     assert captured["expected_replay_effects"] == {"success": 1, "failure": 1, "retry": 2}
+
+
+def test_build_evidence_passes_the_worker_identity_key_to_case_sources():
+    from unittest.mock import patch
+
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence
+
+    from .test_shared_partial_evidence import context
+
+    cloud: Any = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        observation_ended_at=2,
+        events={},
+        raw_histories={},
+        control_records=[],
+        invocations=[],
+        source_uris=set(),
+        _save=lambda *args: None,
+    )
+    captured = {}
+
+    def fake_capture(ctx, cld, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            observations=lambda **_: ([], []),
+            histories=lambda **_: ([], {}, []),
+            attempts=lambda _, **kwargs: ([], {}, []),
+        )
+
+    with patch(
+        "aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", side_effect=fake_capture
+    ):
+        build_evidence(
+            context(),
+            cloud,
+            runtime="python",
+            expected_outcome=lambda item, scenario: {"status": "SUCCEEDED"},
+            worker_identity=lambda raw: raw["worker"],
+            worker_identity_key="worker",
+        )
+    assert captured["worker_identity_key"] == "worker"
 
 
 # ---------------------------------------------------------------------------
