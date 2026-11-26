@@ -395,7 +395,9 @@ def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launc
         view.error("histories and expectedHistories must cover every launched execution exactly")
 
 
-def no_late_dispatch(view: CaseView, sdk_requests: Sequence[Mapping[str, Any]]) -> None:
+def no_late_dispatch(view: CaseView, sdk_requests: Sequence[Mapping[str, Any]] | None = None) -> None:
+    if sdk_requests is None:
+        sdk_requests = mappings(view.value.get("sdkRequests"))
     disposal = view.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
     for request_id, attempt in view.attempts.items():
         closures = [

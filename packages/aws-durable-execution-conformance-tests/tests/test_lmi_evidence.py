@@ -574,6 +574,25 @@ def test_malformed_sdk_requests_keep_disposal_wrapper_diagnostics() -> None:
     assert "INCOMPLETE: disposal needs exactly one wrapper exit for the selected victim" in errors, errors
 
 
+@pytest.mark.parametrize("requests", ["valid", None])
+def test_facade_no_late_dispatch_keeps_its_no_argument_call(requests: str | None) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    value["events"].remove(
+        next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    )
+    value["sdkRequests"].append(event(peer, "request", 100, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+    validator = _Evidence(value)
+    validator.common()
+    validator.errors.clear()
+    if requests is None:
+        validator.value = {**value, "sdkRequests": None}
+
+    validator.no_late_dispatch()
+    expected = "INCOMPLETE: request request-peer dispatched SDK work after its recorded end without closure evidence"
+    assert validator.errors == ([expected] if requests == "valid" else [])
+
+
 @pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
 def test_malformed_dispatch_time_does_not_order_dispatch(validate: EvidenceValidator) -> None:
     value = evidence()
