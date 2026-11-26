@@ -137,7 +137,7 @@ def undispatched_settlements(view: CaseView, retirement: Mapping[str, Any], end:
             and request_id not in referenced
             and execution_arn in execution_arns
             and item.get("serviceErrorType") in UNDISPATCHED_ERROR_TYPES
-            and type(source_event_id) is int
+            and is_json_integer(source_event_id)
             and source_event_id >= 1
             and source_counts[(execution_arn, source_event_id)] == 1
             and isinstance(started, (int, float))
@@ -504,10 +504,14 @@ def _validate_controls_only(validator: CaseView) -> list[str]:
         prepared = launch.get("dispatchState") == "PREPARED" and not any(
             field in launch for field in ("arn", "executionArn", "requestId")
         )
+        # The proof helper also checks boto responses, so it requires an int;
+        # this wire field accepts any integral JSON spelling of the count.
+        retries = launch.get("retryAttempts")
+        rejection = {**launch, "retryAttempts": int(retries)} if is_json_integer(retries) else launch
         if (
             marker in markers
             or launch.get("functionArn") != validator.profile.get("functionArn")
-            or not (prepared or invoke_rejection_proven(launch))
+            or not (prepared or invoke_rejection_proven(rejection))
         ):
             validator.error("controls-only retirement has an unresolved or mismatched launch intent")
         markers.add(marker)
