@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, TypeGuard
@@ -20,6 +19,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.values import (
     RUNTIMES,
     SCHEMA_VERSION,
     TERMINAL_STATUSES,
+    _dump_json,
     _json_result_fingerprint,
     _same_checkpoint_display,
     _valid_fingerprint,
@@ -799,7 +799,7 @@ def _same_execution_result(history: Mapping[str, Any], expected: Mapping[str, An
     if "resultFingerprint" not in history:
         return same_json(history["result"], expected["result"])
     try:
-        expected_digest = _json_result_fingerprint(json.dumps(expected["result"], allow_nan=False))
+        expected_digest = _json_result_fingerprint(_dump_json(expected["result"], compact=True))
     except TypeError, ValueError:
         return False
     return history["resultFingerprint"] == expected_digest and _same_checkpoint_display(

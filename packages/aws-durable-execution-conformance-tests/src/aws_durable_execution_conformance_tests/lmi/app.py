@@ -29,6 +29,7 @@ from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, CO
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
     EvidenceValidator,
+    _dump_json,
     is_json_integer,
     same_json,
 )
@@ -189,34 +190,6 @@ def _finite_json_float(raw: str) -> int | float | Decimal:
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(), parse_float=_finite_json_float, parse_constant=_finite_json_float)
-
-
-def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
-    """Write retained JSON without rounding exact decimal payloads."""
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError("JSON numbers must be finite")
-        return str(value)
-    if not isinstance(value, (dict, list, tuple)) or not value:
-        return json.dumps(value, allow_nan=False)
-    inner = "" if compact else "\n" + "  " * (depth + 1)
-    outer = "" if compact else "\n" + "  " * depth
-    if isinstance(value, dict):
-        keys: set[str] = set()
-        items = []
-        for key, item in value.items():
-            if not isinstance(key, str):
-                if key is not None and not isinstance(key, (bool, int, float)):
-                    raise ValueError("JSON object keys must be strings or scalar JSON values")
-                key = json.dumps(key, allow_nan=False)
-            if key in keys:
-                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
-            keys.add(key)
-            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
-        return "{" + inner + ("," + inner).join(items) + outer + "}"
-    return (
-        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
-    )
 
 
 def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
@@ -1041,17 +1014,30 @@ def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
 _hard_exit: Callable[[int], NoReturn] = os._exit
 
 
-def run(argv: list[str] | None = None) -> None:
-    """Run the CLI, then exit even if a thread started during the run is still alive.
+def _hard_exit_with_lingering_threads(lingering: list[threading.Thread], code: int) -> NoReturn:
+    names = ", ".join(thread.name for thread in lingering)
+    print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()
+    _hard_exit(code or 0)
+
+
+def _run_guarding_lingering_threads[T](body: Callable[[], T]) -> T:
+    """Run ``body``, then exit directly if it leaves a non-daemon thread alive.
 
     Interpreter shutdown joins every non-daemon thread without a bound. When a
-    non-daemon thread started during the run is still alive as the CLI finishes,
-    the process ends with the CLI's exit code without waiting for it. That path
-    skips atexit hooks.
+    non-daemon thread started while ``body`` ran is still alive once ``body``
+    returns or raises, the process cannot otherwise exit; it ends immediately
+    with ``body``'s result, or with the exit code its exception implies,
+    without waiting for that thread. That path skips atexit hooks.
+
+    Callers must resolve ``_hard_exit`` through this module at call time
+    (not import it directly), so tests can replace it for in-process runs.
     """
     existing = set(threading.enumerate())
     try:
-        _run(argv)
+        result = body()
     except BaseException as error:
         lingering = [
             thread
@@ -1068,12 +1054,27 @@ def run(argv: list[str] | None = None) -> None:
         else:
             traceback.print_exception(error)
             code = 130 if isinstance(error, KeyboardInterrupt) else 1
-        names = ", ".join(thread.name for thread in lingering)
-        print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
-        for stream in (sys.stdout, sys.stderr):
-            with contextlib.suppress(OSError, ValueError):
-                stream.flush()
-        _hard_exit(code or 0)
+        _hard_exit_with_lingering_threads(lingering, code or 0)
+    else:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if lingering:
+            _hard_exit_with_lingering_threads(lingering, result if isinstance(result, int) else 0)
+        return result
+
+
+def run(argv: list[str] | None = None) -> None:
+    """Run the CLI, then exit even if a thread started during the run is still alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started during the run is still alive as the CLI finishes,
+    the process ends with the CLI's exit code without waiting for it. That path
+    skips atexit hooks.
+    """
+    _run_guarding_lingering_threads(lambda: _run(argv))
 
 
 def _run(argv: list[str] | None) -> None:

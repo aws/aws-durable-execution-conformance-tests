@@ -416,8 +416,12 @@ For lifecycle 1 the selected request's overlap checkpoint contains a
 `STEP` update with action `SUCCEED` for its marker operation ID. Lifecycle 5
 requires a `WAIT` or `CALLBACK` update with action `START` and the same
 operation ID and type as a successful operation in the collected service
-history. That operation's recorded completion must follow the pending wrapper
-return and precede or coincide with a later invocation's admission. The request must belong to a PENDING
+history. That operation's recorded completion must follow the request's PENDING
+decision and precede or coincide with a later invocation's admission. The
+decision is the request's only `invocation_end` observation when that
+observation has outcome `PENDING` and falls between the request's start and its
+wrapper return; cleanup snapshots that repeat it count once. Otherwise the
+decision is the wrapper return. The request must belong to a PENDING
 invocation of the selected execution, precede its wrapper return, and be
 followed by another invocation of that execution. This establishes an observed
 wait or callback suspension even when an earlier invocation paused for retry. Replay also needs at least one completed STEP in

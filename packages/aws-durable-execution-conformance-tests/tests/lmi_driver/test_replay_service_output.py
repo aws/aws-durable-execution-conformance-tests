@@ -4,10 +4,13 @@
 """Replay snapshots must be compared against independent service output."""
 
 from copy import deepcopy
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.app import load_collected_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.values import _dump_json, _json_result_fingerprint
 from aws_durable_execution_conformance_tests.lmi.source_evidence import replay_evidence
 
 from .test_evidence import sources
@@ -546,6 +549,7 @@ def test_default_replay_rejects_swapped_service_operation_ids():
     ]
 
 
+@pytest.mark.parametrize("round_trip", [False, True])
 @pytest.mark.parametrize(
     ("wire", "expected", "matches"),
     [
@@ -554,10 +558,31 @@ def test_default_replay_rejects_swapped_service_operation_ids():
         ("0.10000000000000001", 0.1, False),
         ("0.10000000000000000", 0.1, True),
         ("1e23", 1e23, True),
+        # The fixture expectation can carry an exact Decimal fraction that
+        # cannot round-trip through a float; the fingerprint must still hash
+        # it exactly, and the retained float display (the service's own
+        # binary64 rounding, per `_display_json`) must reconcile with it.
+        ("0.10000000000000001", Decimal("0.10000000000000001"), True),
+        ('{"x": [0.10000000000000001, 1]}', {"x": [Decimal("0.10000000000000001"), 1]}, True),
+        # A wire value that is actually a different number than the precise
+        # expectation must still mismatch, Decimal or not.
+        ("0.1", Decimal("0.10000000000000001"), False),
+        # Integral binary64 roundings are read back from a capture as ints.
+        ("1.00000000000000001", Decimal("1.00000000000000001"), True),
+        ("9007199254740993.5", Decimal("9007199254740993.5"), True),
+        ("1.00000000000000001", Decimal("1"), False),
     ],
 )
-def test_execution_result_fingerprint_distinguishes_numeric_rounding(wire, expected, matches):
+def test_execution_result_fingerprint_distinguishes_numeric_rounding(wire, expected, matches, round_trip, tmp_path):
     from dataclasses import replace
+
+    if round_trip:
+        # Prove the comparison behaves identically whether the expectation was
+        # built in memory or reloaded from a captured evidence file, the same
+        # way collection reads its own capture back (`load_collected_evidence`).
+        path = tmp_path / "expected-result.json"
+        path.write_text(_dump_json(expected) + "\n")
+        expected = load_collected_evidence(path)
 
     observed, _ = history_sources("StepSucceeded", {}, {"status": "SUCCEEDED"})
     observed.cloud.execution_results["exec"]["Result"] = {"Payload": wire}
@@ -566,7 +591,28 @@ def test_execution_result_fingerprint_distinguishes_numeric_rounding(wire, expec
     assert errors == []
     from aws_durable_execution_conformance_tests.lmi.rules.common import _same_execution_result
 
+    history = histories[0]
+    if round_trip:
+        # Adjudication reads the retained history back from the capture too.
+        path = tmp_path / "history.json"
+        path.write_text(_dump_json(history) + "\n")
+        history = load_collected_evidence(path)
     assert "resultFingerprint" not in expected_histories["exec"]
-    assert _same_execution_result(histories[0], expected_histories["exec"]) is matches
-    if wire == "9007199254740993.0":
+    assert _same_execution_result(history, expected_histories["exec"]) is matches
+    if wire == "9007199254740993.0" and not round_trip:
         assert histories[0]["result"] == 9007199254740993
+
+
+def test_matching_high_precision_result_raises_no_result_differs_finding():
+    """End-to-end: a precise Decimal expectation must not be reported as a mismatch."""
+    from aws_durable_execution_conformance_tests.lmi.rules.common import _history_expectation_mismatches
+
+    history = {
+        "status": "SUCCEEDED",
+        "result": 0.1,
+        "resultEncoding": "json",
+        "resultFingerprint": _json_result_fingerprint("0.10000000000000001"),
+    }
+    expectation = {"status": "SUCCEEDED", "result": Decimal("0.10000000000000001")}
+    errors = _history_expectation_mismatches("exec", history, expectation)
+    assert errors == []
