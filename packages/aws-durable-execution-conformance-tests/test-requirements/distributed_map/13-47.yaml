@@ -1,0 +1,52 @@
+---
+# 13.47: Distributed map records the operation name
+description: Distributed map invoked with an operation name records that name in the start
+  checkpoint
+handler: |
+  Handler invokes the distributed map operation with the name "named-run" over an inline source of
+  one item, with max-concurrency 1. The processor function reports a per-item outcome and succeeds
+  every item. The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map with the name "named-run". The SDK checkpoints
+    DistributedMapStarted (SubType DistributedMap) with Name "named-run", the invocation completes,
+    and the execution suspends until the service records the terminal event. The invocation then
+    completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    Name: named-run
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

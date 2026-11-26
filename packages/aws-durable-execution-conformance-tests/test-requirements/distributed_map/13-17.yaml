@@ -1,0 +1,70 @@
+---
+# 13.17: Distributed map graceful stop ends the run STOPPED
+description: Distributed map whose processor stops the run while handling the first item ends STOPPED,
+  carrying the stop error and a failed result for the item it was handling
+handler: |
+  Handler invokes the distributed map operation over an inline source of three items, with batch
+  size 1, max-concurrency 1 and inline result collection. On item-0 the processor calls
+  StopDistributedMapRun on its own run with the error type "TestStop", then reports item-0 as
+  failed. The processor's execution role must allow StopDistributedMapRun. Items 1 and 2 are never
+  dispatched. The handler returns {status, successCount, failureCount, readCount, totalCount,
+  sourceExhausted, items, errorType}, where items lists each retained result as {itemId, status}
+  and errorType is the summary error's type.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) with batch size 1, the invocation completes, and the execution suspends until
+    the service records the terminal event. The invocation then completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: STOPPED
+    successCount: 0
+    failureCount: 1
+    readCount: 3
+    totalCount: 3
+    sourceExhausted: true
+    items:
+      - itemId: item-0
+        status: FAILED
+    errorType: TestStop
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+        BatchSize: 1
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapStopped
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStoppedDetails:
+      SuccessCount: 0
+      FailureCount: 1
+      ReadCount: 3
+      TotalCount: 3
+      SourceExhausted: true
+      Error:
+        Payload:
+          ErrorType: TestStop
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

@@ -1,0 +1,57 @@
+---
+# 13.14: Distributed map S3 prefix listing source
+description: Distributed map lists every object under an S3 key prefix and reads each as items
+handler: |
+  Handler invokes the distributed map operation over the objects under one S3 key prefix, read in
+  JSON_LINES format, with max-concurrency 1. The prefix holds one small object with the lines
+  {"n": 1} and {"n": 2}.
+  The processor reports a per-item outcome and succeeds every item.
+  The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) with the S3 prefix source, the invocation completes, and the execution suspends
+    until the service records the terminal event. The invocation then completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 2
+    readCount: 2
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: S3
+        S3SourceConfig:
+          Type: LISTED_OBJECTS
+          Bucket: '*'
+          ListedObjectsConfig:
+            KeyPrefix: '*'
+            Format: JSON_LINES
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 2
+      ReadCount: 2
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

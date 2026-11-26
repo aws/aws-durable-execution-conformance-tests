@@ -1,0 +1,33 @@
+---
+# 13.23: Distributed map rejects a completion config with both tolerated-failure thresholds
+description: Distributed map given a completion config that sets both a tolerated failure count and
+  a tolerated failure percentage is rejected before any checkpoint and the execution fails
+handler: |
+  Handler invokes the distributed map operation over an inline source of a few small items, with a
+  batch processor, a positive max-concurrency, and a completion config that sets a tolerated
+  failure count of 1 and a tolerated failure percentage of 25. A completion config must set exactly
+  one of the two thresholds, so the SDK rejects the configuration before writing any checkpoint.
+  The error is not caught, so the execution fails.
+invocations: |
+  - Handler invokes the distributed map with a completion config carrying both thresholds. The SDK
+    rejects the completion config before starting the operation, so no DistributedMap event is
+    checkpointed. The error propagates uncaught and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+    ErrorMessage: '${/(?i).*tolerated.?failure.*mutually exclusive.*/}'
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+          ErrorMessage: '${/(?i).*tolerated.?failure.*mutually exclusive.*/}'

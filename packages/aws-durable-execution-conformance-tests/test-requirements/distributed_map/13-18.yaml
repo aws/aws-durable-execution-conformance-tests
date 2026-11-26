@@ -1,0 +1,30 @@
+---
+# 13.18: Distributed map rejects a processor in a different region
+description: Distributed map whose processor function is in a different region than the durable
+  function is rejected at the start checkpoint and the execution fails
+handler: |
+  Handler invokes the distributed map operation over an inline source of a few small items with a
+  positive max-concurrency. The processor is a function ARN in a different region than the durable
+  function. The service rejects the start checkpoint before any run is created. The error is not
+  caught, so the execution fails.
+invocations: |
+  - Handler invokes the distributed map with a processor ARN in another region. The service rejects
+    the start checkpoint, so no DistributedMap event is checkpointed. The error propagates uncaught
+    and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

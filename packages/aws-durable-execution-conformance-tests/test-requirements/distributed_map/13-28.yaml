@@ -1,0 +1,60 @@
+---
+# 13.28: Distributed map S3 listed-object metadata source
+description: Distributed map over the object metadata listed under an S3 key prefix is accepted and
+  the run succeeds
+handler: |
+  Handler invokes the distributed map operation over the object metadata listed under the S3 key
+  prefix "metadata-listing/", with inline result collection and max-concurrency 1. The prefix holds
+  one small object, "metadata-listing/a.txt". The processor reports a per-item outcome and succeeds
+  every item.
+  The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the S3 listing source with the key prefix, then the invocation completes
+    and the execution suspends. The service records the terminal event. The invocation completes
+    returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: S3
+        S3SourceConfig:
+          Type: LISTED_OBJECT_METADATA
+          Bucket: '*'
+          ListedObjectMetadataConfig:
+            KeyPrefix: metadata-listing/
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

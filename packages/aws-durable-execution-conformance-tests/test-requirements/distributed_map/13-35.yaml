@@ -1,0 +1,60 @@
+---
+# 13.35: Distributed map reader function receives the initial state, then each returned state
+description: Distributed map passes the configured initial state to the first reader call and each
+  returned next state to the following call
+handler: |
+  Handler invokes the distributed map operation over a reader function source with the initial state
+  "s0", inline result collection, max-concurrency 1 and max-items-to-read 100. The reader returns one
+  item whose value is the state it received. Given "s0" it returns the next state "s1", given "s1" it
+  returns "s2", and given "s2" it returns no next state. The processor reports a per-item outcome for
+  each item and returns the item's value unchanged. The handler returns the collected results in input
+  order.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the serialized initial state and the max-items-to-read, then the
+    invocation completes and the execution suspends. The reader is called with "s0", then "s1", then
+    "s2". The service records the terminal event. The invocation completes returning ["s0", "s1",
+    "s2"].
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - s0
+    - s1
+    - s2
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: READER_FUNCTION
+        MaxItemsToRead: 100
+        ReaderFunctionSourceConfig:
+          FunctionName: '*'
+          InitialState:
+            Payload: '"s0"'
+            Truncated: false
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

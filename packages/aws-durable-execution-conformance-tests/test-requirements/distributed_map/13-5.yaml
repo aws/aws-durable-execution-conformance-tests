@@ -1,0 +1,60 @@
+---
+# 13.5: Distributed map with a read limit smaller than the source
+description: Distributed map with a max-items-to-read smaller than the inline source reads only up
+  to the limit, reports that total, and reports the source as not exhausted
+handler: |
+  Handler invokes the distributed map operation over an inline source of five items with
+  max-concurrency 1 and a max-items-to-read of three. The processor function reports a per-item
+  outcome for each item and succeeds every item. The run reads three items, so the source is not
+  exhausted. The handler returns a projection of the summary:
+  {status, successCount, failureCount, readCount, totalCount, sourceExhausted}.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the read limit, the invocation completes, and the execution suspends
+    until the service records the terminal event. The invocation then completes returning the
+    projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 3
+    failureCount: 0
+    readCount: 3
+    totalCount: 3
+    sourceExhausted: false
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+        MaxItemsToRead: 3
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 3
+      FailureCount: 0
+      ReadCount: 3
+      TotalCount: 3
+      SourceExhausted: false
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

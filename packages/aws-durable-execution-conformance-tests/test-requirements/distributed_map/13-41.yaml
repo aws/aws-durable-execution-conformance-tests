@@ -1,0 +1,48 @@
+---
+# 13.41: Distributed map keeps a fractional tolerated failure percentage
+description: Distributed map given a completion config with a tolerated failure percentage of 12.5
+  sends 12.5 unchanged and a one-item run succeeds
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item, with
+  max-concurrency 1 and a completion config with a tolerated failure percentage of 12.5. The processor
+  reports a per-item outcome for each item and succeeds every item. The handler returns the summary
+  status.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying a tolerated failure percentage of 12.5, then the invocation completes and
+    the execution suspends. The service records the terminal event. The invocation completes returning
+    "SUCCEEDED".
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailurePercentage: 12.5
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

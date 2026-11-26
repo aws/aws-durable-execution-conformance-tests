@@ -1,0 +1,33 @@
+---
+# 13.29: Distributed map rejects a max retry attempts of -2
+description: Distributed map given a processor max retry attempts of -2, which is neither a
+  non-negative count nor the unlimited value, is rejected before any checkpoint and the execution
+  fails
+handler: |
+  Handler invokes the distributed map operation over an inline source of a few small items, with a
+  positive max-concurrency and a batch processor whose max retry attempts is -2. Max retry attempts
+  must be a non-negative count or the unlimited value, which is sent as -1, so the SDK rejects the
+  configuration before writing any checkpoint. The error is not caught, so the execution fails.
+invocations: |
+  - Handler invokes the distributed map with max retry attempts -2. The SDK rejects the retry
+    attempts before starting the operation, so no DistributedMap event is checkpointed. The error
+    propagates uncaught and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+    ErrorMessage: '${/(?i).*max.?retry.?attempts.*/}'
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+          ErrorMessage: '${/(?i).*max.?retry.?attempts.*/}'

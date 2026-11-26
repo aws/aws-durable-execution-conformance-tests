@@ -38,7 +38,8 @@ test-requirements/
 ├── map/                 # 9-N: Map operation suite
 ├── plugin/              # 10-N: Instrumentation plugin suite
 ├── general/             # 11-N: Tests not specific to one operation
-└── static_typing/       # 12-N: Capabilities specific to statically typed SDKs
+├── static_typing/       # 12-N: Capabilities specific to statically typed SDKs
+└── distributed_map/     # 13-N: Distributed map operation suite
 ```
 
 Each YAML file defines a single conformance test. The naming convention is `{suite_prefix}-{number}.yaml` (e.g., `1-1.yaml` is the first step test, `4-7.yaml` is the seventh callback test).
@@ -120,8 +121,6 @@ ExpectedResult:
     ErrorType: '${/(?i).*non[-_ ]?determin.*/}'
     ErrorMessage: '${/(?i).*expected.*wait.*step.*/}'
 ```
-
------
 
 ## Running the Validator
 

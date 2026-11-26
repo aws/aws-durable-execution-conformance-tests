@@ -1,0 +1,64 @@
+---
+# 13.32: Distributed map S3 CSV source with a pipe delimiter
+description: Distributed map over an S3 CSV object with the pipe delimiter is accepted and the run
+  succeeds
+handler: |
+  Handler invokes the distributed map operation over one small S3 object in CSV format, with the
+  column names taken from the first row and the delimiter set to PIPE. The object holds the lines
+  id|name and 1|a,b. Result collection is inline and max-concurrency is 1. The processor reports a
+  per-item outcome and succeeds every item. The handler returns {status, successCount, readCount}
+  from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the S3 source and the PIPE delimiter, then the invocation completes and
+    the execution suspends. The service records the terminal event.
+    The invocation completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: S3
+        S3SourceConfig:
+          Type: OBJECT
+          Bucket: '*'
+          ObjectConfig:
+            Key: '*'
+            Format: CSV
+            CsvFormatOptions:
+              HeaderLocation: FIRST_ROW
+              Delimiter: PIPE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

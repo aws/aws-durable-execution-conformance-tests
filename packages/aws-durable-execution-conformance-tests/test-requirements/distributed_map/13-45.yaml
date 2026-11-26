@@ -1,0 +1,76 @@
+---
+# 13.45: Distributed map decodes results through a custom result serdes, including on replay
+description: Distributed map with inline result collection and a custom result serdes returns the
+  decoded item output, and returns the same decoded output after a wait forces a replay
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item "x", with inline
+  result collection and max-concurrency 1. The result serdes is a real, non-identity implementation:
+  its deserializer removes the leading "enc:" from a string. The processor reports a per-item
+  outcome with the output "enc:x". The handler reads the succeeded items' outputs from the result,
+  waits one second, reads the outputs again, and returns {first, second}: the outputs lists before
+  and after the wait. Both lists are ["x"], because each read decodes through the result serdes.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) with inline result collection, the invocation completes, and the execution
+    suspends until the service records the terminal event.
+  - Replay 1: Re-invoked after the terminal event. The SDK decodes the item output through the
+    result serdes and checkpoints WaitStarted with a one-second duration, and the execution
+    suspends again.
+  - Replay 2: Re-invoked after the wait. The SDK checkpoints WaitSucceeded, decodes the item output
+    again from the recorded run, and the invocation completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    first:
+      - x
+    second:
+      - x
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
