@@ -1410,6 +1410,160 @@ def test_binding_deferred_stays_set_across_a_refresh_with_no_new_keys(driver, mo
     assert driver.binding_deferred is True
 
 
+def _victim_and_peer_setup(driver, *, r1_failure):
+    """Arrange two case-owned markers, victim and peer, each with its own
+    WRAPPER_ENTER record(s) that pass the binding checks. The victim owns two
+    native requests, r1 and r2, under its own prefix; the peer owns an
+    unrelated request rp under a disjoint prefix. ``r1_failure`` lets the
+    caller choose how r1's read fails (a retryable S3 error, or the collector
+    running out of budget) while r2 still gets cached.
+
+    Returns ``(context, victim_item, peer_item, fail_r1)``, where ``fail_r1``
+    is a single-element list acting as a mutable flag: set ``fail_r1[0] =
+    False`` to let a later refresh read r1 for real.
+    """
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap", roles=("victim", "peer"))
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    context = ScenarioContext("run", scenario, profile)
+    context.record_attempt("victim", role="victim", marker="victim")
+    context.record_attempt("peer", role="peer", marker="peer")
+    driver.case_context = context
+
+    victim_item = {
+        "marker": "victim",
+        "arn": "victim-exec-arn",
+        "invoke_acknowledged": True,
+        "native_requests": [],
+        "role": "victim",
+        "resume_roles": (),
+        "launch_id": "victim",
+        "payload": {},
+        "execution_name": "victim-exec",
+    }
+    peer_item = {
+        "marker": "peer",
+        "arn": "peer-exec-arn",
+        "invoke_acknowledged": True,
+        "native_requests": [],
+        "role": "peer",
+        "resume_roles": (),
+        "launch_id": "peer",
+        "payload": {},
+        "execution_name": "peer-exec",
+    }
+    driver.invocations = [victim_item, peer_item]
+
+    r1_key = "runs/unit/events/victim/r1.json"
+    r2_key = "runs/unit/events/victim/r2.json"
+    rp_key = "runs/unit/events/peer/rp.json"
+    listings = {
+        "runs/unit/events/victim/": [r1_key, r2_key],
+        "runs/unit/events/peer/": [rp_key],
+    }
+    driver.s3.get_paginator.return_value.paginate.side_effect = lambda *, Prefix, **_: [
+        {"Contents": [{"Key": key} for key in listings[Prefix]], "IsTruncated": False}
+    ]
+
+    def event(marker, request, execution, time_, sequence):
+        return {
+            "run": "unit",
+            "commit": "commit",
+            "marker": marker,
+            "request": request,
+            "execution": execution,
+            "phase": "WRAPPER_ENTER",
+            "time": time_,
+            "sequence": sequence,
+        }
+
+    records = {
+        r1_key: event("victim", "r1", "victim-exec-arn", 100, 1),
+        r2_key: event("victim", "r2", "victim-exec-arn", 200, 1),
+        rp_key: event("peer", "rp", "peer-exec-arn", 50, 1),
+    }
+    fail_r1 = [True]
+
+    def read(*, Key, **_):
+        if Key == r1_key and fail_r1[0]:
+            raise r1_failure
+        return {"Body": io.BytesIO(json.dumps(records[Key]).encode())}
+
+    driver.s3.get_object.side_effect = read
+    return context, victim_item, peer_item, fail_r1
+
+
+def _assert_peer_bound(context, peer_item):
+    # The complete peer read still binds the peer; only the incomplete victim is skipped.
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["peer"]["requestId"] == "rp"
+    assert peer_item["native_requests"] == ["rp"]
+
+
+def _assert_victim_untouched_and_deferred(context, victim_item, driver):
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["victim"].get("requestId") is None
+    assert victim_item["native_requests"] == []
+    assert driver.binding_deferred is True
+
+
+def _assert_victim_bound_and_not_deferred(context, victim_item, driver):
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["victim"]["requestId"] == "r1"
+    assert attempts["victim"]["executionArn"] == "victim-exec-arn"
+    assert attempts["victim:native:r2"]["requestId"] == "r2"
+    assert attempts["victim:native:r2"]["role"] == "victim"
+    assert victim_item["native_requests"] == ["r1", "r2"]
+    assert driver.binding_deferred is False
+
+
+def test_refresh_never_binds_a_cached_retry_as_the_original_for_a_marker_incomplete_earlier(driver):
+    # Regression for the reported defect: `refresh` used to bind over the
+    # whole event cache using only *this call's* failed markers, so a marker
+    # left incomplete by an earlier failed refresh (the victim here) could
+    # get a cached retry wrongly bound as its ordinal-0 request by a later,
+    # unrelated, fully successful refresh (the peer here).
+    r1_failure = ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+    context, victim_item, peer_item, fail_r1 = _victim_and_peer_setup(driver, r1_failure=r1_failure)
+
+    # 1. Victim refresh: r1's GET fails (retryable), r2 is read and cached.
+    with pytest.raises(module.TransientCollectionError):
+        driver.refresh(markers=["victim"])
+    assert driver.binding_deferred is True
+
+    # 2. Peer-only refresh succeeds and must not touch the victim's binding.
+    driver.refresh(markers=["peer"])
+
+    # 3. The peer is bound, and the victim stays unbound: its retry was never
+    # falsely bound as the original.
+    _assert_peer_bound(context, peer_item)
+    _assert_victim_untouched_and_deferred(context, victim_item, driver)
+
+    # 4. A later victim refresh where r1 now reads binds r1 as the original
+    # and r2 as the next request, with no chronology error, and clears the deferral.
+    fail_r1[0] = False
+    driver.refresh(markers=["victim"])
+    _assert_victim_bound_and_not_deferred(context, victim_item, driver)
+
+
+def test_refresh_never_binds_a_cached_retry_after_an_earlier_budget_expiry(driver):
+    # Same regression, but r1's read is cut short by the collector's own
+    # budget expiring rather than a retryable S3 error.
+    r1_failure = module.CollectionBudgetExpired("collection budget expired")
+    context, victim_item, peer_item, fail_r1 = _victim_and_peer_setup(driver, r1_failure=r1_failure)
+
+    with pytest.raises(module.CollectionBudgetExpired, match="collection budget expired"):
+        driver.refresh(markers=["victim"])
+    assert driver.binding_deferred is True
+
+    driver.refresh(markers=["peer"])
+    _assert_peer_bound(context, peer_item)
+    _assert_victim_untouched_and_deferred(context, victim_item, driver)
+
+    fail_r1[0] = False
+    driver.refresh(markers=["victim"])
+    _assert_victim_bound_and_not_deferred(context, victim_item, driver)
+
+
 def test_cutoff_stop_and_completion_race_use_deadline_transport(driver):
     target = driver.manifest["functions"][driver.configuration]
     launch = {"arn": target + "/durable-execution/victim/id", "role": "victim"}

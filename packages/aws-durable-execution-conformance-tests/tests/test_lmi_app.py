@@ -993,6 +993,107 @@ def test_shared_runner_reports_even_when_leftover_work_ignores_cancellation(tmp_
         assert (output / coverage / "report.xml").is_file()
 
 
+_BLOCKED_WORKER_RUNNER_CLI = """
+import sys
+import threading
+from pathlib import Path
+
+from aws_durable_execution_conformance_tests.lmi import app, runner
+from aws_durable_execution_conformance_tests.lmi.catalog import requirements
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
+
+never = threading.Event()
+
+
+def base_manifest():
+    return {
+        "schemaVersion": 1,
+        "runId": "run-1",
+        "runtime": "python",
+        "capabilityProfile": "lifecycle",
+        "profiles": [
+            {
+                "profile_id": f"native-{n}",
+                "resource_id": f"arn:function:{n}",
+                "capacity": n,
+                "native_concurrency": n,
+                "artifact_id": "sdk-commit",
+                "configuration_id": f"config-{n}",
+            }
+            for n in (1, 2)
+        ],
+        "scenarios": [
+            {
+                "case_id": definition["scenario"],
+                "requirement_id": req,
+                "profile_id": "native-2",
+                "scenario": definition["scenario"],
+                **(
+                    {"behavior_budgets": {name: 5 for name in definition["behaviorBudgets"]}}
+                    if definition.get("behaviorBudgets")
+                    else {}
+                ),
+            }
+            for req, definition in requirements("lifecycle").items()
+        ],
+    }
+
+
+def plan(_deployment, _coverage, output):
+    runtime = RuntimeDefinition(
+        "python",
+        "fixture.handler",
+        binding=FixtureBinding(fixtures={}, failure_error_type="ValueError", worker_identity="process"),
+    )
+    return {
+        **base_manifest(),
+        "sdk": {
+            "deployment": {**runtime.to_manifest(), "conformanceRevision": "commit-sha"},
+            "artifacts_dir": str(output / "source"),
+        },
+    }
+
+
+async def blocking_collection(manifest, **kwargs):
+    # Work this run started that never returns, holding a non-daemon thread.
+    threading.Thread(target=never.wait, name="blocked-worker").start()
+    return []
+
+
+app.collect_and_adjudicate = blocking_collection
+output_dir = Path(sys.argv[1])
+raise SystemExit(runner.run({}, output_dir, manifest_factory=plan))
+"""
+
+
+def test_shared_runner_cli_exits_even_when_a_worker_thread_stays_blocked(tmp_path):
+    """``raise SystemExit(runner.run(...))`` is the Python SDK's entry point.
+
+    Without a bounded exit, interpreter shutdown would join the blocked
+    worker thread forever after ``runner.run`` has already written its
+    reports.
+    """
+    from aws_durable_execution_conformance_tests.lmi import runner
+
+    output = tmp_path / "out"
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", _BLOCKED_WORKER_RUNNER_CLI, str(output)],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+        timeout=60,
+        check=False,
+    )
+    assert time.monotonic() - started < 30
+    assert completed.returncode == 1, completed.stderr
+    assert "exiting without waiting for still-running threads: blocked-worker" in completed.stderr, completed.stderr
+    assert "RESULTS:" in completed.stdout
+    for coverage in runner.COVERAGE_PROFILES:
+        assert json.loads((output / coverage / "report.json").read_text())["ci"]["exit_code"] == 1
+        assert (output / coverage / "report.xml").is_file()
+
+
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_shutdown_cancels_tasks_started_while_others_unwind(monkeypatch, capsys, stubborn):
     from aws_durable_execution_conformance_tests.lmi import app

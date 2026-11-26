@@ -978,3 +978,29 @@ def test_every_terminal_history_row_that_supplies_fields_is_compared() -> None:
     }
     findings = _cleanup_behavior_errors(original, snapshot, standard=True)
     assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in findings
+
+
+def _wait_completing_during_wrapper_teardown() -> dict[str, Any]:
+    """The SDK decides PENDING at 33ms, the WAIT completes at 37ms, and the wrapper returns at 40ms."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "invocation_end", 33, outcome="PENDING"))
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 37
+    return value
+
+
+def test_cleanup_reconcile_counts_a_repeated_pending_decision_once() -> None:
+    # Reconciliation concatenates every snapshot's events, so the frozen
+    # invocation_end appears once per snapshot; it is still one observation.
+    value = _wait_completing_during_wrapper_teardown()
+    assert evaluate_evidence(value, retirement_evidence=deepcopy(value), cleanup_evidence={}, standard=True) == []
+
+
+def test_cleanup_reconcile_falls_back_to_the_wrapper_return_for_conflicting_pending_decisions() -> None:
+    value = _wait_completing_during_wrapper_teardown()
+    snapshot = deepcopy(value)
+    victim = snapshot["attempts"][0]
+    snapshot["events"].append(event(victim, "invocation_end", 34, outcome="PENDING"))
+    findings = evaluate_evidence(value, retirement_evidence=snapshot, cleanup_evidence={}, standard=True)
+    assert "ASSERTION: cleanup resume does not follow the observed wait or callback completion" in findings

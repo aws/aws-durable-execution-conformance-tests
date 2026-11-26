@@ -125,6 +125,56 @@ def _valid_fingerprint(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
+    """Write retained JSON without rounding exact decimal payloads.
+
+    Shared with ``lmi.app``, which writes retained evidence files with it, and
+    with ``rules.common._same_execution_result``, which must hash an
+    expectation's exact numeric semantics even when it holds a ``Decimal`` that
+    ``json.dumps`` cannot serialize on its own.
+    """
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("JSON numbers must be finite")
+        return str(value)
+    if not isinstance(value, (dict, list, tuple)) or not value:
+        return json.dumps(value, allow_nan=False)
+    inner = "" if compact else "\n" + "  " * (depth + 1)
+    outer = "" if compact else "\n" + "  " * depth
+    if isinstance(value, dict):
+        keys: set[str] = set()
+        items = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                if key is not None and not isinstance(key, (bool, int, float)):
+                    raise ValueError("JSON object keys must be strings or scalar JSON values")
+                key = json.dumps(key, allow_nan=False)
+            if key in keys:
+                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
+            keys.add(key)
+            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
+        return "{" + inner + ("," + inner).join(items) + outer + "}"
+    return (
+        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
+    )
+
+
+def _same_binary64_rounding(decimal_value: Decimal, display: float) -> bool:
+    """A retained display may be the binary64 rounding of an exact Decimal expectation.
+
+    The display is a float, or an int when a reloaded capture read an integral
+    float display back as an integer.
+    """
+    try:
+        rounded = float(display)
+    except OverflowError:
+        return False
+    if not math.isfinite(rounded) or not decimal_value.is_finite():
+        return False
+    # Converting an out-of-range Decimal gives an infinity, never an exception.
+    return float(decimal_value) == rounded
+
+
 def _same_checkpoint_display(left: Any, right: Any) -> bool:
     """A lossless digest can reconcile numeric display rounding, not a type change."""
     if (type(left) is int and type(right) is float) or (type(left) is float and type(right) is int):
@@ -133,6 +183,10 @@ def _same_checkpoint_display(left: Any, right: Any) -> bool:
             return math.isfinite(rounded) and rounded == float(right)
         except OverflowError:
             return False
+    if type(left) in (int, float) and isinstance(right, Decimal):
+        return _same_binary64_rounding(right, left)
+    if isinstance(left, Decimal) and type(right) in (int, float):
+        return _same_binary64_rounding(left, right)
     if isinstance(left, list) and isinstance(right, list):
         return len(left) == len(right) and all(_same_checkpoint_display(a, b) for a, b in zip(left, right, strict=True))
     if isinstance(left, Mapping) and isinstance(right, Mapping):

@@ -2713,6 +2713,55 @@ def test_replay_requires_completion_between_suspension_and_resume(field: str, re
     assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
 
 
+@pytest.mark.parametrize("ended", [37, 39])
+def test_replay_suspension_checkpoint_follows_the_sdk_pending_decision(ended: int) -> None:
+    """A wait/callback that completes between the SDK's own PENDING decision
+    (an ``invocation_end`` observation at 33ms) and the wrapper return (40ms)
+    still establishes an observed suspension, even though it completes before
+    the wrapper return itself."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "invocation_end", 33, outcome="PENDING"))
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = ended
+    assert validate_evidence(value) == []
+
+
+def test_replay_suspension_checkpoint_still_rejects_completion_before_the_pending_decision() -> None:
+    """A completion before the SDK's own PENDING decision is still incomplete
+    evidence, even though a decision earlier than the wrapper return is now
+    accepted."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "invocation_end", 33, outcome="PENDING"))
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 20
+    assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
+
+
+def test_replay_suspension_checkpoint_falls_back_for_two_distinct_pending_observations() -> None:
+    """Two separate invocation_end rows (distinct source sequences) are not one
+    decision even when their values match: the wrapper return stays the bound."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"] += [
+        event(victim, "invocation_end", 33, outcome="PENDING", sourceSequence=1),
+        event(victim, "invocation_end", 33, outcome="PENDING", sourceSequence=2),
+    ]
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 37
+    assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
+
+
+def test_replay_suspension_checkpoint_without_invocation_end_still_uses_the_wrapper_return() -> None:
+    """With no SDK PENDING observation at all, the wrapper return (40ms) is
+    still the fallback decision: a completion before it remains rejected."""
+    value = replay_evidence()
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 37
+    assert any("needs an observed wait or callback checkpoint" in error for error in validate_evidence(value))
+
+
 def test_replay_requires_positive_evidence_of_original_completed_step_bodies() -> None:
     value = replay_evidence()
     del value["replay"]["operationExecutions"][0]

@@ -11,8 +11,19 @@ from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
+from aws_durable_execution_conformance_tests.lmi import artifacts as artifacts_module
 from aws_durable_execution_conformance_tests.lmi import runner as shared
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
+
+
+@pytest.fixture(autouse=True)
+def _stable_boot_identity(monkeypatch):
+    """Pin owner_lock's boot identity so these tests do not depend on the real host.
+
+    Individual tests that exercise an unavailable identity still override
+    this with their own, more specific monkeypatch.
+    """
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: "test-host-boot-id")
 
 
 def test_no_recorded_cases_skip_aws_cleanup(monkeypatch, tmp_path):
@@ -384,6 +395,100 @@ def test_run_persists_relative_binding_source_as_absolute(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     plan = json.loads((output / "standard/manifest.json").read_text())
     assert shared.sdk_artifact_directory(output / "standard", plan) == binding_source
+
+
+def _profile_recovery_fixture(tmp_path, record):
+    """Build the custom-root layout test_offline_profile_recovery_* needs, then write `record`."""
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {
+        "run": "run",
+        "commit": "commit",
+        "bucket": "private",
+        "region": "us-west-2",
+        "functions": {"c1": target},
+    }
+    coverage = tmp_path / "standard"
+    source = tmp_path / "custom-profile-source"
+    journals = source / "configuration"
+    journals.mkdir(parents=True)
+    coverage.mkdir()
+    (coverage / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "sdk": {"artifacts_dir": str(source)},
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [],
+            }
+        )
+    )
+    journal = journals / f"{shared.case_key(target)}-fence.json"
+    with shared.owner_lock(journal) as owner:
+        journal.write_text(json.dumps({**record, "owner": {**owner, **record.get("owner", {})}}))
+    storage = Mock()
+    storage.get_object.side_effect = lambda **_: {
+        "Body": io.BytesIO(json.dumps({**record, "runId": "run"}).encode()),
+        "ETag": '"own"',
+    }
+    return deployment, journal, storage
+
+
+@pytest.mark.parametrize("state", ["NOT_ADMITTED", "RETIRED"])
+def test_offline_profile_recovery_recovers_without_boot_identity_when_not_acquiring(tmp_path, monkeypatch, state):
+    """A NOT_ADMITTED/RETIRED fence journal needs only the flock, not an owner proof."""
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    record = {
+        "resourceId": target,
+        "token": "owned",
+        "run": "run",
+        "commit": "commit",
+        "singleAttempt": False,
+        "state": state,
+    }
+    deployment, journal, storage = _profile_recovery_fixture(tmp_path, record)
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda *_: storage) == 0
+    assert not journal.exists()
+    storage.delete_object.assert_called_once()
+
+
+def test_offline_profile_recovery_refuses_acquiring_without_boot_identity(tmp_path, monkeypatch):
+    """An ACQUIRING fence journal is still uncertain: it needs same_owner_lock's falsy check."""
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    record = {
+        "resourceId": target,
+        "token": "owned",
+        "run": "run",
+        "commit": "commit",
+        "singleAttempt": True,
+        "state": "ACQUIRING",
+    }
+    deployment, journal, storage = _profile_recovery_fixture(tmp_path, record)
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda *_: storage) == 1
+    assert journal.exists()
+    storage.delete_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "differing_field,replacement",
+    [("bootId", "a-different-hosts-boot-id"), ("inode", 999999999)],
+)
+def test_offline_profile_recovery_refuses_a_foreign_owner(tmp_path, differing_field, replacement):
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    record = {
+        "resourceId": target,
+        "token": "owned",
+        "run": "run",
+        "commit": "commit",
+        "singleAttempt": True,
+        "state": "ACQUIRING",
+        "owner": {differing_field: replacement},
+    }
+    deployment, journal, storage = _profile_recovery_fixture(tmp_path, record)
+    assert shared.cleanup(deployment, tmp_path, client_factory=lambda *_: storage) == 1
+    assert journal.exists()
+    storage.delete_object.assert_not_called()
 
 
 def test_cleanup_uses_relocated_direct_cli_manifest(tmp_path):
