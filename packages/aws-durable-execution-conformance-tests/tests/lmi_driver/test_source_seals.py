@@ -8,7 +8,11 @@ from typing import Any, cast
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import (
+    validate_common_evidence,
+    validate_evidence,
+    validate_retirement_evidence,
+)
 from aws_durable_execution_conformance_tests.lmi.observations import (
     UNDISPATCHED_ERROR_TYPES,
     is_undispatched_rejection,
@@ -555,6 +559,85 @@ def test_late_publication_and_late_activity_use_occurrence_time(tmp_path):
     final = build_evidence(ctx, cloud, phase="final")
     assert final["collectionErrors"] == []
     assert [row["callId"] for row in final["sdkRequests"]] == ["late"]
+
+
+def _reorder_capture(cloud, kinds):
+    """Reassign same-timestamp ledger captures to ``kinds`` order.
+
+    Keeps the existing capture-sequence *values* of these events (just a
+    different permutation among themselves), so the ledger seal's capture set
+    stays exactly ``1..high`` and ``ledger_seal_status`` still certifies it.
+    """
+    observations = {}
+    for record in cloud.events.values():
+        observation = record.get("observation")
+        if isinstance(observation, dict) and observation.get("kind") in kinds:
+            observations[observation["kind"]] = observation
+    values = sorted(observations[kind]["captureSequence"] for kind in kinds)
+    for kind, value in zip(kinds, values, strict=True):
+        observations[kind]["captureSequence"] = value
+
+
+def test_tied_dispatch_before_wrapper_return_keeps_its_sequence_and_is_not_late(tmp_path):
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "checkpoint_call", "callId": "tied", "atMs": 400},
+        {"kind": "checkpoint_exit", "callId": "tied", "atMs": 400},
+    )
+    _reorder_capture(cloud, ["checkpoint_call", "wrapper_return"])
+    evidence = build_evidence(ctx, cloud)
+    assert evidence["collectionErrors"] == []
+    (request,) = evidence["sdkRequests"]
+    wrapper_return = next(event for event in evidence["events"] if event["kind"] == "wrapper_return")
+    # The fix: the normalizer must keep the per-request `sequence` `_causal_order`
+    # assigned on the sdkRequest row, not strip it. Without it, `no_late_dispatch`
+    # falls back to an inclusive same-millisecond comparison and misreports this
+    # strictly-earlier dispatch as late.
+    assert request["atMs"] == wrapper_return["atMs"] == 400
+    assert request["sequence"] < wrapper_return["sequence"]
+    errors = validate_common_evidence(evidence, phase="observations")
+    assert not any("dispatched SDK work after admission closed" in error for error in errors), errors
+
+
+def test_tied_dispatch_before_admission_closed_keeps_its_sequence_and_is_not_late(tmp_path):
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "admission_closed", "atMs": 400},
+        {"kind": "checkpoint_call", "callId": "tied", "atMs": 400},
+        {"kind": "checkpoint_exit", "callId": "tied", "atMs": 400},
+    )
+    # Order the dispatch before both same-millisecond closures: the admission
+    # probe under test, and the wrapper's own exit.
+    _reorder_capture(cloud, ["checkpoint_call", "admission_closed", "wrapper_return"])
+    evidence = build_evidence(ctx, cloud)
+    assert evidence["collectionErrors"] == []
+    (request,) = evidence["sdkRequests"]
+    admission_closed = next(event for event in evidence["events"] if event["kind"] == "admission_closed")
+    assert request["atMs"] == admission_closed["atMs"] == 400
+    assert request["sequence"] < admission_closed["sequence"]
+    errors = validate_common_evidence(evidence, phase="observations")
+    assert not any("dispatched SDK work after admission closed" in error for error in errors), errors
+
+
+def test_tied_dispatch_after_wrapper_return_is_still_a_late_dispatch_assertion(tmp_path):
+    # Unlike the two tests above, the dispatch here is captured after the
+    # wrapper's own exit at the same millisecond: a genuinely late dispatch
+    # that the fix must still flag once real sequence numbers are compared.
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "checkpoint_call", "callId": "late", "atMs": 400},
+        {"kind": "checkpoint_exit", "callId": "late", "atMs": 400},
+    )
+    evidence = build_evidence(ctx, cloud)
+    assert evidence["collectionErrors"] == []
+    (request,) = evidence["sdkRequests"]
+    wrapper_return = next(event for event in evidence["events"] if event["kind"] == "wrapper_return")
+    assert request["atMs"] == wrapper_return["atMs"] == 400
+    assert request["sequence"] > wrapper_return["sequence"]
+    errors = validate_common_evidence(evidence, phase="observations")
+    assert any(
+        error.startswith("ASSERTION:") and "dispatched SDK work after admission closed" in error for error in errors
+    ), errors
 
 
 def test_verified_launch_inventory_survives_missing_lifecycle_attempt(tmp_path):
