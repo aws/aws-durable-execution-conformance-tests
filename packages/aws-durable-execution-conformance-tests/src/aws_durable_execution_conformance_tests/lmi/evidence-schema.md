@@ -242,8 +242,8 @@ in the final history, but an entry without an ID cannot establish skipped work.
 The operation identified by `replay.retry.operationId` must be `SUCCEEDED` in
 `replay.after` and the matching final history, with its stored `result` key.
 Explicit JSON null is a valid result; an absent result is incomplete evidence.
-Unrelated pending operations need no stored result. The validator compares each
-array entry's ID with the retry object's ID.
+Unrelated pending operations need no stored result. The validator locates that
+operation by matching `replay.after[].id` to `replay.retry.operationId`.
 Invocation intervals can be provisional, and owned activity may outlive them;
 their endpoints alone do not establish retry user-code entry order.
 

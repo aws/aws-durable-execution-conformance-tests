@@ -1407,11 +1407,13 @@ def test_misattributed_service_history_is_not_a_successful_output() -> None:
     assert any("fixture expectation" in error for error in validate_evidence(value))
 
 
-@pytest.mark.parametrize("missing", ["retry", "operationExecutions", "sideEffects"])
+@pytest.mark.parametrize("missing", ["before", "after", "retry", "operationExecutions", "sideEffects"])
 def test_replay_cannot_omit_retry_or_execution_observations(missing: str) -> None:
     value = replay_evidence()
     del value["replay"][missing]
-    assert validate_evidence(value)
+    errors = validate_evidence(value)
+    expected = "replay.retry must be an object" if missing == "retry" else f"replay.{missing} must be an array"
+    assert any(expected in error for error in errors), errors
 
 
 @pytest.mark.parametrize(

@@ -311,7 +311,9 @@ def ordinary_evidence_with_optional_fields(evidence_factories, factory):
         (("replay", "before", 0, "id"), ABSENT),
         (("replay", "before", 0, "name"), False),
         (("replay", "before", 0, "type"), 1),
+        (("replay", "before", 0, "type"), ABSENT),
         (("replay", "before", 0, "status"), None),
+        (("replay", "before", 0, "status"), ABSENT),
         (("replay", "before", 0, "parentId"), False),
         (("replay", "before", 0, "result"), ABSENT),
         (("replay", "before", 1, "error"), ABSENT),
@@ -327,17 +329,22 @@ def ordinary_evidence_with_optional_fields(evidence_factories, factory):
         (("replay", "retry"), None),
         (("replay", "retry"), {}),
         (("replay", "retry", "operationId"), None),
+        (("replay", "retry", "operationId"), ABSENT),
         (("replay", "retry", "attempts"), None),
+        (("replay", "retry", "attempts"), ABSENT),
         (("replay", "retry", "attempts"), []),
         (("replay", "retry", "attempts"), [{"attemptId": "one", "requestId": "request-victim", "outcome": "FAILED"}]),
         (("replay", "retry", "attempts", 0, "attemptId"), ABSENT),
         (("replay", "retry", "attempts", 0, "requestId"), 1),
+        (("replay", "retry", "attempts", 0, "requestId"), ABSENT),
         (("replay", "retry", "attempts", 0, "outcome"), False),
         (("replay", "sideEffects"), None),
         (("replay", "sideEffects"), []),
         (("replay", "sideEffects", 0, "operationId"), ABSENT),
         (("replay", "sideEffects", 0, "count"), True),
+        (("replay", "sideEffects", 0, "count"), ABSENT),
         (("replay", "sideEffects", 0, "expectedCount"), -1),
+        (("replay", "sideEffects", 0, "expectedCount"), ABSENT),
     ],
 )
 def test_supplied_optional_wire_fields_have_their_declared_structure_in_other_scenarios(
@@ -386,6 +393,26 @@ def test_optional_wire_fields_do_not_activate_other_scenarios_or_restrict_extens
     value["adapter"] = [None, False]
 
     assert validate_evidence(value, phase=phase) == []
+    assert validate_common_evidence(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("invalid", [True, [" "]])
+def test_replay_projection_errors_are_nonempty_strings(evidence_factories, phase, invalid):
+    value = ordinary_evidence_with_optional_fields(evidence_factories, "evidence")
+    value["replay"]["projectionErrors"] = ["chronology unavailable"]
+    assert validate_common_evidence(value, phase=phase) == []
+    value["replay"]["projectionErrors"] = invalid
+    assert "INCOMPLETE: replay.projectionErrors must be an array of nonempty strings" in validate_common_evidence(
+        value, phase=phase
+    )
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_zero_is_a_structurally_valid_budget(evidence_factories, phase):
+    value = evidence_factories["recovery_evidence"]()
+    value["budgets"].update(admissionMs=0, cleanupMs=0, observationGraceMs=0, recoveryMs=0)
+    # Whether observed timings meet a zero budget is a scenario check, not a structural one.
     assert validate_common_evidence(value, phase=phase) == []
 
 
