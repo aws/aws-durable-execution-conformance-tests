@@ -1884,7 +1884,11 @@ def build_evidence(
                 errors.append(f"SDK request {event.get('callId')} has an invalid outcome")
             evidence["sdkRequests"].append(
                 {
-                    **{key: value for key, value in event.items() if key != "sequence"},
+                    # Keep every event field, including the per-request
+                    # `sequence` `_causal_order` assigned: `no_late_dispatch`
+                    # needs it to order a same-millisecond dispatch against
+                    # `wrapper_return`/`admission_closed`.
+                    **event,
                     "method": "CheckpointDurableExecution"
                     if event["kind"] == "checkpoint_call"
                     else "GetDurableExecutionState",

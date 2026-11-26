@@ -1111,3 +1111,21 @@ def test_active_retry_stays_incomplete_when_independent_retirement_disagrees(mut
     assert f"INCOMPLETE: {finding}" in audit_cutoff(frozen, snapshot)
     findings = evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True)
     assert f"INCOMPLETE: {finding}" in findings, findings
+
+
+def test_active_retry_tolerates_a_renumbered_pre_cutoff_sdk_request_sequence() -> None:
+    """A retirement snapshot may renumber the active retry's SDK request `sequence` without reordering it.
+
+    The cumulative-snapshot rule permits renumbering sequences across a later
+    snapshot as long as relative order is preserved; it does not pin a
+    specific integer. `sequence` must stay metadata for the pre-cutoff
+    SDK-request comparison here, the same way it already is for events,
+    instead of being compared as an ordinary field.
+    """
+    frozen, snapshot = _active_retry_capture()
+    frozen_request = next(row for row in frozen["sdkRequests"] if row.get("callId") == "retry-call")
+    snapshot_request = next(row for row in snapshot["sdkRequests"] if row.get("callId") == "retry-call")
+    frozen_request["sequence"] = 0
+    snapshot_request["sequence"] = 5
+    assert audit_cutoff(frozen, snapshot) == []
+    assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == []

@@ -3750,6 +3750,189 @@ def test_malformed_deferred_requests_keep_the_target_fenced(deferred: Any) -> No
     assert adapter.finished == [False]
 
 
+def test_in_place_retirement_must_cover_the_frozen_deferred_inventory() -> None:
+    """A deferred request the independent snapshot cannot account for keeps the fence.
+
+    Unlike ``test_in_place_retirement_must_audit_service_only_deferred_request``,
+    the independent snapshot here is otherwise complete: ``retire()`` keeps the
+    plain, unmodified final snapshot. It settles the original victim request but
+    says nothing about the separately deferred one, so the fix must still
+    refuse to release the lease.
+    """
+
+    class OmittedDeferralAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                observed["collection"]["deferredServiceRequests"] = [
+                    {
+                        "requestId": "unsettled-deferral",
+                        "executionArn": observed["attempts"][0]["executionArn"],
+                    }
+                ]
+            return observed
+
+    adapter = OmittedDeferralAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any("does not cover deferred service request(s): unsettled-deferral" in error for error in first.errors), (
+        first.errors
+    )
+    assert adapter.finished == [False]
+
+
+def test_in_place_retirement_accepts_a_deferred_request_settled_as_an_attempt() -> None:
+    """The coverage check must not fence a deferral the snapshot settles as its own attempt.
+
+    The lease still releases and the next case reuses the target. Adjudication's
+    separate cutoff audit (``audit_cutoff``) still reports the case, because the
+    matched attempt is the original, on-time request rather than a retry that
+    started after the cutoff; that finding is expected.
+    """
+
+    class SelfSettledDeferralAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                observed["collection"]["deferredServiceRequests"] = [
+                    {
+                        "requestId": observed["attempts"][0]["requestId"],
+                        "executionArn": observed["attempts"][0]["executionArn"],
+                    }
+                ]
+            return observed
+
+    adapter = SelfSettledDeferralAdapter(phase="assertion")
+    (first, next_case), scheduler = _run(adapter)
+    assert not any("does not cover deferred service request" in error for error in first.errors), first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    assert adapter.finished == [True]
+    assert next_case.status == "PASSED", next_case.errors
+
+
+def test_in_place_retirement_accepts_a_deferred_request_proven_undispatched() -> None:
+    """A deferred request the retirement snapshot proves UNDISPATCHED releases normally.
+
+    ``deferred_retirement_errors`` would reject this at the coordinator too: it
+    requires every deferral to reach an actual terminal attempt. The fix must
+    not call it here. Adjudication's own cutoff audit still calls it, and this
+    case still ends up adjudicated incomplete (see the assertions below); it
+    relies on that separate, unrelated rejection staying in place. This test
+    only covers the coordinator's own decision: whether the target is safe to
+    reuse, which this UNDISPATCHED proof is enough to establish.
+    """
+
+    class UndispatchedDeferralAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                observed["collection"]["deferredServiceRequests"] = [
+                    {
+                        "requestId": "rejected-request",
+                        "executionArn": observed["attempts"][0]["executionArn"],
+                    }
+                ]
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                arn = self.snapshots["failed"]["attempts"][0]["executionArn"]
+                final = context.retirement_evidence
+                # The UNDISPATCHED proof's id must be the deferred request's own
+                # id: the proof is scoped to one request, not to the execution.
+                final["resourcesCreated"].append(
+                    {"id": "rejected-request", "kind": "invocation", "ownerCaseId": "failed"}
+                )
+                final["retirement"]["resources"].append(
+                    {
+                        "id": "rejected-request",
+                        "kind": "invocation",
+                        "ownerCaseId": "failed",
+                        "executionArn": arn,
+                        "outcome": "UNDISPATCHED",
+                        "serviceErrorType": "TooManyRequestsException",
+                        "sourceEventId": 999,
+                        "startedAtMs": 20100,
+                        "settledAtMs": 20200,
+                        "evidenceUri": "memory://retained-raw-evidence",
+                    }
+                )
+            return True
+
+    adapter = UndispatchedDeferralAdapter(phase="assertion")
+    (first, next_case), scheduler = _run(adapter)
+    assert not any("does not cover deferred service request" in error for error in first.errors), first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    assert adapter.finished == [True]
+    assert first.status != "PASSED", first.errors
+    assert "INCOMPLETE: Retirement omitted deferred service request rejected-request" in first.errors, first.errors
+    assert next_case.status == "PASSED", next_case.errors
+
+
+def test_in_place_retirement_rejects_an_undispatched_proof_for_a_different_request() -> None:
+    """An UNDISPATCHED proof on one request does not cover a deferral of a different request on the same execution.
+
+    The proof is scoped to the request it names (``undispatched_settlements``
+    keys it by ``id``; the collector settles by native request ID), not to the
+    whole execution. A retirement snapshot that omits the actually-deferred
+    request keeps the fence even when it proves some other request on the same
+    ``executionArn`` UNDISPATCHED.
+    """
+
+    class MismatchedUndispatchedAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                observed["collection"]["deferredServiceRequests"] = [
+                    {
+                        "requestId": "unsettled-deferral",
+                        "executionArn": observed["attempts"][0]["executionArn"],
+                    }
+                ]
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                arn = self.snapshots["failed"]["attempts"][0]["executionArn"]
+                final = context.retirement_evidence
+                # A proof for a *different* request on the same execution; it
+                # must not be read as covering "unsettled-deferral".
+                final["resourcesCreated"].append(
+                    {"id": "some-other-request", "kind": "invocation", "ownerCaseId": "failed"}
+                )
+                final["retirement"]["resources"].append(
+                    {
+                        "id": "some-other-request",
+                        "kind": "invocation",
+                        "ownerCaseId": "failed",
+                        "executionArn": arn,
+                        "outcome": "UNDISPATCHED",
+                        "serviceErrorType": "TooManyRequestsException",
+                        "sourceEventId": 999,
+                        "startedAtMs": 20100,
+                        "settledAtMs": 20200,
+                        "evidenceUri": "memory://retained-raw-evidence",
+                    }
+                )
+            return True
+
+    adapter = MismatchedUndispatchedAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any("does not cover deferred service request(s): unsettled-deferral" in error for error in first.errors), (
+        first.errors
+    )
+    assert adapter.finished == [False]
+
+
 def test_unreleased_case_lease_keeps_the_target_fenced(monkeypatch: pytest.MonkeyPatch) -> None:
     import aws_durable_execution_conformance_tests.lmi.coordinator as coordinator
 
