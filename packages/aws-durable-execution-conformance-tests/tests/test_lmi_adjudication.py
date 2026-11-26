@@ -17,6 +17,7 @@ from aws_durable_execution_conformance_tests.lmi.adjudication import (
     evaluate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.replay import replay_checkpoint_timing
 
 _fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
 complete_retirement_events = _fixtures["complete_retirement_events"]
@@ -679,6 +680,66 @@ def test_cleanup_rejects_completed_replay_bodies_after_observed_pending() -> Non
     assert any("reports repeated completed user code for failed" in error for error in findings)
 
 
+@pytest.mark.parametrize("source", ["retirement", "cleanup"])
+@pytest.mark.parametrize("view", ["before", "after"])
+@pytest.mark.parametrize("operation_id", [["done"], {"id": "done"}, 7])
+def test_cleanup_replay_non_string_checkpoint_id_keeps_behavior_findings(
+    source: str, view: str, operation_id: Any
+) -> None:
+    """A non-string checkpoint ID is reported and does not hide the other cleanup findings."""
+    value = standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    snapshot["replay"]["operationExecutions"].append({"requestId": "request-resume", "operationId": "done"})
+    snapshot["replay"][view][0]["id"] = operation_id
+    assert validate_retirement_evidence(snapshot) == []
+    findings = evaluate_evidence(
+        value,
+        retirement_evidence=snapshot if source == "retirement" else deepcopy(value),
+        cleanup_evidence={"release": [snapshot]} if source == "cleanup" else {},
+        standard=True,
+    )
+    assert f"ASSERTION: cleanup replay.{view} checkpoint lacks an operation ID" in findings
+    assert "ASSERTION: cleanup evidence reports repeated completed user code for done" in findings
+    assert "INCOMPLETE: malformed captured evidence" not in findings
+
+
+@pytest.mark.parametrize("source", ["retirement", "cleanup"])
+@pytest.mark.parametrize("operation_id", [7, ["x"], {"id": "x"}, "", " "])
+def test_cleanup_history_checkpoint_without_usable_id_is_reported(source: str, operation_id: Any) -> None:
+    """A completed history operation without a usable ID cannot pass unreported."""
+    value = standard_retirement_snapshot("replay_evidence")
+    snapshot = deepcopy(value)
+    history = next(row for row in snapshot["histories"] if row["executionArn"] == "arn:execution:victim")
+    history["operations"].append(
+        {
+            "id": operation_id,
+            "type": "STEP",
+            "status": "SUCCEEDED",
+            "name": None,
+            "parentId": None,
+            "startedAtMs": 25,
+            "endedAtMs": 30,
+        }
+    )
+    findings = evaluate_evidence(
+        value,
+        retirement_evidence=snapshot if source == "retirement" else deepcopy(value),
+        cleanup_evidence={"release": [snapshot]} if source == "cleanup" else {},
+        standard=True,
+    )
+    assert "INCOMPLETE: cleanup history checkpoint lacks an operation ID" in findings
+    assert "INCOMPLETE: malformed captured evidence" not in findings
+
+
+@pytest.mark.parametrize("operation_id", [["x"], {"id": "x"}, 7])
+def test_replay_checkpoint_timing_skips_non_string_ids_only_for_omission(operation_id: Any) -> None:
+    """A non-string ID is never an omitted checkpoint, but its end time still counts as late."""
+    before = [{"id": operation_id, "type": "STEP", "status": "SUCCEEDED", "endedAtMs": 40}]
+    after = [{"id": operation_id, "status": "SUCCEEDED", "endedAtMs": 20}]
+    assert replay_checkpoint_timing(before, after, 35) == (False, True)
+    assert replay_checkpoint_timing([], [{**after[0], "id": "x"}], 35) == (True, False)
+
+
 def test_cleanup_recovery_rechecks_declared_observation_grace() -> None:
     value = standard_retirement_snapshot("recovery_evidence")
     value["observationEndedAtMs"] = 100
@@ -917,3 +978,29 @@ def test_every_terminal_history_row_that_supplies_fields_is_compared() -> None:
     }
     findings = _cleanup_behavior_errors(original, snapshot, standard=True)
     assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in findings
+
+
+def _wait_completing_during_wrapper_teardown() -> dict[str, Any]:
+    """The SDK decides PENDING at 33ms, the WAIT completes at 37ms, and the wrapper returns at 40ms."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "invocation_end", 33, outcome="PENDING"))
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 37
+    return value
+
+
+def test_cleanup_reconcile_counts_a_repeated_pending_decision_once() -> None:
+    # Reconciliation concatenates every snapshot's events, so the frozen
+    # invocation_end appears once per snapshot; it is still one observation.
+    value = _wait_completing_during_wrapper_teardown()
+    assert evaluate_evidence(value, retirement_evidence=deepcopy(value), cleanup_evidence={}, standard=True) == []
+
+
+def test_cleanup_reconcile_falls_back_to_the_wrapper_return_for_conflicting_pending_decisions() -> None:
+    value = _wait_completing_during_wrapper_teardown()
+    snapshot = deepcopy(value)
+    victim = snapshot["attempts"][0]
+    snapshot["events"].append(event(victim, "invocation_end", 34, outcome="PENDING"))
+    findings = evaluate_evidence(value, retirement_evidence=snapshot, cleanup_evidence={}, standard=True)
+    assert "ASSERTION: cleanup resume does not follow the observed wait or callback completion" in findings

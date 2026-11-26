@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 import hashlib
 import io
 import json
@@ -11,6 +14,7 @@ from botocore.exceptions import ClientError
 from botocore.stub import ANY, Stubber
 
 from aws_durable_execution_conformance_tests.lmi import cloud as module
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioContext
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
 from aws_durable_execution_conformance_tests.lmi.summary import summarize
 
@@ -585,6 +589,33 @@ def test_cancelled_prepared_invocation_is_not_treated_as_dispatched(driver, monk
     assert driver.run_invocations() == ([], [])
 
 
+def test_journal_write_failure_withdraws_the_undispatched_attempt_before_invoke(driver, monkeypatch):
+    # record_attempt succeeds, but the subsequent SUBMITTED journal write
+    # fails: the attempt never reached the lambda client, so the coordinator
+    # journal must not retain a phantom attempt that blocks retirement.
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap")
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    context = ScenarioContext("run", scenario, profile)
+    driver.case_context = context
+
+    original_save = driver._save
+
+    def save(relative, data, **kwargs):
+        if relative.startswith("invocations/") and isinstance(data, dict) and data.get("dispatchState") == "SUBMITTED":
+            raise OSError("journal disk full")
+        return original_save(relative, data, **kwargs)
+
+    monkeypatch.setattr(driver, "_save", save)
+    driver.lam.invoke = Mock()
+    with pytest.raises(CollectionError, match="invocation API failed") as excinfo:
+        driver.start("success", role="victim")
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert str(excinfo.value.__cause__) == "journal disk full"
+    driver.lam.invoke.assert_not_called()
+    assert driver.invocations == []
+    assert context.attempts == []
+
+
 @pytest.mark.parametrize("malformed", [False, True])
 def test_conflicting_recovered_arns_do_not_block_an_independently_owned_launch(driver, malformed):
     driver.case_context = Mock()
@@ -670,9 +701,11 @@ def test_full_collection_captures_acknowledged_execution_without_ledger(driver, 
         "TooManyRequestsException",
         "DurableExecutionAlreadyStartedException",
         "ExpiredTokenException",
+        "ServiceException",
     ],
 )
 def test_invoke_rejection_only_clears_intent_without_retries(driver, retries, code, tmp_path):
+    rejected = code != "ServiceException" and retries == 0
     driver.lam.invoke = Mock(
         side_effect=ClientError(
             {
@@ -692,8 +725,8 @@ def test_invoke_rejection_only_clears_intent_without_retries(driver, retries, co
         assert driver.run_invocations()[0] == []
         driver.lam.list_durable_executions_by_function.assert_not_called()
     else:
-        assert state == ("REJECTED" if retries == 0 else "SUBMITTED")
-    assert bool(driver.invocations) is (retries != 0)
+        assert state == ("REJECTED" if rejected else "SUBMITTED")
+    assert bool(driver.invocations) is not rejected
 
 
 def test_settlement_retries_visibility_independently_of_peer(driver):
@@ -1081,6 +1114,42 @@ def test_in_flight_read_after_collection_deadline_still_requires_outer_reconcili
     asyncio.run(exercise())
 
 
+def test_bounded_sets_collection_deadline_only_for_collection_phases():
+    import asyncio
+    import time
+
+    from aws_durable_execution_conformance_tests.lmi.coordinator import PhaseTimeout, _bounded
+
+    from .test_shared_partial_evidence import context
+
+    async def exercise():
+        budget = 0.3
+        for phase in ("collection", "partialCollection", "lease"):
+            ctx = context()
+            captured: dict[str, Any] = {}
+
+            async def op(ctx=ctx, captured=captured):
+                captured["deadline"] = ctx._collection_deadline
+
+            started = time.monotonic()
+            residual: list[asyncio.Task[Any]] = []
+            await _bounded(op(), phase, budget, ctx, residual)
+            if phase in {"collection", "partialCollection"}:
+                assert captured["deadline"] is not None
+                assert started < captured["deadline"] < started + budget
+            else:
+                assert captured["deadline"] is None
+            assert ctx._collection_deadline is None
+
+        ctx = context()
+        residual = []
+        with pytest.raises(PhaseTimeout):
+            await _bounded(asyncio.sleep(10), "collection", 0.05, ctx, residual)
+        assert ctx._collection_deadline is None
+
+    asyncio.run(exercise())
+
+
 def test_full_collection_refuses_foreign_service_input_despite_current_ledger(driver):
     target = driver.manifest["functions"]["c1"]
     arn = target + "/durable-execution/old/id"
@@ -1162,6 +1231,337 @@ def test_s3_refresh_retains_completed_batch_and_preserves_budget_expiry(driver):
         driver.refresh(markers=[])
     assert driver.s3.get_object.call_count == 8
     assert len(json.loads((driver.artifacts_dir / "events.json").read_text())) == 8
+    # Binding was skipped (not just failed): a partial read must not bind a
+    # retry as the original. The deferral stays visible until a complete refresh.
+    assert driver.binding_deferred is True
+
+    # A later complete refresh reads the remaining batch, binds normally and
+    # clears the deferral.
+    driver._read_transport = Mock(return_value=driver.s3)
+    driver.refresh(markers=[])
+    assert driver.binding_deferred is False
+
+
+def test_s3_refresh_budget_expiry_marks_every_marker_with_unread_keys_incomplete(driver):
+    # One marker fails a read in the first batch, and the budget expires
+    # before the second batch, which holds the rest of the other marker's
+    # keys. Binding must skip both markers, not bind "two" from a partial read.
+    listings = {
+        "runs/unit/events/one/": [f"runs/unit/events/one/{i}.json" for i in range(6)],
+        "runs/unit/events/two/": [f"runs/unit/events/two/{i}.json" for i in range(4)],
+    }
+    driver.s3.get_paginator.return_value.paginate.side_effect = lambda *, Prefix, **_: [
+        {"Contents": [{"Key": key} for key in listings[Prefix]], "IsTruncated": False}
+    ]
+
+    def read(*, Key, **_):
+        if Key == "runs/unit/events/one/3.json":
+            raise ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+        marker, name = Key.split("/")[-2:]
+        record = {
+            "run": "unit",
+            "commit": "commit",
+            "marker": marker,
+            "request": f"{marker}-request",
+            "phase": "WRAPPER_ENTER",
+            "time": 1,
+            "sequence": int(name.split(".")[0]),
+        }
+        return {"Body": io.BytesIO(json.dumps(record).encode())}
+
+    driver.s3.get_object.side_effect = read
+    driver._read_transport = Mock(
+        side_effect=[driver.s3, driver.s3, driver.s3, module.CollectionBudgetExpired("remaining collection margin")]
+    )
+    incomplete = []
+    driver._bind_requests = Mock(side_effect=lambda events, markers=None: incomplete.append(markers))
+    with pytest.raises(CollectionError):
+        driver.refresh(markers=["one", "two"])
+    assert driver.s3.get_object.call_count == 8
+    assert incomplete == [{"one", "two"}]
+    assert driver.binding_deferred is True
+
+
+def _single_key_wrapper_enter(driver, *, marker="one", request="req-0", execution="execution-arn"):
+    """Arrange one listable, readable S3 key, under the owned marker's own
+    prefix, holding a single WRAPPER_ENTER record."""
+    key = f"runs/unit/events/{marker}/0.json"
+    driver.s3.get_paginator.return_value.paginate.return_value = [
+        {"Contents": [{"Key": key}], "IsTruncated": False},
+    ]
+    driver.s3.get_object.side_effect = lambda *, Key, **_: {
+        "Body": io.BytesIO(
+            json.dumps(
+                {
+                    "run": "unit",
+                    "commit": "commit",
+                    "marker": marker,
+                    "request": request,
+                    "execution": execution,
+                    "phase": "WRAPPER_ENTER",
+                    "time": 1,
+                    "sequence": 1,
+                }
+            ).encode()
+        )
+    }
+
+
+def test_binding_deferred_stays_set_when_binding_itself_raises_budget_expiry(driver, monkeypatch):
+    # With case_context set, binding actually runs (unlike the budget test
+    # above, which uses case_context=None so `_bind_requests` is a no-op).
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap")
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    driver.case_context = ScenarioContext("run", scenario, profile)
+    driver.invocations = [{"marker": "one", "arn": None, "native_requests": [], "role": "victim", "resume_roles": ()}]
+    _single_key_wrapper_enter(driver)
+    monkeypatch.setattr(driver, "_bind_requests", Mock(side_effect=module.CollectionBudgetExpired("binding budget")))
+
+    with pytest.raises(module.CollectionBudgetExpired, match="binding budget"):
+        driver.refresh()
+    # The record was cached before binding failed; the deferral must still
+    # be set even though the budget expired inside the bind itself, not in
+    # the dedicated budget-expiry branch.
+    assert driver.binding_deferred is True
+
+
+def test_binding_deferred_stays_set_when_binding_raises_a_real_collection_error(driver):
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap")
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    driver.case_context = ScenarioContext("run", scenario, profile)
+    # The launch owns the marker but was already bound to a different
+    # execution, so the real bind must fail on its own, with no monkeypatch.
+    driver.invocations = [
+        {
+            "marker": "one",
+            "arn": "different-execution-arn",
+            "invoke_acknowledged": True,
+            "native_requests": [],
+            "role": "victim",
+            "resume_roles": (),
+        }
+    ]
+    _single_key_wrapper_enter(driver)
+
+    with pytest.raises(module.CollectionError, match="changed its original durable execution"):
+        driver.refresh()
+    assert driver.binding_deferred is True
+
+
+def test_binding_deferred_clears_only_after_a_later_successful_bind(driver, monkeypatch):
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap", roles=("victim",))
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    context = ScenarioContext("run", scenario, profile)
+    context.record_attempt("one", role="victim", marker="one")
+    driver.case_context = context
+    driver.invocations = [
+        {
+            "marker": "one",
+            "arn": "execution-arn",
+            "invoke_acknowledged": True,
+            "native_requests": [],
+            "role": "victim",
+            "resume_roles": (),
+            "launch_id": "one",
+            "payload": {},
+            "execution_name": "one-exec",
+        }
+    ]
+    _single_key_wrapper_enter(driver, marker="one", request="req-0", execution="execution-arn")
+
+    # First refresh: the record is cached, but binding itself fails, so the
+    # deferral is set and must survive this failed attempt.
+    original_bind_requests = driver._bind_requests
+    monkeypatch.setattr(driver, "_bind_requests", Mock(side_effect=module.CollectionBudgetExpired("binding budget")))
+    with pytest.raises(module.CollectionBudgetExpired, match="binding budget"):
+        driver.refresh()
+    assert driver.binding_deferred is True
+
+    # A later complete refresh binds the already-cached record for real
+    # (the key is already cached, so nothing new needs to be read) and
+    # clears the deferral.
+    monkeypatch.setattr(driver, "_bind_requests", original_bind_requests)
+    driver.refresh()
+    assert driver.binding_deferred is False
+
+
+def test_binding_deferred_stays_set_across_a_refresh_with_no_new_keys(driver, monkeypatch):
+    # The deferral is sticky: it must not be recomputed from this call's own
+    # `missing` alone (e.g. `self.binding_deferred = bool(missing)`), since a
+    # refresh that rediscovers nothing new but still fails before binding
+    # tells us nothing about whether the earlier deferred record got bound.
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap")
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    driver.case_context = ScenarioContext("run", scenario, profile)
+    driver.invocations = [{"marker": "one", "arn": None, "native_requests": [], "role": "victim", "resume_roles": ()}]
+    _single_key_wrapper_enter(driver)
+    monkeypatch.setattr(driver, "_bind_requests", Mock(side_effect=module.CollectionBudgetExpired("binding budget")))
+
+    # First refresh: a new key is cached, but binding fails before it completes.
+    with pytest.raises(module.CollectionBudgetExpired, match="binding budget"):
+        driver.refresh()
+    assert driver.binding_deferred is True
+
+    # Second refresh: the key is already cached (no new keys this time), and
+    # binding fails again. The deferral must still be True: it was never
+    # resolved by an actual successful bind.
+    with pytest.raises(module.CollectionBudgetExpired, match="binding budget"):
+        driver.refresh()
+    assert driver.binding_deferred is True
+
+
+def _victim_and_peer_setup(driver, *, r1_failure):
+    """Arrange two case-owned markers, victim and peer, each with its own
+    WRAPPER_ENTER record(s) that pass the binding checks. The victim owns two
+    native requests, r1 and r2, under its own prefix; the peer owns an
+    unrelated request rp under a disjoint prefix. ``r1_failure`` lets the
+    caller choose how r1's read fails (a retryable S3 error, or the collector
+    running out of budget) while r2 still gets cached.
+
+    Returns ``(context, victim_item, peer_item, fail_r1)``, where ``fail_r1``
+    is a single-element list acting as a mutable flag: set ``fail_r1[0] =
+    False`` to let a later refresh read r1 for real.
+    """
+    scenario = Scenario("case", "lmi-lifecycle-1", "profile", "overlap", roles=("victim", "peer"))
+    profile = Profile("profile", driver.manifest["functions"]["c1"], 1, 1, "sdk-sha", "config-sha")
+    context = ScenarioContext("run", scenario, profile)
+    context.record_attempt("victim", role="victim", marker="victim")
+    context.record_attempt("peer", role="peer", marker="peer")
+    driver.case_context = context
+
+    victim_item = {
+        "marker": "victim",
+        "arn": "victim-exec-arn",
+        "invoke_acknowledged": True,
+        "native_requests": [],
+        "role": "victim",
+        "resume_roles": (),
+        "launch_id": "victim",
+        "payload": {},
+        "execution_name": "victim-exec",
+    }
+    peer_item = {
+        "marker": "peer",
+        "arn": "peer-exec-arn",
+        "invoke_acknowledged": True,
+        "native_requests": [],
+        "role": "peer",
+        "resume_roles": (),
+        "launch_id": "peer",
+        "payload": {},
+        "execution_name": "peer-exec",
+    }
+    driver.invocations = [victim_item, peer_item]
+
+    r1_key = "runs/unit/events/victim/r1.json"
+    r2_key = "runs/unit/events/victim/r2.json"
+    rp_key = "runs/unit/events/peer/rp.json"
+    listings = {
+        "runs/unit/events/victim/": [r1_key, r2_key],
+        "runs/unit/events/peer/": [rp_key],
+    }
+    driver.s3.get_paginator.return_value.paginate.side_effect = lambda *, Prefix, **_: [
+        {"Contents": [{"Key": key} for key in listings[Prefix]], "IsTruncated": False}
+    ]
+
+    def event(marker, request, execution, time_, sequence):
+        return {
+            "run": "unit",
+            "commit": "commit",
+            "marker": marker,
+            "request": request,
+            "execution": execution,
+            "phase": "WRAPPER_ENTER",
+            "time": time_,
+            "sequence": sequence,
+        }
+
+    records = {
+        r1_key: event("victim", "r1", "victim-exec-arn", 100, 1),
+        r2_key: event("victim", "r2", "victim-exec-arn", 200, 1),
+        rp_key: event("peer", "rp", "peer-exec-arn", 50, 1),
+    }
+    fail_r1 = [True]
+
+    def read(*, Key, **_):
+        if Key == r1_key and fail_r1[0]:
+            raise r1_failure
+        return {"Body": io.BytesIO(json.dumps(records[Key]).encode())}
+
+    driver.s3.get_object.side_effect = read
+    return context, victim_item, peer_item, fail_r1
+
+
+def _assert_peer_bound(context, peer_item):
+    # The complete peer read still binds the peer; only the incomplete victim is skipped.
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["peer"]["requestId"] == "rp"
+    assert peer_item["native_requests"] == ["rp"]
+
+
+def _assert_victim_untouched_and_deferred(context, victim_item, driver):
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["victim"].get("requestId") is None
+    assert victim_item["native_requests"] == []
+    assert driver.binding_deferred is True
+
+
+def _assert_victim_bound_and_not_deferred(context, victim_item, driver):
+    attempts = {attempt["attemptId"]: attempt for attempt in context.attempts}
+    assert attempts["victim"]["requestId"] == "r1"
+    assert attempts["victim"]["executionArn"] == "victim-exec-arn"
+    assert attempts["victim:native:r2"]["requestId"] == "r2"
+    assert attempts["victim:native:r2"]["role"] == "victim"
+    assert victim_item["native_requests"] == ["r1", "r2"]
+    assert driver.binding_deferred is False
+
+
+def test_refresh_never_binds_a_cached_retry_as_the_original_for_a_marker_incomplete_earlier(driver):
+    # Regression for the reported defect: `refresh` used to bind over the
+    # whole event cache using only *this call's* failed markers, so a marker
+    # left incomplete by an earlier failed refresh (the victim here) could
+    # get a cached retry wrongly bound as its ordinal-0 request by a later,
+    # unrelated, fully successful refresh (the peer here).
+    r1_failure = ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+    context, victim_item, peer_item, fail_r1 = _victim_and_peer_setup(driver, r1_failure=r1_failure)
+
+    # 1. Victim refresh: r1's GET fails (retryable), r2 is read and cached.
+    with pytest.raises(module.TransientCollectionError):
+        driver.refresh(markers=["victim"])
+    assert driver.binding_deferred is True
+
+    # 2. Peer-only refresh succeeds and must not touch the victim's binding.
+    driver.refresh(markers=["peer"])
+
+    # 3. The peer is bound, and the victim stays unbound: its retry was never
+    # falsely bound as the original.
+    _assert_peer_bound(context, peer_item)
+    _assert_victim_untouched_and_deferred(context, victim_item, driver)
+
+    # 4. A later victim refresh where r1 now reads binds r1 as the original
+    # and r2 as the next request, with no chronology error, and clears the deferral.
+    fail_r1[0] = False
+    driver.refresh(markers=["victim"])
+    _assert_victim_bound_and_not_deferred(context, victim_item, driver)
+
+
+def test_refresh_never_binds_a_cached_retry_after_an_earlier_budget_expiry(driver):
+    # Same regression, but r1's read is cut short by the collector's own
+    # budget expiring rather than a retryable S3 error.
+    r1_failure = module.CollectionBudgetExpired("collection budget expired")
+    context, victim_item, peer_item, fail_r1 = _victim_and_peer_setup(driver, r1_failure=r1_failure)
+
+    with pytest.raises(module.CollectionBudgetExpired, match="collection budget expired"):
+        driver.refresh(markers=["victim"])
+    assert driver.binding_deferred is True
+
+    driver.refresh(markers=["peer"])
+    _assert_peer_bound(context, peer_item)
+    _assert_victim_untouched_and_deferred(context, victim_item, driver)
+
+    fail_r1[0] = False
+    driver.refresh(markers=["victim"])
+    _assert_victim_bound_and_not_deferred(context, victim_item, driver)
 
 
 def test_cutoff_stop_and_completion_race_use_deadline_transport(driver):

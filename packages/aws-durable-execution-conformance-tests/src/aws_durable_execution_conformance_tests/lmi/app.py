@@ -7,25 +7,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import errno
-import importlib
 import json
 import math
 import os
 import sys
-from collections.abc import Iterable, Mapping
+import threading
+import time
+import traceback
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn
 
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
     EvidenceValidator,
+    _dump_json,
     is_json_integer,
     same_json,
 )
@@ -38,6 +42,9 @@ from aws_durable_execution_conformance_tests.report import (
     RunMetadata,
 )
 from aws_durable_execution_conformance_tests.reporters import render_console, write_report
+
+if TYPE_CHECKING:
+    from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioAdapter
 
 
 @dataclass(frozen=True)
@@ -185,34 +192,6 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(), parse_float=_finite_json_float, parse_constant=_finite_json_float)
 
 
-def _dump_json(value: Any, depth: int = 0, *, compact: bool = False) -> str:
-    """Write retained JSON without rounding exact decimal payloads."""
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError("JSON numbers must be finite")
-        return str(value)
-    if not isinstance(value, (dict, list, tuple)) or not value:
-        return json.dumps(value, allow_nan=False)
-    inner = "" if compact else "\n" + "  " * (depth + 1)
-    outer = "" if compact else "\n" + "  " * depth
-    if isinstance(value, dict):
-        keys: set[str] = set()
-        items = []
-        for key, item in value.items():
-            if not isinstance(key, str):
-                if key is not None and not isinstance(key, (bool, int, float)):
-                    raise ValueError("JSON object keys must be strings or scalar JSON values")
-                key = json.dumps(key, allow_nan=False)
-            if key in keys:
-                raise ValueError(f"JSON object keys collide after encoding: {key!r}")
-            keys.add(key)
-            items.append(f"{json.dumps(key)}: {_dump_json(item, depth + 1, compact=compact)}")
-        return "{" + inner + ("," + inner).join(items) + outer + "}"
-    return (
-        "[" + inner + ("," + inner).join(_dump_json(item, depth + 1, compact=compact) for item in value) + outer + "]"
-    )
-
-
 def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Validate the run inventory before loading an adapter or admitting work."""
     if (
@@ -228,7 +207,7 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
         raise ValueError(f"capabilityProfile must be one of {CAPABILITIES}")
     if not isinstance(manifest.get("runId"), str) or not manifest["runId"].strip():
         raise ValueError("runId must be a non-empty string")
-    # Resolve the profile before any adapter import, deployment or admission.
+    # Resolve the profile before any adapter is constructed, deployed or admitted.
     _required(manifest, suite)
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) < 2:
@@ -325,7 +304,9 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
             raise ValueError("coverageProfile is a run-level property and cannot be overridden by a case")
         _validate_behavior_budgets(scenario, definition, suite)
         if "evidence_file" in scenario:
-            raise ValueError("evidence_file is not supported; collect evidence with --adapter")
+            raise ValueError(
+                "evidence_file is not supported; remove it, since cases are adjudicated only from coordinator captures"
+            )
         if "not_implemented" in scenario and not isinstance(scenario["not_implemented"], str):
             raise ValueError("not_implemented must be a string")
     return manifest
@@ -334,6 +315,48 @@ def _validate_manifest(manifest: Any, *, suite: SuiteDefinition | None = None) -
 def load_manifest(path: Path, *, suite: SuiteDefinition | None = None) -> dict[str, Any]:
     """Load a manifest using the same admission rules as direct collection runs."""
     return _validate_manifest(_read_json(path), suite=suite)
+
+
+def _require_shared_catalog_run(manifest: Mapping[str, Any]) -> None:
+    """Validate a built-in shared-collector run before claiming the audit directory.
+
+    Checked here, never inside the adapter, so a malformed plan never reaches
+    construction: ``sdk.deployment`` carries a valid runtime and fixture binding
+    (``RuntimeDefinition.from_manifest``), its ``runtimeModel`` matches the
+    admitted plan's ``runtime``, its ``conformanceRevision`` is verified, and
+    ``sdk.artifacts_dir`` (which ``SharedAdapter`` requires) is a non-empty
+    string.
+    """
+    from aws_durable_execution_conformance_tests.lmi.runner import _require_conformance_revision
+    from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+
+    sdk = manifest.get("sdk")
+    if not isinstance(sdk, Mapping):
+        raise ValueError("A shared catalog run requires sdk.deployment")
+    deployment = sdk.get("deployment")
+    if not isinstance(deployment, Mapping):
+        raise ValueError("A shared catalog run requires sdk.deployment")
+    try:
+        runtime = RuntimeDefinition.from_manifest(deployment)
+    except (KeyError, ValueError) as error:
+        raise ValueError(
+            f"A shared catalog run requires a valid deployment runtime and fixture binding: {error}"
+        ) from error
+    if runtime.name != manifest.get("runtime"):
+        raise ValueError("Deployment runtimeModel does not match the admitted plan runtime")
+    _require_conformance_revision(deployment.get("conformanceRevision"))
+    artifacts_dir = sdk.get("artifacts_dir")
+    if not isinstance(artifacts_dir, str) or not artifacts_dir:
+        raise ValueError("A shared catalog run requires sdk.artifacts_dir")
+
+
+def load_collected_evidence(path: Path) -> Any:
+    """Read a saved ``collected-evidence.json`` with the JSON rules collection uses.
+
+    Exact decimals stay ``Decimal`` and non-finite numbers are rejected, as when
+    collection reads its own capture back before adjudicating it.
+    """
+    return _read_json(path)
 
 
 def _identity_errors(
@@ -456,14 +479,28 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _sync_file(path: Path) -> None:
+    """Persist an existing file's contents and its directory entry."""
+    # Windows flushes only through a writable handle; POSIX also syncs read-only files.
+    descriptor = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _sync_directory(path.parent)
+
+
 def _write_new_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
-    """Create ``path`` exclusively with the manifest, leaving nothing on failure."""
+    """Create ``path`` exclusively and durably with the manifest, leaving nothing on failure."""
     document = _dump_json(manifest) + "\n"
     created = False
     try:
         with path.open("x") as stream:
             created = True
             stream.write(document)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _sync_directory(path.parent)
     except BaseException:
         if created:
             path.unlink(missing_ok=True)
@@ -490,6 +527,8 @@ def _make_durable_directory(path: Path) -> None:
     process can change must sync; one it cannot write, such as ``/``, cannot hold
     an entry this run created, so its sync is best effort.
     """
+    # A relative path's parents stop at "."; the directories above it need syncing too.
+    path = path.absolute()
     created = {directory for directory in (path, *path.parents) if not directory.exists()}
     path.mkdir(parents=True, exist_ok=True)
     for directory in (path, *path.parents):
@@ -541,7 +580,56 @@ def _result_for_audit(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
 
 
 async def collect_and_adjudicate(
-    manifest: Mapping[str, Any], adapter_name: str, *, audit_dir: Path, suite: SuiteDefinition | None = None
+    manifest: Mapping[str, Any],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition | None = None,
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter] | None = None,
+) -> list[dict[str, Any]]:
+    """Collect catalog or SDK-owned evidence, then adjudicate it.
+
+    ``suite`` and ``adapter_factory`` are given together, for an SDK-owned suite
+    collected with the SDK's own collector: ``adapter_factory`` receives a
+    separate copy of the admitted manifest and is called only after the
+    manifest is validated and ``audit_dir`` is claimed, and never when every
+    case is declared not implemented. (An SDK-owned suite may wrap the
+    internal shared driver in its own factory, but ``SharedAdapter`` carries
+    no compatibility guarantee.)
+
+    With neither, this collects the ``lmi-lifecycle`` catalog itself, using the
+    built-in driver derived from ``manifest["sdk"]["deployment"]``'s fixture
+    binding. That requires a verified ``conformanceRevision``, a deployment
+    whose runtime fields, fixture binding and ``runtimeModel`` agree with the
+    plan's ``runtime``, and an absolute ``sdk.artifacts_dir``, all checked
+    before the audit directory is claimed.
+
+    Passing only one of ``suite``/``adapter_factory`` is rejected.
+    """
+    if suite is None and adapter_factory is None:
+        _require_shared_catalog_run(manifest)
+        if not Path(manifest["sdk"]["artifacts_dir"]).is_absolute():
+            # Cleanup resolves saved journals only from an absolute path. The
+            # CLI's --collect and runner.run normalize a relative one first.
+            raise ValueError(
+                "A shared catalog run requires an absolute sdk.artifacts_dir; "
+                "resolve it with sdk_plan_with_artifact_directory"
+            )
+        from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
+
+        return await _collect_and_adjudicate(manifest, SharedAdapter, audit_dir=audit_dir)
+    if suite is None or adapter_factory is None:
+        raise TypeError("collect_and_adjudicate requires suite and adapter_factory together, or neither")
+    if not isinstance(suite, SuiteDefinition):
+        raise TypeError("collect_and_adjudicate requires an SDK-owned suite definition")
+    return await _collect_and_adjudicate(manifest, adapter_factory, audit_dir=audit_dir, suite=suite)
+
+
+async def _collect_and_adjudicate(
+    manifest: Mapping[str, Any],
+    adapter_factory: Callable[[dict[str, Any]], ScenarioAdapter],
+    *,
+    audit_dir: Path,
+    suite: SuiteDefinition | None = None,
 ) -> list[dict[str, Any]]:
     from aws_durable_execution_conformance_tests.lmi.coordinator import (
         Budgets,
@@ -556,9 +644,6 @@ async def collect_and_adjudicate(
     if suite is not None:
         suite = replace(suite, requirements={key: deepcopy(dict(row)) for key, row in suite.requirements.items()})
     manifest = _validate_manifest(deepcopy(dict(manifest)), suite=suite)
-    module_name, separator, factory_name = adapter_name.partition(":")
-    if not separator or not factory_name:
-        raise ValueError("--adapter must be a local Python module:factory")
     profiles = [
         Profile(**{item.name: profile[item.name] for item in fields(Profile) if item.name in profile})
         for profile in manifest["profiles"]
@@ -589,12 +674,15 @@ async def collect_and_adjudicate(
     manifest_path = audit_dir / "manifest.json"
     # Claim this run's output before any adapter work, then bind the manifest
     # under that claim. Simultaneous callers targeting the same directory cannot
-    # interleave their journals or record another plan's manifest.
+    # interleave their journals or record another plan's manifest. The manifest
+    # is durable before the adapter loads, so a journaled dispatch never outlives
+    # the profile, resource, and artifact bindings it refers to.
     capture_path.touch(exist_ok=False)
     try:
         if manifest_path.exists():
             if not same_json(_read_json(manifest_path), manifest):
                 raise ValueError("audit directory contains a different manifest")
+            _sync_file(manifest_path)
         else:
             _write_new_manifest(manifest_path, manifest)
     except BaseException:
@@ -616,6 +704,9 @@ async def collect_and_adjudicate(
         _, document = _result_for_audit(raw)
         publish(result.case_id, document)
 
+    # Final journal failures, kept so a cancelled run can still report them.
+    publication_errors: list[str] = []
+
     def publish_final(result: dict[str, Any], document: str) -> None:
         if publications.get(result["case_id"]) == document:
             return
@@ -624,7 +715,9 @@ async def collect_and_adjudicate(
         except OSError as exc:
             if result["status"] in ("PASSED", "NOT_IMPLEMENTED"):
                 result["status"] = "INFRASTRUCTURE_ERROR"
-            result["errors"].append(f"Could not publish final case result: {exc}")
+            message = f"Could not publish final case result: {exc}"
+            result["errors"].append(message)
+            publication_errors.append(f"{result['case_id']}: {message}")
 
     skipped_results: list[dict[str, Any]] = []
     for scenario in manifest["scenarios"]:
@@ -651,8 +744,7 @@ async def collect_and_adjudicate(
 
     if not scenarios:
         return reconcile_results(())
-    factory = getattr(importlib.import_module(module_name), factory_name)
-    adapter = factory(deepcopy(manifest))
+    adapter = adapter_factory(deepcopy(manifest))
     try:
         outcomes = await run_scenarios(
             scenarios,
@@ -675,8 +767,17 @@ async def collect_and_adjudicate(
     except asyncio.CancelledError as cancelled:
         try:
             reconcile_results(emitted.values())
-        except (OSError, ValueError, TypeError) as error:
-            cancelled.add_note(f"Could not preserve cancelled run evidence: {error}")
+        except (Exception, asyncio.CancelledError) as error:
+            # Adjudication can run an SDK-owned suite's validator, which may raise
+            # anything, even CancelledError; this cancellation must still reach the
+            # caller. Reconciliation never awaits, so no new cancellation lands here.
+            cancelled.add_note(
+                f"Could not adjudicate and journal the cancelled run's evidence: {type(error).__name__}: {error}"
+            )
+        # The cancelled run returns no results, so journal failures surface only here,
+        # once each even when a declared skip's row failed again during reconciliation.
+        for message in dict.fromkeys(publication_errors):
+            cancelled.add_note(message)
         raise
     return reconcile_results(outcomes)
 
@@ -859,38 +960,170 @@ def build_report(
     return report
 
 
+# How long each teardown step may take once collection has returned.
+_RESIDUAL_TASK_GRACE_SECONDS = 30.0
+
+
+def _run_collection[T](main: Coroutine[Any, Any, T]) -> T:
+    """Run ``main`` like ``asyncio.run``, but bound every teardown step.
+
+    ``run_scenarios`` stops waiting for adapter work that outlives its harness
+    budget and quarantines the target instead. ``asyncio.run`` would cancel that
+    work at teardown and wait for it without a bound, so a task that suppresses
+    cancellation would keep the reports from being written.
+    """
+    runner = asyncio.Runner()
+    loop = runner.get_loop()
+    try:
+        return runner.run(main)
+    finally:
+        try:
+            _drain_leftover_tasks(loop)
+        finally:
+            # Runner.close() would wait for leftover tasks again, without a bound.
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+def _drain_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    deadline = time.monotonic() + _RESIDUAL_TASK_GRACE_SECONDS
+    cancelled: set[asyncio.Task[Any]] = set()
+    while (pending := [task for task in asyncio.all_tasks(loop) if not task.done()]) and (
+        remaining := deadline - time.monotonic()
+    ) > 0:
+        # Cancel each task once; cancelling again would interrupt its cleanup.
+        for task in pending:
+            if task not in cancelled:
+                task.cancel()
+                cancelled.add(task)
+        # Rescan often, so tasks started while others unwind are cancelled too.
+        loop.run_until_complete(asyncio.wait(pending, timeout=min(remaining, 0.1)))
+    if pending:
+        print(
+            f"lmi-lifecycle: abandoned {len(pending)} task(s) that ignored cancellation at shutdown",
+            file=sys.stderr,
+        )
+    asyncgens = loop.create_task(loop.shutdown_asyncgens())
+    loop.run_until_complete(asyncio.wait((asyncgens,), timeout=_RESIDUAL_TASK_GRACE_SECONDS))
+    # The Runner's default loop is a BaseEventLoop, whose executor shutdown takes a bound.
+    if isinstance(loop, asyncio.BaseEventLoop):
+        loop.run_until_complete(loop.shutdown_default_executor(_RESIDUAL_TASK_GRACE_SECONDS))
+
+
+# Ends the process without running interpreter shutdown; replaced in tests.
+_hard_exit: Callable[[int], NoReturn] = os._exit
+
+
+def _hard_exit_with_lingering_threads(lingering: list[threading.Thread], code: int) -> NoReturn:
+    names = ", ".join(thread.name for thread in lingering)
+    print(f"lmi-lifecycle: exiting without waiting for still-running threads: {names}", file=sys.stderr)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()
+    _hard_exit(code or 0)
+
+
+def _run_guarding_lingering_threads[T](body: Callable[[], T]) -> T:
+    """Run ``body``, then exit directly if it leaves a non-daemon thread alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started while ``body`` ran is still alive once ``body``
+    returns or raises, the process cannot otherwise exit; it ends immediately
+    with ``body``'s result, or with the exit code its exception implies,
+    without waiting for that thread. That path skips atexit hooks.
+
+    Callers must resolve ``_hard_exit`` through this module at call time
+    (not import it directly), so tests can replace it for in-process runs.
+    """
+    existing = set(threading.enumerate())
+    try:
+        result = body()
+    except BaseException as error:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if not lingering:
+            raise
+        if isinstance(error, SystemExit):
+            code = error.code
+            if code is not None and not isinstance(code, int):
+                print(code, file=sys.stderr)
+                code = 1
+        else:
+            traceback.print_exception(error)
+            code = 130 if isinstance(error, KeyboardInterrupt) else 1
+        _hard_exit_with_lingering_threads(lingering, code or 0)
+    else:
+        lingering = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing and thread.is_alive() and not thread.daemon
+        ]
+        if lingering:
+            _hard_exit_with_lingering_threads(lingering, result if isinstance(result, int) else 0)
+        return result
+
+
 def run(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="durable-execution-conformance lmi-lifecycle", description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
-    input_source = parser.add_mutually_exclusive_group(required=True)
-    input_source.add_argument(
-        "--collected-evidence", type=Path, help="adjudicate a saved collected-evidence bundle without collecting"
+    """Run the CLI, then exit even if a thread started during the run is still alive.
+
+    Interpreter shutdown joins every non-daemon thread without a bound. When a
+    non-daemon thread started during the run is still alive as the CLI finishes,
+    the process ends with the CLI's exit code without waiting for it. That path
+    skips atexit hooks.
+    """
+    _run_guarding_lingering_threads(lambda: _run(argv))
+
+
+def _run(argv: list[str] | None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="durable-execution-conformance lmi-lifecycle",
+        description="Collect or adjudicate LMI lifecycle evidence with strict coverage.",
     )
-    input_source.add_argument(
-        "--adapter", help="local module:factory for the trusted collection adapter that collects the evidence"
+    parser.add_argument("--manifest", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--collect",
+        action="store_true",
+        help="collect the lmi-lifecycle catalog with the built-in shared driver",
+    )
+    source.add_argument(
+        "--collected-evidence",
+        type=Path,
+        help="adjudicate a saved collected-evidence bundle without collecting",
     )
     parser.add_argument("--output", type=Path, default=Path("lmi-output"))
     args = parser.parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
+        if args.collect:
+            # Check the shared plan before touching the output directory: the
+            # exclusive manifest write below claims it, and normalization may
+            # create the SDK artifact directory.
+            _require_shared_catalog_run(manifest)
         _make_durable_directory(args.output)
         if any(args.output.iterdir()):
             raise ValueError("output directory must be empty; preserve previous run evidence")
         sdk = manifest.get("sdk")
-        if args.adapter and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
+        if args.collect and isinstance(sdk, Mapping) and "artifacts_dir" in sdk:
             from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_plan_with_artifact_directory
 
             manifest = sdk_plan_with_artifact_directory(args.output, manifest)
         # Every mode claims the directory with an exclusive manifest write, so
         # simultaneous runs cannot both pass the emptiness check and publish.
         _write_new_manifest(args.output / "manifest.json", manifest)
+        # Replay never normalizes paths, imports SDK code or contacts AWS;
+        # only --collect runs the built-in collector, through the same bounded
+        # teardown as a direct collect_and_adjudicate call.
         results = (
-            asyncio.run(collect_and_adjudicate(manifest, args.adapter, audit_dir=args.output))
-            if args.adapter is not None
-            else adjudicate_collected_evidence(manifest, _read_json(args.collected_evidence))
+            _run_collection(collect_and_adjudicate(manifest, audit_dir=args.output))
+            if args.collect
+            else adjudicate_collected_evidence(manifest, load_collected_evidence(args.collected_evidence))
         )
         report = build_report(manifest, results)
-    except (OSError, ValueError, TypeError, ImportError, AttributeError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
     (args.output / "evidence.json").write_text(_dump_json(results) + "\n")
     (args.output / "coverage.json").write_text(json.dumps(coverage_inventory(manifest), indent=2) + "\n")

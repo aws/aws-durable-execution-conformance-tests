@@ -371,6 +371,39 @@ class ScenarioContext:
         """
         self._journal_attempt(attempt_id, diagnostics, "launchedAtMs")
 
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Remove a launch whose dispatch provably never happened.
+
+        Only the most recently journaled attempt can be withdrawn, and only
+        when it is still a bare driver-invoke launch: it has a launch
+        timestamp and none of a request ID, execution ARN or native
+        start/end time. Any attempt that may have reached the service must
+        stay visible to retirement, so a mismatch raises rather than
+        silently dropping it.
+        """
+        if not self._attempts or self._attempts[-1]["attemptId"] != attempt_id:
+            raise ValueError("Only the last journaled attempt can be withdrawn")
+        attempt = self._attempts[-1]
+        if (
+            attempt.get("source") != "driver-invoke"
+            or "launchedAtMs" not in attempt
+            or any(key in attempt for key in ("requestId", "executionArn", "nativeStartedAtMs", "nativeEndedAtMs"))
+        ):
+            raise ValueError("Only an undispatched driver launch can be withdrawn")
+        removed = self._attempts.pop()
+        if self._on_attempt is not None:
+            try:
+                self._on_attempt(self)
+            except BaseException:
+                # The durable sink may have already dropped the attempt from
+                # its journal before failing (e.g. an fsync after the write),
+                # so memory and the durable record can still disagree here.
+                # That is safe: Invoke never ran for this attempt, so keeping
+                # it visible in memory and failing closed by re-raising never
+                # hides a launch that may have dispatched.
+                self._attempts.append(removed)
+                raise
+
     def _journal_attempt(self, attempt_id: str, diagnostics: Mapping[str, Any], timestamp_key: str) -> None:
         if not attempt_id or any(item["attemptId"] == attempt_id for item in self._attempts):
             raise ValueError("Attempt identities must be nonempty and unique")
@@ -529,6 +562,18 @@ class ScenarioResult:
     cleanup_evidence: dict[str, list[dict[str, Any]]] = field(default_factory=dict, kw_only=True)
     observation_evidence: list[dict[str, Any]] = field(default_factory=list, kw_only=True)
     trusted_observations: bool = field(default=False, kw_only=True)
+
+
+async def _await_without_cancelling[T](future: asyncio.Future[T]) -> T:
+    """Wait for ``future`` as ``asyncio.shield`` would, without its callbacks.
+
+    Cancelling the waiting task does not cancel ``future``. Some Python 3.14
+    releases report the exception a shielded future later finishes with, even an
+    expected ``CancelledError``, to the event loop's exception handler as an
+    unhandled failure; waiting with ``asyncio.wait`` registers no such callback.
+    """
+    await asyncio.wait((future,))
+    return future.result()
 
 
 async def _bounded(
@@ -696,7 +741,7 @@ async def run_scenarios(
         admitted_at = time.time() * 1000
         context.timings["admission"] = {"startedAtMs": admitted_at}
         try:
-            preparation_errors, preparation_timings = await asyncio.shield(prepared[case.profile_id])
+            preparation_errors, preparation_timings = await _await_without_cancelling(prepared[case.profile_id])
         except asyncio.CancelledError:
             # Waiting cases belong to the run's audit record even though they
             # never acquired a lease, so publish them before propagating.
@@ -1057,7 +1102,7 @@ async def run_scenarios(
         cancellation: asyncio.CancelledError | None = None
         while not finished.done():
             try:
-                await asyncio.shield(finished)
+                await _await_without_cancelling(finished)
             except asyncio.CancelledError as exc:
                 cancellation = exc
                 for task in tuple(finishing_profiles):
@@ -1069,7 +1114,8 @@ async def run_scenarios(
 
     draining = asyncio.create_task(drain_and_finish(), name="drain_and_finish")
     try:
-        outcomes = list(await asyncio.shield(case_results))
+        finished_cases = await _await_without_cancelling(case_results)
+        outcomes = list(finished_cases)
     finally:
         for task in (*tasks, *prepared.values()):
             # A case already in bounded cleanup must be allowed to retire.
@@ -1078,7 +1124,7 @@ async def run_scenarios(
         cancellation: asyncio.CancelledError | None = None
         while not draining.done():
             try:
-                await asyncio.shield(draining)
+                await _await_without_cancelling(draining)
             except asyncio.CancelledError as exc:
                 cancellation = exc
         if case_results.done() and not case_results.cancelled():

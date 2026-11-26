@@ -8,25 +8,39 @@ not this driver.
 
 ## SDK-owned bindings
 
+`SharedAdapter`, `ScenarioDriver`, `build_evidence` and `configuration_identity`
+are internal to this driver; they change freely without SDK edits.
+`ScenarioAdapter` is internal for catalog runs; SDK-owned suites implement it for
+their own collector. An SDK's only contract with the shared collector is data,
+not code:
+
 | Shared API | SDK supplies |
 | --- | --- |
-| `runtime.RuntimeDefinition` | Runtime model (`python`, `java`, `javascript`), handler, architecture, memory |
+| `runtime.RuntimeDefinition` | Runtime model (`python`, `java`, `javascript`), handler, architecture, memory, `binding` |
+| `runtime.FixtureBinding` | The data-only mapping of its deployed fixture onto the shared catalog (below) |
 | `deployment.DeploymentManager` | Runtime definition, stack owner tag, artifact directory, ZIP path, bucket prefix |
-| `cloud.Cloud` | Deployment manifest, artifacts directory, `verify_profile=manager.verify` |
-| `scenarios.ScenarioDriver` | Runtime model, fixture-name mapping, and optional callback encoder |
-| `source_evidence.build_evidence` | Runtime model, expected-outcome callback and observed worker-identity callback |
-| `adapter.SharedAdapter` | Cloud, scenario-driver and evidence factories; configuration-identity callback |
-| `runner.make_manifest` | Exact SDK artifact identity and conformance revision; runtime/configuration callback |
-| `runner.run`, `runner.cleanup`, `summary.summarize` | Manifest/adapter factory or run artifacts |
+| `runner.make_manifest` | Exact SDK artifact identity and conformance revision |
+| `runner.run`, `runner.cleanup`, `summary.summarize` | Deployment manifest, manifest factory, or run artifacts |
+
+`runner.run` is the SDK entry point for `raise SystemExit(runner.run(...))`
+(the Python SDK adoption below calls it this way). If a worker thread the
+run started is still alive once it returns, the process is terminated
+directly with the run's exit code, because interpreter shutdown would
+otherwise join that thread forever and the process would never exit.
 
 Construct a deployment manager with explicit SDK choices, for example:
 
 ```python
 from pathlib import Path
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
-from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 
-runtime = RuntimeDefinition("javascript", "index.handler", architecture="arm64")
+runtime = RuntimeDefinition(
+    "javascript",
+    "index.handler",
+    architecture="arm64",
+    binding=FixtureBinding.load(Path(__file__).parent / "binding.json"),
+)
 manager = DeploymentManager(
     runtime=runtime,
     owner="javascript-sdk-lmi-e2e",
@@ -43,15 +57,71 @@ It reads `AWS_REGION`, `TEST_ACCOUNT_ID`, `CAPACITY_PROVIDER_ARN`, and
 Other SDKs pass their own artifact hash to `make_manifest`. The controller keeps
 the bucket private before upload, verifies the actual published configuration,
 waits for earlier executions before updates, and retains persistent resources.
+It records the runtime (including the binding) into the deployment manifest
+under `fixtureBinding`, next to `runtimeModel`, `handler`, `architecture` and
+`memorySize`; `make_manifest` copies that recorded deployment into
+`plan["sdk"]["deployment"]` and includes the binding in each profile's
+`configuration_id`.
 
-Map the seven scenario keys plus `peer`, `recovery`, and `warm` to your fixture
-entry points. The shared driver passes the fixture name in `scenario`, the
-catalog name in `sharedScenario`, and preserves `run`, `caseId`, `marker`, role,
-control prefix, gates, and behavior budgets. Fixtures return their marker on
-success; the normal-failure fixture throws a language-appropriate error.
-`expected_outcome(item, scenario)` describes expected service outcomes, never
-observed facts. `worker_identity(raw)` returns the actual worker identity from
-the SDK's source record (a Python process, JVM worker, or Node.js worker).
+### `FixtureBinding`
+
+A checked-in JSON file (`FixtureBinding.load(path)`) data-only binding maps the
+SDK's deployed fixture onto the shared catalog. Parsing fails closed: unknown
+fields or values are rejected. The Python SDK's binding, for example:
+
+```json
+{
+  "bindingVersion": 1,
+  "fixtures": {
+    "native-overlap": "barrier",
+    "normal-return": "success",
+    "deadline-during-step": "deadline",
+    "peer-recovery": "deadline",
+    "suspension-retry": "replay",
+    "warm-reuse": "warm-owner",
+    "normal-failure": "failure",
+    "peer": "barrier",
+    "recovery": "barrier",
+    "warm": "warm-probe"
+  },
+  "failureErrorType": "ValueError",
+  "workerIdentity": "process",
+  "suspension": "callback",
+  "callbackPayload": "marker",
+  "recoveryPolicy": "reuse-worker",
+  "replayEffects": [
+    { "operation": "success", "count": 1 },
+    { "operation": "failure", "count": 1 },
+    { "operation": "retry", "count": 2 },
+    { "operation": "item", "count": 1, "values": [1, 2, 3] },
+    { "operation": "left", "count": 1 },
+    { "operation": "right", "count": 1 }
+  ]
+}
+```
+
+- `fixtures` maps the seven catalog scenario keys plus `peer`, `recovery`, and
+  `warm` to fixture entry points; a missing key yields `NOT_IMPLEMENTED` at run
+  time, as today. The shared driver passes the mapped fixture name in
+  `scenario`, the catalog name in `sharedScenario`, and preserves `run`,
+  `caseId`, `marker`, role, control prefix, gates, and behavior budgets.
+  Fixtures return their marker on success; the normal-failure fixture throws a
+  language-appropriate error named by `failureErrorType`.
+- `workerIdentity` (`process` or `worker`) selects the field of the SDK's
+  source record holding its actual worker identity (a Python process, JVM
+  worker, or Node.js worker).
+- `suspension` (`callback`, default, or `wait`) and `callbackPayload`
+  (`marker`, default UTF-8 marker bytes, or `json-marker`, the marker
+  JSON-encoded) describe how the suspension-retry fixture suspends and how its
+  callback result is encoded.
+- `recoveryPolicy` (`reuse-worker`, default, or `replace-worker`) is recorded
+  on every profile and carried through to evidence.
+- `replayEffects` lists expected replay side-effect counts per durable
+  operation name; an entry with `values` expects one count per listed value
+  (e.g. the Python SDK's `item` fixture, keyed by map item), otherwise a single
+  count, owned by the first durable operation ID using that name. Expected service outcome,
+  worker identity, and replay-effect ownership are all derived from this
+  binding by the shared driver; they are never SDK code.
 
 Each logical launch derives a stable, 64-character `DurableExecutionName` from
 its run, configuration, case, and marker. The driver records this name before
@@ -122,23 +192,27 @@ still requires the terminal event and matching native completions.
 
 Replay fixtures use stable operation names `success`, `failure`, `retry`, and
 callback `completion`; their body records retain operation IDs and attempts.
-The callback payload defaults to UTF-8 marker bytes. A fixture using JSON or
-another serializer can pass its encoder as `callback_encoder` to
-`ScenarioDriver`. A fixture that suspends through a durable timer passes
-`suspension_mode="wait"`. The driver awaits the execution result and requires
-the same wait operation's service history to span a PENDING decision and a
-later native invocation. Callback fixtures send the response only after the
-native request that registered the outstanding callback has returned PENDING.
-Record replay body effects in `CONFORMANCE` observations
-with their durable operation IDs. When the fixture also publishes raw `BODY`
-rows, the driver cross-checks them by native request, operation name, and
-attempt. The standard fixture expects one effect each for `success` and
-`failure` and two for `retry`. A binding with different fixture behavior
-can use `expected_replay_effects` in `build_evidence` to set counts per
-operation name. The count applies separately to each matching durable
-operation ID. Operations without a configured name expect zero effects. The shared runner compares actual checkpoints
-and outcomes. SDK hooks must
-observe the real public API and must not emulate an unsupported operation.
+The binding's `callbackPayload` selects the callback encoding (UTF-8 marker
+bytes, or the marker JSON-encoded). A fixture that suspends through a durable
+timer sets the binding's `suspension` to `wait`. The driver awaits the
+execution result and requires the same wait operation's service history to
+span a PENDING decision and a later native invocation. Callback fixtures send
+the response only after the native request that registered the outstanding
+callback has returned PENDING. Record replay body effects in `CONFORMANCE`
+observations with their durable operation IDs. When the fixture also
+publishes raw `BODY` rows, the driver cross-checks them by native request,
+operation name, and attempt. The binding's `replayEffects` sets the expected
+count per operation name (one entry each for `success`, `failure`, and `retry`
+by default); an entry with `values` expects one count per listed value. For
+each expected `(operation, value)` key, the first durable operation ID the
+driver observes owns that count; any other ID sharing the key, or a body whose
+key is not expected, gets zero. One operation ID must report the same value on
+every attempt: an ID whose bodies report more than one key, or whose first body
+has an unexpected key, gets zero and owns no further key. Operations without a
+configured name expect
+zero effects. The shared runner compares actual checkpoints and outcomes. SDK
+hooks must observe the real public API and must not emulate an unsupported
+operation.
 
 Control records and service history remain separate from injected faults. The
 case 4 driver admits the original peer halfway through the victim's timeout,
@@ -184,15 +258,19 @@ nonzero on failure. `setup` runs independently in the harness and cloud jobs.
 | `setup` | Install the SDK toolchain and shared core package from `.conformance`; verify the pin |
 | `harness` | Run binding tests and local SDK integration tests; write test diagnostics |
 | `build` | Build the tested SDK fixture ZIP and build manifest |
-| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration; write `manifest.json` to `$LMI_ARTIFACT_DIRECTORY` by passing that directory as `DeploymentManager`'s `artifacts`, or the step fails |
-| `run` | Execute all seven shared requirements and retain strict JSON/JUnit reports |
+| `deploy` | Use `LMI_SHARED_RUN_ID`, `LMI_RUNTIME`, `LMI_STACK_NAME` and AWS configuration; deploy with the SDK's fixture binding on its `RuntimeDefinition`, which the deployment records as `fixtureBinding`; write `manifest.json` to `$LMI_ARTIFACT_DIRECTORY` by passing that directory as `DeploymentManager`'s `artifacts`, or the step fails |
+| `run` | Run `runner.run`, which collects all seven shared requirements with the built-in driver, and retain strict JSON/JUnit reports |
 | `collect` | Collect available runtime records and service history after success or failure |
 | `cleanup` | Release this run's controls and request stops for its identified executions |
 | `summary` | Print the retained report summary to stdout |
 
 `artifact-directory` defaults to `lmi_tests/artifacts`, also when the caller passes
 an empty value; it is exposed as `LMI_ARTIFACT_DIRECTORY`. Use a plain workspace
-path without glob characters, because the upload treats it as a pattern. The
+path without glob characters, because the upload treats it as a pattern. Make it an
+output-only subdirectory: once deployment holds the target fences, it moves
+everything already in that directory into an archive, except `build.json` and the
+deployment's own journal, lock and manifest, so keep the stage script and SDK code
+outside it; the default `lmi_tests/artifacts` satisfies this. The
 workflow uploads only that directory and skips hidden files and directories, so
 keep the `run` stage's case output, including its reports and
 `collected-evidence.json`, in a visible path inside it. Leave the SDK journal root
@@ -200,10 +278,11 @@ keep the `run` stage's case output, including its reports and
 directory, such as `standard/`, or another visible path inside that directory, so the journals are uploaded and cleanup can
 locate them in a downloaded copy. For direct CLI use, give each run a separate artifact
 directory and pass that same directory to build, deploy, run, collect, and cleanup.
-Deployment archives existing output only after it holds the target fences.
 Writers and cleanup use a nonblocking POSIX lock alongside each journal.
 Automatic recovery of an uncertain write requires the original artifact root,
-lock inode, and Linux boot identity. Keep the lock files with the journals.
+lock inode, and boot identity (Linux `boot_id` or macOS `kern.bootsessionuuid`).
+On a host with neither, deployment writes fail before they start. Keep the lock
+files with the journals.
 The uploaded diagnostics include the plan and deployment journals, which name
 the test account ID, the execution-role and capacity-provider ARNs, and the
 bucket. They are identifiers, not credentials, but anyone who can read the
@@ -231,8 +310,11 @@ at least the job's 155 minutes. Lambda compute stops a build after 15 minutes, a
 a runner that stops early skips collection and cleanup and leaves fences in place.
 
 Every invocation in one caller run shares `LMI_SHARED_RUN_ID`. The deployment
-bucket is scoped by region and stack name, so give each invocation in a run its
-own `stack-name`; invocations sharing a stack would also share run evidence.
+bucket is scoped by account, region and stack name, and the workflow names its
+uploaded artifacts by stack name, Lambda runtime and region, so give each
+invocation in a run that uses the same region its own `stack-name`, even across
+accounts; invocations sharing a stack would also share run evidence. Invocations in
+different regions can reuse a name.
 
 GitHub Actions concurrency serializes automation within the calling repository. The fixed
 `lmi-e2e-shared-capacity-provider` group covers deployment through cleanup and
@@ -241,12 +323,15 @@ repository; SDK repositories must use separately provisioned test capacity if
 they run at the same time. Direct CLI runs are not serialized with Actions.
 
 The driver also acquires persistent retirement fences on each qualified Lambda
-target, twice per run. Deployment holds one while it updates the stack and
-releases it once the update settles. Profile preparation (`prepare(profile)`, once
-per target) then acquires a new one, verifies the deployed configuration before
-admitting any case, and holds it through that target's cases. Its journal is
-`<case output>/<coverage profile>/source/configuration/<first 20 hex characters of
-the SHA-256 of the full qualified function ARN>-fence.json`; those 20 characters
+target, normally twice per run. Deployment holds one while it updates the stack and
+releases it once the update settles. The driver's profile preparation, once per
+target that has at least one case to run, then acquires a new one, verifies the deployed configuration before
+admitting any case, and holds it through that target's cases. A target whose cases
+are all declared not implemented is never prepared, so it has no profile fence or
+journal. For a prepared target, the profile fence's journal is
+`<sdk.artifacts_dir>/configuration/<first 20 hex characters of the SHA-256 of the
+full qualified function ARN>-fence.json`, by default under
+`<case output>/standard/source/`; those 20 characters
 begin the hash in the fence object's key below. Direct CLI runs can acquire
 the target between the two; within a calling repository, the workflow concurrency
 group serializes jobs across that gap. Each fence object is
@@ -260,7 +345,11 @@ roles do not need fence access. Only the owning run clears
 its fence, after it proves quiescence or that the case was never admitted. Failed
 retirement, or an interruption whose outcome cleanup cannot prove from this run's
 journals, leaves the fence in place. Later preparation and deployment reject the fenced
-target and report its exact S3 URI, even if its service executions are terminal.
+target and report its exact S3 URI when their S3 read finds the fence, even if its
+service executions are terminal. An earlier check can stop them first without a
+URI, such as the stack-status check (for example after `UPDATE_ROLLBACK_FAILED`) or
+an existing local deployment or profile journal; derive the key from the bucket and
+the ARN hash above whenever the error omits it.
 
 There is no recovery CLI for a retained fence. Reconcile it promptly: the
 deployment bucket expires `runs/` objects after one day, function logs and durable
@@ -273,17 +362,22 @@ and callbacks. Confirm that no runtime work remains and that the target
 artifact/configuration is correct. If the fenced run left a `deployment-update.json`
 journal, check its phase. A `PREPARED` journal never submitted an update. A
 `SETTLED` journal has a resolved update. To release its remaining fences, run the
-caller's `cleanup` stage against the downloaded artifact directory with the
-original `LMI_SHARED_RUN_ID`; re-running the workflow uses a new run ID and cannot.
-If any fence state in that journal is still `ACQUIRING`, treat the check as
-inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
+caller's `cleanup` stage against the downloaded artifact directory, loading the
+deployment with `deployment.load_cleanup_manifest(<downloaded artifact root>,
+<original LMI_SHARED_RUN_ID>)`. That call points cleanup at the downloaded journals;
+a raw manifest still names the original runner's absolute artifact path.
+Re-running the workflow uses a new run ID and cannot. Relocation works only when
+the journal is absent or `SETTLED` with no `ACQUIRING` fence state.
+`load_cleanup_manifest` refuses a `PREPARED` or `SUBMITTING` journal from a
+different root, so reconcile those at the original absolute artifact path or clear
+the fence manually after the checks below. If any fence state in a `SETTLED`
+journal is still `ACQUIRING`, treat the check as inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
 have reached `UPDATE_COMPLETE`, `UPDATE_ROLLBACK_COMPLETE` or a verified no-op;
-`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, the
-stack's latest status alone is not enough, because it can belong to an older
-request. Keep the fence unless the stack events show that no update is in progress
-and every update started after the fence's S3 `LastModified` time reached
-`UPDATE_COMPLETE` or `UPDATE_ROLLBACK_COMPLETE`, or other independent evidence
-shows that this run never submitted one. Delete the fence only with
+`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, keep the
+fence unless independent evidence shows that this run's own submission settled,
+was a verified no-op or was never made. The stack's latest status or visible
+events alone are not enough: they can belong to an older request, and a missing
+event does not prove that no update was submitted. Delete the fence only with
 a conditional request on the ETag you inspected, and keep it if any check is
 inconclusive. A terminal Lambda execution status alone does not prove retirement. Within a run, the coordinator still
 verifies case ownership, capacity, cancellation and retirement before reusing a

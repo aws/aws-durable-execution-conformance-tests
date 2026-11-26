@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Partial observations remain separate from facts collected after cleanup."""
 
@@ -83,7 +84,6 @@ def adapter(tmp_path, *, read_fails=False, final_retirement=None, retire_fails=F
         evidence_builder=build,
         cloud_factory=Mock(),
         driver_factory=Mock(),
-        configuration_identity=Mock(),
     )
     result.cases["case"] = _Case(cast(ScenarioDriver, driver))
     return result, cloud, calls

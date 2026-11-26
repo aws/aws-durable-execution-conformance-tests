@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Run artifacts, redaction and deterministic case namespaces."""
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -132,13 +135,79 @@ def owner_lock_path(journal: Path) -> Path:
     return journal.with_name(journal.name + ".lock")
 
 
+# Linux exposes a stable per-boot identifier at this fixed path. Read as a
+# module-level constant (rather than inlined) so tests can point it at a
+# fixture file without touching the real host's /proc.
+_LINUX_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+
+
+def _macos_boot_session_uuid() -> str | None:
+    """Return macOS's `kern.bootsessionuuid`, or None if it cannot be read.
+
+    This value is assigned once per boot and is stable across the whole
+    session. Deliberately not `kern.boottime`: that changes whenever the
+    system clock is adjusted, which would make a live boot look foreign to
+    itself and defeat same-boot recovery. Uses the `sysctl` CLI rather than
+    a ctypes binding to libc, to keep this simple; any failure (missing
+    binary, non-zero exit, timeout) or empty output yields None.
+    """
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        return None
+    return result.stdout.strip() or None
+
+
+def _boot_identity() -> str | None:
+    """Return a stable identifier for the current boot, or None if unavailable.
+
+    This binds a lock holder's identity to "this boot" so that a stale
+    recovery record left by an earlier boot -- where PIDs and inodes can be
+    reused -- is detectable as foreign rather than silently treated as our
+    own. Supported on Linux (boot_id) and macOS (a boot-session sysctl); any
+    other platform, or any failure reading the value, yields None.
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            return _LINUX_BOOT_ID_PATH.read_text().strip() or None
+        if sys.platform == "darwin":
+            return _macos_boot_session_uuid()
+        return None
+    except OSError:
+        return None
+
+
 @contextmanager
-def owner_lock(journal: Path) -> Iterator[dict[str, str | int | None]]:
-    """Coordinate same-root writers and recovery on a stable POSIX inode."""
+def owner_lock(journal: Path, *, require_boot_identity: bool = True) -> Iterator[dict[str, str | int | None]]:
+    """Coordinate same-root writers and recovery on a stable POSIX inode.
+
+    A write that might need recovery later (``require_boot_identity=True``,
+    the default) cannot start without a stable boot identity: otherwise a
+    future recovery attempt could never prove it is the same host and would
+    refuse the record forever. A pure recovery/cleanup attempt
+    (``require_boot_identity=False``) does not know in advance whether the
+    record it is about to read actually needs that proof -- a journal that
+    already settled, or a profile fence that is no longer being acquired,
+    needs only the flock below. Pass ``False`` there and let
+    ``same_owner_lock``'s falsy check (defense in depth) refuse any record
+    that turns out to still need an owner we cannot establish.
+    """
     try:
         import fcntl
     except ImportError as error:
         raise ProvisioningError("Journal ownership requires POSIX file locks") from error
+    boot = _boot_identity()
+    if boot is None and require_boot_identity:
+        raise ProvisioningError(
+            "Journal ownership requires a stable boot identity for automatic recovery "
+            "(supported on Linux and macOS); none is available on this host"
+        )
     path = owner_lock_path(journal)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as lock:
@@ -147,10 +216,6 @@ def owner_lock(journal: Path) -> Iterator[dict[str, str | int | None]]:
         except BlockingIOError as error:
             raise ProvisioningError(f"Journal ownership is busy: {journal}") from error
         identity = os.fstat(lock.fileno())
-        try:
-            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        except OSError:
-            boot = None
         # Closing the handle releases the lock. Never remove its inode.
         yield {"bootId": boot, "device": identity.st_dev, "inode": identity.st_ino, "root": str(path.parent.resolve())}
 

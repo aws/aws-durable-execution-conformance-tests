@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Source coverage is a positive witness, separate from visible work pairing."""
 
@@ -166,6 +167,180 @@ def test_service_rejected_before_dispatch_settles_as_undispatched_and_stays_inco
         and "TooManyRequestsException" in error
         for error in errors
     )
+
+
+def _unbound_wrapper_enter(sequence, request, *, marker="marker", execution="execution"):
+    return {
+        "phase": "WRAPPER_ENTER",
+        "sequence": sequence,
+        "time": 0.1,
+        "request": request,
+        "execution": execution,
+        "marker": marker,
+        "environment": "environment",
+        "process": "process",
+        "run": "run",
+        "caseId": "case",
+        "commit": "commit",
+    }
+
+
+def test_unbound_request_is_pending_not_an_error_while_binding_is_deferred(tmp_path):
+    # A budget-expiry refresh intentionally skips binding from a partial read
+    # (see Cloud.refresh): the gap is incomplete evidence, not proof of a
+    # real collection failure, until a later complete refresh binds it.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message not in observation["collectionErrors"]
+    assert message in observation["collection"]["pending"]
+
+
+def test_unbound_request_is_a_collection_error_once_binding_is_not_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = False
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+    assert message not in observation["collection"].get("pending", [])
+
+
+def test_unbound_request_is_still_a_final_phase_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = True
+
+    final = build_evidence(ctx, cloud, phase="final")
+    message = "Native request orphan was not bound to an original launch"
+    assert message in final["collectionErrors"]
+
+
+def test_unbound_request_under_an_unowned_marker_is_always_an_error_even_while_deferred(tmp_path):
+    # An unknown marker (no launch owns it at all, e.g. one `Cloud.start`
+    # removed after a service rejection) is never "not yet bound" - that
+    # sub-case requires an owned launch. It must stay an error regardless
+    # of `binding_deferred`.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan", marker="unowned-marker")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+
+
+def test_unbound_request_under_a_launch_already_bound_elsewhere_is_always_an_error_even_while_deferred(tmp_path):
+    # The owned launch's marker exists, but its launch is already bound to a
+    # *different* execution than this stream's. That is a real ownership
+    # mismatch, not a launch merely awaiting its first binding, so it must
+    # stay an error regardless of `binding_deferred`.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan", execution="different-execution")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+
+
+def _owned_sealed_stream(request, *, marker="marker", execution="execution"):
+    """A fully sealed, self-consistent two-record stream (no captures)."""
+    scope = {
+        "request": request,
+        "execution": execution,
+        "marker": marker,
+        "environment": "environment",
+        "process": "process",
+        "run": "run",
+        "caseId": "case",
+        "commit": "commit",
+    }
+    return [
+        {**scope, "phase": "WRAPPER_ENTER", "sequence": 1, "time": 0.1},
+        {**scope, "phase": "SEALED", "sequence": 2, "time": 0.2, "sourceProtocol": 2, "throughCapture": 0},
+    ]
+
+
+def test_sealed_unbound_request_under_an_owned_launch_is_pending_while_binding_is_deferred(tmp_path):
+    # A refresh that read a newly discovered request's whole stream (its
+    # launch's WRAPPER_ENTER and SEALED) under an owned launch's marker
+    # before the budget expired has not had a chance to bind it yet; that
+    # gap is incomplete evidence, not a real ownership inconsistency.
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message not in observation["collectionErrors"]
+    assert any("orphan2" in item for item in observation["collection"]["pending"])
+
+
+def test_sealed_unbound_request_is_an_ownership_error_once_binding_is_not_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = False
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_unbound_request_is_still_a_final_phase_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    final = build_evidence(ctx, cloud, phase="final")
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in final["collectionErrors"]
+
+
+def test_sealed_request_under_an_unowned_marker_stays_an_ownership_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan3", marker="unowned-marker"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan3 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_request_under_a_launch_already_bound_elsewhere_stays_an_ownership_error_even_while_deferred(tmp_path):
+    # Ledger-side counterpart: the launch is owned (marker matches) but
+    # already bound to a different execution, so this is a genuine mismatch,
+    # never a "not yet bound" gap, regardless of the deferral.
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2", execution="different-execution"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_request_under_a_conflicting_launch_stays_an_ownership_error_even_while_deferred(tmp_path):
+    # A launch `_bind_requests` has already flagged as conflicting can never
+    # become bound, so it is never merely "not yet bound" either.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.invocations[0]["launch_conflict"] = True
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
 
 
 def test_allowlist_is_pinned_exactly():
@@ -1030,7 +1205,7 @@ def test_shared_run_rejects_missing_revision_before_admission(tmp_path, monkeypa
     monkeypatch.setattr(app, "collect_and_adjudicate", admission)
     output = tmp_path / "output"
     with pytest.raises(ValueError, match="verified conformanceRevision"):
-        run({}, output, manifest_factory=factory, adapter_name="unused:adapter")
+        run({}, output, manifest_factory=factory)
     factory.assert_called_once()
     admission.assert_not_called()
 

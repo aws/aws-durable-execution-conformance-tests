@@ -1,12 +1,17 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 import copy
 import io
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from botocore.exceptions import ClientError
 
+from aws_durable_execution_conformance_tests.lmi import artifacts as artifacts_module
 from aws_durable_execution_conformance_tests.lmi import deployment as deployment_module
 from aws_durable_execution_conformance_tests.lmi.artifacts import clear_run_artifacts, save
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
@@ -14,6 +19,20 @@ from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, 
 from aws_durable_execution_conformance_tests.lmi.runtime import CONCURRENCIES, QUALIFIER, SCALING
 
 from .support import RUNTIME
+
+# Captured before the autouse fixture below ever patches the name, so the
+# per-platform tests can restore the real implementation and exercise it.
+_REAL_BOOT_IDENTITY = artifacts_module._boot_identity
+
+
+@pytest.fixture(autouse=True)
+def _stable_boot_identity(monkeypatch):
+    """Pin owner_lock's boot identity so these tests do not depend on the real host.
+
+    Individual tests that exercise an unavailable or foreign identity still
+    override this with their own, more specific monkeypatch.
+    """
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: "test-host-boot-id")
 
 
 @pytest.fixture
@@ -982,3 +1001,215 @@ def test_live_deployment_lock_prevents_recovery_during_fence_acquisition(deploy,
     with pytest.raises(KeyboardInterrupt):
         deploy.deploy_stack(manifest, b"test")
     assert (deploy.artifacts / "deployment-update.json").is_file()
+
+
+# --- Boot identity: owner_lock refuses to operate without one ---
+
+
+def test_owner_lock_rejects_an_unavailable_boot_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    journal = tmp_path / "deployment-update.json"
+    with pytest.raises(ProvisioningError, match="stable boot identity"), artifacts_module.owner_lock(journal):
+        pass
+    # Nothing on disk, not even the lock file itself, when the boot identity
+    # cannot be established.
+    assert not journal.exists()
+    assert not artifacts_module.owner_lock_path(journal).exists()
+
+
+def test_deploy_stack_requires_boot_identity_before_any_write(deploy, manifest, apis, monkeypatch):
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    cfn, s3 = apis["cloudformation"], apis["s3"]
+    with pytest.raises(ProvisioningError, match="stable boot identity"):
+        deploy.deploy_stack(manifest, b"code")
+    cfn.create_stack.assert_not_called()
+    cfn.update_stack.assert_not_called()
+    s3.put_object.assert_not_called()
+    assert not (deploy.artifacts / "deployment-update.json").exists()
+
+
+# --- Boot identity: recovery refuses only a record that is still uncertain ---
+
+
+def test_recover_deployment_update_refuses_an_uncertain_journal_without_boot_identity(
+    deploy, manifest, apis, monkeypatch
+):
+    """A non-SETTLED journal is "uncertain" and still needs same_owner_lock's falsy check."""
+    cfn, s3 = apis["cloudformation"], apis["s3"]
+    cfn.describe_stacks.return_value = {"Stacks": [stack(manifest)]}
+    monkeypatch.setattr(deploy, "wait_for_idle_functions", Mock())
+    cfn.describe_stack_events.side_effect = KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        deploy.deploy_stack(manifest, b"new-code")
+    journal = deploy.artifacts / "deployment-update.json"
+    assert journal.is_file()
+    update_calls_before_recovery = cfn.update_stack.call_count
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    with pytest.raises(ProvisioningError, match="lacks its original local owner lock"):
+        deployment_module.recover_deployment_update(manifest, deploy.artifacts, apis.__getitem__)
+    s3.delete_object.assert_not_called()
+    assert cfn.update_stack.call_count == update_calls_before_recovery
+    assert journal.is_file()
+
+
+def test_recover_deployment_update_still_recovers_a_settled_journal_without_boot_identity(
+    deploy, manifest, apis, monkeypatch
+):
+    """A SETTLED journal is not "uncertain": recovery needs only the flock, not an owner."""
+    from aws_durable_execution_conformance_tests.lmi.quarantine import acquire_fence
+
+    cfn, s3 = apis["cloudformation"], apis["s3"]
+    manifest["deploymentArtifactDirectory"] = str(deploy.artifacts.resolve())
+    fences = {target: acquire_fence(s3, manifest, target) for target in deploy.function_targets(manifest).values()}
+    journal = deploy.artifacts / "deployment-update.json"
+    with deployment_module.owner_lock(journal) as owner:
+        save(
+            journal,
+            {
+                **{key: manifest[key] for key in ("stack", "bucket", "run", "commit")},
+                "owner": owner,
+                "phase": "SETTLED",
+                "fences": fences,
+            },
+        )
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    assert deployment_module.recover_deployment_update(manifest, deploy.artifacts, apis.__getitem__) == manifest["run"]
+    assert not journal.exists()
+    assert s3.delete_object.call_count == len(fences)
+    cfn.update_stack.assert_not_called()
+
+
+# --- Boot identity: same_owner_lock refuses a foreign owner (defense in depth) ---
+
+
+@pytest.mark.parametrize(
+    "differing_field,replacement",
+    [("bootId", "a-different-hosts-boot-id"), ("inode", 999999999)],
+)
+def test_recover_deployment_update_refuses_a_foreign_owner(deploy, manifest, apis, differing_field, replacement):
+    cfn, s3 = apis["cloudformation"], apis["s3"]
+    manifest["deploymentArtifactDirectory"] = str(deploy.artifacts.resolve())
+    targets = deploy.function_targets(manifest).values()
+    journal = deploy.artifacts / "deployment-update.json"
+    with deployment_module.owner_lock(journal) as owner:
+        foreign_owner = {**owner, differing_field: replacement}
+        save(
+            journal,
+            {
+                **{key: manifest[key] for key in ("stack", "bucket", "run", "commit")},
+                "recoveryManifest": manifest,
+                "requestToken": "replay-token",
+                "owner": foreign_owner,
+                "phase": "SUBMITTING",
+                "fences": {target: "fence-token" for target in targets},
+            },
+        )
+    with pytest.raises(ProvisioningError, match="lacks its original local owner lock"):
+        deployment_module.recover_deployment_update(manifest, deploy.artifacts, apis.__getitem__)
+    cfn.update_stack.assert_not_called()
+    s3.delete_object.assert_not_called()
+    assert journal.is_file()
+
+
+def test_same_owner_lock_refuses_matching_owners_without_a_boot_identity():
+    # Recovery on a host without a boot identity yields bootId None. Even an
+    # exact owner match cannot prove the writer ran on this kernel, so an
+    # uncertain record must still be refused.
+    owner = {"bootId": None, "device": 1, "inode": 2, "root": "/artifacts"}
+    assert not artifacts_module.same_owner_lock({"owner": owner}, owner)
+    booted = {**owner, "bootId": "boot"}
+    assert artifacts_module.same_owner_lock({"owner": booted}, booted)
+
+
+def test_recover_deployment_update_refuses_an_uncertain_journal_whose_owner_also_lacks_a_boot_identity(
+    deploy, manifest, apis, monkeypatch
+):
+    cfn, s3 = apis["cloudformation"], apis["s3"]
+    monkeypatch.setattr(artifacts_module, "_boot_identity", lambda: None)
+    manifest["deploymentArtifactDirectory"] = str(deploy.artifacts.resolve())
+    targets = deploy.function_targets(manifest).values()
+    journal = deploy.artifacts / "deployment-update.json"
+    # The stored owner matches the recovery owner exactly, bootId None included.
+    with deployment_module.owner_lock(journal, require_boot_identity=False) as owner:
+        assert owner["bootId"] is None
+        save(
+            journal,
+            {
+                **{key: manifest[key] for key in ("stack", "bucket", "run", "commit")},
+                "recoveryManifest": manifest,
+                "requestToken": "replay-token",
+                "owner": owner,
+                "phase": "SUBMITTING",
+                "fences": {target: "fence-token" for target in targets},
+            },
+        )
+    with pytest.raises(ProvisioningError, match="lacks its original local owner lock"):
+        deployment_module.recover_deployment_update(manifest, deploy.artifacts, apis.__getitem__)
+    cfn.update_stack.assert_not_called()
+    s3.delete_object.assert_not_called()
+    assert journal.is_file()
+
+
+@pytest.mark.skipif(
+    not (sys.platform.startswith("linux") or sys.platform == "darwin"),
+    reason="needs a Linux or macOS boot identity",
+)
+def test_boot_identity_reads_a_stable_value_on_this_host():
+    first, second = _REAL_BOOT_IDENTITY(), _REAL_BOOT_IDENTITY()
+    assert first
+    assert first == second
+
+
+# --- Boot identity: per-platform reading, independent of the real host ---
+
+
+def test_boot_identity_reads_the_linux_boot_id_file(tmp_path, monkeypatch):
+    boot_id_file = tmp_path / "boot_id"
+    boot_id_file.write_text("f47ac10b-58cc-4372-a567-0e02b2c3d479\n")
+    monkeypatch.setattr(artifacts_module, "_boot_identity", _REAL_BOOT_IDENTITY)
+    monkeypatch.setattr(artifacts_module.sys, "platform", "linux")
+    monkeypatch.setattr(artifacts_module, "_LINUX_BOOT_ID_PATH", boot_id_file)
+    assert artifacts_module._boot_identity() == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+
+def test_boot_identity_reads_the_linux_boot_id_file_failure_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(artifacts_module, "_boot_identity", _REAL_BOOT_IDENTITY)
+    monkeypatch.setattr(artifacts_module.sys, "platform", "linux")
+    monkeypatch.setattr(artifacts_module, "_LINUX_BOOT_ID_PATH", tmp_path / "missing-boot-id")
+    assert artifacts_module._boot_identity() is None
+
+
+def test_boot_identity_uses_the_macos_sysctl_value(monkeypatch):
+    monkeypatch.setattr(artifacts_module, "_boot_identity", _REAL_BOOT_IDENTITY)
+    monkeypatch.setattr(artifacts_module.sys, "platform", "darwin")
+    monkeypatch.setattr(artifacts_module, "_macos_boot_session_uuid", lambda: "6F3C1B2A-DARWIN-BOOT-SESSION")
+    assert artifacts_module._boot_identity() == "6F3C1B2A-DARWIN-BOOT-SESSION"
+
+
+def test_boot_identity_on_an_unknown_platform_returns_none(monkeypatch):
+    monkeypatch.setattr(artifacts_module, "_boot_identity", _REAL_BOOT_IDENTITY)
+    monkeypatch.setattr(artifacts_module.sys, "platform", "win32")
+    assert artifacts_module._boot_identity() is None
+
+
+def test_macos_boot_session_uuid_reads_the_sysctl_cli(monkeypatch):
+    completed = Mock(stdout="6F3C1B2A-DARWIN-BOOT-SESSION\n")
+    run = Mock(return_value=completed)
+    monkeypatch.setattr(artifacts_module.subprocess, "run", run)
+    assert artifacts_module._macos_boot_session_uuid() == "6F3C1B2A-DARWIN-BOOT-SESSION"
+    run.assert_called_once_with(
+        ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+
+
+def test_macos_boot_session_uuid_returns_none_when_the_sysctl_cli_fails(monkeypatch):
+    monkeypatch.setattr(
+        artifacts_module.subprocess,
+        "run",
+        Mock(side_effect=OSError("sysctl: command not found")),
+    )
+    assert artifacts_module._macos_boot_session_uuid() is None

@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Bounded real-service driver using the repository's cloud runner."""
 
@@ -132,15 +133,33 @@ class RunnerClient:
 
 class Cloud:
     def __init__(
-        self, manifest, configuration=None, *, artifacts_dir, verify_profile, case_context=None, client_factory=None
+        self,
+        manifest,
+        configuration=None,
+        *,
+        artifacts_dir,
+        verify_profile=None,
+        case_context=None,
+        client_factory=None,
     ):
         self.manifest = manifest
         self.configuration = configuration
         factory = client_factory or client
         self.lam, self.s3, self.logs = (factory(service, manifest["region"]) for service in ("lambda", "s3", "logs"))
         self.single_attempt_fences = client_factory is None
-        self.verify_profile = verify_profile
+        # A missing explicit verifier defaults to the shared profile checks,
+        # bound to the runtime recorded in this deployment's own manifest.
+        self.verify_profile = verify_profile if verify_profile is not None else self._default_verify_profile
         self.events = {}
+        # Set whenever a refresh caches new ledger records; cleared only after
+        # a successful bind while no marker is incomplete (binding from a
+        # partial read could bind a retry as the original).
+        self.binding_deferred = False
+        # Markers whose most recent covering refresh left their listing or
+        # reads incomplete. A marker is removed once a refresh that covers it
+        # reads everything; until then binding skips it, even in refreshes of
+        # other markers (see `refresh`/`_bind_requests`).
+        self._incomplete_markers: set[str] = set()
         self.invocations = []
         self.rejected_markers: set[str] = set()
         self.gates = set()
@@ -152,7 +171,6 @@ class Cloud:
         self._history_lock = Lock()
         self._retiring = False
         self.request_roles: dict[str, str] = {}
-        self.request_launches: dict[str, str] = {}
         self.raw_histories: dict[str, list[dict[str, Any]]] = {}
         self.terminal_histories: set[str] = set()
         self.execution_results: dict[str, dict[str, Any]] = {}
@@ -166,6 +184,12 @@ class Cloud:
         if case_context is not None:
             owner = case_key(case_context.scenario.case_id)
             self.control_prefix = f"runs/{manifest['run']}/cases/{owner}/control/"
+
+    def _default_verify_profile(self, config, scaling, manifest, key) -> None:
+        from aws_durable_execution_conformance_tests.lmi.deployment import verify_profile
+        from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+
+        verify_profile(RuntimeDefinition.from_manifest(manifest), config, scaling, manifest, key)
 
     def _remaining_collection_time(self) -> float | None:
         deadline = getattr(self.case_context, "_collection_deadline", None)
@@ -368,7 +392,6 @@ class Cloud:
                 )
             item["native_requests"].append(event["request"])
             self.request_roles[event["request"]] = role
-            self.request_launches[event["request"]] = launch_id
 
     def verify(self):
         if self.manifest.get("concurrencies") != CONCURRENCIES or set(self.manifest["functions"]) != set(CONCURRENCIES):
@@ -443,7 +466,7 @@ class Cloud:
 
         def before_invoke():
             context = self.case_context
-            before = len(context.attempts) if context is not None else 0
+            recorded = False
             try:
                 if context is not None:
                     context.record_attempt(
@@ -454,14 +477,18 @@ class Cloud:
                         durableExecutionName=execution_name,
                         source="driver-invoke",
                     )
+                    recorded = True
                 self._save(relative, {**journal, "dispatchState": "SUBMITTED"})
-            except BaseException:
-                if (
-                    context is not None
-                    and len(context.attempts) == before + 1
-                    and context.attempts[-1].get("attemptId") == marker
-                ):
-                    context.attempts.pop()
+            except BaseException as error:
+                if context is not None and recorded:
+                    try:
+                        context.withdraw_attempt(marker)
+                    except BaseException as withdraw_error:
+                        # withdraw_attempt restores its own in-memory removal if the
+                        # durable sink rejects it, so the attempt stays journaled
+                        # either way; fail closed on the original error and note
+                        # the secondary failure rather than swallowing it.
+                        error.add_note(f"Failed to withdraw the undispatched attempt: {withdraw_error}")
                 raise
             journal["dispatchState"] = "SUBMITTED"
             self.invocations.append(item)
@@ -600,6 +627,7 @@ class Cloud:
                 raise CollectionError("A shared case cannot read another case's marker")
         root = f"runs/{self.manifest['run']}/events/"
         prefixes = {f"{root}{marker}/": marker for marker in markers} if markers else {root: ""}
+        in_scope_markers = set(prefixes.values())
         missing: dict[str, str] = {}
         failures: list[tuple[str, Exception]] = []
         for prefix, marker in prefixes.items():
@@ -623,6 +651,15 @@ class Cloud:
                         break
             except Exception as error:
                 failures.append((marker, error))
+
+        if missing:
+            # Any newly discovered record can end up cached (self.events)
+            # before a later failure, of any kind, stops this refresh short
+            # of a complete bind. Defer as soon as there is something new to
+            # bind rather than only on the specific budget-expiry branch
+            # below; the deferral is cleared only once a complete,
+            # failure-free bind actually runs.
+            self.binding_deferred = True
 
         def read(key):
             self._check_read_budget(read_transport)
@@ -654,7 +691,11 @@ class Cloud:
                     try:
                         read_transport = self._read_transport("s3", self.s3)
                     except CollectionBudgetExpired as error:
-                        failures.append(("", error))
+                        # Every marker with an unread key is incomplete, so
+                        # binding cannot treat its partial read as complete.
+                        failures.extend(
+                            (marker, error) for marker in dict.fromkeys(missing[key] for key in keys[start:])
+                        )
                         break
                     pending = {key: readers.submit(read, key) for key in keys[start : start + 8]}
                     for key, future in pending.items():
@@ -662,6 +703,15 @@ class Cloud:
                             self.events[key] = future.result()
                         except Exception as error:
                             failures.append((missing[key], error))
+        # A marker is incomplete for binding purposes whenever this call's own
+        # listing or any of its reads failed or went unread (including the
+        # budget-expiry attribution above and the all-budget early raise
+        # below). It is only cleared once its own listing and every one of
+        # its reads succeed in a call that actually covers it; a marker left
+        # out of this call's scope keeps whatever status it already had.
+        failed_markers = {marker for marker, _ in failures} & in_scope_markers
+        self._incomplete_markers |= failed_markers
+        self._incomplete_markers -= in_scope_markers - failed_markers
         events = list(self.events.values())
         budget_errors = [error for _, error in failures if isinstance(error, CollectionBudgetExpired)]
         if budget_errors and all(isinstance(error, CollectionBudgetExpired) for _, error in failures):
@@ -670,10 +720,13 @@ class Cloud:
             raise budget_errors[0]
         self.check_active()
         try:
-            if failures:
-                self._bind_requests(events, {marker for marker, _ in failures})
-            else:
-                self._bind_requests(events)
+            # Bind over the whole event cache, but always skip every marker
+            # this or any earlier call left incomplete: a cached retry for a
+            # still-incomplete marker must never be bound as its original
+            # request just because an unrelated marker's refresh succeeded.
+            self._bind_requests(events, self._incomplete_markers)
+            if not self._incomplete_markers:
+                self.binding_deferred = False
         except CollectionError as error:
             failures.append(("", error))
         if failures:

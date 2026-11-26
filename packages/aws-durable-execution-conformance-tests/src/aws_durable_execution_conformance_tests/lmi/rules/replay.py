@@ -292,6 +292,56 @@ def replay(view: CaseView) -> None:
             view.error("side-effect count differs from the fixture's retry policy", "ASSERTION")
 
 
+def _pending_decision_times(attempts: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]]):
+    """The wrapper return and the SDK's own PENDING decision for each suspended request.
+
+    Mirrors ``observations._pending_native_decisions``: a request's single
+    ``invocation_end`` observation with outcome ``PENDING`` is the decision
+    time when it falls inside ``[startedAtMs, wrapper_return]``. Repeats of the
+    same source observation (same source and capture sequence and value) count
+    once: cleanup reconciliation concatenates the events of every snapshot, and
+    each snapshot repeats the frozen observation. Otherwise the
+    wrapper return itself is the decision, since that is the latest point the
+    wrapper could have observed and published the suspension. The wrapper
+    return is always returned separately: it still bounds when the
+    suspension's checkpoint dispatch must have happened.
+    """
+    by_request = {attempt["requestId"]: attempt for attempt in attempts}
+    wrapper_returns = {
+        event["requestId"]: event["atMs"]
+        for event in events
+        if event.get("kind") == "wrapper_return"
+        and event.get("requestId") in by_request
+        and by_request[event["requestId"]].get("outcome") == "PENDING"
+        and type(event.get("atMs")) in (int, float)
+    }
+    invocation_ends: dict[Any, list[Any]] = {}
+    for event in events:
+        request_id = event.get("requestId")
+        if event.get("kind") == "invocation_end" and isinstance(request_id, str) and request_id in wrapper_returns:
+            invocation_ends.setdefault(request_id, []).append(event)
+    decisions = {}
+    for request_id, wrapper_at in wrapper_returns.items():
+        started = by_request[request_id]["startedAtMs"]
+        decision = wrapper_at
+        candidates: list[tuple[Any, Any, Any, Any]] = []
+        for item in invocation_ends.get(request_id, []):
+            observed = (
+                item.get("sourceSequence"),
+                item.get("captureSequence"),
+                item.get("outcome"),
+                item.get("atMs"),
+            )
+            if observed not in candidates:
+                candidates.append(observed)
+        if len(candidates) == 1 and candidates[0][2] == "PENDING":
+            at = candidates[0][3]
+            if type(at) in (int, float) and started <= at <= wrapper_at:
+                decision = at
+        decisions[request_id] = (wrapper_at, decision)
+    return decisions
+
+
 def completed_suspension_checkpoint(
     attempts: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
@@ -300,23 +350,17 @@ def completed_suspension_checkpoint(
 ) -> bool:
     by_request = {attempt["requestId"]: attempt for attempt in attempts}
     by_id = {operation.get("id"): operation for operation in checkpoints}
-    suspensions = {
-        event["requestId"]: event["atMs"]
-        for event in events
-        if event.get("kind") == "wrapper_return"
-        and event.get("requestId") in by_request
-        and by_request[event["requestId"]].get("outcome") == "PENDING"
-        and type(event.get("atMs")) in (int, float)
-    }
+    decisions = _pending_decision_times(attempts, events)
     for request in requests:
         request_id, at = request.get("requestId"), request.get("atMs")
+        if not isinstance(request_id, str) or request_id not in decisions:
+            continue
+        wrapper_at, decision = decisions[request_id]
         if (
-            not isinstance(request_id, str)
-            or request_id not in suspensions
-            or request.get("method") != "CheckpointDurableExecution"
+            request.get("method") != "CheckpointDurableExecution"
             or request.get("outcome") != "DISPATCHED"
             or type(at) not in (int, float)
-            or not by_request[request_id]["startedAtMs"] <= at <= suspensions[request_id]
+            or not by_request[request_id]["startedAtMs"] <= at <= wrapper_at
             or not isinstance(request.get("updates"), list)
         ):
             continue
@@ -334,7 +378,7 @@ def completed_suspension_checkpoint(
                 operation.get("type") == update["type"]
                 and operation.get("status") == "SUCCEEDED"
                 and type(ended) in (int, float)
-                and suspensions[request_id] < ended
+                and decision < ended
                 and any(later["startedAtMs"] >= ended for later in attempts)
             ):
                 return True
@@ -348,7 +392,9 @@ def replay_checkpoint_timing(
     observed_ends: Mapping[str, set[int | float]] | None = None,
 ) -> tuple[bool, bool]:
     """Return whether a completed checkpoint is omitted or ends after suspension."""
-    before_ids = {operation.get("id") for operation in before}
+    # Non-string IDs are reported elsewhere; skipping them keeps an unhashable
+    # ID from hiding the other findings.
+    before_ids = {operation["id"] for operation in before if isinstance(operation.get("id"), str)}
 
     def times(operation: Mapping[str, Any]) -> set[int | float]:
         operation_id = operation.get("id")
@@ -362,7 +408,8 @@ def replay_checkpoint_timing(
 
     omitted = any(
         operation.get("status") in COMPLETED_OPERATION_STATUSES
-        and operation.get("id") not in before_ids
+        and isinstance(operation.get("id"), str)
+        and operation["id"] not in before_ids
         and any(end <= pending_at for end in times(operation))
         for operation in after
     )
@@ -726,9 +773,12 @@ def _cleanup_checkpoint_errors(
                 continue
             for operation in records(history.get("operations")):
                 operation_id = operation.get("id")
-                if isinstance(operation_id, str) and operation_id.strip():
-                    history_ids.add(operation_id)
-                    observations.setdefault(operation_id, []).append(("history", operation))
+                # Collection shape-checks only the retirement snapshot's histories.
+                if not isinstance(operation_id, str) or not operation_id.strip():
+                    findings.append("INCOMPLETE: cleanup history checkpoint lacks an operation ID")
+                    continue
+                history_ids.add(operation_id)
+                observations.setdefault(operation_id, []).append(("history", operation))
 
     for operation_id, observed in observations.items():
         identity: dict[str, Any] = {"id": operation_id}

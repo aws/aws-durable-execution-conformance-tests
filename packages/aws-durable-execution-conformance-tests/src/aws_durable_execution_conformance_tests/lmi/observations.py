@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Language-neutral source selection and runtime-specific placement models."""
 
@@ -134,8 +135,9 @@ def suspension_resumptions(
             if kind in operation:
                 duplicate_waits.add(identity)
             operation[kind] = at
+    decisions = list(_pending_native_decisions(ledger, history))
     resumed: dict[str, set[str]] = {}
-    for start, pending, end in _pending_native_decisions(ledger, history):
+    for _, pending, end in decisions:
         candidates = sorted(
             (native_start, request)
             for request, (native_start, _) in intervals.items()
@@ -144,11 +146,18 @@ def suspension_resumptions(
         if not candidates or (len(candidates) > 1 and candidates[0][0] == candidates[1][0]):
             continue
         resumed_at, request = candidates[0]
+        # The wait may have started in this invocation or in an earlier one that
+        # also returned PENDING: a wait still outstanding across an intermediate
+        # resume (another operation's retry, say) wakes the execution here.
         waking = {
             identity
             for identity, pair in waits.items()
             if identity not in duplicate_waits
-            and start <= pair.get(start_kind, -1) <= pending < pair.get(completion_kind, -1) <= resumed_at
+            and pending < pair.get(completion_kind, -1) <= resumed_at
+            and any(
+                window_start <= pair.get(start_kind, -1) <= window_pending <= pending
+                for window_start, window_pending, _ in decisions
+            )
         }
         if waking:
             resumed.setdefault(request, set()).update(waking)

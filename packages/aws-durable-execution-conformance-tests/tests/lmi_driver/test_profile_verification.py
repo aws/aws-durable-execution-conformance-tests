@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Preparation verifies each selected target independently."""
 
@@ -10,18 +11,28 @@ from botocore.exceptions import ClientError
 
 from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
+from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
 from aws_durable_execution_conformance_tests.lmi.coordinator import Profile
 from aws_durable_execution_conformance_tests.lmi.errors import ProvisioningError
 from aws_durable_execution_conformance_tests.lmi.runtime import CONCURRENCIES, QUALIFIER
+
+from .support import RUNTIME
 
 
 @pytest.fixture
 def verification(tmp_path):
     deployment = {
+        **RUNTIME.to_manifest(),
         "region": "us-west-2",
         "run": "run",
         "bucket": "evidence",
         "commit": "sdk",
+        "runtime": "python3.14",
+        "role": "role",
+        "provider": "provider",
+        "codeSha256": "code",
+        "invocationTimeout": 60,
+        "executionTimeout": 240,
         "functions": {
             key: f"arn:aws:lambda:us-west-2:123456789012:function:lmi-{key}:{QUALIFIER}" for key in CONCURRENCIES
         },
@@ -86,16 +97,17 @@ def test_failed_profile_does_not_fail_healthy_adapter_preparation(verification, 
     lam.get_function_configuration.side_effect = get_configuration
     verify_profile.side_effect = validate
     adapter = SharedAdapter(
-        {"sdk": {"deployment": deployment, "artifacts_dir": str(tmp_path)}},
+        {"runtime": "python", "sdk": {"deployment": deployment, "artifacts_dir": str(tmp_path)}},
         evidence_builder=Mock(),
         cloud_factory=factory,
         driver_factory=Mock(),
-        configuration_identity=lambda manifest, key: key,
     )
 
     async def prepare():
         for key, native in CONCURRENCIES.items():
-            profile = Profile(key, deployment["functions"][key], native, native, "sdk", key)
+            profile = Profile(
+                key, deployment["functions"][key], native, native, "sdk", configuration_identity(deployment, key)
+            )
             if key == "c1":
                 with pytest.raises(ProvisioningError, match="c1"):
                     await adapter.prepare(profile)

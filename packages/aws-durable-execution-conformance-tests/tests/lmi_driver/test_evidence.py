@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 import copy
 
 import pytest
@@ -128,6 +131,41 @@ def test_replacement_worker_correlation_is_preserved():
     assert "outcome" not in attempts[0]
     assert attempts[0]["replacesWorkerId"] == "retired-worker"
     assert attempts[0]["workerId"] == "p"
+
+
+def test_binding_selected_worker_identity_key_is_validated_like_process():
+    """A ``workerIdentity: worker`` binding must not raise when a raw WRAPPER_ENTER
+    event omits ``worker``; CaseSources validates it exactly like ``process``.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
+
+    from .test_shared_partial_evidence import context
+
+    binding = FixtureBinding(fixtures={}, failure_error_type="ValueError", worker_identity="worker")
+    ctx = context()
+    cloud = SimpleNamespace(
+        manifest={"commit": "commit"},
+        invocations=[{"marker": "m", "payload": {"scenario": "barrier"}}],
+        request_roles={"r1": "victim"},
+        raw_histories={},
+    )
+    case_sources = CaseSources(
+        ctx,
+        cast("Any", cloud),
+        tuple([raw_record("WRAPPER_ENTER", 1)]),
+        expected_outcome=lambda item, scenario: {"status": "SUCCEEDED"},
+        worker_identity=lambda raw: raw[binding.worker_identity],
+        worker_identity_key=binding.worker_identity,
+    )
+    ctx.record_attempt("r1", role="victim", requestId="r1")
+    events = [{"kind": "wrapper_return", "requestId": "r1", "atMs": 20, "outcome": "SUCCEEDED"}]
+    attempts, _, errors = case_sources.attempts(events)
+    assert attempts == []
+    assert any("Invalid WRAPPER_ENTER identity or time" in error for error in errors)
 
 
 def retry_body(request, attempt, at_ms):

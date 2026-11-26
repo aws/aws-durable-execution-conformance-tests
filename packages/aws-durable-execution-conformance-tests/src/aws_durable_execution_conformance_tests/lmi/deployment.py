@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Reusable persistent LMI stack deployment; runtime/build choices are caller-owned."""
 
@@ -30,6 +31,36 @@ from .errors import CollectionError, ProvisioningError
 from .quarantine import FenceRetryUncertain, acquire_fence, fence_matches, read_fence, release_fence
 from .runtime import CONCURRENCIES, MEMORY_GIB_PER_VCPU, QUALIFIER, SCALING, RuntimeDefinition
 from .service import OUTSTANDING_EXECUTION_STATUSES, client, definitive_s3_write_rejection, retryable_read_error
+
+
+def verify_profile(runtime: RuntimeDefinition, config, scaling, manifest, key) -> None:
+    """Check one deployed function's readback against its manifest and runtime.
+
+    Shared by ``DeploymentManager.verify`` (the deploying SDK) and the default
+    ``Cloud`` verifier (derived from the recorded ``RuntimeDefinition``), so both
+    paths apply exactly the same profile checks.
+    """
+    actual = config.get("CapacityProviderConfig", {}).get("LambdaManagedInstancesCapacityProviderConfig", {})
+    checks = [
+        actual.get("CapacityProviderArn") == manifest["provider"],
+        actual.get("PerExecutionEnvironmentMaxConcurrency") == manifest["concurrencies"][key],
+        actual.get("ExecutionEnvironmentMemoryGiBPerVCpu") == MEMORY_GIB_PER_VCPU,
+        config.get("Runtime") == manifest["runtime"],
+        config.get("Role") == manifest["role"],
+        config.get("Handler") == runtime.handler,
+        not config.get("Layers", []),
+        config.get("Environment", {}).get("Variables") == DeploymentManager.environment(manifest),
+        config.get("Architectures") == [runtime.architecture],
+        config.get("Version") == QUALIFIER,
+        config.get("CodeSha256") == manifest["codeSha256"],
+        config.get("MemorySize") == runtime.memory_size,
+        config.get("State") == "Active",
+        config.get("DurableConfig", {}).get("ExecutionTimeout") == manifest["executionTimeout"],
+        config.get("Timeout") == manifest["invocationTimeout"],
+        scaling.get("AppliedFunctionScalingConfig") == SCALING,
+    ]
+    if not all(checks):
+        raise ProvisioningError(f"{key}: LMI configuration/artifact/scaling readback mismatch")
 
 
 class DeploymentManager:
@@ -203,27 +234,7 @@ class DeploymentManager:
         }
 
     def verify(self, config, scaling, manifest, key):
-        actual = config.get("CapacityProviderConfig", {}).get("LambdaManagedInstancesCapacityProviderConfig", {})
-        checks = [
-            actual.get("CapacityProviderArn") == manifest["provider"],
-            actual.get("PerExecutionEnvironmentMaxConcurrency") == manifest["concurrencies"][key],
-            actual.get("ExecutionEnvironmentMemoryGiBPerVCpu") == MEMORY_GIB_PER_VCPU,
-            config.get("Runtime") == manifest["runtime"],
-            config.get("Role") == manifest["role"],
-            config.get("Handler") == self.runtime.handler,
-            not config.get("Layers", []),
-            config.get("Environment", {}).get("Variables") == self.environment(manifest),
-            config.get("Architectures") == [self.runtime.architecture],
-            config.get("Version") == QUALIFIER,
-            config.get("CodeSha256") == manifest["codeSha256"],
-            config.get("MemorySize") == self.runtime.memory_size,
-            config.get("State") == "Active",
-            config.get("DurableConfig", {}).get("ExecutionTimeout") == manifest["executionTimeout"],
-            config.get("Timeout") == manifest["invocationTimeout"],
-            scaling.get("AppliedFunctionScalingConfig") == SCALING,
-        ]
-        if not all(checks):
-            raise ProvisioningError(f"{key}: LMI configuration/artifact/scaling readback mismatch")
+        verify_profile(self.runtime, config, scaling, manifest, key)
 
     def deploy(self, args):
         if not args.run_id or not re.fullmatch(r"[a-z0-9-]{1,24}", args.run_id):
@@ -770,7 +781,10 @@ def recover_deployment_update(manifest, artifacts: Path, client_factory) -> str 
     journal = artifacts / "deployment-update.json"
     if not journal.is_file():
         return None
-    with owner_lock(journal) as owner:
+    # Recovery, not a new write: a SETTLED (or relocatable-settled) journal needs
+    # only the flock. same_owner_lock's falsy check refuses an uncertain record
+    # when no boot identity could be established here.
+    with owner_lock(journal, require_boot_identity=False) as owner:
         if not journal.is_file():
             return None
         return _recover_deployment_update(manifest, artifacts, client_factory, journal, owner)

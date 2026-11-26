@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """The shared AWS driver's bridge to the LMI scenario coordinator, which trusts what it reports."""
 
@@ -16,16 +17,38 @@ from typing import Any, Protocol
 
 from aws_durable_execution_conformance_tests.lmi.artifacts import case_key, owner_lock, save
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
+from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Profile,
     ScenarioContext,
+    _await_without_cancelling,
 )
 from aws_durable_execution_conformance_tests.lmi.errors import (
     CollectionBudgetExpired,
     CollectionError,
     ProvisioningError,
 )
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
+from aws_durable_execution_conformance_tests.lmi.source_evidence import binding_evidence_builder
+
+# "marker": UTF-8 marker bytes (today's str.encode). "json-marker": the marker
+# string JSON-encoded before being sent as the callback payload.
+_CALLBACK_ENCODERS: dict[str, Callable[[str], bytes]] = {
+    "marker": str.encode,
+    "json-marker": lambda marker: json.dumps(marker).encode(),
+}
+
+
+def _binding_driver_factory(binding: FixtureBinding, runtime: str) -> Callable[..., ScenarioDriver]:
+    """Build a ``driver_factory(context, cloud, **options)`` driven by a FixtureBinding."""
+
+    def factory(context: ScenarioContext, cloud: Cloud, **options: Any) -> ScenarioDriver:
+        options.setdefault("callback_encoder", _CALLBACK_ENCODERS[binding.callback_payload])
+        options.setdefault("suspension_mode", binding.suspension)
+        return ScenarioDriver(context, cloud, runtime=runtime, fixtures=dict(binding.fixtures), **options)
+
+    return factory
 
 
 def _only_undispatched_journals(cloud: Cloud, context: ScenarioContext) -> bool:
@@ -67,7 +90,7 @@ class _CoordinatorLoopContext:
     Every other attribute is the context's own.
     """
 
-    _LOOP_METHODS = frozenset({"record_attempt", "record_service_attempt", "update_attempt"})
+    _LOOP_METHODS = frozenset({"record_attempt", "record_service_attempt", "update_attempt", "withdraw_attempt"})
 
     def __init__(self, context: ScenarioContext, loop: asyncio.AbstractEventLoop) -> None:
         object.__setattr__(self, "_context", context)
@@ -109,7 +132,7 @@ class _Case:
         try:
             # Keep the worker task alive on outer cancellation so retirement can
             # join the actual thread before issuing cleanup writes.
-            return await asyncio.shield(self.worker)
+            return await _await_without_cancelling(self.worker)
         except asyncio.CancelledError:
             self.driver.cloud.cancel()
             raise
@@ -117,7 +140,7 @@ class _Case:
     async def prepare_retirement(self) -> None:
         if self.worker is not None:
             try:
-                await asyncio.shield(self.worker)
+                await _await_without_cancelling(self.worker)
             except Exception:
                 # The coordinator retains the original phase error; this only
                 # confirms its service-call worker has really stopped.
@@ -129,28 +152,42 @@ class _Case:
 
 
 class SharedAdapter:
-    """Each shared case has one Cloud, worker, control namespace and evidence sink."""
+    """Each shared case has one Cloud, worker, control namespace and evidence sink.
+
+    ``cloud_factory``, ``driver_factory`` and ``evidence_builder`` are internal test
+    seams only: production code always builds them from the plan's own
+    ``sdk.deployment`` runtime/fixture binding, never from an SDK-supplied override.
+    """
 
     def __init__(
         self,
         manifest: Mapping[str, Any],
         *,
-        evidence_builder: EvidenceBuilder,
-        cloud_factory: Callable[..., Cloud],
-        driver_factory: Callable[..., ScenarioDriver],
-        configuration_identity: Callable[[Mapping[str, Any], str], str],
+        evidence_builder: EvidenceBuilder | None = None,
+        cloud_factory: Callable[..., Cloud] | None = None,
+        driver_factory: Callable[..., ScenarioDriver] | None = None,
     ) -> None:
         self.manifest = deepcopy(dict(manifest))
         self.sdk = self.manifest["sdk"]
         self.deployment = self.sdk["deployment"]
         self.artifacts_dir = Path(self.sdk["artifacts_dir"])
+        self.cloud_factory = cloud_factory or Cloud
+        # Only derive the binding (and parse the deployment's runtime) when a
+        # built-in default is actually needed; test seams that already supply
+        # both factories never require a real, binding-carrying deployment.
+        if evidence_builder is None or driver_factory is None:
+            binding = RuntimeDefinition.from_manifest(self.deployment).binding
+            runtime_name = self.manifest["runtime"]
+            evidence_builder = evidence_builder or binding_evidence_builder(binding, runtime_name)
+            driver_factory = driver_factory or _binding_driver_factory(binding, runtime_name)
         self.evidence_builder = evidence_builder
-        self.cloud_factory = cloud_factory
         self.driver_factory = driver_factory
-        self.configuration_identity = configuration_identity
         self.cases: dict[str, _Case] = {}
         self.prepared_clouds: dict[str, tuple[Cloud, str]] = {}
         self.preparation_workers: dict[str, asyncio.Task[tuple[Cloud, str]]] = {}
+        # Cases proven to have done no work before `start` failed and deleted
+        # them; `collect_partial` still gets called for these during cleanup.
+        self.no_work_cases: set[str] = set()
 
     async def prepare(self, profile: Profile) -> None:
         def verify() -> tuple[Cloud, str]:
@@ -159,7 +196,7 @@ class SharedAdapter:
             key = next(key for key, arn in self.deployment["functions"].items() if arn == profile.resource_id)
             if self.deployment["concurrencies"][key] != profile.native_concurrency:
                 raise ProvisioningError("Native concurrency differs from the shared profile")
-            if profile.configuration_id != self.configuration_identity(self.deployment, key):
+            if profile.configuration_id != configuration_identity(self.deployment, key):
                 raise ProvisioningError("Shared configuration identity differs from the deployed fixture")
             cloud = self.cloud_factory(self.deployment, key, artifacts_dir=self.artifacts_dir / "configuration")
             from .quarantine import FenceRetryUncertain, acquire_fence, release_fence
@@ -229,7 +266,7 @@ class SharedAdapter:
         worker = asyncio.create_task(asyncio.to_thread(verify))
         self.preparation_workers[resource] = worker
         try:
-            self.prepared_clouds[resource] = await asyncio.shield(worker)
+            self.prepared_clouds[resource] = await _await_without_cancelling(worker)
         except asyncio.CancelledError:
             # Finish must still join the thread and recover a fence acquired
             # after the coordinator cancelled the provisioning phase.
@@ -257,14 +294,22 @@ class SharedAdapter:
             raise ProvisioningError("Case target is outside the owned deployment")
         owner = case_key(context.scenario.case_id)
         threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
-        cloud = await asyncio.to_thread(
-            self.cloud_factory,
-            self.deployment,
-            key,
-            artifacts_dir=self.artifacts_dir / "cases" / owner,
-            case_context=threaded,
-        )
-        driver = self.driver_factory(threaded, cloud)
+        try:
+            cloud = await asyncio.to_thread(
+                self.cloud_factory,
+                self.deployment,
+                key,
+                artifacts_dir=self.artifacts_dir / "cases" / owner,
+                case_context=threaded,
+            )
+            driver = self.driver_factory(threaded, cloud)
+        except Exception:
+            # Either Cloud itself failed to construct, or it did but the
+            # driver failed before this case was ever registered. Either way
+            # no case work (no service I/O, no driver.start) could have run
+            # yet, so collect_partial must skip this case too.
+            self.no_work_cases.add(context.scenario.case_id)
+            raise
         case = self.cases[context.scenario.case_id] = _Case(driver)
         try:
             await case.call(driver.start)
@@ -280,6 +325,7 @@ class SharedAdapter:
                 or not _only_undispatched_journals(cloud, context)
             ):
                 del self.cases[context.scenario.case_id]
+                self.no_work_cases.add(context.scenario.case_id)
             raise
 
     async def place(self, context: ScenarioContext) -> None:
@@ -301,6 +347,11 @@ class SharedAdapter:
 
     async def collect_partial(self, context: ScenarioContext) -> dict[str, Any]:
         """Retain a failed phase's facts before release, without awaiting cleanup."""
+        case_id = context.scenario.case_id
+        if case_id in self.no_work_cases and case_id not in self.cases:
+            # `start` already proved this case never did any work and deleted
+            # it; there is nothing to collect and no service call to make.
+            return {}
         case = self._case(context)
 
         def capture() -> dict[str, Any]:
@@ -394,7 +445,7 @@ class SharedAdapter:
         if worker is not None:
             # The provisioning phase already reports failures from this worker.
             with suppress(Exception):
-                self.prepared_clouds[resource] = await asyncio.shield(worker)
+                self.prepared_clouds[resource] = await _await_without_cancelling(worker)
             del self.preparation_workers[resource]
         prepared = self.prepared_clouds.get(resource)
         if prepared is None or not quiescent:
