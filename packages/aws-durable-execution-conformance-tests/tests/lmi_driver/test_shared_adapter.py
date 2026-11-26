@@ -1834,55 +1834,10 @@ def test_callback_uses_same_execution_and_actual_pending_before_response(
     runner.send_callback_success.assert_called_once_with("callback-id", result=encoded_marker)
 
 
-@pytest.mark.parametrize("durable_wait", [True, False])
-def test_wait_only_suspension_selects_native_timer_proof(durable_wait):
-    from aws_durable_execution_conformance_tests.lmi.observations import wait_crossed_suspension
-
+def test_wait_only_suspension_never_sends_a_callback():
+    # test_wait_crossed_suspension_uses_the_sdk_pending_decision pins the
+    # service-side timer proof this mode relies on.
     cloud = ScriptCloud()
-    ledger = [
-        *cloud.for_item(None),
-        {
-            "phase": "CONFORMANCE",
-            "request": "first",
-            "observation": {
-                "kind": "invocation_end",
-                "outcome": "PENDING",
-                "atMs": 900,
-            },
-        },
-    ]
-    history: list[dict[str, Any]] = [
-        {
-            "EventType": "InvocationCompleted",
-            "InvocationCompletedDetails": {
-                "RequestId": "first",
-                "StartTimestamp": 0,
-                "EndTimestamp": 1.1,
-            },
-        },
-        {
-            "EventType": "InvocationCompleted",
-            "InvocationCompletedDetails": {
-                "RequestId": "second",
-                "StartTimestamp": 2,
-                "EndTimestamp": 3,
-            },
-        },
-        {
-            "EventType": "StepFailed",
-            "Id": "retry",
-            "StepFailedDetails": {"RetryDetails": {"NextAttemptDelaySeconds": 1}},
-        },
-    ]
-    if durable_wait:
-        history.extend(
-            [
-                {"EventType": "WaitStarted", "Id": "timer", "EventTimestamp": 0.8},
-                # Timer elapses during wrapper teardown, after the SDK's PENDING decision.
-                {"EventType": "WaitSucceeded", "Id": "timer", "EventTimestamp": 0.95},
-            ]
-        )
-    assert wait_crossed_suspension(ledger, history) is durable_wait
     driver = ScenarioDriver(context(), cloud, suspension_mode="wait")
     driver.start()
     driver.execute()
@@ -1981,6 +1936,85 @@ def test_suspension_resumptions_rejects_wakeup_completing_after_resume_started()
     # Completes at 6.5, after C (the resume) already started at 6.
     ledger, history = _carryover_ledger_and_history(wakeup_at=6.5, waking_event_type="Wait")
     assert suspension_resumptions(ledger, history, "wait") == {}
+
+
+def _teardown_ledger_and_history(*, decision_observed=True):
+    """first returns PENDING at 1s and its invocation ends at 1.1s; second resumes at 2s.
+
+    With ``decision_observed`` the SDK reports its PENDING decision at 900ms,
+    so work completing during wrapper teardown follows the decision.
+    """
+    ledger: list[dict[str, Any]] = [
+        {"phase": "WRAPPER_RETURN", "status": "PENDING", "time": 1, "request": "first"},
+        {"phase": "WRAPPER_ENTER", "request": "first"},
+        {"phase": "WRAPPER_ENTER", "request": "second"},
+    ]
+    if decision_observed:
+        ledger.append(
+            {
+                "phase": "CONFORMANCE",
+                "request": "first",
+                "observation": {"kind": "invocation_end", "outcome": "PENDING", "atMs": 900},
+            }
+        )
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "first", "StartTimestamp": 0, "EndTimestamp": 1.1},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "second", "StartTimestamp": 2, "EndTimestamp": 3},
+        },
+        {
+            "EventType": "StepFailed",
+            "Id": "retry",
+            "StepFailedDetails": {"RetryDetails": {"NextAttemptDelaySeconds": 1}},
+        },
+    ]
+    return ledger, history
+
+
+@pytest.mark.parametrize(
+    ("durable_wait", "decision_observed", "crossed"),
+    [
+        # The timer elapses during wrapper teardown, after the SDK's PENDING decision.
+        (True, True, True),
+        # Only a backoff suspended the execution.
+        (False, True, False),
+        # Without the SDK's decision the wrapper return bounds it, and the timer elapsed first.
+        (True, False, False),
+    ],
+)
+def test_wait_crossed_suspension_uses_the_sdk_pending_decision(durable_wait, decision_observed, crossed):
+    from aws_durable_execution_conformance_tests.lmi.observations import wait_crossed_suspension
+
+    ledger, history = _teardown_ledger_and_history(decision_observed=decision_observed)
+    if durable_wait:
+        history += [
+            {"EventType": "WaitStarted", "Id": "timer", "EventTimestamp": 0.8},
+            {"EventType": "WaitSucceeded", "Id": "timer", "EventTimestamp": 0.95},
+        ]
+    assert wait_crossed_suspension(ledger, history) is crossed
+
+
+@pytest.mark.parametrize(
+    ("started_at", "decision_observed", "selected"), [(0.85, True, True), (0.95, True, False), (0.95, False, True)]
+)
+def test_pending_callback_must_start_by_the_sdk_pending_decision(started_at, decision_observed, selected):
+    from aws_durable_execution_conformance_tests.lmi.observations import pending_callback
+
+    ledger, history = _teardown_ledger_and_history(decision_observed=decision_observed)
+    history.append(
+        {
+            "EventType": "CallbackStarted",
+            "Name": "completion",
+            "Id": "callback",
+            "EventTimestamp": started_at,
+            "CallbackStartedDetails": {"CallbackId": "token"},
+        }
+    )
+    assert pending_callback(ledger, history, "completion") == ("token" if selected else None)
 
 
 def test_each_case_has_independent_artifact_namespace(monkeypatch, tmp_path):
