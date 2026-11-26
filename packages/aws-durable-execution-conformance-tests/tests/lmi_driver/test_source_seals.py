@@ -694,16 +694,36 @@ def test_observation_scope_does_not_need_a_post_cutoff_retry_seal(tmp_path):
     assert final["collection"]["watermarks"] == {}
 
 
-def test_malformed_task_id_does_not_hide_verified_resources(tmp_path):
+def _malformed_task_id_source(tmp_path):
     ctx, cloud = cloud_source(tmp_path, {"kind": "task_start", "taskId": [], "atMs": 410})
     cloud.raw_histories["execution"].append(
         {"EventType": "CallbackStarted", "Id": "callback-operation", "EventTimestamp": 0.2}
     )
-    cloud.refresh = lambda **_: list(cloud.events.values())
-    assert not ScenarioDriver(ctx, cloud).quiescent()
+    return ctx, cloud
+
+
+def test_malformed_task_id_does_not_hide_verified_resources(tmp_path):
+    ctx, cloud = _malformed_task_id_source(tmp_path)
     evidence = build_evidence(ctx, cloud, phase="partial")
     assert any("native at sequence 6 has invalid taskId" in message for message in evidence["collectionErrors"])
     assert {row["kind"] for row in evidence["resourcesCreated"]} == {"invocation", "execution", "callback"}
+
+
+def test_malformed_task_id_keeps_the_driver_from_quiescing():
+    from .test_shared_adapter import seal_fixture_events, settled_cloud
+
+    driver, events = settled_cloud()
+    assert driver.quiescent()
+    events.append(
+        {
+            "phase": "CONFORMANCE",
+            "request": "native",
+            "execution": "execution",
+            "observation": {"kind": "task_start", "taskId": [], "requestId": "native"},
+        }
+    )
+    seal_fixture_events(events)
+    assert not driver.quiescent()
 
 
 @pytest.mark.parametrize("missing_end", [False, True])
@@ -1219,3 +1239,182 @@ def test_sealed_stream_without_wrapper_is_an_observation_error(tmp_path):
 
     assert any("ledger seal but no wrapper entry" in error for error in evidence["collectionErrors"])
     assert not evidence["collection"]["watermarks"]
+
+
+def _late_retry_source(tmp_path):
+    """A normal-return victim whose sealed, journaled service retry starts after the 1000ms cutoff."""
+    from aws_durable_execution_conformance_tests.lmi.coordinator import Scenario
+
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "root_completed", "outcome": "SUCCEEDED", "atMs": 290},
+        {"kind": "admission_probe", "probe": "operation", "outcome": "REJECTED", "atMs": 410},
+        {"kind": "admission_probe", "probe": "checkpoint", "outcome": "REJECTED", "atMs": 411},
+    )
+    ctx.scenario = Scenario(
+        "case",
+        "lmi-lifecycle-2",
+        ctx.profile.profile_id,
+        "normal-return",
+        roles=("victim",),
+        coverage_profile="standard",
+    )
+    cloud.manifest["conformanceRevision"] = "conformance"
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
+    ctx.record_attempt(
+        "late-attempt",
+        role="victim",
+        requestId="late-retry",
+        executionArn="execution",
+        source="service-observed",
+        nativeStartedAtMs=1100,
+    )
+    retry = raw_stream(
+        {"kind": "wrapper_enter", "atMs": 1100},
+        {"kind": "task_start", "taskId": "root", "atMs": 1110},
+        {"kind": "task_exit", "taskId": "root", "atMs": 1290},
+        {"kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": 1295},
+    )
+    for row in retry:
+        row.update(request="late-retry", time=max(row["time"], 1.1))
+        cloud.events[f"late-retry/{row['sequence']}"] = row
+    cloud.request_roles["late-retry"] = "victim"
+    cloud.invocations[0]["native_requests"].append("late-retry")
+    cloud.raw_histories["execution"].append(
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 4,
+            "InvocationCompletedDetails": {"RequestId": "late-retry", "StartTimestamp": 1.1, "EndTimestamp": 1.3},
+        }
+    )
+    return ctx, cloud
+
+
+def test_deferred_service_retry_is_proven_by_independent_retirement(tmp_path):
+    from copy import deepcopy
+
+    from aws_durable_execution_conformance_tests.lmi.adjudication import evaluate_evidence
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_common_evidence
+
+    ctx, cloud = _late_retry_source(tmp_path)
+    frozen = build_evidence(ctx, cloud)
+    assert frozen["collection"]["deferredServiceRequests"] == [{"requestId": "late-retry", "executionArn": "execution"}]
+    assert [attempt["requestId"] for attempt in frozen["attempts"]] == ["native"]
+    assert any("independent retirement audit" in error for error in validate_evidence(frozen, phase="final"))
+    # Retirement reads sources again after the late retry has completed.
+    cloud.observation_ended_at = 1.4
+    final = build_evidence(ctx, cloud, phase="final")
+    assert {attempt["requestId"]: attempt["startedAtMs"] for attempt in final["attempts"]} == {
+        "native": 100,
+        "late-retry": 1100,
+    }
+
+    def common(evidence, *, phase="final"):
+        return validate_common_evidence(evidence, phase=phase)
+
+    def adjudicate(frozen_evidence, retirement_evidence, validator=None):
+        return evaluate_evidence(
+            frozen_evidence,
+            retirement_evidence=retirement_evidence,
+            cleanup_evidence={},
+            attempts=ctx.attempts,
+            standard=True,
+            validator=validator,
+        )
+
+    for validator in (None, common):
+        assert adjudicate(frozen, final, validator) == []
+    phantom = deepcopy(frozen)
+    phantom["collection"]["deferredServiceRequests"].append({"requestId": "phantom", "executionArn": "execution"})
+    early = deepcopy(final)
+    next(row for row in early["attempts"] if row["requestId"] == "late-retry")["startedAtMs"] = 1000
+    for validator in (None, common):
+        assert (
+            "INCOMPLETE: independent retirement requests must match the frozen and deferred inventories"
+            in adjudicate(phantom, final, validator)
+        )
+        assert "INCOMPLETE: Retirement did not prove deferred service request late-retry started after the cutoff" in (
+            adjudicate(frozen, early, validator)
+        )
+    concealed = deepcopy(frozen)
+    del concealed["collection"]["deferredServiceRequests"]
+    assert "INCOMPLETE: frozen observations do not cover all client-journaled launches" in adjudicate(concealed, final)
+
+
+@pytest.mark.parametrize("proof", ["sealed", "unsealed", "no-completion", "journal-interval"])
+def test_case_sources_mark_only_a_proven_victim_retry_active_at_the_cutoff(tmp_path, proof):
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import CaseSources
+
+    ctx, cloud = cloud_source(tmp_path)
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
+    ctx.record_attempt(
+        "retry-attempt",
+        role="victim",
+        requestId="in-flight",
+        executionArn="execution",
+        source="service-observed",
+        nativeStartedAtMs=900,
+        nativeEndedAtMs=1250 if proof == "journal-interval" else 1300,
+    )
+    for row in raw_stream(
+        {"kind": "wrapper_enter", "atMs": 900}, {"kind": "task_start", "taskId": "root", "atMs": 910}
+    ):
+        row.update(request="in-flight", time=0.9 if row["phase"] == "WRAPPER_ENTER" else 0.95)
+        cloud.events[f"in-flight/{row['sequence']}"] = row
+    cloud.request_roles["in-flight"] = "victim"
+    cloud.invocations[0]["native_requests"].append("in-flight")
+    if proof != "no-completion":
+        cloud.raw_histories["execution"].append(
+            {
+                "EventType": "InvocationCompleted",
+                "EventId": 4,
+                "InvocationCompletedDetails": {"RequestId": "in-flight", "StartTimestamp": 0.9, "EndTimestamp": 1.3},
+            }
+        )
+    sources = CaseSources(
+        ctx,
+        cloud,
+        tuple(cloud.events.values()),
+        expected_outcome=lambda *_: {"status": "SUCCEEDED"},
+        worker_identity=lambda raw: raw["process"],
+    )
+    pending: list[str] = []
+    events, errors = sources.observations(pending=pending)
+    attempts, selected, attempt_errors = sources.attempts(
+        events,
+        pending=pending,
+        cutoff_ms=1000,
+        excluded=set(),
+        sealed={"native"} if proof == "unsealed" else {"native", "in-flight"},
+    )
+
+    assert errors == attempt_errors == []
+    assert selected == {"victim": "native"}
+    retry = next(attempt for attempt in attempts if attempt["requestId"] == "in-flight")
+    assert retry["startedAtMs"] == 900
+    assert not {"endedAtMs", "outcome"} & retry.keys()
+    unbounded = "Native request in-flight has no observed completion boundary"
+    if proof == "sealed":
+        assert retry["activeAtObservationEnd"] is True
+        assert unbounded not in pending
+    else:
+        assert "activeAtObservationEnd" not in retry
+        assert unbounded in pending
+
+
+@pytest.mark.parametrize(("ordinal", "retry"), [(2, True), (2.0, True), (1, False), (1.5, False), (True, False)])
+def test_cutoff_rules_accept_only_integral_retry_ordinals(ordinal, retry):
+    from aws_durable_execution_conformance_tests.lmi.rules.cutoff import active_retry_interval
+
+    attempt = {
+        "requestId": "in-flight",
+        "executionArn": "execution",
+        "role": "victim",
+        "source": "service-observed",
+        "attempt": ordinal,
+        "nativeStartedAtMs": 900,
+        "nativeEndedAtMs": 1300,
+    }
+    assert active_retry_interval(attempt, 1000, "execution") is retry
+    late = {**attempt, "nativeStartedAtMs": 1100}
+    assert requests_after_cutoff([late], 1000) == ({"in-flight"} if retry else set())

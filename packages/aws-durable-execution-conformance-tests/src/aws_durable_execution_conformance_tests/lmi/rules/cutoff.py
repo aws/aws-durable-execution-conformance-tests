@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _owned_record_enriches
+from aws_durable_execution_conformance_tests.lmi.rules.values import is_json_integer
 
 
 def deferred_service_requests(evidence: Mapping[str, Any]) -> dict[str, str]:
@@ -63,7 +64,7 @@ def requests_after_cutoff(attempts: Sequence[Mapping[str, Any]], cutoff_ms: Any)
         request
         for item in attempts
         if item.get("source") == "service-observed"
-        and type(ordinal := item.get("attempt")) is int
+        and is_json_integer(ordinal := item.get("attempt"))
         and ordinal > 1
         and isinstance(request := item.get("requestId"), str)
         and bool(request)
@@ -84,7 +85,7 @@ def active_retry_interval(attempt: Mapping[str, Any], cutoff: Any, victim_arn: A
         and isinstance(victim_arn, str)
         and bool(victim_arn)
         and attempt.get("executionArn") == victim_arn
-        and type(ordinal) is int
+        and is_json_integer(ordinal)
         and ordinal > 1
         and isinstance(started, (int, float))
         and not isinstance(started, bool)
