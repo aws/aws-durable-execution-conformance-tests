@@ -1,14 +1,17 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Ownership, native-request journaling and cancellation of the shared driver."""
 
 import asyncio
+import contextlib
 import io
 import json
 import time
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from runpy import run_path
 from threading import Event
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -24,11 +27,16 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     ResourceScheduler,
     Scenario,
     ScenarioContext,
-    run_scenarios,
 )
-from aws_durable_execution_conformance_tests.lmi.errors import CollectionError, ProvisioningError
+from aws_durable_execution_conformance_tests.lmi.errors import (
+    CollectionBudgetExpired,
+    CollectionError,
+    ProvisioningError,
+)
 
-from .support import FIXTURES, ScenarioDriver, build_evidence, configuration_identity
+from .support import FIXTURES, RUNTIME, ScenarioDriver, build_evidence, configuration_identity
+
+run_and_adjudicate = run_path(str(Path(__file__).parents[1] / "test_lmi_coordinator.py"))["run_and_adjudicate"]
 
 FUNCTION = "arn:aws:lambda:us-west-2:123456789012:function:lmi:$LATEST.PUBLISHED"
 EXECUTION = FUNCTION + "/durable-execution/name/id"
@@ -59,6 +67,7 @@ def context(
 
 def deployment():
     return {
+        **RUNTIME.to_manifest(),
         "functions": {"c1": FUNCTION, "c2": FUNCTION + "-c2"},
         "concurrencies": {"c1": 1, "c2": 2},
         "region": "us-west-2",
@@ -295,13 +304,12 @@ class FakeCloud:
 
 def adapter(tmp_path, *, factory=FakeCloud):
     return adapter_module.SharedAdapter(
-        {"sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}},
+        {"runtime": "python", "sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}},
         evidence_builder=lambda context, cloud, *, phase: {
             "retirement": {"owner": context.scenario.case_id, "phase": phase}
         },
         cloud_factory=factory,
         driver_factory=partial(adapter_module.ScenarioDriver, runtime="python", fixtures=FIXTURES),
-        configuration_identity=configuration_identity,
     )
 
 
@@ -424,6 +432,656 @@ def test_missing_fixture_does_not_create_retirement_evidence(tmp_path):
     asyncio.run(exercise())
 
 
+def test_no_work_start_failure_does_not_quarantine_a_shared_target(tmp_path, monkeypatch):
+    """A proven-empty `start` failure must not fence the target for later cases.
+
+    The coordinator still calls `collect_partial` for a case whose `start`
+    raised before doing any work. Once `start` has deleted that empty case,
+    `collect_partial` must not try to look it up again (which would raise and
+    turn into a cleanup error, releasing the per-target lease non-quiescent
+    and keeping the persistent fence even though nothing is actually wrong).
+    """
+    from aws_durable_execution_conformance_tests.lmi import quarantine, source_evidence
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    class ObservedCloud(FakeCloud):
+        observation_ended_at: float
+        retired_at: float | None = None
+        source_uris: ClassVar[set[str]] = {"memory://source"}
+        execution_results: ClassVar[dict[str, dict[str, str]]] = {EXECUTION: {"Status": "SUCCEEDED"}}
+        terminal_histories: ClassVar[set[str]] = {EXECUTION}
+
+        def _save(self, name, evidence):
+            pass
+
+    started = time.time() * 1000 - 100
+
+    def snapshot_sources(ctx, cloud):
+        owned = {"requestId": "request", "ownerRequestId": "request", "executionArn": EXECUTION}
+        events = [
+            {**owned, "kind": "wrapper_enter", "atMs": started},
+            {**owned, "kind": "task_start", "taskId": "root", "atMs": started + 1},
+            {**owned, "kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": started + 2},
+            {**owned, "kind": "task_exit", "taskId": "root", "atMs": started + 3},
+        ]
+        raw_events = [
+            {"phase": "WRAPPER_ENTER", "request": "request", "sequence": 1, "time": started / 1000},
+            *(
+                {
+                    "phase": "CONFORMANCE",
+                    "request": "request",
+                    "sequence": capture + 1,
+                    "observation": {"captureSequence": capture},
+                }
+                for capture, _ in enumerate(events, 1)
+            ),
+            {
+                "phase": "SEALED",
+                "request": "request",
+                "sequence": len(events) + 2,
+                "sourceProtocol": 2,
+                "throughCapture": len(events),
+            },
+        ]
+        for event in raw_events:
+            event.update(marker="marker", execution=EXECUTION)
+        cloud.events = dict(enumerate(raw_events, 1))
+        cloud.raw_histories = {
+            EXECUTION: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                {"EventType": "ExecutionSucceeded", "EventId": 2, "EventTimestamp": started / 1000},
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 3,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "request",
+                        "StartTimestamp": started / 1000,
+                        "EndTimestamp": (started + 3) / 1000,
+                    },
+                },
+            ]
+        }
+        attempt = {
+            **owned,
+            "environmentId": "environment",
+            "workerId": "worker",
+            "processId": "process",
+            "role": "victim",
+            "attempt": 1,
+            "startedAtMs": started,
+            "endedAtMs": started + 3,
+            "outcome": "SUCCEEDED",
+        }
+        history = {
+            "executionArn": EXECUTION,
+            "ownerCaseId": ctx.scenario.case_id,
+            "status": "SUCCEEDED",
+            "operations": [],
+        }
+        return SimpleNamespace(
+            observations=lambda **kwargs: (events, []),
+            histories=lambda **kwargs: ([history], {}, []),
+            attempts=lambda events, **kwargs: ([attempt], {"victim": "request"}, []),
+        )
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            if self.context.scenario.case_id == "no-work":
+                raise NotImplementedError("Missing SDK fixture: never dispatched")
+            self.context.record_attempt("launch", requestId="request", executionArn=EXECUTION, role="victim")
+            self.cloud.invocations.append({"arn": EXECUTION, "marker": "marker", "native_requests": ["request"]})
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+
+        def retire(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.retired_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+            return True
+
+    monkeypatch.setattr(
+        source_evidence.CaseSources,
+        "capture",
+        lambda ctx, cloud, **options: cloud.normalized_sources,
+    )
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    no_work_case = Scenario(
+        "no-work",
+        "fixture-check",
+        profile.profile_id,
+        "completed-cohort",
+        roles=("victim",),
+        coverage_profile="fixture",
+    )
+    normal_case = Scenario(
+        "normal", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path, factory=ObservedCloud)
+    value.evidence_builder = build_evidence
+    value.driver_factory = Driver  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    results = asyncio.run(
+        run_and_adjudicate([no_work_case, normal_case], [profile], value, run_id="run", scheduler=scheduler)
+    )
+    no_work_result = next(result for result in results if result.case_id == "no-work")
+    normal_result = next(result for result in results if result.case_id == "normal")
+    assert no_work_result.status == "NOT_IMPLEMENTED"
+    assert normal_result.status not in ("INFRASTRUCTURE_ERROR", "NOT_IMPLEMENTED")
+    assert scheduler.quarantine_reason(FUNCTION) is None, results
+    release.assert_called_once()
+
+
+def test_driver_factory_failure_before_registration_does_not_quarantine_a_shared_target(tmp_path, monkeypatch):
+    """A `driver_factory` (or `cloud_factory`) failure before the case is even
+    registered must not fence the target either: no Cloud or driver call ran,
+    so this case did no work, exactly like a no-work `start()` failure.
+    """
+    from aws_durable_execution_conformance_tests.lmi import quarantine, source_evidence
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    class ObservedCloud(FakeCloud):
+        observation_ended_at: float
+        retired_at: float | None = None
+        source_uris: ClassVar[set[str]] = {"memory://source"}
+        execution_results: ClassVar[dict[str, dict[str, str]]] = {EXECUTION: {"Status": "SUCCEEDED"}}
+        terminal_histories: ClassVar[set[str]] = {EXECUTION}
+
+        def _save(self, name, evidence):
+            pass
+
+    started = time.time() * 1000 - 100
+
+    def snapshot_sources(ctx, cloud):
+        owned = {"requestId": "request", "ownerRequestId": "request", "executionArn": EXECUTION}
+        events = [
+            {**owned, "kind": "wrapper_enter", "atMs": started},
+            {**owned, "kind": "task_start", "taskId": "root", "atMs": started + 1},
+            {**owned, "kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": started + 2},
+            {**owned, "kind": "task_exit", "taskId": "root", "atMs": started + 3},
+        ]
+        raw_events = [
+            {"phase": "WRAPPER_ENTER", "request": "request", "sequence": 1, "time": started / 1000},
+            *(
+                {
+                    "phase": "CONFORMANCE",
+                    "request": "request",
+                    "sequence": capture + 1,
+                    "observation": {"captureSequence": capture},
+                }
+                for capture, _ in enumerate(events, 1)
+            ),
+            {
+                "phase": "SEALED",
+                "request": "request",
+                "sequence": len(events) + 2,
+                "sourceProtocol": 2,
+                "throughCapture": len(events),
+            },
+        ]
+        for event in raw_events:
+            event.update(marker="marker", execution=EXECUTION)
+        cloud.events = dict(enumerate(raw_events, 1))
+        cloud.raw_histories = {
+            EXECUTION: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                {"EventType": "ExecutionSucceeded", "EventId": 2, "EventTimestamp": started / 1000},
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 3,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "request",
+                        "StartTimestamp": started / 1000,
+                        "EndTimestamp": (started + 3) / 1000,
+                    },
+                },
+            ]
+        }
+        attempt = {
+            **owned,
+            "environmentId": "environment",
+            "workerId": "worker",
+            "processId": "process",
+            "role": "victim",
+            "attempt": 1,
+            "startedAtMs": started,
+            "endedAtMs": started + 3,
+            "outcome": "SUCCEEDED",
+        }
+        history = {
+            "executionArn": EXECUTION,
+            "ownerCaseId": ctx.scenario.case_id,
+            "status": "SUCCEEDED",
+            "operations": [],
+        }
+        return SimpleNamespace(
+            observations=lambda **kwargs: (events, []),
+            histories=lambda **kwargs: ([history], {}, []),
+            attempts=lambda events, **kwargs: ([attempt], {"victim": "request"}, []),
+        )
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            self.context.record_attempt("launch", requestId="request", executionArn=EXECUTION, role="victim")
+            self.cloud.invocations.append({"arn": EXECUTION, "marker": "marker", "native_requests": ["request"]})
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+
+        def retire(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.retired_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+            return True
+
+    def driver_factory(context, cloud):
+        if context.scenario.case_id == "no-work":
+            # Neither Cloud nor the driver ran; this is the earliest a case
+            # can fail, before `start()` even gets a chance to run.
+            raise ValueError("driver construction failed")
+        return Driver(context, cloud)
+
+    monkeypatch.setattr(
+        source_evidence.CaseSources,
+        "capture",
+        lambda ctx, cloud, **options: cloud.normalized_sources,
+    )
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    no_work_case = Scenario(
+        "no-work",
+        "fixture-check",
+        profile.profile_id,
+        "completed-cohort",
+        roles=("victim",),
+        coverage_profile="fixture",
+    )
+    normal_case = Scenario(
+        "normal", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path, factory=ObservedCloud)
+    value.evidence_builder = build_evidence
+    value.driver_factory = driver_factory  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    results = asyncio.run(
+        run_and_adjudicate([no_work_case, normal_case], [profile], value, run_id="run", scheduler=scheduler)
+    )
+    no_work_result = next(result for result in results if result.case_id == "no-work")
+    normal_result = next(result for result in results if result.case_id == "normal")
+    # ValueError (the factory's failure) adjudicates as INCOMPLETE_EVIDENCE.
+    assert no_work_result.status == "INCOMPLETE_EVIDENCE"
+    assert any("driver construction failed" in error for error in no_work_result.errors), no_work_result.errors
+    assert normal_result.status not in ("INFRASTRUCTURE_ERROR", "NOT_IMPLEMENTED")
+    assert scheduler.quarantine_reason(FUNCTION) is None, results
+    release.assert_called_once()
+
+
+def test_cloud_factory_failure_before_registration_does_not_quarantine_a_shared_target(tmp_path, monkeypatch):
+    """Same shape as the `driver_factory` case above, but `cloud_factory` -
+    tried first in `SharedAdapter.start` - is the one that fails before the
+    case is ever registered. `no_work_cases` and `collect_partial` must
+    treat this exactly like the `driver_factory` failure.
+    """
+    from aws_durable_execution_conformance_tests.lmi import quarantine, source_evidence
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    class ObservedCloud(FakeCloud):
+        observation_ended_at: float
+        retired_at: float | None = None
+        source_uris: ClassVar[set[str]] = {"memory://source"}
+        execution_results: ClassVar[dict[str, dict[str, str]]] = {EXECUTION: {"Status": "SUCCEEDED"}}
+        terminal_histories: ClassVar[set[str]] = {EXECUTION}
+
+        def _save(self, name, evidence):
+            pass
+
+    started = time.time() * 1000 - 100
+
+    def snapshot_sources(ctx, cloud):
+        owned = {"requestId": "request", "ownerRequestId": "request", "executionArn": EXECUTION}
+        events = [
+            {**owned, "kind": "wrapper_enter", "atMs": started},
+            {**owned, "kind": "task_start", "taskId": "root", "atMs": started + 1},
+            {**owned, "kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": started + 2},
+            {**owned, "kind": "task_exit", "taskId": "root", "atMs": started + 3},
+        ]
+        raw_events = [
+            {"phase": "WRAPPER_ENTER", "request": "request", "sequence": 1, "time": started / 1000},
+            *(
+                {
+                    "phase": "CONFORMANCE",
+                    "request": "request",
+                    "sequence": capture + 1,
+                    "observation": {"captureSequence": capture},
+                }
+                for capture, _ in enumerate(events, 1)
+            ),
+            {
+                "phase": "SEALED",
+                "request": "request",
+                "sequence": len(events) + 2,
+                "sourceProtocol": 2,
+                "throughCapture": len(events),
+            },
+        ]
+        for event in raw_events:
+            event.update(marker="marker", execution=EXECUTION)
+        cloud.events = dict(enumerate(raw_events, 1))
+        cloud.raw_histories = {
+            EXECUTION: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                {"EventType": "ExecutionSucceeded", "EventId": 2, "EventTimestamp": started / 1000},
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 3,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "request",
+                        "StartTimestamp": started / 1000,
+                        "EndTimestamp": (started + 3) / 1000,
+                    },
+                },
+            ]
+        }
+        attempt = {
+            **owned,
+            "environmentId": "environment",
+            "workerId": "worker",
+            "processId": "process",
+            "role": "victim",
+            "attempt": 1,
+            "startedAtMs": started,
+            "endedAtMs": started + 3,
+            "outcome": "SUCCEEDED",
+        }
+        history = {
+            "executionArn": EXECUTION,
+            "ownerCaseId": ctx.scenario.case_id,
+            "status": "SUCCEEDED",
+            "operations": [],
+        }
+        return SimpleNamespace(
+            observations=lambda **kwargs: (events, []),
+            histories=lambda **kwargs: ([history], {}, []),
+            attempts=lambda events, **kwargs: ([attempt], {"victim": "request"}, []),
+        )
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            self.context.record_attempt("launch", requestId="request", executionArn=EXECUTION, role="victim")
+            self.cloud.invocations.append({"arn": EXECUTION, "marker": "marker", "native_requests": ["request"]})
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+
+        def retire(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.retired_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+            return True
+
+    def cloud_factory(deployment_config, key, *, artifacts_dir, case_context=None):
+        # `prepare()` also calls this factory, for shared profile-level fence
+        # verification, with no `case_context` at all; only a per-case start
+        # for "no-work" should fail here.
+        if case_context is not None and case_context.scenario.case_id == "no-work":
+            # Cloud itself never got constructed, so no service I/O could
+            # have run for this case at all.
+            raise ValueError("cloud construction failed")
+        return ObservedCloud(deployment_config, key, artifacts_dir=artifacts_dir, case_context=case_context)
+
+    monkeypatch.setattr(
+        source_evidence.CaseSources,
+        "capture",
+        lambda ctx, cloud, **options: cloud.normalized_sources,
+    )
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    no_work_case = Scenario(
+        "no-work",
+        "fixture-check",
+        profile.profile_id,
+        "completed-cohort",
+        roles=("victim",),
+        coverage_profile="fixture",
+    )
+    normal_case = Scenario(
+        "normal", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path, factory=cloud_factory)
+    value.evidence_builder = build_evidence
+    value.driver_factory = Driver  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    results = asyncio.run(
+        run_and_adjudicate([no_work_case, normal_case], [profile], value, run_id="run", scheduler=scheduler)
+    )
+    no_work_result = next(result for result in results if result.case_id == "no-work")
+    normal_result = next(result for result in results if result.case_id == "normal")
+    assert no_work_result.status == "INCOMPLETE_EVIDENCE"
+    assert any("cloud construction failed" in error for error in no_work_result.errors), no_work_result.errors
+    assert normal_result.status not in ("INFRASTRUCTURE_ERROR", "NOT_IMPLEMENTED")
+    assert scheduler.quarantine_reason(FUNCTION) is None, results
+    release.assert_called_once()
+
+
+def test_newly_discovered_request_defers_binding_then_retirement_binds_and_drains_it(tmp_path, monkeypatch):
+    """End-to-end regression for the budget-expiry binding deferral, using a
+    REAL `Cloud` (mocked boto3 clients only, not `FakeCloud`): a refresh
+    discovers a newly published native request's sealed stream under the
+    owned launch's marker, but the collection budget expires right before
+    `_bind_requests` runs. Observation collection must complete with the gap
+    recorded as pending (not a collection error); a later, deadline-free
+    retirement refresh then binds and drains the request for real, leaving
+    nothing fenced.
+    """
+    from aws_durable_execution_conformance_tests.lmi import quarantine
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    clients = {name: Mock() for name in ("lambda", "s3", "logs")}
+    clients["lambda"].invoke.side_effect = lambda **kwargs: {
+        "StatusCode": 202,
+        "DurableExecutionArn": f"{kwargs['FunctionName']}/durable-execution/{kwargs['DurableExecutionName']}/id",
+    }
+    clients["lambda"].get_durable_execution.return_value = {"Status": "SUCCEEDED"}
+    clients["lambda"].get_durable_execution_history.return_value = {
+        "Events": [
+            {"EventId": 1, "EventType": "ExecutionStarted"},
+            {"EventId": 2, "EventType": "ExecutionSucceeded", "EventTimestamp": 0.45},
+            {
+                "EventId": 3,
+                "EventType": "InvocationCompleted",
+                "InvocationCompletedDetails": {
+                    "RequestId": "native-request-1",
+                    "StartTimestamp": 0.1,
+                    "EndTimestamp": 0.5,
+                },
+            },
+        ]
+    }
+    clients["s3"].put_object.return_value = {"ResponseMetadata": {"RetryAttempts": 0}}
+    clients["s3"].head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
+
+    marker, request = "launch", "native-request-1"
+    event_keys = [f"runs/run/events/{marker}/{index}.json" for index in range(6)]
+    clients["s3"].get_paginator.return_value.paginate.return_value = [
+        {"Contents": [{"Key": key} for key in event_keys], "IsTruncated": False},
+    ]
+
+    execution_arn: dict[str, str] = {}
+
+    def ledger_records():
+        scope = {
+            "request": request,
+            "execution": execution_arn["value"],
+            "marker": marker,
+            "environment": "environment",
+            "process": "process",
+            "run": "run",
+            "caseId": "case",
+            "commit": "sdk-sha",
+        }
+        observations = [
+            {"kind": "wrapper_enter", "atMs": 100},
+            {"kind": "task_start", "taskId": "root", "atMs": 110},
+            {"kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": 300},
+            {"kind": "task_exit", "taskId": "root", "atMs": 400},
+        ]
+        return [
+            {**scope, "phase": "WRAPPER_ENTER", "sequence": 1, "time": 0.1},
+            *(
+                {
+                    **scope,
+                    "phase": "CONFORMANCE",
+                    "sequence": capture + 1,
+                    "time": 0.2,
+                    "observation": {**event, "captureSequence": capture},
+                }
+                for capture, event in enumerate(observations, 1)
+            ),
+            {
+                **scope,
+                "phase": "SEALED",
+                "sequence": len(observations) + 2,
+                "time": 0.2,
+                "sourceProtocol": 2,
+                "throughCapture": len(observations),
+            },
+        ]
+
+    def get_object(*, Key, **_):
+        if Key not in event_keys:
+            # A control-gate confirmation read (e.g. for "release-all"): the
+            # held body `hold()` would have written.
+            return {"Body": io.BytesIO(b"hold"), "ETag": '"held"'}
+        record = ledger_records()[event_keys.index(Key)]
+        return {"Body": io.BytesIO(json.dumps(record).encode())}
+
+    clients["s3"].get_object.side_effect = get_object
+
+    bind_calls = {"count": 0}
+
+    def cloud_factory(deployment_config, key, *, artifacts_dir, case_context=None):
+        cloud = cloud_module.Cloud(
+            deployment_config,
+            key,
+            artifacts_dir=artifacts_dir,
+            case_context=case_context,
+            verify_profile=Mock(),
+            client_factory=lambda service, region: clients[service],
+        )
+        if case_context is not None:
+            original_bind_requests = cloud._bind_requests
+
+            def deferred_bind_requests(events, incomplete=None):
+                bind_calls["count"] += 1
+                if bind_calls["count"] == 1:
+                    # Simulate the budget expiring exactly at `Cloud.refresh`'s
+                    # pre-bind check: the newly read stream is already cached
+                    # (self.events), but binding itself never runs this time.
+                    raise CollectionBudgetExpired("pre-bind budget expired")
+                return original_bind_requests(events, incomplete)
+
+            cloud._bind_requests = deferred_bind_requests  # type: ignore[method-assign]
+        return cloud
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            self.cloud.start("scenario", role="victim", marker=marker)
+            execution_arn["value"] = self.cloud.invocations[0]["arn"]
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            # Adjudication still judges the retained observations; the
+            # coordinator still audits retirement.
+            with contextlib.suppress(CollectionBudgetExpired):
+                self.cloud.collect(full_run=False)
+
+        def retire(self):
+            self.cloud.collect(full_run=False)
+            self.cloud.delete_controls()
+            self.cloud.retired_at = time.time()
+            return True
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    case = Scenario("case", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",))
+    value = adapter(tmp_path, factory=cloud_factory)
+    value.evidence_builder = build_evidence
+    value.driver_factory = Driver  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    (result,) = asyncio.run(run_and_adjudicate([case], [profile], value, run_id="run", scheduler=scheduler))
+
+    not_bound_markers = ("was not bound to an original launch", "inconsistent ledger, launch or service ownership")
+    snapshots = [result.evidence, *(item for items in result.cleanup_evidence.values() for item in items)]
+    for snapshot in snapshots:
+        for error in snapshot.get("collectionErrors", []):
+            assert not any(text in error for text in not_bound_markers), (snapshot.get("scenario"), error)
+    assert bind_calls["count"] >= 2
+    # Pin the deferral itself, not just the absence of a collection error:
+    # the observation snapshot must have actually recorded the gap as pending.
+    assert any("native-request-1" in entry for entry in result.evidence["collection"].get("pending", []))
+    assert scheduler.quarantine_reason(FUNCTION) is None, result.errors
+    release.assert_called_once()
+
+
 @pytest.mark.parametrize("journaled", [False, True])
 def test_preflight_value_error_does_not_retain_empty_case_but_keeps_a_prepared_intent(tmp_path, journaled):
     class Driver:
@@ -449,6 +1107,80 @@ def test_preflight_value_error_does_not_retain_empty_case_but_keeps_a_prepared_i
             assert not ctx.retirement_evidence
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("reject", [False, True])
+def test_driver_threads_journal_on_the_coordinator_loop(tmp_path, monkeypatch, reject):
+    """The adapter's view runs worker-thread journal calls on the coordinator loop."""
+    import threading
+
+    from aws_durable_execution_conformance_tests.lmi import quarantine
+    from aws_durable_execution_conformance_tests.lmi.coordinator import run_scenarios
+
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", Mock())
+    calls: list[str] = []
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            assert threading.current_thread() is not threading.main_thread()
+            self.context.record_attempt("launch", role="victim")
+            calls.append("dispatch")
+            self.context.update_attempt("launch", requestId="request", executionArn=EXECUTION)
+            self.context.record_service_attempt(
+                "service-retry", original_request_id="request", execution_arn=EXECUTION, role="victim"
+            )
+            calls.append("bound")
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            pass
+
+        def retire(self):
+            return True
+
+    sink_threads: set[threading.Thread] = set()
+
+    def on_attempt(context):
+        sink_threads.add(threading.current_thread())
+        if reject:
+            raise ValueError("journal refused the launch")
+
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    case = Scenario(
+        "case", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path)
+    value.driver_factory = Driver  # type: ignore[assignment]
+    (result,) = asyncio.run(
+        run_scenarios([case], [profile], value, run_id="run", scheduler=ResourceScheduler(), on_attempt=on_attempt)
+    )
+    # Worker threads journal through the adapter's view, so the sink runs on the
+    # coordinator loop's thread.
+    assert sink_threads == {threading.main_thread()}
+    if reject:
+        # The journal sink's failure reaches the worker before it dispatches anything.
+        assert calls == []
+        assert result.attempts == []
+        assert any("journal refused the launch" in error for error in result.errors), result.errors
+    else:
+        assert calls == ["dispatch", "bound"]
+        launch, retry = result.attempts
+        assert (launch["requestId"], launch["executionArn"], "launchedAtMs" in launch) == ("request", EXECUTION, True)
+        assert (retry["requestId"], retry["executionArn"], "discoveredAtMs" in retry) == (
+            "service-retry",
+            EXECUTION,
+            True,
+        )
 
 
 def test_pending_observations_do_not_fence_after_audited_retirement(tmp_path, monkeypatch):
@@ -590,13 +1322,195 @@ def test_pending_observations_do_not_fence_after_audited_retirement(tmp_path, mo
         )
 
     (result,) = asyncio.run(
-        run_scenarios([case], [profile], value, run_id="run", validator=validator, scheduler=scheduler)
+        run_and_adjudicate([case], [profile], value, run_id="run", validator=validator, scheduler=scheduler)
     )
     assert "INCOMPLETE: observation window still open" in result.errors
     assert result.evidence["collectionErrors"] == []
     assert result.retirement_evidence["collection"]["watermarks"]
     assert scheduler.quarantine_reason(FUNCTION) is None, result.errors
     release.assert_called_once()
+
+
+def test_undispatched_rejection_releases_the_fence_but_stays_incomplete_behavior(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import quarantine, source_evidence
+    from aws_durable_execution_conformance_tests.lmi.adjudication import adjudicate_evidence
+
+    release = Mock()
+    monkeypatch.setattr(quarantine, "acquire_fence", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(quarantine, "release_fence", release)
+
+    class ObservedCloud(FakeCloud):
+        observation_ended_at: float
+        retired_at: float | None = None
+        source_uris: ClassVar[set[str]] = {"memory://source"}
+        execution_results: ClassVar[dict[str, dict[str, str]]] = {EXECUTION: {"Status": "SUCCEEDED"}}
+        terminal_histories: ClassVar[set[str]] = {EXECUTION}
+
+        def _save(self, name, evidence):
+            pass
+
+    class Driver:
+        def __init__(self, case_context, cloud):
+            self.context = case_context
+            self.cloud = cloud
+
+        def start(self):
+            self.context.record_attempt("launch", requestId="request", executionArn=EXECUTION, role="victim")
+            self.cloud.invocations.append({"arn": EXECUTION, "marker": "marker", "native_requests": ["request"]})
+
+        def place(self):
+            pass
+
+        def execute(self):
+            pass
+
+        def collect(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+
+        def retire(self):
+            self.cloud.observation_ended_at = time.time()
+            self.cloud.retired_at = time.time()
+            self.cloud.normalized_sources = snapshot_sources(self.context, self.cloud)
+            return True
+
+    started = time.time() * 1000 - 100
+
+    def snapshot_sources(ctx, cloud):
+        owned = {"requestId": "request", "ownerRequestId": "request", "executionArn": EXECUTION}
+        events = [
+            {**owned, "kind": "wrapper_enter", "atMs": started},
+            {**owned, "kind": "task_start", "taskId": "root", "atMs": started + 1},
+            {**owned, "kind": "wrapper_return", "outcome": "SUCCEEDED", "atMs": started + 2},
+        ]
+        if cloud.retired_at is not None:
+            events.append({**owned, "kind": "task_exit", "taskId": "root", "atMs": started + 3})
+        raw_events = [
+            {"phase": "WRAPPER_ENTER", "request": "request", "sequence": 1, "time": started / 1000},
+            *(
+                {
+                    "phase": "CONFORMANCE",
+                    "request": "request",
+                    "sequence": capture + 1,
+                    "observation": {"captureSequence": capture},
+                }
+                for capture, _ in enumerate(events, 1)
+            ),
+        ]
+        if cloud.retired_at is not None:
+            raw_events.append(
+                {
+                    "phase": "SEALED",
+                    "request": "request",
+                    "sequence": len(raw_events) + 1,
+                    "sourceProtocol": 2,
+                    "throughCapture": len(events),
+                }
+            )
+        for event in raw_events:
+            event.update(marker="marker", execution=EXECUTION)
+        cloud.events = dict(enumerate(raw_events, 1))
+        # A real run's Cloud._save retains the history URI as it is written;
+        # this fixture's no-op _save does not, so register it explicitly.
+        cloud.source_uris.add((cloud.artifacts_dir / "histories/marker.json").resolve().as_uri())
+        cloud.raw_histories = {
+            EXECUTION: [
+                {"EventType": "ExecutionStarted", "EventId": 1},
+                {"EventType": "ExecutionSucceeded", "EventId": 2, "EventTimestamp": started / 1000},
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 3,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "request",
+                        "StartTimestamp": started / 1000,
+                        "EndTimestamp": (started + 3) / 1000,
+                    },
+                },
+                # The service also rejected a second native request on the same
+                # launch before any handler ran; it never gets a ledger stream.
+                {
+                    "EventType": "InvocationCompleted",
+                    "EventId": 4,
+                    "InvocationCompletedDetails": {
+                        "RequestId": "rejected",
+                        "StartTimestamp": (started - 10) / 1000,
+                        "EndTimestamp": (started - 5) / 1000,
+                        "Error": {
+                            "Payload": {"ErrorType": "TooManyRequestsException", "ErrorMessage": "capacity"},
+                            "Truncated": False,
+                        },
+                    },
+                },
+            ]
+        }
+        attempt = {
+            **owned,
+            "environmentId": "environment",
+            "workerId": "worker",
+            "processId": "process",
+            "role": "victim",
+            "attempt": 1,
+            "startedAtMs": started,
+            "endedAtMs": started + 3,
+            "outcome": "SUCCEEDED",
+        }
+        history = {
+            "executionArn": EXECUTION,
+            "ownerCaseId": ctx.scenario.case_id,
+            "status": "SUCCEEDED",
+            "operations": [],
+        }
+        return SimpleNamespace(
+            observations=lambda **kwargs: (events, []),
+            histories=lambda **kwargs: ([history], {}, []),
+            attempts=lambda events, **kwargs: ([attempt], {"victim": "request"}, []),
+        )
+
+    monkeypatch.setattr(
+        source_evidence.CaseSources,
+        "capture",
+        lambda ctx, cloud, **options: cloud.normalized_sources,
+    )
+    profile = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    case = Scenario(
+        "case", "fixture-check", profile.profile_id, "completed-cohort", roles=("victim",), coverage_profile="fixture"
+    )
+    value = adapter(tmp_path, factory=ObservedCloud)
+    value.evidence_builder = build_evidence
+    value.driver_factory = Driver  # type: ignore[assignment]
+    scheduler = ResourceScheduler()
+
+    def validator(evidence, *, phase="final"):
+        required = {"lifecycle", "sdkRequests", "history"}
+        return (
+            []
+            if required == evidence["collection"]["watermarks"].keys()
+            else ["INCOMPLETE: observation window still open"]
+        )
+
+    (result,) = asyncio.run(
+        run_and_adjudicate([case], [profile], value, run_id="run", validator=validator, scheduler=scheduler)
+    )
+    assert "INCOMPLETE: observation window still open" in result.errors
+    assert result.evidence["collectionErrors"] == []
+    settlement = next(
+        item for item in result.retirement_evidence["retirement"]["resources"] if item["id"] == "rejected"
+    )
+    assert settlement["outcome"] == "UNDISPATCHED"
+    assert result.retirement_evidence["collection"]["watermarks"]
+    assert scheduler.quarantine_reason(FUNCTION) is None, result.errors
+    release.assert_called_once()
+
+    status, findings, _ = adjudicate_evidence(
+        "COLLECTED",
+        [],
+        result.evidence,
+        retirement_evidence=result.retirement_evidence,
+        cleanup_evidence=result.cleanup_evidence or {},
+        standard=True,
+    )
+    assert status != "PASSED"
+    assert any("service rejected native request rejected before its handler ran" in finding for finding in findings)
 
 
 def test_foreign_target_prevents_any_driver_launch(tmp_path):
@@ -1107,6 +2021,65 @@ def test_failed_retirement_fences_a_second_run_with_terminal_execution_and_live_
     asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
     asyncio.run(second.prepare(second_valid))
     assert json.loads(objects[fence_key(FUNCTION)])["runId"] == "second"
+
+
+def test_undispatched_rejection_does_not_block_a_quiescent_runs_persistent_fence_release(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.quarantine import fence_key
+
+    objects: dict[str, bytes] = {}
+
+    class Storage:
+        def get_object(self, *, Bucket, Key):
+            if Key not in objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+            return {"Body": io.BytesIO(objects[Key]), "ETag": '"fence-etag"'}
+
+        def put_object(self, *, Bucket, Key, Body, IfNoneMatch):
+            assert IfNoneMatch == "*"
+            assert Key not in objects
+            objects[Key] = Body
+            return {"ResponseMetadata": {"RetryAttempts": 0}}
+
+        def delete_object(self, *, Bucket, Key, IfMatch):
+            assert IfMatch == '"fence-etag"'
+            del objects[Key]
+
+    storage = Storage()
+
+    class PersistentCloud(FakeCloud):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.s3 = storage
+
+    valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    first = adapter(tmp_path / "first", factory=PersistentCloud)
+    asyncio.run(first.prepare(valid))
+
+    # A fully quiescent run, except the service also rejected a second native
+    # request before any handler ran. That proven rejection must not keep the
+    # physical fence any more than a normal quiescent run would.
+    driver, _events = settled_cloud()
+    driver.cloud.raw_histories["execution"] = [
+        {
+            "EventType": "InvocationCompleted",
+            "EventId": 4,
+            "InvocationCompletedDetails": {
+                "RequestId": "rejected",
+                "StartTimestamp": 0.1,
+                "EndTimestamp": 0.5,
+                "Error": {
+                    "Payload": {"ErrorType": "TooManyRequestsException", "ErrorMessage": "capacity"},
+                    "Truncated": False,
+                },
+            },
+        }
+    ]
+    assert driver.quiescent()
+    asyncio.run(first.finish(valid, quiescent=driver.quiescent()))
+    assert fence_key(FUNCTION) not in objects
+
+    second = adapter(tmp_path / "second", factory=PersistentCloud)
+    asyncio.run(second.prepare(valid))
 
 
 def test_quiescent_finish_cannot_clear_a_foreign_run_fence(tmp_path):

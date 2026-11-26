@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """All seven shared contracts reach their actual SDK fixture and preserve audit facts."""
 
 from copy import deepcopy

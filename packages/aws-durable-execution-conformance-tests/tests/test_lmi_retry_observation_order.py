@@ -18,9 +18,10 @@ from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Scenario,
     ScenarioContext,
     ScenarioResult,
-    run_scenarios,
 )
-from aws_durable_execution_conformance_tests.lmi.evidence import same_json, validate_evidence
+from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence
+
+run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_coordinator.py")))["run_and_adjudicate"]
 
 
 def _replay_evidence(count: int = 2) -> dict[str, Any]:
@@ -126,7 +127,7 @@ def _run(adapter: RetryObservationAdapter) -> tuple[ScenarioResult, ResourceSche
     )
     scheduler = ResourceScheduler()
     (result,) = asyncio.run(
-        run_scenarios(
+        run_and_adjudicate(
             [case],
             [profile],
             adapter,
@@ -161,7 +162,7 @@ def test_retry_order_conflict_survives_corrected_collection(source: str) -> None
     )
     assert result.status != "PASSED", result.errors
     assert any("retry attempt order" in error for error in result.errors), result.errors
-    # Retry order is an offline verdict. Only the interrupted capture lacks
+    # Retry order is an adjudication verdict. Only the interrupted capture lacks
     # the physical retirement required to reuse the target.
     assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (source == "partial")
 
@@ -200,30 +201,6 @@ def test_retry_attempt_metadata_enrichment_preserves_one_record_per_identity() -
     assert result.evidence["replay"]["retry"]["attempts"] == value["replay"]["retry"]["attempts"]
 
 
-def test_retry_attempt_multiplicity_is_not_erased_by_collection() -> None:
-    value = _replay_evidence()
-    attempts = value["replay"]["retry"]["attempts"]
-    result, _ = _run(RetryObservationAdapter(value, [[attempts[0], attempts[0], attempts[1]]]))
-    assert result.status != "PASSED"
-    assert any("distinct observed attempts" in error for error in result.errors), result.errors
-    assert sum(attempt["attemptId"] == "retry-1" for attempt in result.evidence["replay"]["retry"]["attempts"]) == 2
-
-
-@pytest.mark.parametrize("field,replacement", [("requestId", "request-resume"), ("outcome", "SUCCEEDED")])
-def test_retry_attempt_enrichment_cannot_replace_request_or_outcome(field: str, replacement: str) -> None:
-    value = _replay_evidence(3)
-    known = deepcopy(value["replay"]["retry"]["attempts"])
-    value["replay"]["retry"]["attempts"][1][field] = replacement
-    for execution in value["replay"]["operationExecutions"]:
-        if execution.get("attemptId") == "retry-2":
-            execution[field] = replacement
-    assert validate_evidence(value) == []
-    result, _ = _run(RetryObservationAdapter(value, [known]))
-    assert result.status != "PASSED"
-    retained = next(item for item in result.evidence["replay"]["retry"]["attempts"] if item["attemptId"] == "retry-2")
-    assert retained[field] == known[1][field]
-
-
 class SideEffectObservationAdapter(RetryObservationAdapter):
     def __init__(self, collected: dict[str, Any], initial: list[dict[str, Any]], *, partial: bool = False) -> None:
         super().__init__(collected, [deepcopy(collected["replay"]["retry"]["attempts"])], partial=partial)
@@ -250,7 +227,7 @@ def test_side_effect_observations_can_reach_the_predeclared_count(partial: bool)
     else:
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
-    assert not any("side-effect" in error or "omitted or changed retained" in error for error in result.errors)
+    assert not any("side-effect" in error for error in result.errors)
     assert _effect(result.evidence) == {"operationId": "done", "count": 2, "expectedCount": 2}
 
 
@@ -273,9 +250,11 @@ def test_side_effect_progress_cannot_decrease_or_change_the_declared_expectation
     assert validate_evidence(value) == []
     result, _ = _run(SideEffectObservationAdapter(value, [known]))
     assert result.status != "PASSED", result.errors
-    assert _effect(result.evidence)["expectedCount"] == 1
-    assert _effect(result.evidence)["count"] == 2
-    assert any("side-effect count differs" in error for error in result.errors), result.errors
+    expected = {
+        "decrease": "ASSERTION: observed side-effect count differs from earlier observations for done",
+        "expectation": "ASSERTION: declared side-effect expectation for done changed across observations",
+    }[change]
+    assert expected in result.errors, result.errors
 
 
 @pytest.mark.parametrize("source", ["context", "collector"])
@@ -293,7 +272,6 @@ def test_side_effect_snapshots_cannot_repeat_an_operation_identity(source: str, 
     result, _ = _run(SideEffectObservationAdapter(value, initial))
     assert result.status != "PASSED", result.errors
     assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
-    assert sum(item["operationId"] == "done" for item in result.evidence["replay"]["sideEffects"]) == 2
 
 
 @pytest.mark.parametrize("field", ["count", "expectedCount"])
@@ -326,60 +304,6 @@ def _replay_with_fault() -> dict[str, Any]:
     value["retirement"]["faults"] = [{**fault, "releasedAtMs": 205, "mode": "normal"}]
     assert validate_evidence(value) == []
     return value
-
-
-@pytest.mark.parametrize("phase", ["place", "execute"])
-@pytest.mark.parametrize(
-    "inventory",
-    [
-        "attempts",
-        "histories",
-        "operations",
-        "faultsCreated",
-        "resourcesCreated",
-        "retry",
-        "sideEffects",
-        "before",
-        "after",
-    ],
-)
-def test_in_place_identity_occurrence_increases_survive_later_deduplication(phase: str, inventory: str) -> None:
-    value = _replay_with_fault()
-    invalid = deepcopy(value)
-    rows = _inventory(invalid, inventory)
-    rows.insert(1, deepcopy(rows[0]))
-    if inventory != "sideEffects":
-        assert validate_evidence(invalid)
-
-    class DuplicateDuringPhaseAdapter(RetryObservationAdapter):
-        async def start(self, context: ScenarioContext) -> None:
-            await super().start(context)
-            context.evidence = deepcopy(self.collected)
-            context.evidence.pop("retirement")
-
-        def duplicate(self, context: ScenarioContext) -> None:
-            rows = _inventory(context.evidence, inventory)
-            rows.insert(1, deepcopy(rows[0]))
-
-        async def place(self, context: ScenarioContext) -> None:
-            if phase == "place":
-                self.duplicate(context)
-
-        async def execute(self, context: ScenarioContext) -> None:
-            if phase == "execute":
-                self.duplicate(context)
-
-    result, scheduler = _run(DuplicateDuringPhaseAdapter(value, [value["replay"]["retry"]["attempts"]]))
-    assert result.status != "PASSED", result.errors
-    assert len(_inventory(result.evidence, inventory)) == len(_inventory(value, inventory)) + 1
-    if inventory == "retry":
-        assert any("duplicate retry attemptId" in error for error in result.errors), result.errors
-        assert any("distinct observed attempts" in error for error in validate_evidence(result.evidence))
-    if inventory == "sideEffects":
-        assert any("duplicate side-effect operationId" in error for error in result.errors), result.errors
-    # Side-effect counters are behavior evidence with no physical owner, so a
-    # duplicate fails the case without blocking reuse of a retired target.
-    assert bool(scheduler.quarantine_reason(value["profile"]["functionArn"])) is (inventory != "sideEffects")
 
 
 @pytest.mark.parametrize(
@@ -465,44 +389,7 @@ def test_checkpoint_snapshots_can_fill_missing_operation_metadata(
     else:
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
-    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
     assert result.evidence["replay"][snapshot] == value["replay"][snapshot]
-
-
-@pytest.mark.parametrize("snapshot", ["before", "after"])
-@pytest.mark.parametrize("outcome", ["result", "error"])
-@pytest.mark.parametrize("original,changed", [([1, 2], [2, 1]), ({"value": 1}, {"value": 1, "extra": True})])
-def test_completed_snapshot_outcomes_remain_atomic(snapshot: str, outcome: str, original: Any, changed: Any) -> None:
-    value = _replay_evidence()
-    operation_id = "done" if outcome == "result" else "failed"
-    for operation in _checkpoint_views(value):
-        if operation["id"] == operation_id:
-            operation[outcome] = deepcopy(changed)
-    assert validate_evidence(value) == []
-    initial = deepcopy(value["replay"][snapshot])
-    next(operation for operation in initial if operation["id"] == operation_id)[outcome] = deepcopy(original)
-    result, _ = _run(CheckpointObservationAdapter(value, snapshot, initial))
-    assert result.status != "PASSED", result.errors
-    retained = [operation for operation in result.evidence["replay"][snapshot] if operation["id"] == operation_id]
-    assert len(retained) == 1
-    assert same_json(retained[0][outcome], original)
-
-
-@pytest.mark.parametrize("snapshot", ["before", "after"])
-@pytest.mark.parametrize("field,changed", [("name", "renamed"), ("type", "CONTEXT"), ("parentId", "other-parent")])
-def test_checkpoint_snapshot_identity_fields_cannot_change(snapshot: str, field: str, changed: str) -> None:
-    value = _replay_evidence()
-    original = deepcopy(value["replay"][snapshot][0])
-    for operation in _checkpoint_views(value):
-        if operation["id"] == original["id"]:
-            operation[field] = changed
-    assert validate_evidence(value) == []
-    initial = deepcopy(value["replay"][snapshot])
-    initial[0] = original
-    result, _ = _run(CheckpointObservationAdapter(value, snapshot, initial))
-    assert result.status != "PASSED", result.errors
-    retained = next(operation for operation in result.evidence["replay"][snapshot] if operation["id"] == original["id"])
-    assert retained[field] == original[field]
 
 
 @pytest.mark.parametrize("mode", ["normal", "partial", "phase"])
@@ -522,47 +409,6 @@ def test_after_snapshot_can_complete_an_unfinished_operation(mode: str, status: 
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
     assert result.evidence["replay"]["after"] == value["replay"]["after"]
-
-
-def test_before_snapshot_cannot_promote_an_unfinished_operation_to_completed() -> None:
-    value = _replay_evidence()
-    initial = deepcopy(value["replay"]["before"])
-    initial[0]["status"] = "STARTED"
-    result, _ = _run(CheckpointObservationAdapter(value, "before", initial, "phase"))
-    assert result.status != "PASSED"
-    retained = next(
-        operation for operation in result.evidence["replay"]["before"] if operation["id"] == initial[0]["id"]
-    )
-    assert retained["status"] == "STARTED"
-
-
-@pytest.mark.parametrize("rewrite", [False, True])
-def test_after_status_delta_retains_an_unchanged_terminal_null_outcome(rewrite: bool) -> None:
-    value = _replay_evidence()
-    if not rewrite:
-        for operation in _checkpoint_views(value):
-            if operation["id"] == "retry":
-                operation["result"] = None
-    assert validate_evidence(value) == []
-    initial = deepcopy(value["replay"]["after"])
-    next(operation for operation in initial if operation["id"] == "retry").update(status="STARTED", result=None)
-
-    class StatusOnlyAfterAdapter(CheckpointObservationAdapter):
-        async def place(self, context: ScenarioContext) -> None:
-            next(operation for operation in context.evidence["replay"]["after"] if operation["id"] == "retry")[
-                "status"
-            ] = "SUCCEEDED"
-
-        async def execute(self, context: ScenarioContext) -> None:
-            if rewrite:
-                next(operation for operation in context.evidence["replay"]["after"] if operation["id"] == "retry")[
-                    "result"
-                ] = "recovered"
-
-    result, _ = _run(StatusOnlyAfterAdapter(value, "after", initial))
-    assert (result.status == "PASSED") is (not rewrite), result.errors
-    retained = next(operation for operation in result.evidence["replay"]["after"] if operation["id"] == "retry")
-    assert retained["result"] is None
 
 
 class OperationEntryAdapter(RetryObservationAdapter):
@@ -597,47 +443,6 @@ def test_operation_entry_can_gain_missing_outcome_metadata(mode: str, operation_
         assert result.status == "PASSED", result.errors
     assert validate_evidence(result.evidence) == [], result.errors
     assert result.evidence["replay"]["operationExecutions"] == value["replay"]["operationExecutions"]
-    assert not any("omitted or changed retained" in error for error in result.errors), result.errors
-
-
-@pytest.mark.parametrize(
-    "field,changed",
-    [
-        ("requestId", "request-resume"),
-        ("operationId", "other-work"),
-        ("attemptId", "other-attempt"),
-        ("outcome", "SUCCEEDED"),
-        ("details", {"values": [2, 1]}),
-    ],
-)
-def test_operation_entry_cannot_rewrite_known_identity_or_metadata(field: str, changed: Any) -> None:
-    value = _replay_evidence()
-    original = {
-        "requestId": "request-victim",
-        "operationId": "uncheckpointed",
-        "attemptId": "extra",
-        "outcome": "FAILED",
-        "details": {"values": [1, 2]},
-    }
-    value["replay"]["operationExecutions"].append({**deepcopy(original), field: changed})
-    assert validate_evidence(value) == []
-    result, _ = _run(OperationEntryAdapter(value, [original]))
-    assert result.status != "PASSED", result.errors
-    assert any(same_json(original, item) for item in result.evidence["replay"]["operationExecutions"])
-
-
-@pytest.mark.parametrize("initial_identified", [False, True])
-def test_operation_entry_without_attempt_id_cannot_be_rebound_to_a_retry(initial_identified: bool) -> None:
-    value = _replay_evidence()
-    original = {"requestId": "request-victim", "operationId": "uncheckpointed"}
-    collected = {**original, "attemptId": "identified"}
-    if initial_identified:
-        original, collected = collected, original
-    value["replay"]["operationExecutions"].append(collected)
-    result, _ = _run(OperationEntryAdapter(value, [original]))
-    assert result.status != "PASSED"
-    assert original in result.evidence["replay"]["operationExecutions"]
-    assert collected in result.evidence["replay"]["operationExecutions"]
 
 
 def test_operation_entry_enrichment_matches_occurrences_without_stealing_known_metadata() -> None:
@@ -665,28 +470,6 @@ def test_new_retry_entries_remain_distinct_on_the_same_request_and_operation() -
     assert [item["attemptId"] for item in entries] == ["retry-1", "retry-2", "retry-3"]
 
 
-@pytest.mark.parametrize("phase", ["place", "execute"])
-def test_operation_entry_enrichment_cannot_erase_an_additional_body_occurrence(phase: str) -> None:
-    value = _replay_evidence()
-    original = {"requestId": "request-victim", "operationId": "uncheckpointed"}
-    value["replay"]["operationExecutions"].append({**original, "outcome": "SUCCEEDED"})
-
-    class RepeatedEntryAdapter(OperationEntryAdapter):
-        async def place(self, context: ScenarioContext) -> None:
-            if phase == "place":
-                context.evidence["replay"]["operationExecutions"].append(deepcopy(original))
-
-        async def execute(self, context: ScenarioContext) -> None:
-            if phase == "execute":
-                context.evidence["replay"]["operationExecutions"].append(deepcopy(original))
-
-    result, _ = _run(RepeatedEntryAdapter(value, [original]))
-    assert result.status != "PASSED"
-    assert (
-        sum(item["operationId"] == "uncheckpointed" for item in result.evidence["replay"]["operationExecutions"]) == 2
-    )
-
-
 def test_operation_entry_metadata_does_not_hide_completed_code_on_resume() -> None:
     value = _replay_evidence()
     original = {"requestId": "request-resume", "operationId": "done"}
@@ -711,5 +494,4 @@ def test_missing_side_effect_observation_does_not_block_target_reuse() -> None:
     value["replay"]["sideEffects"].remove(_effect(value))
     result, scheduler = _run(SideEffectObservationAdapter(value, [known]))
     assert result.status != "PASSED", result.errors
-    assert any("omitted or changed retained side-effect observations" in error for error in result.errors)
     assert scheduler.quarantine_reason(value["profile"]["functionArn"]) is None

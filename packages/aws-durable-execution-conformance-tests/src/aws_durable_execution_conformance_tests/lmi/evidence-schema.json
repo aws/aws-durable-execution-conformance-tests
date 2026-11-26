@@ -460,7 +460,42 @@
                   "required": ["kind"]
                 },
                 "then": {
-                  "properties": { "outcome": { "const": "QUIESCENT" } }
+                  "properties": { "outcome": { "enum": ["QUIESCENT", "UNDISPATCHED"] } }
+                }
+              },
+              {
+                "$comment": "The UNDISPATCHED allowlist and its behavior-mode rejection are enforced by the Python validator, not this wire schema.",
+                "if": {
+                  "properties": {
+                    "kind": { "const": "invocation" },
+                    "outcome": { "const": "UNDISPATCHED" }
+                  },
+                  "required": ["kind", "outcome"]
+                },
+                "then": {
+                  "type": "object",
+                  "required": [
+                    "executionArn",
+                    "serviceErrorType",
+                    "sourceEventId",
+                    "startedAtMs"
+                  ],
+                  "properties": {
+                    "executionArn": {
+                      "$ref": "#/$defs/nonBlankString"
+                    },
+                    "serviceErrorType": {
+                      "$ref": "#/$defs/nonBlankString"
+                    },
+                    "sourceEventId": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "startedAtMs": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  }
                 }
               },
               {

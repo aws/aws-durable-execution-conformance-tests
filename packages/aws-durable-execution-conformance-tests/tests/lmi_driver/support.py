@@ -1,13 +1,15 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """Explicit test fixture policies; no language SDK is needed by the shared harness."""
 
 from functools import partial
 
-from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity as identity
-from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity as configuration_identity
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver as Driver
 from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence as normalize
 
-RUNTIME = RuntimeDefinition("python", "fixture.handler")
 FIXTURES = {
     "native-overlap": "barrier",
     "normal-return": "success",
@@ -20,13 +22,21 @@ FIXTURES = {
     "recovery": "barrier",
     "warm": "warm-probe",
 }
+BINDING = FixtureBinding(
+    fixtures=FIXTURES,
+    failure_error_type="ValueError",
+    worker_identity="process",
+)
+RUNTIME = RuntimeDefinition("python", "fixture.handler", binding=BINDING)
 
 
 def ScenarioDriver(context, cloud, **options):
     return Driver(context, cloud, runtime="python", fixtures=FIXTURES, **options)
 
 
-configuration_identity = partial(identity, runtime=RUNTIME)
+# configuration_identity now derives its runtime from the deployment manifest
+# itself (RuntimeDefinition.from_manifest), so no partial binding is needed here;
+# it is re-exported for callers that only import this support module.
 _normalize = partial(
     normalize,
     runtime="python",

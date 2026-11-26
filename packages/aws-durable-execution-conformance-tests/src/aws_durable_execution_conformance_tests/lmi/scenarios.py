@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Drive the seven shared lifecycle scenarios through real SDK handlers."""
 
@@ -35,6 +36,7 @@ from aws_durable_execution_conformance_tests.lmi.source_evidence import (
     owned_observation,
     retirement_activity_after_cutoff,
     terminal_history_pending,
+    undispatched_requests,
 )
 from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
 
@@ -418,7 +420,8 @@ class ScenarioDriver:
                 required=False,
             )
         except CollectionBudgetExpired:
-            # The coordinator still audits any retained observations and retirement.
+            # Adjudication still judges the retained observations, and the
+            # coordinator still audits retirement.
             pass
 
     def _collect_observation(self) -> bool:
@@ -451,6 +454,10 @@ class ScenarioDriver:
         if not self.cloud.invocations:
             return True
         known, missing, errors = ledger_seal_status(events, self.cloud.raw_histories, self.cloud.invocations, set())
+        # A request the service proves undispatched can never get a ledger seal,
+        # so physical retirement exempts it from this requirement alone; it is
+        # still reported incomplete everywhere behavior is evaluated.
+        missing -= undispatched_requests(events, self.cloud.raw_histories, self.cloud.invocations).keys()
         if not known or missing or errors:
             return False
         if any(not item.get("arn") or not item["native_requests"] for item in self.cloud.invocations):

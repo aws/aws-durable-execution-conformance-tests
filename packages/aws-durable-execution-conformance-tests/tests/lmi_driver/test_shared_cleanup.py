@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Run-scoped cleanup needs no distributed lock and never touches foreign work."""
 
@@ -379,7 +380,7 @@ def test_run_persists_relative_binding_source_as_absolute(tmp_path, monkeypatch)
 
     monkeypatch.setattr(app, "load_manifest", stop_before_runtime)
     with pytest.raises(RuntimeError, match="stop before runtime"):
-        shared.run({"run": "run"}, output, manifest_factory=factory, adapter_name="fixture")
+        shared.run({"run": "run"}, output, manifest_factory=factory)
     monkeypatch.chdir(tmp_path)
     plan = json.loads((output / "standard/manifest.json").read_text())
     assert shared.sdk_artifact_directory(output / "standard", plan) == binding_source

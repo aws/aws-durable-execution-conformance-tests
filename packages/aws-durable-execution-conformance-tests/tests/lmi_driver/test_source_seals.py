@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Source coverage is a positive witness, separate from visible work pairing."""
 
@@ -7,13 +8,50 @@ from typing import Any, cast
 
 import pytest
 
-from aws_durable_execution_conformance_tests.lmi.evidence import validate_retirement_evidence
-from aws_durable_execution_conformance_tests.lmi.source_evidence import ledger_seal_status, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.observations import (
+    UNDISPATCHED_ERROR_TYPES,
+    is_undispatched_rejection,
+)
+from aws_durable_execution_conformance_tests.lmi.source_evidence import (
+    ledger_seal_status,
+    requests_after_cutoff,
+    undispatched_requests,
+)
 
 from .support import ScenarioDriver, build_evidence
 from .test_shared_adapter import context
 
 LAUNCHES = [{"arn": "execution", "marker": "marker", "native_requests": ["native"]}]
+
+
+def rejection_payload(error_type="TooManyRequestsException", **overrides):
+    """The real payload shape from a service capacity rejection, confirmed from
+    retained InvocationCompleted records in aws/aws-durable-execution-sdk-python
+    LMI runs 43973096696, 43978687067 and 44191933207."""
+    payload = {
+        "ErrorMessage": (
+            "You currently do not have sufficient capacity for the function. If this error "
+            "persists, check your function version's scaling config to allocate more execution "
+            "environments for it."
+        ),
+        "ErrorType": error_type,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def rejected_completion(request, event_id, start, end, *, payload=None, truncated=False):
+    return {
+        "EventType": "InvocationCompleted",
+        "EventId": event_id,
+        "InvocationCompletedDetails": {
+            "RequestId": request,
+            "StartTimestamp": start,
+            "EndTimestamp": end,
+            "Error": {"Payload": payload if payload is not None else rejection_payload(), "Truncated": truncated},
+        },
+    }
 
 
 def raw_stream(*observations):
@@ -91,6 +129,341 @@ def cloud_source(tmp_path, *extra):
         _save=lambda *args: None,
     )
     return ctx, cast("Any", cloud)
+
+
+def test_service_rejected_before_dispatch_settles_as_undispatched_and_stays_incomplete(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.evidence import validate_observed_retirement
+
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.raw_histories["execution"].append(rejected_completion("rejected", 4, 0.6, 0.8))
+    history_uri = (tmp_path / "histories/marker.json").resolve().as_uri()
+    cloud.source_uris.add(history_uri)
+
+    observation = build_evidence(ctx, cloud)
+    assert observation["collectionErrors"] == []
+    rejected_pending = [pending for pending in observation["collection"]["pending"] if "rejected" in pending]
+    assert any("has no lifecycle ledger stream" in pending for pending in rejected_pending)
+    assert any("Missing ledger seals" in pending for pending in rejected_pending)
+    assert "lifecycle" not in observation["collection"]["watermarks"]
+    assert "sdkRequests" not in observation["collection"]["watermarks"]
+    assert validate_evidence(observation, phase="observations")
+
+    final = build_evidence(ctx, cloud, phase="final")
+    assert final["collectionErrors"] == []
+    assert final["collection"]["watermarks"] == {"lifecycle": 1000, "sdkRequests": 1000, "history": 1000}
+    settlement = next(item for item in final["retirement"]["resources"] if item["id"] == "rejected")
+    assert settlement["outcome"] == "UNDISPATCHED"
+    assert settlement["executionArn"] == "execution"
+    assert settlement["serviceErrorType"] == "TooManyRequestsException"
+    assert settlement["sourceEventId"] == 4
+    assert settlement["startedAtMs"] == 600
+    assert settlement["settledAtMs"] == 800
+    assert settlement["evidenceUri"] == history_uri
+    assert validate_retirement_evidence(final) == []
+    assert validate_observed_retirement(final) == []
+    errors = validate_evidence(final)
+    assert any(
+        "service rejected native request rejected before its handler ran" in error
+        and "TooManyRequestsException" in error
+        for error in errors
+    )
+
+
+def _unbound_wrapper_enter(sequence, request, *, marker="marker", execution="execution"):
+    return {
+        "phase": "WRAPPER_ENTER",
+        "sequence": sequence,
+        "time": 0.1,
+        "request": request,
+        "execution": execution,
+        "marker": marker,
+        "environment": "environment",
+        "process": "process",
+        "run": "run",
+        "caseId": "case",
+        "commit": "commit",
+    }
+
+
+def test_unbound_request_is_pending_not_an_error_while_binding_is_deferred(tmp_path):
+    # A budget-expiry refresh intentionally skips binding from a partial read
+    # (see Cloud.refresh): the gap is incomplete evidence, not proof of a
+    # real collection failure, until a later complete refresh binds it.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message not in observation["collectionErrors"]
+    assert message in observation["collection"]["pending"]
+
+
+def test_unbound_request_is_a_collection_error_once_binding_is_not_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = False
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+    assert message not in observation["collection"].get("pending", [])
+
+
+def test_unbound_request_is_still_a_final_phase_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan")
+    cloud.binding_deferred = True
+
+    final = build_evidence(ctx, cloud, phase="final")
+    message = "Native request orphan was not bound to an original launch"
+    assert message in final["collectionErrors"]
+
+
+def test_unbound_request_under_an_unowned_marker_is_always_an_error_even_while_deferred(tmp_path):
+    # An unknown marker (no launch owns it at all, e.g. one `Cloud.start`
+    # removed after a service rejection) is never "not yet bound" - that
+    # sub-case requires an owned launch. It must stay an error regardless
+    # of `binding_deferred`.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan", marker="unowned-marker")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+
+
+def test_unbound_request_under_a_launch_already_bound_elsewhere_is_always_an_error_even_while_deferred(tmp_path):
+    # The owned launch's marker exists, but its launch is already bound to a
+    # *different* execution than this stream's. That is a real ownership
+    # mismatch, not a launch merely awaiting its first binding, so it must
+    # stay an error regardless of `binding_deferred`.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events[100] = _unbound_wrapper_enter(100, "orphan", execution="different-execution")
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan was not bound to an original launch"
+    assert message in observation["collectionErrors"]
+
+
+def _owned_sealed_stream(request, *, marker="marker", execution="execution"):
+    """A fully sealed, self-consistent two-record stream (no captures)."""
+    scope = {
+        "request": request,
+        "execution": execution,
+        "marker": marker,
+        "environment": "environment",
+        "process": "process",
+        "run": "run",
+        "caseId": "case",
+        "commit": "commit",
+    }
+    return [
+        {**scope, "phase": "WRAPPER_ENTER", "sequence": 1, "time": 0.1},
+        {**scope, "phase": "SEALED", "sequence": 2, "time": 0.2, "sourceProtocol": 2, "throughCapture": 0},
+    ]
+
+
+def test_sealed_unbound_request_under_an_owned_launch_is_pending_while_binding_is_deferred(tmp_path):
+    # A refresh that read a newly discovered request's whole stream (its
+    # launch's WRAPPER_ENTER and SEALED) under an owned launch's marker
+    # before the budget expired has not had a chance to bind it yet; that
+    # gap is incomplete evidence, not a real ownership inconsistency.
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message not in observation["collectionErrors"]
+    assert any("orphan2" in item for item in observation["collection"]["pending"])
+
+
+def test_sealed_unbound_request_is_an_ownership_error_once_binding_is_not_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = False
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_unbound_request_is_still_a_final_phase_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    final = build_evidence(ctx, cloud, phase="final")
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in final["collectionErrors"]
+
+
+def test_sealed_request_under_an_unowned_marker_stays_an_ownership_error_even_while_deferred(tmp_path):
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan3", marker="unowned-marker"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan3 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_request_under_a_launch_already_bound_elsewhere_stays_an_ownership_error_even_while_deferred(tmp_path):
+    # Ledger-side counterpart: the launch is owned (marker matches) but
+    # already bound to a different execution, so this is a genuine mismatch,
+    # never a "not yet bound" gap, regardless of the deferral.
+    ctx, cloud = cloud_source(tmp_path)
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2", execution="different-execution"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_sealed_request_under_a_conflicting_launch_stays_an_ownership_error_even_while_deferred(tmp_path):
+    # A launch `_bind_requests` has already flagged as conflicting can never
+    # become bound, so it is never merely "not yet bound" either.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.invocations[0]["launch_conflict"] = True
+    for sequence, record in enumerate(_owned_sealed_stream("orphan2"), start=200):
+        cloud.events[sequence] = record
+    cloud.binding_deferred = True
+
+    observation = build_evidence(ctx, cloud)
+    message = "Native request orphan2 has inconsistent ledger, launch or service ownership"
+    assert message in observation["collectionErrors"]
+
+
+def test_allowlist_is_pinned_exactly():
+    # Any addition must be reviewed; a wrong string only matches nothing and
+    # leaves the target fenced, so widening this set is never a safe fix.
+    assert frozenset({"TooManyRequestsException"}) == UNDISPATCHED_ERROR_TYPES
+
+
+@pytest.mark.parametrize(
+    ("mutate", "valid"),
+    [
+        (lambda error, payload: None, True),
+        (lambda error, payload: payload.update(ErrorType="Sandbox.Timedout"), False),
+        (lambda error, payload: payload.update(ErrorType="Runtime.ExitError"), False),
+        (lambda error, payload: payload.update(ErrorType="ClientError"), False),
+        (lambda error, payload: payload.update(ErrorType="toomanyrequestsexception"), False),
+        (lambda error, payload: payload.update(ErrorType="Lambda.TooManyRequestsException"), False),
+        (lambda error, payload: payload.update(ErrorType=["TooManyRequestsException"]), False),
+        (
+            lambda error, payload: (payload.pop("ErrorType"), payload.update(ErrorMessage="TooManyRequestsException")),
+            False,
+        ),
+        (lambda error, payload: payload.update(ErrorData="TooManyRequestsException"), False),
+        (lambda error, payload: payload.update(StackTrace=["line 1"]), False),
+        (lambda error, payload: payload.update(ErrorData={"detail": "capacity"}), False),
+        (lambda error, payload: error.update(Payload=[]), False),
+        (lambda error, payload: error.update(Payload="TooManyRequestsException"), False),
+        (lambda error, payload: error.update(Truncated=True), False),
+        (lambda error, payload: error.update(Truncated="false"), False),
+        (lambda error, payload: error.update(Truncated=0), False),
+        (lambda error, payload: error.update(Truncated=None), False),
+        (lambda error, payload: payload.update(ErrorMessage=123), False),
+        (lambda error, payload: payload.pop("ErrorMessage"), False),
+    ],
+)
+def test_undispatched_rejection_discriminator_matches_only_the_confirmed_allowlisted_payload_shape(mutate, valid):
+    details = rejected_completion("rejected", 4, 0.6, 0.8)["InvocationCompletedDetails"]
+    mutate(details["Error"], details["Error"]["Payload"])
+    assert is_undispatched_rejection(details) is valid
+
+
+@pytest.mark.parametrize(
+    "details",
+    [None, {}, {"Error": None}, {"Error": "rejected"}, {"Error": []}],
+)
+def test_undispatched_rejection_discriminator_rejects_missing_or_malformed_error(details):
+    assert is_undispatched_rejection(details) is False
+
+
+HISTORIES = {"execution": [rejected_completion("rejected", 4, 0.6, 0.8)]}
+LAUNCH = {"arn": "execution", "marker": "marker", "native_requests": []}
+
+
+def test_undispatched_requests_proves_a_request_with_no_runtime_trace_at_all():
+    proven = undispatched_requests((), HISTORIES, [LAUNCH])
+    assert proven == {
+        "rejected": {
+            "executionArn": "execution",
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 4,
+            "startedAtMs": 600,
+            "settledAtMs": 800,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda event: event.update(EventType="StepSucceeded"),
+        lambda event: event["InvocationCompletedDetails"].update(StartTimestamp=None),
+        lambda event: event["InvocationCompletedDetails"].update(EndTimestamp=None),
+        lambda event: event["InvocationCompletedDetails"].update(EndTimestamp=0.5, StartTimestamp=0.6),
+        lambda event: event.update(EventId=None),
+        lambda event: event.update(EventId="4"),
+        lambda event: event.update(EventId=0),
+        lambda event: event.update(EventId=-1),
+    ],
+)
+def test_undispatched_requests_requires_a_sound_event_and_interval(corrupt):
+    event = rejected_completion("rejected", 4, 0.6, 0.8)
+    corrupt(event)
+    assert undispatched_requests((), {"execution": [event]}, [LAUNCH]) == {}
+
+
+def test_undispatched_requests_rejects_any_ledger_row_for_the_request():
+    for row in (
+        {"request": "rejected", "phase": "WRAPPER_ENTER"},
+        {"request": "rejected", "phase": "CONFORMANCE", "observation": {"kind": "body"}},
+        {"request": "rejected", "phase": "CONTROL_ERROR"},
+        {"request": "rejected", "phase": "WRAPPER_RETURN"},
+    ):
+        assert undispatched_requests((row,), HISTORIES, [LAUNCH]) == {}
+
+
+def test_undispatched_requests_rejects_a_bound_request():
+    bound_launch = {**LAUNCH, "native_requests": ["rejected"]}
+    assert undispatched_requests((), HISTORIES, [bound_launch]) == {}
+
+
+def test_undispatched_requests_rejects_duplicate_or_foreign_completions():
+    duplicate_in_one_history = {"execution": [*HISTORIES["execution"], rejected_completion("rejected", 5, 0.6, 0.8)]}
+    assert undispatched_requests((), duplicate_in_one_history, [LAUNCH]) == {}
+
+    duplicate_across_histories = {**HISTORIES, "other-execution": [rejected_completion("rejected", 4, 0.6, 0.8)]}
+    other_launch = {"arn": "other-execution", "marker": "other-marker", "native_requests": []}
+    assert undispatched_requests((), duplicate_across_histories, [LAUNCH, other_launch]) == {}
+
+    assert undispatched_requests((), HISTORIES, []) == {}
+    foreign_launch = {"arn": "another-execution", "marker": "marker", "native_requests": []}
+    assert undispatched_requests((), HISTORIES, [foreign_launch]) == {}
+
+
+def test_undispatched_request_rejected_as_a_launchs_only_request_still_fences(tmp_path):
+    # Open question 4 is deliberately left unimplemented: a launch whose only
+    # native request was rejected still has no non-empty native_requests, so
+    # the driver's quiescent() check keeps the fence regardless of the proof.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events.clear()
+    cloud.invocations[0]["native_requests"] = []
+    cloud.raw_histories["execution"] = [rejected_completion("native", 4, 0.1, 0.5)]
+    cloud.refresh = lambda **_: list(cloud.events.values())
+    assert not ScenarioDriver(ctx, cloud).quiescent()
 
 
 def test_seal_is_required_even_when_service_reports_native_completion(tmp_path):
@@ -524,16 +897,11 @@ def test_partial_observation_at_the_cutoff_does_not_include_driver_stop(tmp_path
     ],
 )
 def test_malformed_replay_checkpoint_does_not_hide_owned_resources(tmp_path, operations):
-    ctx, cloud = cloud_source(tmp_path, {"kind": "invocation_start", "atMs": 110, "operations": operations})
-    ctx.scenario = ctx.scenario.__class__(
-        "case",
-        "lmi-lifecycle-5",
-        ctx.profile.profile_id,
-        "suspension-retry",
-        roles=("victim", "resume"),
-        coverage_profile="standard",
-    )
-    ctx.attempts[0]["role"] = "resume"
+    _, cloud = cloud_source(tmp_path, {"kind": "invocation_start", "atMs": 110, "operations": operations})
+    # The journal is immutable through ScenarioContext.attempts, so journal the
+    # resume role on a suspension-retry context instead of editing a copy.
+    ctx = context(scenario="suspension-retry", roles=("victim", "resume"))
+    ctx.record_attempt("native", role="resume", requestId="native")
     cloud.request_roles["native"] = "resume"
     cloud.raw_histories["execution"].append(
         {"EventType": "CallbackStarted", "Id": "callback-operation", "EventTimestamp": 0.2}
@@ -546,7 +914,7 @@ def test_malformed_replay_checkpoint_does_not_hide_owned_resources(tmp_path, ope
 
 def test_unpublished_post_cutoff_service_retry_is_included_only_in_retirement(tmp_path):
     ctx, cloud = cloud_source(tmp_path)
-    ctx.attempts[0]["executionArn"] = "execution"
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
     cloud.invocations[0].update(role="victim", resume_roles=())
     cloud.raw_histories["execution"].append(
         {
@@ -777,7 +1145,7 @@ def test_failed_native_pending_does_not_authorize_callback():
 
 def test_service_proven_late_retry_with_a_scoped_nonwrapper_row_is_deferred(tmp_path):
     ctx, cloud = cloud_source(tmp_path)
-    ctx.attempts[0]["executionArn"] = "execution"
+    ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
     cloud.invocations[0].update(role="victim", resume_roles=())
     cloud.raw_histories["execution"].append(
         {
@@ -834,10 +1202,10 @@ def test_shared_run_rejects_missing_revision_before_admission(tmp_path, monkeypa
 
     factory = Mock(return_value={"sdk": {"deployment": {}}})
     admission = Mock()
-    monkeypatch.setattr(app, "live_results", admission)
+    monkeypatch.setattr(app, "collect_and_adjudicate", admission)
     output = tmp_path / "output"
     with pytest.raises(ValueError, match="verified conformanceRevision"):
-        run({}, output, manifest_factory=factory, adapter_name="unused:adapter")
+        run({}, output, manifest_factory=factory)
     factory.assert_called_once()
     admission.assert_not_called()
 

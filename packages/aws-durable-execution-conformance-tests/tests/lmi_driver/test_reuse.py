@@ -1,7 +1,9 @@
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
+# SPDX-License-Identifier: Apache-2.0
 """Deployment, placement and manifest APIs accept every supported runtime model."""
 
 from copy import deepcopy
-from functools import partial
 from typing import cast
 
 import pytest
@@ -12,7 +14,7 @@ from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentMan
 from aws_durable_execution_conformance_tests.lmi.errors import PlacementError, ProvisioningError
 from aws_durable_execution_conformance_tests.lmi.observations import overlap
 from aws_durable_execution_conformance_tests.lmi.runner import make_manifest
-from aws_durable_execution_conformance_tests.lmi.runtime import RuntimeDefinition
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 
 from .test_evidence import alive, event
 from .test_shared_adapter import deployment
@@ -27,7 +29,21 @@ from .test_shared_adapter import deployment
     ],
 )
 def test_all_runtimes_supply_their_own_artifact_and_configuration(tmp_path, name, handler, native):
-    runtime = RuntimeDefinition(name, handler, architecture="x86_64", memory_size=3072)
+    binding = FixtureBinding(
+        fixtures={
+            "native-overlap": "barrier",
+            "normal-return": "success",
+            "deadline-during-step": "deadline",
+            "peer-recovery": "deadline",
+            "suspension-retry": "replay",
+            "warm-reuse": "warm-owner",
+            "normal-failure": "failure",
+        },
+        failure_error_type="ValueError",
+        worker_identity="process",
+        recovery_policy="replace-worker",
+    )
+    runtime = RuntimeDefinition(name, handler, architecture="x86_64", memory_size=3072, binding=binding)
     manifest = {
         **deployment(),
         **runtime.to_manifest(),
@@ -53,18 +69,15 @@ def test_all_runtimes_supply_their_own_artifact_and_configuration(tmp_path, name
         manifest,
         "standard",
         tmp_path,
-        runtime=name,
         artifact_id="sha256:tested-artifact",
         conformance_revision="revision",
-        configuration_identity=partial(configuration_identity, runtime=runtime),
-        recovery_policy="replace-worker",
     )
     assert plan["runtime"] == name
     assert {profile["recovery_policy"] for profile in plan["profiles"]} == {"replace-worker"}
     assert {case["requirement_id"] for case in plan["scenarios"]} == {f"lmi-lifecycle-{i}" for i in range(1, 8)}
     assert all(profile["artifact_id"] == "sha256:tested-artifact" for profile in plan["profiles"])
-    assert configuration_identity(manifest, "c1", runtime) != configuration_identity(
-        manifest, "c1", RuntimeDefinition(name, "other.handler")
+    assert configuration_identity(manifest, "c1") != configuration_identity(
+        {**manifest, "handler": "other.handler"}, "c1"
     )
 
 

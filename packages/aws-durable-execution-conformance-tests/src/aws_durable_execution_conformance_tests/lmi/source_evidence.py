@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Normalize observed SDK/service evidence for the pinned shared validator.
 
@@ -19,21 +20,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, TypeGuard
 
-from aws_durable_execution_conformance_tests.lmi.artifacts import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.coordinator import ScenarioContext
-from aws_durable_execution_conformance_tests.lmi.evidence import (
-    CUTOFF_ACTIVE_STATUSES,
-    _decimal_identity,
-    _decode_json_wire,
-    _json_result_fingerprint,
-    is_json_integer,
-    same_checkpoint,
-)
 from aws_durable_execution_conformance_tests.lmi.observations import (
-    active_retry_interval,
     is_platform_timeout,
-    requests_after_cutoff,
+    is_undispatched_rejection,
     service_error_type,
     service_native_intervals,
     suspension_resumptions,
@@ -41,6 +32,17 @@ from aws_durable_execution_conformance_tests.lmi.observations import (
 from aws_durable_execution_conformance_tests.lmi.observations import (
     timestamp_ms as _milliseconds,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import active_retry_interval, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.rules.values import (
+    CUTOFF_ACTIVE_STATUSES,
+    _decimal_identity,
+    _decode_json_wire,
+    _json_result_fingerprint,
+    is_json_integer,
+    same_checkpoint,
+)
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding
 from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
 
 SOURCE_PROTOCOL_VERSION = 2
@@ -235,13 +237,47 @@ def observation_exclusions(
     return excluded
 
 
+def _awaiting_bind(launch: Mapping[str, Any] | None, execution: Any) -> bool:
+    """True when ``launch`` could still legitimately bind ``execution``.
+
+    A launch ``_bind_requests`` already skipped as conflicting can never
+    become bound, so it is never merely "not yet bound". Otherwise a launch
+    awaits binding when it has no bound execution yet, or when it is already
+    bound to this same execution (and is just missing this one request from
+    ``native_requests``). A launch already bound to a *different* execution
+    is a real ownership mismatch, not a binding gap.
+    """
+    return (
+        launch is not None
+        and not launch.get("launch_conflict")
+        and isinstance(execution, str)
+        and bool(execution)
+        and (not launch.get("arn") or launch.get("arn") == execution)
+    )
+
+
 def ledger_seal_status(
     records: Sequence[Mapping[str, Any]],
     histories: Mapping[str, Sequence[Mapping[str, Any]]],
     launches: Sequence[Mapping[str, Any]],
     excluded: set[str],
+    *,
+    defer_unbound: bool = False,
 ) -> tuple[set[str], set[str], list[str]]:
-    """Return known requests, missing seals/boundaries and invalid identities or seals."""
+    """Return known requests, missing seals/boundaries and invalid identities or seals.
+
+    ``defer_unbound`` only applies to a sealed stream that is otherwise fully
+    consistent with an owned launch (matching identity fields, no foreign
+    service completion owner) but whose launch has not yet recorded this
+    request (no ``arn`` yet, or ``arn`` matches but the request is absent
+    from ``native_requests``). A budget-expiry refresh can cache such a
+    stream before binding runs (see ``Cloud.refresh``); treating that as
+    "missing" rather than an error avoids fencing a target for a gap that a
+    later complete refresh resolves on its own. Every other mismatch (no
+    matching launch, a launch already skipped as conflicting, a launch bound
+    to a different execution, a foreign completion owner or a genuine
+    identity mismatch) stays an error.
+    """
     streams = defaultdict(list)
     errors = []
     for record in records:
@@ -282,18 +318,32 @@ def ledger_seal_status(
         marker = wrapper.get("marker")
         arn = wrapper.get("execution")
         launch = by_marker.get(marker) if isinstance(marker, str) and marker else None
+        valid_arn = isinstance(arn, str) and bool(arn)
+        identity_matches = not any(
+            record.get(field) != wrapper.get(field)
+            for record in stream
+            for field in ("run", "commit", "caseId", "marker", "execution")
+        )
+        completion_consistent = completion_owners.get(request, arn) == arn
+        not_yet_bound = (
+            defer_unbound
+            and valid_arn
+            and identity_matches
+            and completion_consistent
+            and _awaiting_bind(launch, arn)
+            and launch is not None
+            and request not in launch.get("native_requests", ())
+        )
+        if not_yet_bound:
+            missing.add(request)
+            continue
         if (
             launch is None
-            or not isinstance(arn, str)
-            or not arn
+            or not valid_arn
             or launch.get("arn") != arn
             or request not in launch.get("native_requests", ())
-            or completion_owners.get(request, arn) != arn
-            or any(
-                record.get(field) != wrapper.get(field)
-                for record in stream
-                for field in ("run", "commit", "caseId", "marker", "execution")
-            )
+            or not completion_consistent
+            or not identity_matches
         ):
             errors.append(f"Native request {request} has inconsistent ledger, launch or service ownership")
             continue
@@ -329,6 +379,59 @@ def ledger_seal_status(
         ):
             errors.append(f"Native request {request} has an incomplete capture sequence at its ledger seal")
     return known, missing, errors
+
+
+def undispatched_requests(
+    records: Sequence[Mapping[str, Any]],
+    histories: Mapping[str, Sequence[Mapping[str, Any]]],
+    launches: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """The service proves these requests never reached a handler.
+
+    A request qualifies only if it has no runtime trace of any phase (no
+    ledger row, published or not, and no binding to a launch) and exactly one
+    service-recorded completion, on an owned execution, that is an allowlisted
+    platform rejection with a valid native interval. Such a request is exempt
+    only from the physical-retirement seal requirement; it never satisfies
+    behavior evidence.
+    """
+    published = {record.get("request") for record in records}
+    bound = {request for launch in launches for request in launch.get("native_requests", ())}
+    owned = {launch.get("arn") for launch in launches if launch.get("arn")}
+    found: defaultdict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)
+    for arn, history in histories.items():
+        for event in history:
+            # Count leniently, the same way _invocation_completions matches
+            # events, so a malformed extra completion for the same request
+            # cannot be hidden behind a technicality and still disqualify it.
+            if event.get("EventType") != "InvocationCompleted" and "InvocationCompletedDetails" not in event:
+                continue
+            details = event.get("InvocationCompletedDetails")
+            if isinstance(details, Mapping) and isinstance(details.get("RequestId"), str):
+                found[details["RequestId"]].append((arn, event))
+    proven: dict[str, dict[str, Any]] = {}
+    for request, completions in found.items():
+        if len(completions) != 1 or request in published or request in bound:
+            continue
+        ((arn, event),) = completions
+        details = event["InvocationCompletedDetails"]
+        interval = service_native_intervals([event]).get(request)  # also requires EventType == InvocationCompleted
+        event_id = event.get("EventId")
+        if (
+            arn in owned
+            and interval is not None
+            and is_undispatched_rejection(details)
+            and type(event_id) is int
+            and event_id >= 1
+        ):
+            proven[request] = {
+                "executionArn": arn,
+                "serviceErrorType": service_error_type(details),
+                "sourceEventId": event_id,
+                "startedAtMs": interval[0],
+                "settledAtMs": interval[1],
+            }
+    return proven
 
 
 def _terminal_end(history: Sequence[Mapping[str, Any]], result: Mapping[str, Any]) -> float | None:
@@ -540,6 +643,7 @@ class CaseSources:
     raw: tuple[Mapping[str, Any], ...]
     expected_outcome: Callable[[Mapping[str, Any], str], Mapping[str, Any]]
     worker_identity: Callable[[Mapping[str, Any]], str]
+    worker_identity_key: str = "process"
 
     @classmethod
     def capture(
@@ -708,6 +812,10 @@ class CaseSources:
                     elif kind == "WAIT":
                         # WaitSucceeded has no Result field in the service model.
                         operation["result"] = None
+                    # The suspension check orders a wait or callback's service
+                    # completion between the suspending return and the resume.
+                    if kind in ("WAIT", "CALLBACK") and (completed_at := _service_event_time(raw)) is not None:
+                        operation["endedAtMs"] = completed_at
                 elif event_type == "StepFailed" and "NextAttemptDelaySeconds" in details.get("RetryDetails", {}):
                     operation["status"] = "STARTED"
                 elif event_type.endswith("Failed"):
@@ -791,6 +899,7 @@ class CaseSources:
         cutoff_ms: float | None = None,
         excluded: set[str] | None = None,
         sealed: set[str] | None = None,
+        undispatched: Collection[str] = (),
     ) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
         attempts: list[dict[str, Any]] = []
         selected: dict[str, str] = {}
@@ -810,7 +919,7 @@ class CaseSources:
                 or not request.strip()
                 or not all(
                     isinstance(raw.get(key), str) and raw[key]
-                    for key in ("marker", "execution", "environment", "process")
+                    for key in ("marker", "execution", "environment", "process", self.worker_identity_key)
                 )
                 or not _valid_timestamp(raw.get("time"))
             ):
@@ -828,6 +937,7 @@ class CaseSources:
                 if (
                     isinstance(native, str)
                     and native not in raw_by_request
+                    and native not in undispatched
                     and (excluded is None or native not in excluded)
                 ):
                     unpublished[native] = service_error_type(details)
@@ -842,7 +952,25 @@ class CaseSources:
                 None,
             )
             if item is None or request not in journal or request not in self.cloud.request_roles:
-                errors.append(f"Native request {request} was not bound to an original launch")
+                message = f"Native request {request} was not bound to an original launch"
+                if (
+                    _awaiting_bind(item, raw.get("execution"))
+                    and pending is not None
+                    and getattr(self.cloud, "binding_deferred", False) is True
+                ):
+                    # A budget-expiry refresh intentionally skips binding from a
+                    # partial read (binding early could bind a retry as the
+                    # original). While observation is still ongoing, that gap is
+                    # incomplete evidence, not a collection error; a later
+                    # complete refresh binds and drains the request. An unowned
+                    # marker (no launch at all, e.g. one `Cloud.start` removed
+                    # after a service rejection), a launch `_bind_requests`
+                    # already skipped as conflicting, or a launch already bound
+                    # to a *different* execution are never just "not yet bound" -
+                    # those stay errors regardless of the deferral.
+                    pending.append(message)
+                else:
+                    errors.append(message)
                 continue
             owned = [event for event in events if event.get("requestId") == request]
             boundaries = [event for event in owned if event.get("kind") in {"wrapper_return", "wrapper_raise"}]
@@ -1394,6 +1522,94 @@ def _public_suspension_histories(
     return suspension_resumptions([row for row in ledger if row.get("execution") == victim_arn], history, mode)
 
 
+def _binding_expected_outcome(binding: FixtureBinding, item: Mapping[str, Any], scenario: str) -> dict[str, Any]:
+    """Expected service outcome, keyed on the catalog scenario and role.
+
+    Conformance-owned: never derived from an SDK fixture name, only from the
+    catalog scenario the shared driver admitted and the launch's cohort role.
+    """
+    role = item.get("role")
+    if scenario == "normal-failure" and role == "victim":
+        return {
+            "status": "FAILED",
+            "error": {"type": binding.failure_error_type, "message": "expected:" + item["marker"]},
+        }
+    if scenario in {"deadline-during-step", "peer-recovery"} and role == "victim":
+        # This fixture asserts native deadline/retry behavior. Its logical
+        # execution may still be active or may finish after normal release.
+        return {"allowedStatuses": ["RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", "STOPPED"]}
+    return {"status": "SUCCEEDED", "result": item["marker"]}
+
+
+def _binding_replay_effect_policy(binding: FixtureBinding) -> ReplayEffectPolicy:
+    """Generalize the standard ``replay_effects`` rule over an arbitrary binding.
+
+    Builds one expected ``(operation, value)`` key per ``values`` entry a replay
+    effect declares, or a single ``(operation, None)`` key when it declares none.
+    For each key, the first durable operation ID observed owns its ``count``; any
+    other ID sharing that key gets zero, and a body whose key is not expected also
+    gets zero. Keys with no owner are reported missing, named ``operation`` or
+    ``operation:value``.
+    """
+    expected: dict[tuple[str, int | None], int] = {
+        (effect.operation, value): effect.count
+        for effect in binding.replay_effects
+        for value in (effect.values if effect.values is not None else (None,))
+    }
+    valued_operations = {effect.operation for effect in binding.replay_effects if effect.values is not None}
+
+    def policy(bodies: Sequence[Mapping[str, Any]]) -> tuple[dict[str, int], list[str]]:
+        owners: dict[tuple[str, int | None], str] = {}
+        allowances: dict[str, int] = {}
+        for body in bodies:
+            name, identity = body["operation"], body["operationId"]
+            value = body.get("value") if name in valued_operations else None
+            key = (name, value)
+            if (name in valued_operations and type(value) is not int) or key not in expected:
+                allowances.setdefault(identity, 0)
+                continue
+            owner = owners.setdefault(key, identity)
+            allowances.setdefault(identity, expected[key] if identity == owner else 0)
+        missing = [
+            f"{name}:{value}" if value is not None else name for name, value in expected if (name, value) not in owners
+        ]
+        return allowances, missing
+
+    return policy
+
+
+def binding_evidence_builder(binding: FixtureBinding, runtime: str) -> Callable[..., dict[str, Any]]:
+    """Build an ``evidence_builder(context, cloud, *, phase)`` driven by a FixtureBinding.
+
+    Replaces the SDK-supplied ``expected_outcome``/``worker_identity`` callbacks and
+    the replay-effect policy with rules derived purely from the binding, keyed on
+    the catalog scenario and role rather than any SDK fixture name.
+    """
+    expected_replay_effects = {effect.operation: effect.count for effect in binding.replay_effects}
+    replay_effect_policy = _binding_replay_effect_policy(binding)
+
+    def expected_outcome(item: Mapping[str, Any], scenario: str) -> dict[str, Any]:
+        return _binding_expected_outcome(binding, item, scenario)
+
+    def worker_identity(raw: Mapping[str, Any]) -> str:
+        return raw[binding.worker_identity]
+
+    def builder(context: ScenarioContext, cloud: Cloud, *, phase: str = "observations") -> dict[str, Any]:
+        return build_evidence(
+            context,
+            cloud,
+            runtime=runtime,
+            expected_outcome=expected_outcome,
+            worker_identity=worker_identity,
+            worker_identity_key=binding.worker_identity,
+            phase=phase,
+            expected_replay_effects=expected_replay_effects,
+            replay_effect_policy=replay_effect_policy,
+        )
+
+    return builder
+
+
 def build_evidence(
     context: ScenarioContext,
     cloud: Cloud,
@@ -1401,6 +1617,7 @@ def build_evidence(
     runtime: str,
     expected_outcome: Callable[[Mapping[str, Any], str], Mapping[str, Any]],
     worker_identity: Callable[[Mapping[str, Any]], str],
+    worker_identity_key: str = "process",
     phase: str = "observations",
     expected_replay_effects: Mapping[str, int] | None = None,
     replay_effect_policy: ReplayEffectPolicy | None = None,
@@ -1448,14 +1665,31 @@ def build_evidence(
     ):
         control_only = _undispatched_launches(context, cloud)
     sources = CaseSources.capture(
-        context, cloud, raw=ledger, expected_outcome=expected_outcome, worker_identity=worker_identity
+        context,
+        cloud,
+        raw=ledger,
+        expected_outcome=expected_outcome,
+        worker_identity=worker_identity,
+        worker_identity_key=worker_identity_key,
     )
     pending: list[str] = []
     all_events, errors = sources.observations(pending=None if final else pending)
     events = [event for event in all_events if event["atMs"] <= ended] if frozen else all_events
     history_pending: list[str] = []
-    known, missing, seal_errors = ledger_seal_status(ledger, service, cloud.invocations, excluded)
+    known, missing, seal_errors = ledger_seal_status(
+        ledger,
+        service,
+        cloud.invocations,
+        excluded,
+        defer_unbound=(not final) and getattr(cloud, "binding_deferred", False) is True,
+    )
     errors.extend(seal_errors)
+    # The service proves a physically undispatched request never reached a
+    # handler, so it is exempt from the physical seal requirement; it still
+    # counts as incomplete behavior evidence everywhere else, so it is never
+    # computed outside the final (physical retirement) phase.
+    undispatched = undispatched_requests(all_ledger, service, cloud.invocations) if final else {}
+    missing -= undispatched.keys()
     sealed = (
         known - missing
         if frozen
@@ -1465,7 +1699,7 @@ def build_evidence(
     )
     if final:
         histories, expected, history_errors = sources.histories()
-        attempts, selected, attempt_errors = sources.attempts(events)
+        attempts, selected, attempt_errors = sources.attempts(events, undispatched=undispatched.keys())
     else:
         histories, expected, history_errors = sources.histories(
             pending=history_pending, cutoff_ms=ended if frozen else None
@@ -1551,7 +1785,7 @@ def build_evidence(
             (item["executionArn"] for item in attempts if item["requestId"] == selected.get("victim")), None
         )
         # Clouds built by live drivers record the selected suspension mode.
-        # Legacy offline fixture assemblies can still verify the first resume.
+        # Fixture-built clouds without a driver can still verify the first resume.
         suspension_mode = getattr(cloud, "suspension_mode", None)
         resumes = _public_suspension_histories(cloud, ledger, victim_arn) if complete_replay and suspension_mode else {}
         resume_id = selected.get("resume")
@@ -1763,7 +1997,20 @@ def build_evidence(
                 "evidenceUri": (cloud.artifacts_dir / "events.json").resolve().as_uri(),
             }
             if resource["kind"] == "invocation":
-                item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
+                proof = undispatched.get(resource["id"])
+                if proof is not None:
+                    # A request proven undispatched settles with its proof fields;
+                    # settledAtMs becomes its native rejection time, not the
+                    # overall retirement time. Behavior validation must still
+                    # reject this outcome, so a retry can never stand in for it.
+                    item.update(outcome="UNDISPATCHED", **proof)
+                    invocation = next((i for i in cloud.invocations if i.get("arn") == proof["executionArn"]), None)
+                    if invocation is not None:
+                        item["evidenceUri"] = (
+                            (cloud.artifacts_dir / f"histories/{invocation['marker']}.json").resolve().as_uri()
+                        )
+                else:
+                    item["outcome"] = "QUIESCENT" if _quiescent(resource["id"], events) else "UNKNOWN"
             elif resource["kind"] == "execution":
                 item["outcome"] = cloud.execution_results.get(resource["id"], {}).get("Status", "UNKNOWN")
                 invocation = next((i for i in cloud.invocations if i.get("arn") == resource["id"]), None)

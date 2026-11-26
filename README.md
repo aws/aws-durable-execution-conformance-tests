@@ -67,8 +67,14 @@ distribution.
 
 ## Running Conformance
 
-For live runs or offline validation of Lambda Managed Instances evidence, see the
-[LMI lifecycle runner and evidence contract](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/evidence-schema.md#live-lifecycle-runner).
+Coordinated multi-invocation Lambda Managed Instances checks are a separate,
+optional suite run with `durable-execution-conformance lmi-lifecycle`; ordinary
+`--suite all` runs do not include them. See the
+[LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
+for manifests, SDK adapter contracts, persistent deployments and the reusable
+workflow, and the
+[LMI lifecycle runner and evidence contract](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/evidence-schema.md#collection)
+for collection and adjudication.
 
 The runner accepts a SAM template whose functions map to requirement IDs with
 `TestingMetadata.TestDescription`:
@@ -263,16 +269,3 @@ through the [AWS vulnerability reporting page](https://aws.amazon.com/security/v
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-## Optional LMI lifecycle suite
-
-Use `durable-execution-conformance lmi-lifecycle` for coordinated multi-invocation
-Lambda Managed Instances checks. The suite has runtime-specific placement rules,
-versioned evidence, shared/exclusive resource ownership, and strict coverage.
-It is separate from ordinary `--suite all` runs. See the
-[LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
-for manifests, SDK adapter contracts, persistent deployment profiles,
-and the remaining real-LMI adoption gates. Packaged requirements apply to every
-supported SDK runtime. SDK-specific regression suites, their case matrices and
-validators live in the corresponding SDK repository; they can reuse the common
-coordination and reporting APIs without entering this catalog.

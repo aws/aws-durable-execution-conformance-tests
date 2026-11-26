@@ -1,4 +1,5 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
+#
 # SPDX-License-Identifier: Apache-2.0
 """Replay snapshots must be compared against independent service output."""
 
@@ -117,6 +118,26 @@ def test_wait_success_uses_the_service_models_empty_result():
     histories, _, errors = observed.histories()
     assert errors == []
     assert histories[0]["operations"][0]["result"] is None
+
+
+@pytest.mark.parametrize(
+    "event_type,details",
+    [("WaitSucceeded", {}), ("CallbackSucceeded", {"Result": {"Payload": '"marker"', "Truncated": False}})],
+)
+def test_suspension_operation_keeps_its_service_completion_time(event_type, details):
+    from datetime import UTC, datetime
+
+    observed, _ = history_sources(event_type, details, {"status": "SUCCEEDED"})
+    observed.cloud.raw_histories["exec"][0]["EventTimestamp"] = datetime.fromtimestamp(0.045, tz=UTC)
+    histories, _, errors = observed.histories()
+    assert errors == []
+    assert histories[0]["operations"][0]["endedAtMs"] == pytest.approx(45)
+
+
+def test_suspension_operation_without_a_service_time_has_no_completion_time():
+    observed, _ = history_sources("WaitSucceeded", {}, {"status": "SUCCEEDED"})
+    histories, _, _ = observed.histories()
+    assert "endedAtMs" not in histories[0]["operations"][0]
 
 
 @pytest.mark.parametrize("error_source", ["operation", "execution"])
@@ -328,7 +349,7 @@ def test_nonfinite_json_wire_values_remain_raw(payload):
 def test_checkpoint_preserves_exact_json_numbers(service_wire, sdk_wire, matches):
     from dataclasses import replace
 
-    from aws_durable_execution_conformance_tests.lmi.evidence import same_checkpoint
+    from aws_durable_execution_conformance_tests.lmi.rules.values import same_checkpoint
 
     observed, events = history_sources(
         "StepSucceeded", {"Result": {"Payload": service_wire}}, {"status": "SUCCEEDED", "serializedResult": sdk_wire}
@@ -366,7 +387,7 @@ def test_conflicting_sdk_start_snapshots_do_not_select_the_first():
     ],
 )
 def test_matching_fingerprint_does_not_hide_display_value_changes(original, tampered):
-    from aws_durable_execution_conformance_tests.lmi.evidence import same_checkpoint
+    from aws_durable_execution_conformance_tests.lmi.rules.values import same_checkpoint
 
     base = {"id": "checkpoint", "resultEncoding": "json", "resultFingerprint": "a" * 64}
     assert not same_checkpoint({**base, "result": original}, {**base, "result": tampered})
@@ -543,7 +564,7 @@ def test_execution_result_fingerprint_distinguishes_numeric_rounding(wire, expec
     observed = replace(observed, expected_outcome=lambda *_: {"status": "SUCCEEDED", "result": expected})
     histories, expected_histories, errors = observed.histories()
     assert errors == []
-    from aws_durable_execution_conformance_tests.lmi.evidence import _same_execution_result
+    from aws_durable_execution_conformance_tests.lmi.rules.common import _same_execution_result
 
     assert "resultFingerprint" not in expected_histories["exec"]
     assert _same_execution_result(histories[0], expected_histories["exec"]) is matches

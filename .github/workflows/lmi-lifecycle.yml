@@ -4,9 +4,10 @@ on:
   workflow_call:
     inputs:
       conformance-ref:
-        description: Full commit SHA matching the reusable workflow reference
-        required: true
+        description: Optional full commit SHA; when set it must equal the reusable workflow reference
+        required: false
         type: string
+        default: ''
       sdk-script:
         description: Caller-owned Bash script implementing the documented LMI stages
         required: true
@@ -24,6 +25,7 @@ on:
         type: string
         default: us-west-2
       artifact-directory:
+        description: Plain workspace path, without glob characters, for stage output; an empty value uses the default
         type: string
         default: lmi_tests/artifacts
     secrets:
@@ -43,28 +45,40 @@ env:
   # Ignore the CodeBuild image's shared pip target and Python search path.
   PIP_CONFIG_FILE: /dev/null
   PYTHONPATH: ""
-  CONFORMANCE_REVISION: ${{ inputs.conformance-ref }}
   LMI_SHARED_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   LMI_SDK_SCRIPT: ${{ inputs.sdk-script }}
   LMI_RUNTIME: ${{ inputs.lambda-runtime }}
-  LMI_ARTIFACT_DIRECTORY: ${{ inputs.artifact-directory }}
+  LMI_ARTIFACT_DIRECTORY: ${{ inputs.artifact-directory || 'lmi_tests/artifacts' }}
 
 jobs:
   harness:
-    # Keep fork and Dependabot code outside the testing account.
-    runs-on: ${{ (github.actor == 'dependabot[bot]' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) }}
+    # Only trusted events reach the testing-account runner. Fork PRs,
+    # Dependabot actors, PR authors and branches, and any other event use the
+    # hosted unprivileged runner.
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && !startsWith(github.ref, 'refs/heads/dependabot/') && !startsWith(github.head_ref, 'dependabot/') && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && format('codebuild-github-actions-runner-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Resolve pinned shared conformance
+        env:
+          REQUESTED_REVISION: ${{ inputs.conformance-ref }}
+          WORKFLOW_REVISION: ${{ job.workflow_sha }}
+        run: |
+          test -n "$WORKFLOW_REVISION"
+          if test -n "$REQUESTED_REVISION" && test "$REQUESTED_REVISION" != "$WORKFLOW_REVISION"; then
+            echo "::error::conformance-ref $REQUESTED_REVISION differs from the reusable workflow commit $WORKFLOW_REVISION"
+            exit 1
+          fi
+          echo "CONFORMANCE_REVISION=$WORKFLOW_REVISION" >> "$GITHUB_ENV"
       - name: Check out pinned shared conformance
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: aws/aws-durable-execution-conformance-tests
-          ref: ${{ env.CONFORMANCE_REVISION }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .conformance
           persist-credentials: false
       # uv supplies Python on the CodeBuild Amazon Linux image and on Ubuntu.
@@ -80,18 +94,21 @@ jobs:
         if: always()
         with:
           name: lmi-harness-${{ inputs.stack-name }}-${{ inputs.lambda-runtime }}-${{ inputs.region }}
-          path: ${{ inputs.artifact-directory }}/
+          path: ${{ env.LMI_ARTIFACT_DIRECTORY }}
 
   cloud:
     name: cloud (${{ inputs.runtime-label }}, concurrency 1 and 2)
     needs: harness
-    # Trusted pushes, PRs and manual runs exercise the shared lifecycle suite.
-    # A caller's post-merge push must run it too, or a regression that lands on
-    # top of a pre-merge green PR is never observed. SDK failures remain strict;
-    # fork and Dependabot PRs run only the harness.
-    if: github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    # Trusted pushes, schedules, same-repository PRs and manual runs exercise
+    # the shared lifecycle suite. A caller's post-merge push must run it too, or
+    # a regression that lands on top of a pre-merge green PR is never observed.
+    # SDK failures remain strict; fork PRs, Dependabot actors, PR authors and
+    # branches, and other events run only the harness. Keep this condition
+    # identical to the harness runner's.
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && !startsWith(github.ref, 'refs/heads/dependabot/') && !startsWith(github.head_ref, 'dependabot/') && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: codebuild-github-actions-runner-${{ github.run_id }}-${{ github.run_attempt }}
-    timeout-minutes: 120
+    # Covers the step budgets below, including cleanup's deployment recovery.
+    timeout-minutes: 155
     permissions:
       contents: read
       id-token: write
@@ -111,11 +128,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Resolve pinned shared conformance
+        env:
+          REQUESTED_REVISION: ${{ inputs.conformance-ref }}
+          WORKFLOW_REVISION: ${{ job.workflow_sha }}
+        run: |
+          test -n "$WORKFLOW_REVISION"
+          if test -n "$REQUESTED_REVISION" && test "$REQUESTED_REVISION" != "$WORKFLOW_REVISION"; then
+            echo "::error::conformance-ref $REQUESTED_REVISION differs from the reusable workflow commit $WORKFLOW_REVISION"
+            exit 1
+          fi
+          echo "CONFORMANCE_REVISION=$WORKFLOW_REVISION" >> "$GITHUB_ENV"
       - name: Check out pinned shared conformance
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: aws/aws-durable-execution-conformance-tests
-          ref: ${{ env.CONFORMANCE_REVISION }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .conformance
           persist-credentials: false
       # uv supplies Python on the CodeBuild Amazon Linux image and on Ubuntu.
@@ -123,25 +151,45 @@ jobs:
         with:
           python-version: '3.14'
           activate-environment: true
+      # An unset secret arrives empty; an empty role would let the credentials
+      # action fall back to the runner's own identity.
+      - name: Require test-account configuration
+        env:
+          TEST_ROLE_ARN: ${{ secrets.TEST_ROLE_ARN }}
+        run: |
+          for name in TEST_ROLE_ARN TEST_ACCOUNT_ID CAPACITY_PROVIDER_ARN TEST_LAMBDA_EXECUTION_ROLE_ARN; do
+            value="${!name}"
+            if test -z "${value//[[:space:]]/}"; then
+              echo "::error::$name is empty or blank"
+              exit 1
+            fi
+          done
+      # The testing-account session is configured only after setup and build.
+      # They still run in this job, which can request the OIDC token.
+      - name: Set up SDK harness
+        timeout-minutes: 10
+        run: bash "$LMI_SDK_SCRIPT" setup
+      - name: Build SDK checkout
+        timeout-minutes: 5
+        run: bash "$LMI_SDK_SCRIPT" build
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.TEST_ROLE_ARN }}
           role-session-name: shared-lmi-e2e
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: ${{ secrets.TEST_ACCOUNT_ID }}
-      - name: Verify test account and prerequisites
-        run: |
-          test -n "$CAPACITY_PROVIDER_ARN"
-          test -n "$TEST_LAMBDA_EXECUTION_ROLE_ARN"
-          test "$(aws sts get-caller-identity --query Account --output text)" = "$TEST_ACCOUNT_ID"
-      - name: Set up SDK harness
-        run: bash "$LMI_SDK_SCRIPT" setup
-      - name: Build SDK checkout
-        timeout-minutes: 5
-        run: bash "$LMI_SDK_SCRIPT" build
+      - name: Verify test account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$TEST_ACCOUNT_ID"
+      # Collection and cleanup find the run through this manifest; a stage
+      # script writing elsewhere would otherwise skip them silently.
       - name: Create or update persistent LMI functions
         timeout-minutes: 35
-        run: bash "$LMI_SDK_SCRIPT" deploy
+        run: |
+          bash "$LMI_SDK_SCRIPT" deploy
+          if ! test -f "$LMI_ARTIFACT_DIRECTORY/manifest.json"; then
+            echo "::error::deploy did not write $LMI_ARTIFACT_DIRECTORY/manifest.json"
+            exit 1
+          fi
       - name: Refresh credentials for cloud assertions
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -152,8 +200,17 @@ jobs:
       - name: Run seven shared lifecycle requirements
         timeout-minutes: 60
         run: bash "$LMI_SDK_SCRIPT" run
+      # One shell check gates refresh, collection and cleanup alike, for any
+      # artifact-directory the shell can reach.
+      - name: Find this run's deployment manifest
+        id: deployment
+        if: always()
+        run: |
+          if test -f "$LMI_ARTIFACT_DIRECTORY/manifest.json"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Refresh credentials for evidence and cleanup
-        if: always() && hashFiles(format('{0}/manifest.json', inputs.artifact-directory)) != ''
+        if: always() && steps.deployment.outputs.present == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.TEST_ROLE_ARN }}
@@ -161,28 +218,23 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: ${{ secrets.TEST_ACCOUNT_ID }}
       - name: Collect service history and runtime evidence
-        if: always()
+        if: always() && steps.deployment.outputs.present == 'true'
         timeout-minutes: 5
-        run: |
-          if test -f "$LMI_ARTIFACT_DIRECTORY/manifest.json"; then
-            bash "$LMI_SDK_SCRIPT" collect
-          fi
+        run: bash "$LMI_SDK_SCRIPT" collect
+      # Cleanup also reconciles an interrupted deployment update, which can
+      # poll CloudFormation for up to 25 minutes before releasing its fences.
       - name: Release this run's work and retain persistent functions
-        if: always()
-        timeout-minutes: 5
-        run: |
-          if test -f "$LMI_ARTIFACT_DIRECTORY/manifest.json"; then
-            bash "$LMI_SDK_SCRIPT" cleanup
-          fi
+        if: always() && steps.deployment.outputs.present == 'true'
+        timeout-minutes: 30
+        run: bash "$LMI_SDK_SCRIPT" cleanup
       - name: Retain diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: lmi-${{ inputs.stack-name }}-${{ inputs.lambda-runtime }}-${{ inputs.region }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 7
-          path: ${{ inputs.artifact-directory }}/
+          if-no-files-found: error
+          path: ${{ env.LMI_ARTIFACT_DIRECTORY }}
       - name: Summarize outcomes
         if: always()
-        run: |
-          bash "$LMI_SDK_SCRIPT" summary >> "$GITHUB_STEP_SUMMARY"
-          find "$LMI_ARTIFACT_DIRECTORY/shared" -name report.json -print 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+        run: bash "$LMI_SDK_SCRIPT" summary >> "$GITHUB_STEP_SUMMARY"
