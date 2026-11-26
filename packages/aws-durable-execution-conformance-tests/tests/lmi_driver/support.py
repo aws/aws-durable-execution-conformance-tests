@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Explicit test fixture policies; no language SDK is needed by the shared harness."""
 
+from functools import partial
+
 from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
+from aws_durable_execution_conformance_tests.lmi.source_evidence import build_evidence as normalize
 
 FIXTURES = {
     "native-overlap": "barrier",
@@ -23,3 +26,15 @@ BINDING = FixtureBinding(
     worker_identity="process",
 )
 RUNTIME = RuntimeDefinition("python", "fixture.handler", binding=BINDING)
+
+
+_normalize = partial(
+    normalize,
+    runtime="python",
+    expected_outcome=lambda item, scenario: {"status": "SUCCEEDED", "result": item["marker"]},
+    worker_identity=lambda raw: raw["process"],
+)
+
+
+def build_evidence(context, cloud, **options):
+    return _normalize(context, cloud, **options)

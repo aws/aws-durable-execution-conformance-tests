@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Deployment and manifest APIs accept every supported runtime model."""
+"""Deployment, placement and manifest APIs accept every supported runtime model."""
 
 from copy import deepcopy
 
@@ -9,10 +9,12 @@ import pytest
 
 from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
-from aws_durable_execution_conformance_tests.lmi.errors import ProvisioningError
+from aws_durable_execution_conformance_tests.lmi.errors import PlacementError, ProvisioningError
+from aws_durable_execution_conformance_tests.lmi.observations import overlap
 from aws_durable_execution_conformance_tests.lmi.runner import make_manifest
 from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
 
+from .test_evidence import alive, event
 from .test_shared_adapter import deployment
 
 
@@ -75,3 +77,91 @@ def test_all_runtimes_supply_their_own_artifact_and_configuration(tmp_path, name
     assert configuration_identity(manifest, "c1") != configuration_identity(
         {**manifest, "handler": "other.handler"}, "c1"
     )
+
+
+@pytest.mark.parametrize("runtime", ["java", "javascript"])
+def test_same_process_runtime_overlap_requires_distinct_requests_and_shared_worker(runtime):
+    first = event("BLOCKED", worker="worker")
+    second = event("BLOCKED", 2, marker="b", request="r2", execution="exec2", worker="worker")
+    assert overlap(alive([first, second]), {"a", "b"}, 2, runtime=runtime) == "env1"
+    with pytest.raises(PlacementError):
+        overlap(alive([first, {**second, "process": "other"}]), {"a", "b"}, 2, runtime=runtime)
+    if runtime == "javascript":
+        with pytest.raises(PlacementError):
+            overlap(alive([first, {**second, "worker": "other"}]), {"a", "b"}, 2, runtime=runtime)
+
+
+def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from .support import build_evidence
+    from .test_shared_partial_evidence import context
+
+    cloud = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        control_prefix="runs/run/cases/case/control/",
+        retired_at=None,
+        observation_ended_at=2,
+        source_uris=set(),
+        events={},
+        raw_histories={},
+        terminal_histories=set(),
+        control_records=[{"action": "hold", "gate": "fault"}, {"action": "hold", "gate": "peer"}],
+        invocations=[{"role": "victim", "payload": {"scenario": "javaTimeoutFixture", "gate": "fault"}}],
+        _save=lambda *args: None,
+        artifacts_dir=tmp_path,
+    )
+    sources = SimpleNamespace(
+        observations=lambda **_: ([], []), histories=lambda **_: ([], {}, []), attempts=lambda _, **kwargs: ([], {}, [])
+    )
+    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
+        evidence = build_evidence(context(), cloud)
+    assert evidence["faultsCreated"] == [{"id": "fault", "ownerCaseId": "case"}]
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+def test_emergency_fault_release_preserves_the_earliest_release_timestamp(tmp_path, phase):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from .support import build_evidence
+    from .test_shared_partial_evidence import context
+
+    cloud = SimpleNamespace(
+        manifest={"invocationTimeout": 60, "bucket": "private"},
+        control_prefix="runs/run/cases/case/control/",
+        retired_at=3 if phase == "final" else None,
+        observation_ended_at=2,
+        source_uris=set(),
+        events={},
+        raw_histories={},
+        terminal_histories=set(),
+        control_records=[
+            {"action": "hold", "gate": "fault"},
+            {"action": "release", "gate": "fault", "started": 2, "time": 2.1},
+        ],
+        invocations=[{"role": "victim", "payload": {"gate": "fault"}}],
+        _save=lambda *args: None,
+        artifacts_dir=tmp_path,
+    )
+    sources = SimpleNamespace(
+        observations=lambda **_: (
+            [
+                {
+                    "kind": "fault_released",
+                    "mode": "emergency",
+                    "gateId": "fault",
+                    "atMs": 1000,
+                    "requestId": "native",
+                    "source": {"sequence": 0},
+                }
+            ],
+            [],
+        ),
+        histories=lambda **_: ([], {}, []),
+        attempts=lambda _, **kwargs: ([], {}, []),
+    )
+    with patch("aws_durable_execution_conformance_tests.lmi.source_evidence.CaseSources.capture", return_value=sources):
+        evidence = build_evidence(context(), cloud, phase=phase)
+    assert evidence["faultsCreated"] == [{"id": "fault", "ownerCaseId": "case", "releasedAtMs": 1000}]
