@@ -37,6 +37,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_service_requests, requests_after_cutoff
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors
 
 
@@ -475,7 +476,12 @@ class ScenarioContext:
                     raise ValueError("Attempt ordinal must remain an integer")
                 # Once bound, a launch keeps its request and execution: a later
                 # update must not rebind it to another invocation's work.
-                for name, label in (("requestId", "invocation request ID"), ("executionArn", "durable execution")):
+                for name, label in (
+                    ("requestId", "invocation request ID"),
+                    ("executionArn", "durable execution"),
+                    ("nativeStartedAtMs", "service native start"),
+                    ("nativeEndedAtMs", "service native completion"),
+                ):
                     if name in attempt and diagnostics.get(name, attempt[name]) != attempt[name]:
                         raise ValueError(f"Cannot replace the original {label}")
                 if "attempt" in diagnostics:
@@ -941,8 +947,33 @@ async def run_scenarios(
                         snapshot.get(name) for snapshot in [evidence, *cleanup_snapshots] for name in owned_inventories
                     )
                 )
+                # A failed deferral reconciliation must fail retirement here;
+                # raising would skip the non-quiescent release.
+                try:
+                    journaled_late = requests_after_cutoff(context.attempts, evidence.get("observationEndedAtMs"))
+                    if journaled_late:
+                        deferred = deferred_service_requests(evidence)
+                        deferred.update(
+                            {
+                                item["requestId"]: item["executionArn"]
+                                for item in context.attempts
+                                if item.get("requestId") in journaled_late
+                            }
+                        )
+                        evidence.setdefault("collection", {})["deferredServiceRequests"] = [
+                            {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
+                        ]
+                    full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
+                        isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
+                        for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
+                    )
+                except Exception as exc:
+                    cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
+                    full_runtime_audit_required = True
                 supplied_retirement = context.retirement_evidence
-                if owned_work and (status != "COLLECTED" or supplied_retirement or cleanup_changed):
+                if owned_work and (
+                    status != "COLLECTED" or supplied_retirement or cleanup_changed or full_runtime_audit_required
+                ):
                     try:
                         retirement_evidence = copy.deepcopy(dict(supplied_retirement))
                         if not retirement_evidence and status == "COLLECTED" and cleanup_changed:
@@ -1031,6 +1062,15 @@ async def run_scenarios(
             return
         profile = profile_map[profile_id]
         context = ScenarioContext(run_id, Scenario("finish", "finish", profile_id, "finish"), profile)
+        # Quiescence must be positive: a case that ended without releasing its
+        # lease never completed its retirement audit, so keep the fence.
+        stranded = sorted(
+            owner for owner in leases._resources[profile.resource_id].owners if owner.startswith(f"{run_id}:")
+        )
+        if stranded:
+            await leases.quarantine(
+                profile.resource_id, f"Case ownership was not released after retirement: {', '.join(stranded)}"
+            )
         quiet = leases.quarantine_reason(profile.resource_id) is None and not any(interrupted)
         task = asyncio.current_task()
         assert task is not None

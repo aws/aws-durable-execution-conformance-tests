@@ -89,6 +89,7 @@ def main() -> None:
             "runner",
             "runtime",
             "service",
+            "source_evidence",
         ):
             module = importlib.import_module(f"aws_durable_execution_conformance_tests.lmi.{name}")
             assert Path(module.__file__).is_relative_to(target)

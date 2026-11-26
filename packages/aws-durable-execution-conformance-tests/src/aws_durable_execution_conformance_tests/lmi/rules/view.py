@@ -13,6 +13,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.frames import CaseFrames
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     COMPLETED_OPERATION_STATUSES,
     REQUIREMENT_IDS,
+    _valid_fingerprint,
     is_json_integer,
 )
 
@@ -103,6 +104,14 @@ class CaseView:
         for key in ("id", "type", "status"):
             if not partial or key in operation:
                 self.string(operation.get(key), f"{path}.{key}")
+        if "resultEncoding" in operation and (
+            operation["resultEncoding"] not in ("json", "raw") or "result" not in operation
+        ):
+            self.error(f"{path}.resultEncoding requires a stored result and json or raw encoding")
+        if "resultFingerprint" in operation and (
+            operation.get("resultEncoding") != "json" or not _valid_fingerprint(operation["resultFingerprint"])
+        ):
+            self.error(f"{path}.resultFingerprint requires JSON encoding and a SHA-256 digest")
         if "name" not in operation:
             if not partial:
                 self.error(f"{path}.name is required (null for an unnamed operation)")
@@ -121,7 +130,7 @@ class CaseView:
             if operation.get("status") not in COMPLETED_OPERATION_STATUSES:
                 self.error(f"{path} must have a terminal operation status")
             outcome_key = "result" if operation.get("status") == "SUCCEEDED" else "error"
-            if outcome_key not in operation:
+            if outcome_key not in operation and not (outcome_key == "result" and operation.get("type") == "CONTEXT"):
                 self.error(f"{path} must preserve the stored {outcome_key}")
 
     def at_or_after(
