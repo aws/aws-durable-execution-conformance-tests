@@ -37,7 +37,11 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
-from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_service_requests, requests_after_cutoff
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    deferred_service_requests,
+    requests_after_cutoff,
+    unsettled_deferred_requests,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors
 
 
@@ -516,6 +520,24 @@ class ScenarioAdapter(Protocol):
     is True; otherwise it must preserve quarantine until external recovery.
     Every attempted launch is journaled before transport dispatch.
 
+    Every observation, partial, cleanup and retirement snapshot of a case must be
+    cumulative. A later snapshot may only add records and fields, fill a
+    previously unassigned association, complete an attempt active at the
+    cutoff, advance a nonterminal status, refine a provisional fixture-sourced
+    time (including replacing it with a platform measurement), and renumber
+    sequences without reordering. It must never remove an observed record,
+    execution or resource, and never change an identity or a terminal fact.
+    Derived summaries such as ``replay.retry``, ``replay.sideEffects`` and
+    ``replay.expectedBefore`` are recomputed from each snapshot's own records; a
+    partial or pending snapshot may omit them, and a later snapshot may select
+    a different retry operation. ``observationEndedAtMs`` never moves earlier.
+    Other collection metadata (watermarks, ``collectionErrors``, ``pending``,
+    ``deferredServiceRequests``) describes only the collection window of the
+    snapshot that carries it: the retirement snapshot carries no deferred
+    inventory of its own and instead settles the frozen evidence's deferred
+    inventory; every deferred service request it does not independently settle
+    or prove ``UNDISPATCHED`` keeps the target fenced.
+
     An optional ``collect_partial(context)`` returns a bounded read-only snapshot of
     every observation so far after a non-cancelled phase failure, before fault
     release; it replaces ``context.evidence``. It must not wait for cleanup or
@@ -963,13 +985,15 @@ async def run_scenarios(
                         evidence.setdefault("collection", {})["deferredServiceRequests"] = [
                             {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
                         ]
-                    full_runtime_audit_required = bool(deferred_service_requests(evidence)) or any(
+                    frozen_deferred_requests = deferred_service_requests(evidence)
+                    full_runtime_audit_required = bool(frozen_deferred_requests) or any(
                         isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
                         for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
                     )
                 except Exception as exc:
                     cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
                     full_runtime_audit_required = True
+                    frozen_deferred_requests = {}
                 supplied_retirement = context.retirement_evidence
                 if owned_work and (
                     status != "COLLECTED" or supplied_retirement or cleanup_changed or full_runtime_audit_required
@@ -989,7 +1013,18 @@ async def run_scenarios(
                                 errors.extend(error for error in audit if error not in errors)
                                 cleanup_errors.append("Independent retirement evidence did not establish quiescence")
                             else:
-                                physical_retirement_verified = True
+                                # The retirement snapshot must also cover the frozen
+                                # deferred inventory: a deferred request absent from
+                                # this independent audit was never proven settled or
+                                # UNDISPATCHED, so quiescence is not established for it.
+                                unsettled = unsettled_deferred_requests(frozen_deferred_requests, retirement_evidence)
+                                if unsettled:
+                                    cleanup_errors.append(
+                                        "Independent retirement evidence does not cover deferred service "
+                                        f"request(s): {', '.join(sorted(unsettled))}"
+                                    )
+                                else:
+                                    physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")
                 # Every SDK record's native owner must be settled, including

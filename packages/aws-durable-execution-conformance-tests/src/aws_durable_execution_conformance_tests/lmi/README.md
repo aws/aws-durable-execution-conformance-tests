@@ -139,7 +139,10 @@ limits. The run-level `budgets` above separately limits controller phases in
 seconds.
 
 A retry stays in the original evidence attempt list;
-never replace the original case with a successful retry.
+never replace the original case with a successful retry. A service retry proven
+to start after the observation cutoff is not in the frozen attempts: collection
+records its `requestId` and `executionArn` in `collection.deferredServiceRequests`
+instead.
 
 Use a fresh output directory for every run. The output contains the input manifest, complete case evidence/attempts/timings,
 JSON report and JUnit report. Collection runs also flush `attempts.jsonl` before
@@ -373,6 +376,11 @@ the [observation protocol](REUSE.md#observation-protocol) and the
 A role that was required by the scenario but never actually launched still makes
 the scenario incomplete. It does not represent an invented outstanding request:
 retirement can succeed when every actual launch is independently proven settled.
+That includes each deferred service request: before the lease is released, the
+independent retirement snapshot must match it to a settled attempt with the same
+`requestId` and `executionArn`, or to a proven `UNDISPATCHED` invocation with the
+same `id` and `executionArn`. Otherwise the target stays fenced, even when every
+listed attempt is settled.
 This distinction lets later cases use a safely retired target while preserving
 all earlier test failures. A failed case that owned work but has no independent
 retirement evidence keeps its target conservatively quarantined. A case does not
