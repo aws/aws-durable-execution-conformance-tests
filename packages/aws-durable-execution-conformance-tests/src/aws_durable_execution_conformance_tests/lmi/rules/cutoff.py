@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _owned_record_enriches
-from aws_durable_execution_conformance_tests.lmi.rules.values import is_json_integer
+from aws_durable_execution_conformance_tests.lmi.rules.values import is_json_integer, mappings
 
 
 def deferred_service_requests(evidence: Mapping[str, Any]) -> dict[str, str]:
@@ -38,6 +38,31 @@ def deferred_service_requests(evidence: Mapping[str, Any]) -> dict[str, str]:
             raise ValueError("Deferred service requests must have unique request IDs and owned execution ARNs")
         requests[request] = arn
     return requests
+
+
+def unsettled_deferred_requests(deferred: Mapping[str, str], retirement_evidence: Mapping[str, Any]) -> set[str]:
+    """Deferred requests the independent retirement snapshot still does not cover.
+
+    A deferred request is covered when the retirement snapshot settled it as its
+    own attempt, or proved that request ``UNDISPATCHED`` through an UNDISPATCHED
+    invocation settlement; either must match the request ID and ``executionArn``.
+    The UNDISPATCHED proof is ``undispatched_settlements``'s, established by the
+    retirement audit that runs before this check, and it covers only that one
+    invocation. This never calls ``deferred_retirement_errors``: that function
+    also rejects a physically settled UNDISPATCHED deferral as an unsatisfied
+    obligation, which adjudication's cutoff audit relies on, so this coordinator
+    check only decides whether the target is safe to reuse.
+    """
+    retirement = retirement_evidence.get("retirement")
+    covered = {
+        (item.get("requestId"), item.get("executionArn")) for item in mappings(retirement_evidence.get("attempts"))
+    }
+    covered |= {
+        (item.get("id"), item.get("executionArn"))
+        for item in mappings(retirement.get("resources") if isinstance(retirement, Mapping) else None)
+        if item.get("kind") == "invocation" and item.get("outcome") == "UNDISPATCHED"
+    }
+    return {request for request, arn in deferred.items() if (request, arn) not in covered}
 
 
 def cutoff_obligations(evidence: Mapping[str, Any]) -> tuple[set[str], dict[str, str]]:
@@ -136,9 +161,12 @@ def active_pre_cutoff_errors(original: Mapping[str, Any], final: Mapping[str, An
                     continue
                 match = next(
                     (
+                        # `sequence` is renumberable metadata for SDK requests as
+                        # well as events (cumulative-snapshot rule); relative
+                        # order is checked by `reconcile_admission_closures`.
                         index
                         for index, final_row in enumerate(retained)
-                        if _owned_record_enriches(row, final_row, event=name == "events")
+                        if _owned_record_enriches(row, final_row, event=True)
                     ),
                     None,
                 )
