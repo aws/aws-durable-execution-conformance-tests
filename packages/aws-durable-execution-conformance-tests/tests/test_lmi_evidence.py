@@ -333,7 +333,15 @@ def test_native_runtime_overlap_positive_controls(runtime: str) -> None:
 
 @pytest.mark.parametrize(
     "factory",
-    [lambda: evidence(2), deadline_evidence, recovery_evidence, replay_evidence, warm_evidence, failure_evidence],
+    [
+        lambda: evidence(2),
+        deadline_evidence,
+        recovery_evidence,
+        lambda: recovery_evidence("python"),
+        replay_evidence,
+        warm_evidence,
+        failure_evidence,
+    ],
 )
 def test_lifecycle_positive_controls(factory: Any) -> None:
     assert validate_evidence(factory()) == []
@@ -1407,11 +1415,13 @@ def test_misattributed_service_history_is_not_a_successful_output() -> None:
     assert any("fixture expectation" in error for error in validate_evidence(value))
 
 
-@pytest.mark.parametrize("missing", ["retry", "operationExecutions", "sideEffects"])
+@pytest.mark.parametrize("missing", ["before", "after", "retry", "operationExecutions", "sideEffects"])
 def test_replay_cannot_omit_retry_or_execution_observations(missing: str) -> None:
     value = replay_evidence()
     del value["replay"][missing]
-    assert validate_evidence(value)
+    errors = validate_evidence(value)
+    expected = "replay.retry must be an object" if missing == "retry" else f"replay.{missing} must be an array"
+    assert any(expected in error for error in errors), errors
 
 
 @pytest.mark.parametrize(
@@ -1794,7 +1804,7 @@ def test_unnamed_context_replay_still_rejects_completed_user_code(operation_id: 
 
 @pytest.mark.parametrize("parent", [False, 1, ["parent"], {"id": "parent"}])
 def test_history_operation_parent_must_be_a_string_or_null(parent: Any) -> None:
-    # The wire schema allows a string or null; presence alone accepted a
+    # The contract allows a string or null; presence alone accepted a
     # malformed parent that the replay comparison then matched consistently.
     value = evidence()
     value["histories"][0]["operations"] = [

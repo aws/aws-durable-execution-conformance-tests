@@ -604,12 +604,28 @@ def test_undispatched_settlement_with_a_consistent_proof_passes_independent_reti
     assert validate_retirement_evidence(_undispatched_retirement_fixture(source_event_id)) == []
 
 
+def test_an_execution_cannot_settle_as_undispatched():
+    # Only an invocation can be proven undispatched; an execution may still resume.
+    value = _undispatched_retirement_fixture()
+    for record in (*value["resourcesCreated"], *value["retirement"]["resources"]):
+        if record["id"] == "rejected":
+            record["kind"] = "execution"
+    errors = validate_retirement_evidence(value)
+    assert any("an execution may still resume after retirement" in error for error in errors), errors
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
         lambda resource, value: resource.update(serviceErrorType="ClientError"),
+        lambda resource, value: resource.pop("serviceErrorType"),
         lambda resource, value: resource.update(executionArn="arn:execution:foreign"),
+        lambda resource, value: resource.pop("executionArn"),
+        lambda resource, value: resource.update(executionArn=""),
         lambda resource, value: resource.pop("sourceEventId"),
+        lambda resource, value: resource.update(sourceEventId=0),
+        lambda resource, value: resource.pop("startedAtMs"),
+        lambda resource, value: resource.update(startedAtMs=-1),
         lambda resource, value: resource.update(sourceEventId=99.5),
         lambda resource, value: resource.update(sourceEventId=True),
         lambda resource, value: resource.update(startedAtMs=resource["settledAtMs"] + 1),
@@ -618,8 +634,14 @@ def test_undispatched_settlement_with_a_consistent_proof_passes_independent_reti
     ],
     ids=[
         "unlisted-error-type",
+        "missing-error-type",
         "foreign-execution-arn",
+        "missing-execution-arn",
+        "blank-execution-arn",
         "missing-source-event-id",
+        "zero-source-event-id",
+        "missing-start",
+        "negative-start",
         "non-integral-source-event-id",
         "boolean-source-event-id",
         "started-after-settled",

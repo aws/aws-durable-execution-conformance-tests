@@ -3,9 +3,8 @@
 `validate_evidence(document, phase="observations" | "final")` is the executable
 schema and semantic validator. It returns findings prefixed `INCOMPLETE:`,
 `PLACEMENT:`, or `ASSERTION:`. Unknown versions fail closed. Producers may add
-fields; they cannot omit required version 1 observations. `evidence-schema.json`
-describes the structural wire format; the Python validator also checks ownership,
-ordering, placement, outcomes, and coverage.
+fields; they cannot omit required version 1 observations. Besides structure, the
+validator checks ownership, ordering, placement, outcomes, and coverage.
 
 Integer-valued wire fields accept finite, mathematically integral JSON numbers,
 including decimal and exponent spellings such as `2.0` and `2e0`. Booleans remain
@@ -245,9 +244,8 @@ in the final history, but an entry without an ID cannot establish skipped work.
 The operation identified by `replay.retry.operationId` must be `SUCCEEDED` in
 `replay.after` and the matching final history, with its stored `result` key.
 Explicit JSON null is a valid result; an absent result is incomplete evidence.
-Unrelated pending operations need no stored result. This cross-record identity
-constraint is enforced by the semantic validator, since the structural JSON
-schema cannot compare an array entry's ID with the retry object's ID.
+Unrelated pending operations need no stored result. The validator locates that
+operation by matching `replay.after[].id` to `replay.retry.operationId`.
 Invocation intervals can be provisional, and owned activity may outlive them;
 their endpoints alone do not establish retry user-code entry order.
 
@@ -371,9 +369,9 @@ each. It rejects missing or mismatched source kinds and unknown names in the
 reserved `observed_task_*` alias family. Every restored child start and exit
 receives the same completion checks as a native task event. The audit leaves the
 caller's behavior evidence unchanged; already restored snapshots remain valid.
-The root exit alone does not prove child-task or I/O completion. The wire schema
-covers the shared envelope; these additional physical completion rules apply to
-the independent audit rather than every behavior observation document.
+The root exit alone does not prove child-task or I/O completion. Behavior
+validation covers the shared envelope; these additional physical completion rules
+apply to the independent audit rather than every behavior observation document.
 
 Every invocation's settlement must cover its last actual activity. Every
 collected execution history must be terminal and agree with its retirement
