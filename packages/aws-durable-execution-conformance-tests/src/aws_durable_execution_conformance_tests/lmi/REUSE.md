@@ -267,10 +267,20 @@ nonzero on failure. `setup` runs independently in the harness and cloud jobs.
 `artifact-directory` defaults to `lmi_tests/artifacts`, also when the caller passes
 an empty value; it is exposed as `LMI_ARTIFACT_DIRECTORY`. Use a plain workspace
 path without glob characters, because the upload treats it as a pattern. Make it an
-output-only subdirectory: once deployment holds the target fences, it moves
-everything already in that directory into an archive, except `build.json` and the
-deployment's own journal, lock and manifest, so keep the stage script and SDK code
-outside it; the default `lmi_tests/artifacts` satisfies this. The
+output-only subdirectory: once deployment holds the target fences and has
+confirmed the functions are idle, it moves everything already in that directory
+into an archive, except `build.json`, `pre-deploy-executions.json` (rewritten by
+the idle check on an existing stack) and the deployment's own journal, lock and
+manifest. When it creates an archive, it copies whichever manifest is active at
+that point into it before writing the new one; with nothing else to archive it
+replaces the manifest directly. A
+deployment that fails its idle check archives nothing. If the directory has no
+manifest yet, as in the workflow's fresh checkout, deployment writes the current
+run's manifest before acquiring the fences, so that manifest stays in place, and
+collection and cleanup still run, when deployment fails at a fence or the idle
+check. Keep the
+stage script and SDK code outside the directory; the default
+`lmi_tests/artifacts` satisfies this. The
 workflow uploads only that directory and skips hidden files and directories, so
 keep the `run` stage's case output, including its reports and
 `collected-evidence.json`, in a visible path inside it. Leave the SDK journal root
@@ -283,11 +293,18 @@ Automatic recovery of an uncertain write requires the original artifact root,
 lock inode, and boot identity (Linux `boot_id` or macOS `kern.bootsessionuuid`).
 On a host with neither, deployment writes fail before they start. Keep the lock
 files with the journals.
-The uploaded diagnostics include the plan and deployment journals, which name
-the test account ID, the execution-role and capacity-provider ARNs, and the
-bucket. They are identifiers, not credentials, but anyone who can read the
-caller repository's Actions artifacts can read them. Recovery needs the
-downloaded artifact, so they are not redacted.
+The uploaded diagnostics include the deployment manifest if deployment wrote it,
+each coverage profile's case plan if the `run` stage wrote it, and any deployment or
+profile journals still present at upload time. A journal is removed once its fences
+are released, or once its fence PUT is proven rejected or never sent, so its absence
+is normal. A journal that remains, including a `SETTLED` one, still needs
+reconciliation: it may have a fence to release, an `ACQUIRING` acquisition whose
+outcome is unresolved, or a fence that this run already deleted (during deployment,
+retirement or cleanup) before a later step failed or the run stopped (see the manual
+recovery checks below). These files name the test account ID, the execution-role
+and capacity-provider ARNs, and the bucket. They are identifiers, not credentials,
+but anyone who can read the caller repository's Actions artifacts can read them.
+Recovery needs the downloaded artifact, so they are not redacted.
 The shared workflow owns setup of driver Python,
 OIDC credentials and refreshes, account verification, deployment/test budgets,
 always-run collection/cleanup, artifact upload and the job summary. The workflow
@@ -345,8 +362,11 @@ roles do not need fence access. Only the owning run clears
 its fence, after it proves quiescence or that the case was never admitted. Failed
 retirement, or an interruption whose outcome cleanup cannot prove from this run's
 journals, leaves the fence in place. Later preparation and deployment reject the fenced
-target and report its exact S3 URI when their S3 read finds the fence, even if its
-service executions are terminal. An earlier check can stop them first without a
+target and report its exact S3 URI when their initial S3 read finds a fence that
+names the target and a run, even if its service executions are terminal; that
+error does not establish who owns the fence. A fence object without those fields,
+or a PUT whose uncertain outcome a readback resolves to another owner (leaving this
+run's PUT unresolved), reports no URI. An earlier check can stop them first without a
 URI, such as the stack-status check (for example after `UPDATE_ROLLBACK_FAILED`) or
 an existing local deployment or profile journal; derive the key from the bucket and
 the ARN hash above whenever the error omits it.
@@ -360,7 +380,9 @@ job has ended and its runner is gone. A controller paused between cases can look
 idle. Then inspect the fence's retained evidence prefix and reconcile all prior invocations, tasks, I/O, checkpoints, polls
 and callbacks. Confirm that no runtime work remains and that the target
 artifact/configuration is correct. If the fenced run left a `deployment-update.json`
-journal, check its phase. A `PREPARED` journal never submitted an update. A
+journal, check its phase. A `PREPARED` journal never submitted an update, unless the
+host crashed on storage that cannot `fsync` directories: there the journal on disk
+can lag a submitted update, so treat it like an unavailable journal. A
 `SETTLED` journal has a resolved update. To release its remaining fences, run the
 caller's `cleanup` stage against the downloaded artifact directory, loading the
 deployment with `deployment.load_cleanup_manifest(<downloaded artifact root>,
@@ -370,10 +392,17 @@ Re-running the workflow uses a new run ID and cannot. Relocation works only when
 the journal is absent or `SETTLED` with no `ACQUIRING` fence state.
 `load_cleanup_manifest` refuses a `PREPARED` or `SUBMITTING` journal from a
 different root, so reconcile those at the original absolute artifact path or clear
-the fence manually after the checks below. If any fence state in a `SETTLED`
-journal is still `ACQUIRING`, treat the check as inconclusive. For a `SUBMITTING` journal, the exact CloudFormation request token must
-have reached `UPDATE_COMPLETE`, `UPDATE_ROLLBACK_COMPLETE` or a verified no-op;
-`UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, keep the
+the fence manually after the checks below. Check both the deployment journal and
+the target's profile journal (`<sdk.artifacts_dir>/configuration/...-fence.json`).
+If either records the fence as `ACQUIRING`, whatever the deployment journal's
+phase, treat the check as inconclusive: a PUT attempt may still be in flight and
+could recreate the fence after a manual delete, so first establish that every
+possible PUT attempt settled. A settled CloudFormation update alone does not
+establish that when the journal is unavailable. For a `SUBMITTING` journal, the exact CloudFormation request token must
+have reached `UPDATE_COMPLETE`, `UPDATE_ROLLBACK_COMPLETE` or a verified no-op, or
+independent evidence must prove that every submission attempt, including any
+replay, was never sent or was definitively rejected; a credential-refresh error is
+inconclusive. `UPDATE_ROLLBACK_FAILED` keeps the fence. If the journal is unavailable, keep the
 fence unless independent evidence shows that this run's own submission settled,
 was a verified no-op or was never made. The stack's latest status or visible
 events alone are not enough: they can belong to an older request, and a missing

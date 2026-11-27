@@ -356,7 +356,8 @@ task/request intervals, source coverage, and actual invocation exit
 observations, and to settle the native owner of every SDK record seen in any
 snapshot. A journaled launch without an identified invocation request (unless
 the driver recorded a definite Invoke rejection for it), missing completion
-pairs, outstanding work, malformed evidence or interrupted controller work
+pairs (a rejected checkpoint or poll call may omit its exit when a matching
+rejected SDK request corroborates it), outstanding work, malformed evidence or interrupted controller work
 retain quarantine. A case that held controls but never dispatched an Invoke is
 retired by the separate controls-only audit instead, which requires empty runtime
 histories; see the
@@ -380,7 +381,10 @@ That includes each deferred service request: before the lease is released, the
 independent retirement snapshot must match it to a settled attempt with the same
 `requestId` and `executionArn`, or to a proven `UNDISPATCHED` invocation with the
 same `id` and `executionArn`. Otherwise the target stays fenced, even when every
-listed attempt is settled.
+listed attempt is settled. Likewise, a frozen attempt still active at the cutoff
+(`activeAtObservationEnd: true`) keeps the target fenced unless the snapshot has
+an attempt with the same `requestId`, `executionArn` and `startedAtMs`, a terminal
+invocation outcome and an end after the cutoff.
 This distinction lets later cases use a safely retired target while preserving
 all earlier test failures. A failed case that owned work but has no independent
 retirement evidence keeps its target conservatively quarantined. A case does not
