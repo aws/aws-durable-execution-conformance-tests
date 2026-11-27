@@ -31,6 +31,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_retirement_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.cutoff import unsettled_active_retries
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import undispatched_message
 
 run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_coordinator.py")))["run_and_adjudicate"]
 _evidence_fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
@@ -4548,6 +4549,43 @@ def test_independent_retirement_archives_the_adapters_unmodified_native_source()
     assert result.status == "PASSED", result.errors
     archived = next(row for row in result.retirement_evidence["attempts"] if row["requestId"] == victim["requestId"])
     assert "endedAtMsSource" not in archived
+
+
+def test_retirement_only_undispatched_discovery_stays_incomplete_after_quiescent_release() -> None:
+    """A service retry first discovered only in the independent retirement snapshot, proven UNDISPATCHED.
+
+    Physical retirement still releases the lease as quiescent: the service's
+    own rejection record is enough proof to let a later case reuse the
+    target. Behavior validation nonetheless reports the case incomplete,
+    because this retry never satisfies a role, attempt or deferred-request
+    obligation and a retry must never stand in for the original.
+    """
+    value = _standard_retirement_snapshot("evidence")
+    cutoff_ms = value["observationEndedAtMs"]
+    victim = next(row for row in value["attempts"] if row["role"] == "victim")
+    resource = {"id": "service-retry", "kind": "invocation", "ownerCaseId": value["caseId"]}
+
+    def mutate(snapshot: dict[str, Any]) -> None:
+        snapshot["resourcesCreated"].append(deepcopy(resource))
+        snapshot["retirement"]["resources"].append(
+            {
+                **resource,
+                "executionArn": victim["executionArn"],
+                "serviceErrorType": "TooManyRequestsException",
+                "sourceEventId": 99,
+                "startedAtMs": cutoff_ms + 1,
+                "settledAtMs": cutoff_ms + 2,
+                "evidenceUri": snapshot["collection"]["evidenceUris"][0],
+                "outcome": "UNDISPATCHED",
+            }
+        )
+
+    result = _run_standard_cleanup_discovery(value, mutate, phase="retirement", path="independent")
+    assert result.status == "INCOMPLETE_EVIDENCE", result.errors
+    discovered = next(
+        row for row in result.retirement_evidence["retirement"]["resources"] if row["id"] == "service-retry"
+    )
+    assert f"INCOMPLETE: {undispatched_message(discovered)}" in result.errors
 
 
 def test_cleanup_deadline_rejects_late_in_flight_task_observation() -> None:
