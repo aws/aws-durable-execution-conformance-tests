@@ -1231,6 +1231,51 @@ def test_failed_native_pending_does_not_authorize_callback():
     assert pending_callback(ledger, history, "completion") == "token"
 
 
+@pytest.mark.parametrize(
+    ("observations", "selected"),
+    [
+        ([], True),
+        ([{"outcome": "PENDING", "atMs": 800}], False),
+        ([{"outcome": "PENDING", "atMs": 950}, {"outcome": "PENDING", "atMs": 960}], True),
+        ([{"outcome": "SUCCEEDED", "atMs": 800}], True),
+        ([{"outcome": "PENDING", "atMs": 1050}], True),
+        ([{"outcome": "PENDING", "atMs": -1}], True),
+        ([{"outcome": "PENDING", "atMs": True}], True),
+        ([{"outcome": "PENDING"}], True),
+    ],
+)
+def test_ambiguous_pending_decision_falls_back_to_the_wrapper_return(observations, selected):
+    """Only one in-range PENDING invocation_end moves the decision before the wrapper return.
+
+    The callback starts at 900 ms and the wrapper returns at 1000 ms, so it
+    belongs to the suspension only when the decision is the wrapper return.
+    """
+    from aws_durable_execution_conformance_tests.lmi.observations import pending_callback
+
+    ledger: list[dict[str, Any]] = [
+        {"phase": "WRAPPER_ENTER", "request": "request"},
+        *(
+            {"phase": "CONFORMANCE", "request": "request", "observation": {"kind": "invocation_end", **row}}
+            for row in observations
+        ),
+        {"phase": "WRAPPER_RETURN", "request": "request", "status": "PENDING", "time": 1},
+    ]
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "CallbackStarted",
+            "Name": "completion",
+            "Id": "callback",
+            "EventTimestamp": 0.9,
+            "CallbackStartedDetails": {"CallbackId": "token"},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "request", "StartTimestamp": 0, "EndTimestamp": 1.1},
+        },
+    ]
+    assert pending_callback(ledger, history, "completion") == ("token" if selected else None)
+
+
 def test_service_proven_late_retry_with_a_scoped_nonwrapper_row_is_deferred(tmp_path):
     ctx, cloud = cloud_source(tmp_path)
     ctx.update_attempt(ctx.attempts[0]["attemptId"], executionArn="execution")
