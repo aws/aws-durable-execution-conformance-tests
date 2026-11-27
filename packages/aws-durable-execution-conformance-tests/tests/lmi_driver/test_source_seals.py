@@ -1347,7 +1347,7 @@ def test_failed_native_pending_does_not_authorize_callback():
     [
         ([], True),
         ([{"outcome": "PENDING", "atMs": 800}], False),
-        ([{"outcome": "PENDING", "atMs": 950}, {"outcome": "PENDING", "atMs": 960}], True),
+        ([{"outcome": "PENDING", "atMs": 800}, {"outcome": "PENDING", "atMs": 850}], True),
         ([{"outcome": "SUCCEEDED", "atMs": 800}], True),
         ([{"outcome": "PENDING", "atMs": 1050}], True),
         ([{"outcome": "PENDING", "atMs": -1}], True),
@@ -1358,8 +1358,10 @@ def test_failed_native_pending_does_not_authorize_callback():
 def test_ambiguous_pending_decision_falls_back_to_the_wrapper_return(observations, selected):
     """Only one in-range PENDING invocation_end moves the decision before the wrapper return.
 
-    The callback starts at 900 ms and the wrapper returns at 1000 ms, so it
-    belongs to the suspension only when the decision is the wrapper return.
+    The callback starts at 900 ms and the wrapper returns at 1000 ms, and every
+    observed atMs other than the out-of-range ones is before 900 ms, so the
+    callback belongs to the suspension only when the decision is the wrapper
+    return.
     """
     from aws_durable_execution_conformance_tests.lmi.observations import pending_callback
 
@@ -1385,6 +1387,33 @@ def test_ambiguous_pending_decision_falls_back_to_the_wrapper_return(observation
         },
     ]
     assert pending_callback(ledger, history, "completion") == ("token" if selected else None)
+
+
+def test_wrapper_return_just_after_the_service_end_keeps_the_suspension():
+    """A wrapper clock slightly ahead of the service must not drop a PENDING suspension.
+
+    Adjudication does not bound the wrapper return by the service end either.
+    """
+    from aws_durable_execution_conformance_tests.lmi.observations import pending_callback
+
+    ledger: list[dict[str, Any]] = [
+        {"phase": "WRAPPER_ENTER", "request": "request"},
+        {"phase": "WRAPPER_RETURN", "request": "request", "status": "PENDING", "time": 1.105},
+    ]
+    history: list[dict[str, Any]] = [
+        {
+            "EventType": "CallbackStarted",
+            "Name": "completion",
+            "Id": "callback",
+            "EventTimestamp": 0.9,
+            "CallbackStartedDetails": {"CallbackId": "token"},
+        },
+        {
+            "EventType": "InvocationCompleted",
+            "InvocationCompletedDetails": {"RequestId": "request", "StartTimestamp": 0, "EndTimestamp": 1.1},
+        },
+    ]
+    assert pending_callback(ledger, history, "completion") == "token"
 
 
 def test_service_proven_late_retry_with_a_scoped_nonwrapper_row_is_deferred(tmp_path):
