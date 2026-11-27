@@ -55,17 +55,20 @@ def audit_cutoff(evidence: Mapping[str, Any], retirement_evidence: Mapping[str, 
     """Prove frozen evidence's observation-cutoff obligations against independent retirement.
 
     Returns no findings when no retry was active at the cutoff and no service
-    request was deferred past it. Raises ``ValueError`` for a malformed deferral
-    inventory.
+    request was deferred past it, other than any UNDISPATCHED invocation the
+    independent retirement snapshot records; such a retry may be discovered
+    only there, and behavior validation always reports it incomplete. Raises
+    ``ValueError`` for a malformed deferral inventory.
     """
     active, deferred = cutoff_rules.cutoff_obligations(evidence)
+    rejected = retirement_rules.undispatched_behavior_findings(retirement_evidence)
     if not active and not deferred:
-        return []
+        return rejected
     if not isinstance(retirement_evidence, Mapping) or not retirement_evidence:
         return [f"INCOMPLETE: {_CUTOFF_AUDIT_REQUIRED}"]
     errors = retirement_rules.validate_retirement_evidence(retirement_evidence)
     if errors:
-        return errors
+        return [*errors, *rejected]
     frozen = {attempt.get("requestId") for attempt in mappings(evidence.get("attempts"))}
     retired = {attempt.get("requestId") for attempt in mappings(retirement_evidence.get("attempts"))}
     if retired != frozen | deferred.keys():
@@ -77,7 +80,7 @@ def audit_cutoff(evidence: Mapping[str, Any], retirement_evidence: Mapping[str, 
             + cutoff_rules.active_retirement_errors(evidence, retirement_evidence)
         )
     )
-    return errors
+    return [*errors, *rejected]
 
 
 def establish(evidence: Mapping[str, Any]) -> CaseView:

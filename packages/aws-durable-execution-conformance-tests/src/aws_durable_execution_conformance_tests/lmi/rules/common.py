@@ -465,6 +465,19 @@ def _has_matching_sdk_request(event: Mapping[str, Any], method: str, outcome: st
     )
 
 
+def rejected_call_settled(
+    start_kind: str, starts: Sequence[Mapping[str, Any]], ends: Sequence[Mapping[str, Any]], sdk_requests: Any
+) -> bool:
+    """A rejected SDK call start may settle without its exit when corroborated by a matching rejected request."""
+    return (
+        start_kind in _CALL_METHODS
+        and len(starts) == 1
+        and not ends
+        and starts[0].get("outcome") == "REJECTED"
+        and _has_matching_sdk_request(starts[0], _CALL_METHODS[start_kind], "REJECTED", sdk_requests)
+    )
+
+
 def normalize_retirement_events(events: Sequence[Mapping[str, Any]], errors: list[str]) -> list[Mapping[str, Any]]:
     aliases = {"observed_task_start": "task_start", "observed_task_exit": "task_exit"}
     normalized = []

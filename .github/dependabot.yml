@@ -4,3 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Put all GitHub Actions updates in one pull request.
+    # Without a group, Dependabot opens one pull request per action.
+    groups:
+      actions-deps:
+        patterns:
+          - "*"
