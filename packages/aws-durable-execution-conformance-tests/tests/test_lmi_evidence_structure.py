@@ -81,25 +81,6 @@ def test_deadline_scenarios_require_their_declared_budgets(evidence_factories, r
         assert any(f"budgets.{field}" in error for error in errors), errors
 
 
-@pytest.mark.parametrize(
-    ("factory", "arguments"),
-    [
-        ("evidence", (1,)),
-        ("evidence", (2,)),
-        ("deadline_evidence", ()),
-        ("recovery_evidence", ()),
-        ("recovery_evidence", ("python",)),
-        ("replay_evidence", ()),
-        ("warm_evidence", ()),
-        ("failure_evidence", ()),
-        ("unnamed_context_replay_evidence", ()),
-    ],
-)
-def test_validator_accepts_complete_lifecycle_fixtures(evidence_factories, factory, arguments):
-    value = evidence_factories[factory](*arguments)
-    assert validate_evidence(value) == []
-
-
 @pytest.mark.parametrize("retry_count", [0, 1])
 def test_builder_reports_missing_retry_as_behavior_evidence(evidence_factories, retry_count):
     import json
@@ -651,13 +632,34 @@ def test_execution_history_fingerprint_shape(evidence_factories, field, digest):
 
 
 @pytest.mark.parametrize("kind", ["checkpoint_call", "poll_call"])
-@pytest.mark.parametrize("extra", [{}, {"callId": " "}, {"callId": "call", "outcome": "UNKNOWN"}])
+@pytest.mark.parametrize(
+    ("mutation", "finding"),
+    [
+        ({"callId": None}, "observed SDK call lacks a unique matching SDK request"),
+        ({"callId": " "}, "observed SDK call lacks a unique matching SDK request"),
+        ({"outcome": "UNKNOWN"}, "observed SDK call outcome must be DISPATCHED or REJECTED"),
+    ],
+)
 def test_validator_rejects_malformed_sdk_call_event(
-    evidence_factories: dict[str, Any], kind: str, extra: dict[str, str]
+    evidence_factories: dict[str, Any], kind: str, mutation: dict[str, str | None], finding: str
 ) -> None:
     value = evidence_factories["evidence"](2)
-    value["events"].append(evidence_factories["event"](value["attempts"][0], kind, 26, **extra))
-    assert any("observed SDK call" in error for error in validate_evidence(value))
+    victim = value["attempts"][0]
+    method = {"checkpoint_call": "CheckpointDurableExecution", "poll_call": "GetDurableExecutionState"}[kind]
+    call = evidence_factories["event"](victim, kind, 26, callId="call", outcome="DISPATCHED")
+    request = evidence_factories["event"](victim, "request", 26, method=method, outcome="DISPATCHED", callId="call")
+    value["events"].append(call)
+    value["sdkRequests"].append(request)
+    assert not [error for error in validate_evidence(value) if "observed SDK call" in error]
+    for field, replacement in mutation.items():
+        # A call ID is the join key, so blank or drop it on both records;
+        # an outcome belongs to the observed call alone.
+        for record in (call, request) if field == "callId" else (call,):
+            if replacement is None:
+                del record[field]
+            else:
+                record[field] = replacement
+    assert any(finding in error for error in validate_evidence(value))
 
 
 @pytest.mark.parametrize("parent", ["", " "])

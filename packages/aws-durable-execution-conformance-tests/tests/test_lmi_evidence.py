@@ -333,7 +333,15 @@ def test_native_runtime_overlap_positive_controls(runtime: str) -> None:
 
 @pytest.mark.parametrize(
     "factory",
-    [lambda: evidence(2), deadline_evidence, recovery_evidence, replay_evidence, warm_evidence, failure_evidence],
+    [
+        lambda: evidence(2),
+        deadline_evidence,
+        recovery_evidence,
+        lambda: recovery_evidence("python"),
+        replay_evidence,
+        warm_evidence,
+        failure_evidence,
+    ],
 )
 def test_lifecycle_positive_controls(factory: Any) -> None:
     assert validate_evidence(factory()) == []
