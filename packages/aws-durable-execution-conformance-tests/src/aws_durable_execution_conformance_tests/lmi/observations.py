@@ -90,17 +90,17 @@ def _pending_native_decisions(
         ]
         try:
             returned = timestamp_ms(event.get("time"))
-            if observed:
-                if len(observed) != 1 or observed[0].get("outcome") != "PENDING":
-                    continue
-                at = observed[0].get("atMs")
-                if not isinstance(at, (int, float)) or isinstance(at, bool):
-                    continue
-                decision = float(at)
-            else:
-                decision = returned
         except KeyError, TypeError, ValueError, OverflowError:
             continue
+        # As in rules/replay._pending_decision_times and evidence-schema.md: the
+        # decision is the single PENDING invocation_end inside [start, return],
+        # and otherwise the wrapper return, the latest point the wrapper could
+        # have observed the suspension.
+        decision = returned
+        if len(observed) == 1 and observed[0].get("outcome") == "PENDING":
+            at = observed[0].get("atMs")
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and start <= at <= returned:
+                decision = float(at)
         if 0 <= start <= decision <= returned <= end < math.inf:
             decisions.append((start, decision, end))
     return decisions
