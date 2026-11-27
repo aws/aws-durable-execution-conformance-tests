@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
-from aws_durable_execution_conformance_tests.lmi.rules.common import (
-    _has_matching_sdk_request,
-    normalize_retirement_events,
-)
+from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
 from aws_durable_execution_conformance_tests.lmi.rules.controls import (
     case_key,
     controls_only_retirement,
@@ -84,14 +81,10 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
             candidates = [
                 item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
             ]
-            rejected = (
-                start_kind in _CALL_METHODS
-                and start.get("outcome") == "REJECTED"
-                and _has_matching_sdk_request(
-                    start, _CALL_METHODS[start_kind], "REJECTED", view.value.get("sdkRequests", [])
-                )
+            settled = common_rules.rejected_call_settled(
+                start_kind, [start], candidates, view.value.get("sdkRequests", [])
             )
-            if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
+            if key in seen or (len(candidates) != 1 and not settled):
                 view.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
             elif candidates:
                 completion = candidates[0]
@@ -103,6 +96,31 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
             seen.add(key)
     if unmatched:
         view.error("retirement-only completion has no unique observed work start")
+
+
+def undispatched_message(item: Mapping[str, Any]) -> str:
+    """The shared finding text for a native request the service rejected before its handler ran."""
+    return (
+        f"service rejected native request {item.get('id')} before its handler ran "
+        f"({item.get('serviceErrorType')}); its invocation evidence is incomplete"
+    )
+
+
+def undispatched_behavior_findings(retirement_evidence: Any) -> list[str]:
+    """Every UNDISPATCHED invocation ``retirement_evidence`` records, including a retirement-only discovery.
+
+    A service retry first discovered only in the independent retirement
+    snapshot and proven ``UNDISPATCHED`` there never satisfies a role, attempt
+    or deferred-request obligation; behavior validation always reports it
+    incomplete. Safe against a missing or malformed retirement mapping.
+    """
+    retirement = retirement_evidence.get("retirement") if isinstance(retirement_evidence, Mapping) else None
+    resources = retirement.get("resources") if isinstance(retirement, Mapping) else None
+    return [
+        f"INCOMPLETE: {undispatched_message(item)}"
+        for item in mappings(resources)
+        if item.get("kind") == "invocation" and item.get("outcome") == "UNDISPATCHED"
+    ]
 
 
 def undispatched_settlements(view: CaseView, retirement: Mapping[str, Any], end: float) -> set[str]:
@@ -266,10 +284,7 @@ def retirement(
                         # A retry must never stand in for the original: physical
                         # retirement may release the fence, but behavior
                         # validation always reports this request incomplete.
-                        view.error(
-                            f"service rejected native request {item['id']} before its handler ran "
-                            f"({item['serviceErrorType']}); its invocation evidence is incomplete"
-                        )
+                        view.error(undispatched_message(item))
                 elif kind == "invocation" and item.get("outcome") != "QUIESCENT":
                     view.error("invocation quiescence is not established")
                 if kind == "invocation" and time < last_activity(view, item.get("id")):
@@ -451,15 +466,8 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
                 for identifier in identifiers:
                     starts = [event for event in started if event.get(identity) == identifier]
                     ends = [event for event in ended if event.get(identity) == identifier]
-                    rejected = (
-                        start_kind in _CALL_METHODS
-                        and len(starts) == 1
-                        and starts[0].get("outcome") == "REJECTED"
-                        and _has_matching_sdk_request(
-                            starts[0], _CALL_METHODS[start_kind], "REJECTED", evidence["sdkRequests"]
-                        )
-                    )
-                    if len(starts) != 1 or (len(ends) != 1 and not (rejected and not ends)):
+                    settled = common_rules.rejected_call_settled(start_kind, starts, ends, evidence["sdkRequests"])
+                    if len(starts) != 1 or (len(ends) != 1 and not settled):
                         validator.error(f"retirement lacks the unique {start_kind}/{end_kind} completion pair")
                         continue
                     if not ends:

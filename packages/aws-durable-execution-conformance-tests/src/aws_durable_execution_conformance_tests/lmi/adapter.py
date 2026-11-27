@@ -203,7 +203,7 @@ class SharedAdapter:
 
             token = uuid.uuid4().hex
             journal = self.artifacts_dir / "configuration" / f"{case_key(profile.resource_id)}-fence.json"
-            from .service import definitive_s3_write_rejection
+            from .service import definitely_not_sent, definitive_s3_write_rejection
 
             with owner_lock(journal) as owner:
                 if journal.exists():
@@ -242,7 +242,12 @@ class SharedAdapter:
                         save(journal, {**identity, "state": "ACQUIRING", "singleAttempt": False})
                     raise
                 except Exception as error:
-                    if reserved and definitive_s3_write_rejection(error, precondition=True):
+                    # A rejected or never-sent PUT created no fence, so the
+                    # ACQUIRING journal would otherwise block recovery forever.
+                    if reserved and (
+                        definitive_s3_write_rejection(error, precondition=True)
+                        or definitely_not_sent(error, single_attempt=identity["singleAttempt"])
+                    ):
                         journal.unlink(missing_ok=True)
                     raise
                 save(journal, {**identity, "token": token, "state": "ACQUIRED"})

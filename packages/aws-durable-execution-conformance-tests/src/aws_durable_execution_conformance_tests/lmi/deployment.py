@@ -16,21 +16,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from botocore.exceptions import (
-    BotoCoreError,
-    ClientError,
-    ConnectionError,
-    HTTPClientError,
-    NoCredentialsError,
-    ParamValidationError,
-    PartialCredentialsError,
-)
+from botocore.exceptions import BotoCoreError, ClientError, ConnectionError, HTTPClientError
 
 from .artifacts import clear_run_artifacts, owner_lock, owner_lock_path, same_owner_lock, save
 from .errors import CollectionError, ProvisioningError
 from .quarantine import FenceRetryUncertain, acquire_fence, fence_matches, read_fence, release_fence
 from .runtime import CONCURRENCIES, MEMORY_GIB_PER_VCPU, QUALIFIER, SCALING, RuntimeDefinition
-from .service import OUTSTANDING_EXECUTION_STATUSES, client, definitive_s3_write_rejection, retryable_read_error
+from .service import (
+    OUTSTANDING_EXECUTION_STATUSES,
+    client,
+    credential_refresh_error,
+    definitely_not_sent,
+    definitive_s3_write_rejection,
+    retryable_read_error,
+)
 
 
 def verify_profile(runtime: RuntimeDefinition, config, scaling, manifest, key) -> None:
@@ -368,7 +367,9 @@ class DeploymentManager:
         except FileExistsError as error:
             raise ProvisioningError("Existing deployment update journal requires reconciliation") from error
         active_manifest = self.artifacts / "manifest.json"
-        preserve = frozenset({journal.name, active_manifest.name, owner_lock_path(journal).name})
+        preserve = frozenset(
+            {journal.name, active_manifest.name, owner_lock_path(journal).name, "pre-deploy-executions.json"}
+        )
         if not active_manifest.exists():
             save(active_manifest, manifest)
         update_pending = False
@@ -395,22 +396,38 @@ class DeploymentManager:
                     save(journal, submission)
                     raise
                 except ClientError as error:
-                    if submission["fenceStates"][target] == "ACQUIRING" and definitive_s3_write_rejection(
-                        error, precondition=True
+                    if submission["fenceStates"][target] == "ACQUIRING" and (
+                        definitive_s3_write_rejection(error, precondition=True)
+                        or definitely_not_sent(error, single_attempt=submission["singleAttemptFences"])
+                    ):
+                        submission["fenceStates"][target] = "REJECTED"
+                        save(journal, submission)
+                    raise
+                except BotoCoreError as error:
+                    # A pre-send failure (bad/missing credentials, a local
+                    # parameter validation error) never reached S3: this
+                    # acquisition definitely did not happen, so the journal
+                    # can be settled and released instead of retained forever.
+                    if submission["fenceStates"][target] == "ACQUIRING" and definitely_not_sent(
+                        error, single_attempt=submission["singleAttemptFences"]
                     ):
                         submission["fenceStates"][target] = "REJECTED"
                         save(journal, submission)
                     raise
                 submission["fenceStates"][target] = "ACQUIRED"
                 save(journal, submission)
+            # Check idle status before archiving the previous run's manifest and
+            # cleanup evidence: fences are already held, so admission cannot race
+            # this check, but a failure here must still leave the previous run's
+            # manifest active and its cleanup evidence intact for discovery.
+            if stack is not None:
+                self.wait_for_idle_functions(stack)
             if capacity is not None:
                 archive = clear_run_artifacts(self.artifacts, preserve=preserve)
                 if archive is not None:
                     save(archive / active_manifest.name, json.loads(active_manifest.read_text()))
                 save(active_manifest, manifest)
                 save(self.artifacts / "capacity-provider.json", capacity)
-            if stack is not None:
-                self.wait_for_idle_functions(stack)
 
             def update_stack(spec):
                 nonlocal update_pending
@@ -425,10 +442,12 @@ class DeploymentManager:
                 update_pending = True
                 try:
                     cfn.update_stack(**request)
-                except (ParamValidationError, NoCredentialsError, PartialCredentialsError):
-                    update_pending = False
-                    raise
                 except (BotoCoreError, ClientError) as error:
+                    # The CloudFormation client retries, so a credential refresh
+                    # failure may follow an attempt that started the update.
+                    if definitely_not_sent(error, single_attempt=False):
+                        update_pending = False
+                        raise
                     if isinstance(error, ClientError):
                         code = error.response["Error"]["Code"]
                         message = error.response["Error"].get("Message", "")
@@ -524,6 +543,10 @@ class DeploymentManager:
 
     @staticmethod
     def update_rejected(error):
+        if credential_refresh_error(error):
+            # A credential provider failed, not UpdateStack: a retry may follow
+            # an attempt that already started the update.
+            return False
         response = error.response
         code = response["Error"]["Code"]
         metadata = response.get("ResponseMetadata", {})

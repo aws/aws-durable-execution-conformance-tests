@@ -90,18 +90,21 @@ def _pending_native_decisions(
         ]
         try:
             returned = timestamp_ms(event.get("time"))
-            if observed:
-                if len(observed) != 1 or observed[0].get("outcome") != "PENDING":
-                    continue
-                at = observed[0].get("atMs")
-                if not isinstance(at, (int, float)) or isinstance(at, bool):
-                    continue
-                decision = float(at)
-            else:
-                decision = returned
         except KeyError, TypeError, ValueError, OverflowError:
             continue
-        if 0 <= start <= decision <= returned <= end < math.inf:
+        # As in rules/replay._pending_decision_times and evidence-schema.md: the
+        # decision is the single PENDING invocation_end inside [start, return],
+        # and otherwise the wrapper return, the latest point the wrapper could
+        # have observed the suspension.
+        decision = returned
+        if len(observed) == 1 and observed[0].get("outcome") == "PENDING":
+            at = observed[0].get("atMs")
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and start <= at <= returned:
+                decision = float(at)
+        # The decision lies in [start, return] by construction. Like adjudication,
+        # do not bound the wrapper return by the service end: a wrapper clock a
+        # few milliseconds ahead of the service must not drop the suspension.
+        if start <= returned:
             decisions.append((start, decision, end))
     return decisions
 
@@ -246,6 +249,8 @@ def check_controls(events):
 
 
 def overlap(events, markers, count, environment=None, *, runtime, replacement=False):
+    # A runtime-supported worker retirement can have no final diagnostic. Recovery
+    # and full-capacity placement must therefore also be asserted by the driver.
     if runtime not in {"python", "java", "javascript"}:
         raise ValueError("Unknown runtime placement model")
     blocked = [e for e in select(events, "BLOCKED") if e["marker"] in markers]
@@ -289,6 +294,3 @@ def overlap(events, markers, count, environment=None, *, runtime, replacement=Fa
                 continue
             return env
     raise PlacementError(f"No {count}-request {runtime} overlap in one execution environment")
-
-    # A runtime-supported worker retirement can have no final diagnostic. Recovery
-    # and full-capacity placement must therefore also be asserted by the driver.

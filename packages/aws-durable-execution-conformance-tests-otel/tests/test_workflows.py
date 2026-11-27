@@ -294,7 +294,7 @@ def test_workers_load_support_from_their_own_workflow_revision() -> None:
 def test_setup_go_uses_pinned_action_with_collector_inputs() -> None:
     steps = _load(SUITE_WORKFLOW)["jobs"]["s3_collector"]["steps"]
     setup = next(step for step in steps if step["name"] == "Set up Go")
-    assert setup["uses"] == "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+    assert setup["uses"] == "actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5"
     assert setup["with"] == {
         "go-version-file": "${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.mod",
         "cache-dependency-path": "${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/go.sum\n${{ env.OTEL_LAMBDA_CHECKOUT }}/collector/lambdacomponents/go.sum\n",

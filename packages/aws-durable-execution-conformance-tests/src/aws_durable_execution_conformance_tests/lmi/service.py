@@ -18,10 +18,15 @@ from botocore.exceptions import (
     ChecksumError,
     ClientError,
     ConnectionError,
+    CredentialRetrievalError,
     FlexibleChecksumError,
     HTTPClientError,
     IncompleteReadError,
+    NoCredentialsError,
+    ParamValidationError,
+    PartialCredentialsError,
     ResponseStreamingError,
+    TokenRetrievalError,
 )
 
 from aws_durable_execution_conformance_tests.validate import inherit_wait_for_callback_event_names
@@ -44,8 +49,30 @@ def client(service, region=None, *, single_attempt=False, connect_timeout=3, rea
     )
 
 
+# Operations botocore's credential providers call while resolving or refreshing
+# credentials. A ClientError from one of them describes the credentials, not
+# the operation the caller made, and a retrying client can raise it after an
+# earlier attempt already reached the service.
+_CREDENTIAL_OPERATIONS = frozenset(
+    {
+        "AssumeRole",
+        "AssumeRoleWithSAML",
+        "AssumeRoleWithWebIdentity",
+        "CreateToken",
+        "GetFederationToken",
+        "GetRoleCredentials",
+        "GetSessionToken",
+    }
+)
+
+
+def credential_refresh_error(error: BaseException) -> bool:
+    """True for a ClientError that a credential provider's own call raised."""
+    return isinstance(error, ClientError) and getattr(error, "operation_name", None) in _CREDENTIAL_OPERATIONS
+
+
 def definitive_s3_write_rejection(error: Exception, *, precondition: bool = False) -> bool:
-    if not isinstance(error, ClientError):
+    if not isinstance(error, ClientError) or credential_refresh_error(error):
         return False
     retries = error.response.get("ResponseMetadata", {}).get("RetryAttempts")
     if type(retries) is not int or retries != 0:
@@ -60,6 +87,30 @@ def definitive_s3_write_rejection(error: Exception, *, precondition: bool = Fals
         "InvalidArgument",
         "NoSuchBucket",
     } or (precondition and code in {"PreconditionFailed", "ConditionalRequestConflict"})
+
+
+# Raised before the first attempt is signed, so no attempt was ever sent.
+_NEVER_SENT_ERRORS = (NoCredentialsError, ParamValidationError)
+# Raised while resolving or refreshing credentials to sign an attempt. A
+# retrying client re-signs every attempt, so one of these, like a
+# credential provider's own ClientError, can follow an attempt that already
+# reached the service.
+_UNSIGNED_ATTEMPT_ERRORS = (PartialCredentialsError, CredentialRetrievalError, TokenRetrievalError)
+
+
+def definitely_not_sent(error: BaseException, *, single_attempt: bool) -> bool:
+    """True when botocore raised before any request of this call reached the wire.
+
+    Missing credentials and local parameter validation fail before the first
+    attempt. A credential refresh failure proves nothing was sent only for a
+    client that makes a single attempt; a retrying client may have sent an
+    earlier attempt that the service accepted. When this is True, no readback
+    or retry can learn more, and any write the call was guarding did not
+    happen.
+    """
+    return isinstance(error, _NEVER_SENT_ERRORS) or (
+        single_attempt and (isinstance(error, _UNSIGNED_ATTEMPT_ERRORS) or credential_refresh_error(error))
+    )
 
 
 def release_control(storage, bucket: str, key: str, *, allow_absent: bool = False) -> None:
@@ -137,7 +188,14 @@ def retryable_read_error(error: Exception) -> bool:
 
 
 def request_execution_stops(service, executions, *, timeout=30) -> dict[str, Exception]:
-    """Retry service visibility independently for the executions the caller verified."""
+    """Stop each verified execution that is RUNNING or PAUSED, retrying service visibility.
+
+    ``timeout`` bounds the retry window, not each call: every execution's status
+    is read at least once, and each call is bounded by the client's own
+    timeouts. Retryable failures are retried until the window closes. An
+    execution that is still PAUSING, or whose reads keep failing, is reported in
+    the returned errors instead of being stopped.
+    """
     deadline = time.monotonic() + timeout
     pending = set(executions)
     errors: dict[str, Exception] = {}

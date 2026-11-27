@@ -43,6 +43,7 @@ from aws_durable_execution_conformance_tests.lmi.runtime import CONCURRENCIES, Q
 from aws_durable_execution_conformance_tests.lmi.service import (
     DurableFunctionRunner,
     client,
+    credential_refresh_error,
     definitive_s3_write_rejection,
     release_control,
     retryable_read_error,
@@ -525,7 +526,9 @@ class Cloud:
             arn = runner.run_async(input=payload, execution_name=execution_name)
             require_execution_name(arn, function, execution_name)
         except Exception as error:
-            if item in self.invocations and isinstance(error, ClientError):
+            # A credential provider's ClientError says nothing about Invoke: the
+            # retrying client may have sent an attempt that started the launch.
+            if item in self.invocations and isinstance(error, ClientError) and not credential_refresh_error(error):
                 rejection = {
                     "dispatchState": "REJECTED",
                     "retryAttempts": error.response.get("ResponseMetadata", {}).get("RetryAttempts"),

@@ -27,9 +27,11 @@ from aws_durable_execution_conformance_tests.lmi.observations import (
     pending_callback,
     select,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.common import rejected_call_settled
 from aws_durable_execution_conformance_tests.lmi.service import retryable_read_error
 from aws_durable_execution_conformance_tests.lmi.source_evidence import (
     DEADLINE_REQUIREMENTS,
+    _sdk_requests,
     deadline_cutoff_results,
     ledger_seal_status,
     observation_exclusions,
@@ -466,20 +468,24 @@ class ScenarioDriver:
         ended = {event["request"] for event in events if event["phase"] in {"WRAPPER_RETURN", "WRAPPER_RAISE"}}
         if not entered or not entered <= ended:
             return False
+        # A rejected checkpoint/poll call may settle without its exit, exactly as
+        # the evidence builder and retirement validator accept it.
+        sdk_requests = _sdk_requests(observations)
         for start, end, identity in (
             ("task_start", "task_exit", "taskId"),
             ("io_start", "io_exit", "taskId"),
             ("checkpoint_call", "checkpoint_exit", "callId"),
             ("poll_call", "poll_exit", "callId"),
         ):
-            starts = Counter(
-                (item.get("requestId"), item.get(identity)) for item in observations if item.get("kind") == start
-            )
-            ends = Counter(
-                (item.get("requestId"), item.get(identity)) for item in observations if item.get("kind") == end
-            )
-            if starts - ends:
-                return False
+            starts = [item for item in observations if item.get("kind") == start]
+            ends = [item for item in observations if item.get("kind") == end]
+            opened = Counter((item.get("requestId"), item.get(identity)) for item in starts)
+            closed = Counter((item.get("requestId"), item.get(identity)) for item in ends)
+            for key in opened - closed:
+                own_starts = [item for item in starts if (item.get("requestId"), item.get(identity)) == key]
+                own_ends = [item for item in ends if (item.get("requestId"), item.get(identity)) == key]
+                if not rejected_call_settled(start, own_starts, own_ends, sdk_requests):
+                    return False
         # The public root task hook is a positive witness that task instrumentation
         # ran; absent instrumentation must not look like an empty, settled pool.
         root_ends = {
