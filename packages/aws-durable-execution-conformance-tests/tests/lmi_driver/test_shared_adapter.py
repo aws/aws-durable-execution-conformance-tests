@@ -2117,6 +2117,24 @@ def test_retirement_requires_every_real_task_and_call_to_exit(start, end, identi
     assert driver.quiescent()
 
 
+@pytest.mark.parametrize("start", ["checkpoint_call", "poll_call"])
+def test_retirement_settles_a_rejected_call_without_an_exit(start):
+    envelope = {"phase": "CONFORMANCE", "request": "native", "execution": "execution"}
+    rejected = {"requestId": "native", "callId": "closed", "kind": start, "atMs": 411}
+    driver, events = settled_cloud()
+    events.append({**envelope, "observation": {**rejected, "outcome": "DISPATCHED"}})
+    seal_fixture_events(events)
+    assert not driver.quiescent()
+    driver, events = settled_cloud()
+    events.append({**envelope, "observation": {**rejected, "outcome": "REJECTED"}})
+    seal_fixture_events(events)
+    assert driver.quiescent()
+    # A second rejected start sharing that callId is not a single settled rejection.
+    events.append({**envelope, "observation": {**rejected, "outcome": "REJECTED", "atMs": 412}})
+    seal_fixture_events(events)
+    assert not driver.quiescent()
+
+
 def test_missing_producer_seal_cannot_claim_physical_retirement():
     driver, events = settled_cloud()
     assert driver.quiescent()
