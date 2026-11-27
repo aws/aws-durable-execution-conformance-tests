@@ -2135,6 +2135,16 @@ def test_retirement_settles_a_rejected_call_without_an_exit(start):
     assert not driver.quiescent()
 
 
+@pytest.mark.parametrize("kind", [[], {}])
+def test_retirement_check_tolerates_an_unhashable_observation_kind(kind):
+    # The evidence builder reports the malformed record; the driver must not crash on it first.
+    driver, events = settled_cloud()
+    envelope = {"phase": "CONFORMANCE", "request": "native", "execution": "execution"}
+    events.append({**envelope, "observation": {"requestId": "native", "kind": kind, "atMs": 411}})
+    seal_fixture_events(events)
+    assert driver.quiescent() is True
+
+
 def test_missing_producer_seal_cannot_claim_physical_retirement():
     driver, events = settled_cloud()
     assert driver.quiescent()
