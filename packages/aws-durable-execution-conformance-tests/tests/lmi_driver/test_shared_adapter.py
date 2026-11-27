@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 from unittest.mock import Mock
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, CredentialRetrievalError, NoCredentialsError, ParamValidationError
 
 from aws_durable_execution_conformance_tests.lmi import adapter as adapter_module
 from aws_durable_execution_conformance_tests.lmi import cloud as cloud_module
@@ -2355,6 +2355,49 @@ def test_retried_profile_fence_persists_token_without_verifying_or_deleting(tmp_
     asyncio.run(value.finish(valid, quiescent=True))
     cloud.s3.delete_object.assert_not_called()
     assert journal.is_file()
+
+
+@pytest.mark.parametrize(
+    "error,single_attempt,settled",
+    [
+        (NoCredentialsError(), False, True),
+        (ParamValidationError(report="bad"), False, True),
+        (CredentialRetrievalError(provider="sso", error_msg="expired"), True, True),
+        (CredentialRetrievalError(provider="sso", error_msg="expired"), False, False),
+    ],
+)
+def test_never_sent_profile_fence_put_settles_its_journal(tmp_path, error, single_attempt, settled):
+    from aws_durable_execution_conformance_tests.lmi import runner
+    from aws_durable_execution_conformance_tests.lmi.artifacts import case_key
+
+    class UnsentCloud(FakeCloud):
+        single_attempt_fences = single_attempt
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.s3.put_object.side_effect = error
+
+    value = adapter(tmp_path, factory=UnsentCloud)
+    valid = replace(PROFILE, configuration_id=configuration_identity(deployment(), "c1"))
+    with pytest.raises(type(error)):
+        asyncio.run(value.prepare(valid))
+    cloud = FakeCloud.instances[-1]
+    cloud.s3.put_object.assert_called_once()
+    assert "verify" not in cloud.actions
+    journal = value.artifacts_dir / "configuration" / f"{case_key(FUNCTION)}-fence.json"
+    assert journal.is_file() is not settled
+    errors = runner._recover_profile_fences(
+        deployment(), value.artifacts_dir, {"c1": {"resource_id": FUNCTION}}, cloud.s3
+    )
+    if settled:
+        # Offline cleanup finds nothing to reconcile, and a new attempt can reserve the profile again.
+        assert errors == []
+        asyncio.run(adapter(tmp_path).prepare(valid))
+    else:
+        # A retrying client may have sent an earlier attempt, so the outcome stays unresolved.
+        assert json.loads(journal.read_text())["state"] == "ACQUIRING"
+        assert errors == [f"{FUNCTION}: CollectionError: Profile fence acquisition outcome is unresolved"]
+    cloud.s3.delete_object.assert_not_called()
 
 
 def test_attempt_audit_failure_does_not_mark_invocation_submitted(cloud):
