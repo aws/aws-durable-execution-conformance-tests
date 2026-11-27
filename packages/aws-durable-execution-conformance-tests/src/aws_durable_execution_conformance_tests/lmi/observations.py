@@ -101,7 +101,10 @@ def _pending_native_decisions(
             at = observed[0].get("atMs")
             if isinstance(at, (int, float)) and not isinstance(at, bool) and start <= at <= returned:
                 decision = float(at)
-        if 0 <= start <= decision <= returned <= end < math.inf:
+        # The decision lies in [start, return] by construction. Like adjudication,
+        # do not bound the wrapper return by the service end: a wrapper clock a
+        # few milliseconds ahead of the service must not drop the suspension.
+        if start <= returned:
             decisions.append((start, decision, end))
     return decisions
 
