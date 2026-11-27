@@ -64,6 +64,7 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
     )
     for completion in completions:
         common_rules.owned_record(view, completion, "retirement.completion", end)
+        common_rules.event_sequence(view, completion, "retirement.completion")
         if view.number(completion.get("atMs"), "retirement.completion.atMs") <= view.value.get(
             "observationEndedAtMs", 0
         ):

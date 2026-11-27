@@ -816,6 +816,10 @@
         "atMs": {
           "type": "number",
           "minimum": 0
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "allOf": [

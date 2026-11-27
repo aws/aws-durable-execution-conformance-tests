@@ -234,6 +234,7 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
             if event.get("outcome") not in ("ACCEPTED", "REJECTED"):
                 subject = f"{probe} probe" if probe in ("operation", "checkpoint") else "admission probe"
                 view.error(f"{subject} outcome must be ACCEPTED or REJECTED")
+        event_sequence(view, event, "event")
         if kind in {"observation_error", "control_error"}:
             view.error(f"{kind} reports failed observation or control publication")
     sdk_requests = view.records(value.get("sdkRequests"), "sdkRequests")
@@ -293,6 +294,11 @@ def collection(view: CaseView, observation_end: float | None = None) -> Mapping[
         for index, uri in enumerate(references):
             view.string(uri, f"collection.evidenceUris[{index}]")
     return collection
+
+
+def event_sequence(view: CaseView, event: Mapping[str, Any], path: str) -> None:
+    if "sequence" in event and (not is_json_integer(event["sequence"]) or event["sequence"] < 0):
+        view.error(f"{path}.sequence must be a non-negative integer")
 
 
 def owned_record(view: CaseView, record: Mapping[str, Any], kind: str, end: float) -> None:

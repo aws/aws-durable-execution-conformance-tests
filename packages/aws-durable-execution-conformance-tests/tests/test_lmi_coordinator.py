@@ -1637,6 +1637,28 @@ def test_caller_suite_service_transition_preserves_original_execution():
     assert [(item["role"], item["attempt"]) for item in context.attempts] == [("initial", 1), ("continued", 1)]
 
 
+def test_cleanup_frames_keep_an_explicitly_malformed_event_sequence():
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _cleanup_record_errors
+
+    event = {"requestId": "r", "ownerRequestId": "r", "executionArn": "e", "kind": "barrier_arrived", "atMs": 5}
+    final: dict[str, Any] = {
+        "attempts": [{"requestId": "r", "executionArn": "e"}],
+        "events": [{**event, "sequence": 3}],
+        "retirement": {
+            "resources": [
+                {"kind": "invocation", "id": "r", "outcome": "QUIESCENT", "settledAtMs": 20},
+                {"kind": "execution", "id": "e", "outcome": "SUCCEEDED", "settledAtMs": 20},
+            ]
+        },
+    }
+    malformed = "INCOMPLETE: cleanup events.sequence must be a non-negative integer"
+    # Later frames that omit or correct the sequence do not erase the malformed value.
+    frames = [{"events": [{**event, "sequence": False}]}, {"events": [event]}, final]
+
+    assert _cleanup_record_errors(frames, final) == [malformed]
+    assert _cleanup_record_errors(frames[1:], final) == []
+
+
 @pytest.mark.parametrize("inventory", ["operationExecutions", "retry.attempts"])
 def test_cleanup_replay_discovery_requires_settlement(inventory):
     from aws_durable_execution_conformance_tests.lmi.coordinator import _cleanup_record_errors
