@@ -17,8 +17,14 @@ from aws_durable_execution_conformance_tests.lmi.adjudication import (
     evaluate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    deferred_service_requests,
+    unsettled_active_retries,
+    unsettled_deferred_requests,
+)
 from aws_durable_execution_conformance_tests.lmi.rules.engine import audit_cutoff
 from aws_durable_execution_conformance_tests.lmi.rules.replay import replay_checkpoint_timing
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import undispatched_message
 
 _fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
 complete_retirement_events = _fixtures["complete_retirement_events"]
@@ -1129,3 +1135,46 @@ def test_active_retry_tolerates_a_renumbered_pre_cutoff_sdk_request_sequence() -
     snapshot_request["sequence"] = 5
     assert audit_cutoff(frozen, snapshot) == []
     assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == []
+
+
+@pytest.mark.parametrize("factory", ["failure_evidence", "deadline_evidence", "evidence"])
+def test_retirement_only_undispatched_discovery_is_reported_incomplete(factory: str) -> None:
+    """A service retry first discovered only in the independent retirement snapshot, proven UNDISPATCHED.
+
+    It has no frozen attempt, no deferred inventory entry and no active retry,
+    so no cutoff obligation would otherwise require an independent audit.
+    Behavior validation must still report it incomplete instead of letting it
+    pass adjudication silently (it never satisfies a role, attempt or
+    deferred-request obligation).
+    """
+    frozen = standard_retirement_snapshot(factory, requirement=2)
+    cutoff_ms = frozen["observationEndedAtMs"]
+    assert not deferred_service_requests(frozen)
+    assert not any(attempt.get("activeAtObservationEnd") for attempt in frozen["attempts"])
+    snapshot = deepcopy(frozen)
+    resource = {"id": "service-retry", "kind": "invocation", "ownerCaseId": frozen["caseId"]}
+    snapshot["resourcesCreated"].append(deepcopy(resource))
+    snapshot["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": frozen["attempts"][0]["executionArn"],
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 99,
+            "startedAtMs": cutoff_ms + 1,
+            "settledAtMs": cutoff_ms + 2,
+            "evidenceUri": frozen["collection"]["evidenceUris"][0],
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    message = f"INCOMPLETE: {undispatched_message(snapshot['retirement']['resources'][-1])}"
+    assert validate_retirement_evidence(snapshot) == []
+    deferred = deferred_service_requests(frozen)
+    assert unsettled_deferred_requests(deferred, snapshot) == set()
+    assert unsettled_active_retries(frozen, snapshot) == set()
+    assert audit_cutoff(frozen, snapshot) == [message]
+    status, findings, _ = adjudicate_evidence(
+        "COLLECTED", [], frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True
+    )
+    assert status == "INCOMPLETE_EVIDENCE", findings
+    assert message in findings
+    assert all(item.startswith("INCOMPLETE:") for item in findings), findings
