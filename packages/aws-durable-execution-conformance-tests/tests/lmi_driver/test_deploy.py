@@ -9,7 +9,14 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    CredentialRetrievalError,
+    NoCredentialsError,
+    ParamValidationError,
+    PartialCredentialsError,
+    TokenRetrievalError,
+)
 
 from aws_durable_execution_conformance_tests.lmi import artifacts as artifacts_module
 from aws_durable_execution_conformance_tests.lmi import deployment as deployment_module
@@ -334,6 +341,40 @@ def test_busy_or_incompletely_listed_functions_block_updates(deploy, manifest, a
     apis["lambda"].stop_durable_execution.assert_not_called()
 
 
+def test_idle_check_failure_before_archiving_preserves_the_previous_run(deploy, manifest, apis, monkeypatch):
+    """A busy idle check must fail before the previous run's manifest and cleanup
+    evidence are archived away and the active manifest is switched: otherwise a
+    failed new deploy leaves the failed run's manifest active with no archive to
+    recover the previous one from, and cleanup finds the wrong run.
+    """
+    from aws_durable_execution_conformance_tests.lmi.deployment import load_cleanup_manifest
+
+    previous_manifest = deploy.artifacts / "manifest.json"
+    previous_manifest.write_text(json.dumps({"run": "previous"}))
+    (deploy.artifacts / "case-output.json").write_text(json.dumps({"runId": "previous", "directory": "shared"}))
+
+    cfn = apis["cloudformation"]
+    cfn.describe_stacks.return_value = {"Stacks": [stack(manifest)]}
+    apis["lambda"].get_paginator.return_value.paginate.return_value = [
+        {"DurableExecutions": [{"DurableExecutionArn": "old"}]}
+    ]
+    wait = deploy.wait_for_idle_functions
+    monkeypatch.setattr(deploy, "wait_for_idle_functions", lambda value: wait(value, seconds=0))
+
+    with pytest.raises(ProvisioningError, match="code was not updated"):
+        deploy.deploy_stack(manifest, b"new-code", capacity={})
+
+    assert json.loads(previous_manifest.read_text()) == {"run": "previous"}
+    assert (deploy.artifacts / "case-output.json").exists()
+    assert not list(deploy.artifacts.parent.glob(f"{deploy.artifacts.name}-previous-*"))
+    assert not (deploy.artifacts / "deployment-update.json").exists()
+    holds = [call for call in apis["s3"].put_object.call_args_list if call.kwargs["Key"].startswith("quarantine/")]
+    assert len(holds) == 2
+    assert apis["s3"].delete_object.call_count == 2
+    cfn.update_stack.assert_not_called()
+    assert load_cleanup_manifest(deploy.artifacts, "previous")["run"] == "previous"
+
+
 def test_only_run_data_expires_and_code_is_retained(deploy, manifest):
     rules = deploy.template(manifest)["Resources"]["Bucket"]["Properties"]["LifecycleConfiguration"]["Rules"]
     assert all(rule.get("Prefix") == "runs/" for rule in rules)
@@ -594,7 +635,7 @@ def test_failed_atomic_artifact_update_preserves_existing_journal(tmp_path, monk
             },
             "UpdateStack",
         ),
-        deployment_module.ParamValidationError(report="invalid parameter"),
+        ParamValidationError(report="invalid parameter"),
     ],
 )
 def test_proven_stack_rejection_releases_fences_without_wait(deploy, manifest, apis, monkeypatch, error):
@@ -606,6 +647,192 @@ def test_proven_stack_rejection_releases_fences_without_wait(deploy, manifest, a
         deploy.deploy_stack(manifest, b"new-code")
     cfn.describe_stack_events.assert_not_called()
     assert s3.delete_object.call_count == 2
+
+
+def test_deploy_stack_syncs_the_parent_directory_between_acquiring_and_the_fence_put_and_before_update_stack(
+    deploy, manifest, apis, monkeypatch
+):
+    """The directory fsync that makes an ACQUIRING journal write durable must land
+    before the fence PUT it is meant to protect, and the one for a SUBMITTING
+    write must land before ``update_stack``: otherwise a host crash right after
+    either S3/CFN call can come back with a journal that never proves what AWS
+    actually received.
+    """
+    cfn = apis["cloudformation"]
+    cfn.describe_stacks.return_value = {"Stacks": [stack(manifest)]}
+    monkeypatch.setattr(deploy, "wait_for_idle_functions", Mock())
+    monkeypatch.setattr(deploy, "wait_update", Mock(return_value="UPDATE_COMPLETE"))
+    monkeypatch.setattr(deploy, "verify", Mock())
+
+    trace: list[str] = []
+    real_sync = artifacts_module._sync_directory
+
+    def recording_sync(path):
+        trace.append("sync")
+        real_sync(path)
+
+    monkeypatch.setattr(artifacts_module, "_sync_directory", recording_sync)
+
+    real_save = deployment_module.save
+
+    def recording_save(path, data, *, exclusive=False):
+        if isinstance(data, dict):
+            if "ACQUIRING" in data.get("fenceStates", {}).values():
+                trace.append("acquiring-save")
+            elif data.get("phase") == "SUBMITTING":
+                trace.append("submitting-save")
+        real_save(path, data, exclusive=exclusive)
+
+    monkeypatch.setattr(deployment_module, "save", recording_save)
+
+    real_put_object = apis["s3"].put_object.side_effect
+
+    def recording_put_object(*, Bucket, Key, **kwargs):
+        if Key.startswith("quarantine/"):
+            trace.append("quarantine-put")
+        return real_put_object(Bucket=Bucket, Key=Key, **kwargs)
+
+    apis["s3"].put_object.side_effect = recording_put_object
+
+    def recording_update_stack(**_kwargs):
+        trace.append("update-stack")
+
+    cfn.update_stack.side_effect = recording_update_stack
+
+    deploy.deploy_stack(manifest, b"code")
+
+    acquiring_indices = [index for index, event in enumerate(trace) if event == "acquiring-save"]
+    assert acquiring_indices, trace
+    for index in acquiring_indices:
+        assert trace[index : index + 3] == ["acquiring-save", "sync", "quarantine-put"], trace
+
+    submitting_indices = [index for index, event in enumerate(trace) if event == "submitting-save"]
+    assert submitting_indices, trace
+    for index in submitting_indices:
+        assert trace[index : index + 3] == ["submitting-save", "sync", "update-stack"], trace
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PartialCredentialsError(provider="env", cred_var="AWS_SECRET_ACCESS_KEY"),
+        CredentialRetrievalError(provider="custom-process", error_msg="refresh failed"),
+        TokenRetrievalError(provider="sso", error_msg="refresh failed"),
+        # An STS refresh failure surfaces as the STS operation's own ClientError.
+        ClientError(
+            {"Error": {"Code": "ExpiredToken"}, "ResponseMetadata": {"HTTPStatusCode": 403, "RetryAttempts": 0}},
+            "AssumeRole",
+        ),
+    ],
+)
+def test_credential_refresh_failure_on_update_stack_waits_for_the_update(deploy, manifest, apis, monkeypatch, error):
+    # The CloudFormation client retries: a refresh failure can follow an
+    # attempt that already started the update, so the fences must stay held
+    # until the update's own outcome is observed.
+    cfn = apis["cloudformation"]
+    cfn.describe_stacks.return_value = {"Stacks": [stack(manifest)]}
+    monkeypatch.setattr(deploy, "wait_for_idle_functions", Mock())
+    monkeypatch.setattr(deploy, "verify", Mock())
+    wait_update = Mock(return_value="UPDATE_COMPLETE")
+    monkeypatch.setattr(deploy, "wait_update", wait_update)
+    cfn.update_stack.side_effect = error
+    deploy.deploy_stack(manifest, b"new-code")
+    wait_update.assert_called_once()
+
+
+def test_definitely_not_sent_trusts_credential_refresh_failures_only_for_single_attempt_clients():
+    from aws_durable_execution_conformance_tests.lmi.service import definitely_not_sent
+
+    refresh = CredentialRetrievalError(provider="custom-process", error_msg="refresh failed")
+    assert definitely_not_sent(refresh, single_attempt=True)
+    assert not definitely_not_sent(refresh, single_attempt=False)
+    for never_sent in (NoCredentialsError(), ParamValidationError(report="invalid parameter")):
+        assert definitely_not_sent(never_sent, single_attempt=False)
+    assert not definitely_not_sent(ClientError({"Error": {"Code": "SlowDown"}}, "PutObject"), single_attempt=True)
+    sts = ClientError(
+        {"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPStatusCode": 403, "RetryAttempts": 0}},
+        "AssumeRoleWithWebIdentity",
+    )
+    assert definitely_not_sent(sts, single_attempt=True)
+    assert not definitely_not_sent(sts, single_attempt=False)
+
+
+def test_credential_provider_errors_are_not_s3_write_rejections():
+    from aws_durable_execution_conformance_tests.lmi.service import definitive_s3_write_rejection
+
+    metadata = {"HTTPStatusCode": 403, "RetryAttempts": 0}
+    assert definitive_s3_write_rejection(
+        ClientError({"Error": {"Code": "AccessDenied"}, "ResponseMetadata": metadata}, "PutObject")
+    )
+    assert not definitive_s3_write_rejection(
+        ClientError({"Error": {"Code": "AccessDenied"}, "ResponseMetadata": metadata}, "AssumeRole")
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NoCredentialsError(),
+        ParamValidationError(report="invalid parameter"),
+        # The production fence client makes a single attempt, so a refresh
+        # failure proves the PUT was never sent.
+        CredentialRetrievalError(provider="custom-process", error_msg="refresh failed"),
+        ClientError(
+            {"Error": {"Code": "ExpiredToken"}, "ResponseMetadata": {"HTTPStatusCode": 403, "RetryAttempts": 0}},
+            "AssumeRole",
+        ),
+    ],
+)
+def test_pre_send_fence_error_settles_the_journal_instead_of_sticking_it(deploy, manifest, apis, monkeypatch, error):
+    """A definite pre-send failure (bad credentials, a local parameter error) on the
+    fence PUT never reached S3: it must not be treated as ambiguous. The journal
+    should settle and release instead of being retained forever, and the next
+    deploy must be able to proceed.
+    """
+    cfn = apis["cloudformation"]
+    cfn.describe_stacks.return_value = {"Stacks": [stack(manifest)]}
+    fence_storage = Mock()
+    fence_storage.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    fence_storage.put_object.side_effect = error
+
+    def fake_factory(service, region=None, *, single_attempt=False, **_kwargs):
+        if service == "cloudformation":
+            return cfn
+        if service == "s3":
+            return fence_storage if single_attempt else apis["s3"]
+        raise AssertionError(f"Unexpected client request: {service}")
+
+    # Construct after patching so ``self.client`` binds to the same object as the
+    # module-level ``client`` the production code compares against, exactly as it
+    # does when no client_factory override is given.
+    monkeypatch.setattr(deployment_module, "client", fake_factory)
+    pinned = DeploymentManager(runtime=RUNTIME, owner="test-lmi-e2e", artifacts=deploy.artifacts, bundle=deploy.bundle)
+    assert pinned.client is fake_factory
+
+    with pytest.raises(type(error)):
+        pinned.deploy_stack(manifest, b"code")
+
+    journal = deploy.artifacts / "deployment-update.json"
+    assert not journal.exists()
+    fence_storage.put_object.assert_called_once()
+    # Only the pre-acquisition existence check; the failure must not trigger any
+    # readback after the PUT since the write definitely never reached S3.
+    assert fence_storage.get_object.call_count == 1
+    fence_storage.head_object.assert_not_called()
+    cfn.update_stack.assert_not_called()
+
+    from aws_durable_execution_conformance_tests.lmi.quarantine import fence_key, read_fence
+
+    for target in DeploymentManager.function_targets(manifest).values():
+        assert read_fence(fence_storage, manifest["bucket"], target) is None
+        assert not any(call.kwargs["Key"] == fence_key(target) for call in apis["s3"].put_object.call_args_list)
+
+    # The next deploy is no longer refused by a permanently-stuck ACQUIRING journal.
+    monkeypatch.setattr(deploy, "wait_for_idle_functions", Mock())
+    monkeypatch.setattr(deploy, "wait_update", Mock(return_value="UPDATE_COMPLETE"))
+    monkeypatch.setattr(deploy, "verify", Mock())
+    deploy.deploy_stack(manifest, b"code")
+    cfn.update_stack.assert_called_once()
 
 
 def test_interrupted_update_recovers_exact_operation_using_persisted_token(deploy, manifest, apis, monkeypatch):

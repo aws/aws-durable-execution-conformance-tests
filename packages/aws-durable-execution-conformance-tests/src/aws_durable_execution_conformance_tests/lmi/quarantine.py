@@ -19,7 +19,7 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 
 from .errors import ProvisioningError
-from .service import definitive_s3_write_rejection
+from .service import definitely_not_sent, definitive_s3_write_rejection
 
 
 class FenceRetryUncertain(ProvisioningError):
@@ -93,6 +93,10 @@ def acquire_fence(
             IfNoneMatch="*",
         )
     except (BotoCoreError, ClientError) as error:
+        if definitely_not_sent(error, single_attempt=single_attempt):
+            # The PUT never reached S3: no readback can prove or disprove a
+            # write that was never attempted, and no state was persisted.
+            raise
         if before_put is not None and isinstance(error, ClientError):
             retries = error.response.get("ResponseMetadata", {}).get("RetryAttempts")
             if retries is not None and (type(retries) is not int or retries != 0):
