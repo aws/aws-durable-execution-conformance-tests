@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
+from aws_durable_execution_conformance_tests.lmi.rules import cutoff as cutoff_rules
 from aws_durable_execution_conformance_tests.lmi.rules import deadline as deadline_rules
 from aws_durable_execution_conformance_tests.lmi.rules import disposal as disposal_rules
 from aws_durable_execution_conformance_tests.lmi.rules import overlap as overlap_rules
@@ -17,7 +18,7 @@ from aws_durable_execution_conformance_tests.lmi.rules import replay as replay_r
 from aws_durable_execution_conformance_tests.lmi.rules import retirement as retirement_rules
 from aws_durable_execution_conformance_tests.lmi.rules import warm_reuse as warm_reuse_rules
 from aws_durable_execution_conformance_tests.lmi.rules.frames import CaseFrames
-from aws_durable_execution_conformance_tests.lmi.rules.values import REQUIREMENT_IDS
+from aws_durable_execution_conformance_tests.lmi.rules.values import REQUIREMENT_IDS, mappings
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 
 
@@ -25,7 +26,10 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
     """Validate all observations, then optionally case-owned retirement.
 
     ``observations`` checks the envelope and the scenario's observations.
-    ``final`` additionally requires complete retirement evidence.
+    ``final`` additionally requires complete retirement evidence. A retry active
+    at the observation cutoff or a deferred service request needs independent
+    retirement evidence, which only adjudication has (``audit_cutoff``), so this
+    single-document check reports it incomplete.
     """
     if not isinstance(evidence, Mapping):
         return ["INCOMPLETE: evidence must be an object"]
@@ -34,7 +38,49 @@ def validate_evidence(evidence: Mapping[str, Any], *, phase: Literal["observatio
     view = establish(evidence)
     if phase == "final":
         retire(view, evidence)
+        try:
+            active, deferred = cutoff_rules.cutoff_obligations(evidence)
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            view.error(f"malformed retirement evidence: {error}")
+        else:
+            if active or deferred:
+                view.error(_CUTOFF_AUDIT_REQUIRED)
     return view.errors
+
+
+_CUTOFF_AUDIT_REQUIRED = "active-at-cutoff or deferred request evidence requires an independent retirement audit"
+
+
+def audit_cutoff(evidence: Mapping[str, Any], retirement_evidence: Mapping[str, Any]) -> list[str]:
+    """Prove frozen evidence's observation-cutoff obligations against independent retirement.
+
+    Returns no findings when no retry was active at the cutoff and no service
+    request was deferred past it, other than any UNDISPATCHED invocation the
+    independent retirement snapshot records; such a retry may be discovered
+    only there, and behavior validation always reports it incomplete. Raises
+    ``ValueError`` for a malformed deferral inventory.
+    """
+    active, deferred = cutoff_rules.cutoff_obligations(evidence)
+    rejected = retirement_rules.undispatched_behavior_findings(retirement_evidence)
+    if not active and not deferred:
+        return rejected
+    if not isinstance(retirement_evidence, Mapping) or not retirement_evidence:
+        return [f"INCOMPLETE: {_CUTOFF_AUDIT_REQUIRED}"]
+    errors = retirement_rules.validate_retirement_evidence(retirement_evidence)
+    if errors:
+        return [*errors, *rejected]
+    frozen = {attempt.get("requestId") for attempt in mappings(evidence.get("attempts"))}
+    retired = {attempt.get("requestId") for attempt in mappings(retirement_evidence.get("attempts"))}
+    if retired != frozen | deferred.keys():
+        errors.append("INCOMPLETE: independent retirement requests must match the frozen and deferred inventories")
+    errors.extend(
+        f"INCOMPLETE: {finding}"
+        for finding in (
+            cutoff_rules.active_pre_cutoff_errors(evidence, retirement_evidence)
+            + cutoff_rules.active_retirement_errors(evidence, retirement_evidence)
+        )
+    )
+    return [*errors, *rejected]
 
 
 def establish(evidence: Mapping[str, Any]) -> CaseView:
@@ -87,6 +133,9 @@ def validate_common_evidence(
 
     Callers must also invoke their catalog's behavior validator. This helper does
     not validate a scenario merely because its ownership envelope is complete.
+    It does not check observation-cutoff obligations (retries active at the
+    cutoff, deferred service requests); adjudication proves them with
+    ``audit_cutoff`` against the capture's independent retirement evidence.
     """
     if not isinstance(evidence, Mapping):
         return ["INCOMPLETE: evidence must be an object"]

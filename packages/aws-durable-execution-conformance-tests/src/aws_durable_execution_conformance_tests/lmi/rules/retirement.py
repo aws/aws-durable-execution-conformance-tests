@@ -6,20 +6,27 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
-from aws_durable_execution_conformance_tests.lmi.rules.common import (
-    _has_matching_sdk_request,
-    normalize_retirement_events,
+from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
+from aws_durable_execution_conformance_tests.lmi.rules.controls import (
+    case_key,
+    controls_only_retirement,
+    invoke_rejection_proven,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import deferred_service_requests
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
     _CALL_METHODS,
     _WORK_INTERVALS,
     TERMINAL_STATUSES,
+    UNDISPATCHED_ERROR_TYPES,
     is_json_integer,
+    mappings,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.view import CaseView
 
@@ -74,14 +81,10 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
             candidates = [
                 item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
             ]
-            rejected = (
-                start_kind in _CALL_METHODS
-                and start.get("outcome") == "REJECTED"
-                and _has_matching_sdk_request(
-                    start, _CALL_METHODS[start_kind], "REJECTED", view.value.get("sdkRequests", [])
-                )
+            settled = common_rules.rejected_call_settled(
+                start_kind, [start], candidates, view.value.get("sdkRequests", [])
             )
-            if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
+            if key in seen or (len(candidates) != 1 and not settled):
                 view.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
             elif candidates:
                 completion = candidates[0]
@@ -95,8 +98,86 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
         view.error("retirement-only completion has no unique observed work start")
 
 
+def undispatched_message(item: Mapping[str, Any]) -> str:
+    """The shared finding text for a native request the service rejected before its handler ran."""
+    return (
+        f"service rejected native request {item.get('id')} before its handler ran "
+        f"({item.get('serviceErrorType')}); its invocation evidence is incomplete"
+    )
+
+
+def undispatched_behavior_findings(retirement_evidence: Any) -> list[str]:
+    """Every UNDISPATCHED invocation ``retirement_evidence`` records, including a retirement-only discovery.
+
+    A service retry first discovered only in the independent retirement
+    snapshot and proven ``UNDISPATCHED`` there never satisfies a role, attempt
+    or deferred-request obligation; behavior validation always reports it
+    incomplete. Safe against a missing or malformed retirement mapping.
+    """
+    retirement = retirement_evidence.get("retirement") if isinstance(retirement_evidence, Mapping) else None
+    resources = retirement.get("resources") if isinstance(retirement, Mapping) else None
+    return [
+        f"INCOMPLETE: {undispatched_message(item)}"
+        for item in mappings(resources)
+        if item.get("kind") == "invocation" and item.get("outcome") == "UNDISPATCHED"
+    ]
+
+
+def undispatched_settlements(view: CaseView, retirement: Mapping[str, Any], end: float) -> set[str]:
+    """Resources proven undispatched: no attempt, no reference anywhere, a consistent proof.
+
+    This never satisfies a role, attempt or deferred-request obligation on its
+    own; callers only use it to exempt physical retirement from the seal
+    requirement for a request the service proves never reached a handler.
+    """
+    resources = mappings(retirement.get("resources"))
+    rows = [item for item in resources if item.get("kind") == "invocation" and item.get("outcome") == "UNDISPATCHED"]
+    source_counts = Counter((item.get("executionArn"), item.get("sourceEventId")) for item in rows)
+    execution_arns = {item.get("executionArn") for item in view.attempts.values()}
+    collection = view.value.get("collection")
+    evidence_uris = collection.get("evidenceUris") if isinstance(collection, Mapping) else None
+    completions = mappings(retirement.get("completions", []))
+    referenced: set[Any] = set()
+    for record in (*view.events, *(view.value.get("sdkRequests") or []), *completions):
+        if not isinstance(record, Mapping):
+            continue
+        referenced.update(
+            record[key] for key in ("requestId", "ownerRequestId", "observedDuringRequestId") if key in record
+        )
+    proven: set[str] = set()
+    for item in rows:
+        request_id = item.get("id")
+        execution_arn, source_event_id = item.get("executionArn"), item.get("sourceEventId")
+        started, settled = item.get("startedAtMs"), item.get("settledAtMs")
+        if (
+            isinstance(request_id, str)
+            and request_id not in view.attempts
+            and request_id not in referenced
+            and execution_arn in execution_arns
+            and item.get("serviceErrorType") in UNDISPATCHED_ERROR_TYPES
+            and is_json_integer(source_event_id)
+            and source_event_id >= 1
+            and source_counts[(execution_arn, source_event_id)] == 1
+            and isinstance(started, (int, float))
+            and not isinstance(started, bool)
+            and isinstance(settled, (int, float))
+            and not isinstance(settled, bool)
+            and 0 <= started <= settled <= end
+            and isinstance(evidence_uris, list)
+            and item.get("evidenceUri") in evidence_uris
+        ):
+            proven.add(request_id)
+        else:
+            view.error(f"undispatched invocation {item.get('id')} lacks a consistent service rejection proof")
+    return proven
+
+
 def retirement(
-    view: CaseView, *, audit_observed_work: bool = True, retired_requests: Mapping[str, set[str]] | None = None
+    view: CaseView,
+    *,
+    audit_observed_work: bool = True,
+    retired_requests: Mapping[str, set[str]] | None = None,
+    physical: bool = False,
 ) -> None:
     retirement = view.mapping(view.value.get("retirement"), "retirement")
     end = view.number(retirement.get("retiredAtMs"), "retirement.retiredAtMs")
@@ -112,6 +193,8 @@ def retirement(
     }
     required = {("invocation", item["requestId"]) for item in view.attempts.values()}
     required.update(("execution", item["executionArn"]) for item in view.attempts.values())
+    proven = undispatched_settlements(view, retirement, end)
+    required.update(("invocation", request) for request in proven)
     if required != identities:
         view.error("resourcesCreated must match observations for every launched invocation and execution")
     for created_key, settled_key, time_key in (
@@ -196,7 +279,13 @@ def retirement(
                         if field in operation
                     ):
                         view.error("execution settled before its recorded service operation")
-                if kind == "invocation" and item.get("outcome") != "QUIESCENT":
+                if kind == "invocation" and item.get("id") in proven:
+                    if not physical:
+                        # A retry must never stand in for the original: physical
+                        # retirement may release the fence, but behavior
+                        # validation always reports this request incomplete.
+                        view.error(undispatched_message(item))
+                elif kind == "invocation" and item.get("outcome") != "QUIESCENT":
                     view.error("invocation quiescence is not established")
                 if kind == "invocation" and time < last_activity(view, item.get("id")):
                     view.error("invocation settled before its recorded activity")
@@ -295,7 +384,7 @@ def validate_observed_retirement(evidence: Mapping[str, Any]) -> list[str]:
     )
     try:
         common_rules.common(validator, validate_behavior=False)
-        retirement(validator)
+        retirement(validator, physical=True)
         if not validator.errors:
             _validate_sdk_dispatches(validator, normalize_retirement_events(validator.events, validator.errors))
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
@@ -320,9 +409,14 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
     )
     try:
         validator.string(requirement, "requirementId")
+        if deferred_service_requests(evidence):
+            validator.error("independent retirement evidence must settle every deferred service request")
+            return validator.errors
+        if controls_only_retirement(evidence):
+            return _validate_controls_only(validator)
         common_rules.common(validator, validate_behavior=False, allow_no_launches=allow_no_launches)
         validator.events = normalize_retirement_events(validator.events, validator.errors)
-        retirement(validator, audit_observed_work=False)
+        retirement(validator, audit_observed_work=False, physical=True)
         if validator.errors:
             return validator.errors
         record = evidence["retirement"]
@@ -372,15 +466,8 @@ def validate_retirement_evidence(evidence: Mapping[str, Any], *, allow_no_launch
                 for identifier in identifiers:
                     starts = [event for event in started if event.get(identity) == identifier]
                     ends = [event for event in ended if event.get(identity) == identifier]
-                    rejected = (
-                        start_kind in _CALL_METHODS
-                        and len(starts) == 1
-                        and starts[0].get("outcome") == "REJECTED"
-                        and _has_matching_sdk_request(
-                            starts[0], _CALL_METHODS[start_kind], "REJECTED", evidence["sdkRequests"]
-                        )
-                    )
-                    if len(starts) != 1 or (len(ends) != 1 and not (rejected and not ends)):
+                    settled = common_rules.rejected_call_settled(start_kind, starts, ends, evidence["sdkRequests"])
+                    if len(starts) != 1 or (len(ends) != 1 and not settled):
                         validator.error(f"retirement lacks the unique {start_kind}/{end_kind} completion pair")
                         continue
                     if not ends:
@@ -401,3 +488,131 @@ def collect_fault_releases(view: ReconcileView) -> list[int | float]:
     releases, release_errors = retained_fault_releases((*view.observation_snapshots, *view.sources), final_end)
     view.findings.extend(release_errors)
     return releases
+
+
+def _validate_controls_only(validator: CaseView) -> list[str]:
+    value = validator.value
+    common_rules.envelope(validator)
+    collection = common_rules.collection(validator)
+    validator.number(value.get("observationEndedAtMs"), "observationEndedAtMs")
+    for key in ("attempts", "events", "histories", "sdkRequests", "faultsCreated"):
+        if value.get(key) != []:
+            validator.error(f"controls-only retirement cannot contain {key}")
+    if value.get("selectedRequests") != {} or "replay" in value or collection.get("watermarks") != {}:
+        validator.error("controls-only retirement cannot assert runtime observations")
+    resources = validator.records(value.get("resourcesCreated"), "resourcesCreated", nonempty=True)
+    if any(resource.get("kind") != "control" for resource in resources):
+        validator.error("controls-only retirement must own only control objects")
+    retirement_record = validator.mapping(value.get("retirement"), "retirement")
+    launches = validator.records(retirement_record.get("undispatchedLaunches"), "retirement.undispatchedLaunches")
+    markers: set[str] = set()
+    for launch in launches:
+        marker = validator.string(launch.get("marker"), "undispatched launch marker")
+        validator.string(launch.get("durableExecutionName"), "undispatched launch execution name")
+        prepared = launch.get("dispatchState") == "PREPARED" and not any(
+            field in launch for field in ("arn", "executionArn", "requestId")
+        )
+        # The proof helper also checks boto responses, so it requires an int;
+        # this wire field accepts any integral JSON spelling of the count.
+        retries = launch.get("retryAttempts")
+        rejection = {**launch, "retryAttempts": int(retries)} if is_json_integer(retries) else launch
+        if (
+            marker in markers
+            or launch.get("functionArn") != validator.profile.get("functionArn")
+            or not (prepared or invoke_rejection_proven(rejection))
+        ):
+            validator.error("controls-only retirement has an unresolved or mismatched launch intent")
+        markers.add(marker)
+    retirement(validator)
+    if validator.errors:
+        return validator.errors
+
+    receipts = validator.records(value.get("controlRecords"), "controlRecords", nonempty=True)
+    states = {
+        "hold": ("ACKNOWLEDGED", "REJECTED"),
+        "release": ("ACKNOWLEDGED",),
+        "delete": ("ACKNOWLEDGED",),
+    }
+    for record in receipts:
+        validator.string(record.get("gate"), "controlRecords.gate")
+        action = record.get("action")
+        if not isinstance(action, str) or action not in states:
+            validator.error("controls-only retirement contains an unknown control action")
+        elif record.get("state") not in states[action]:
+            validator.error("controls-only retirement contains an unresolved control receipt")
+    if validator.errors:
+        return validator.errors
+    holds = {
+        record.get("gate")
+        for record in receipts
+        if record.get("action") == "hold" and record.get("state") != "REJECTED"
+    }
+    if len(holds) != len(resources) or holds != {resource.get("gate") for resource in resources}:
+        validator.error("controls-only inventory must cover every possibly held control")
+    if any(record.get("gate") not in holds and record.get("state") != "REJECTED" for record in receipts):
+        validator.error("controls-only receipts refer to a control outside the inventory")
+    settlements = {item["id"]: item for item in retirement_record["resources"]}
+    case_id, run_id = value["caseId"], value["runId"]
+    prefix = f"/runs/{run_id}/cases/{case_key(case_id)}/control/"
+    buckets = {urlsplit(resource["id"]).netloc for resource in resources}
+    if len(buckets) != 1:
+        validator.error("controls-only retirement refers to multiple control buckets")
+    for resource in resources:
+        identifier = urlsplit(resource["id"])
+        gate = validator.string(resource.get("gate"), "control gate")
+        if (
+            "/" in gate
+            or gate in (".", "..")
+            or (
+                identifier.scheme != "s3"
+                or not identifier.netloc
+                or identifier.path != prefix + gate
+                or identifier.query
+                or identifier.fragment
+            )
+        ):
+            validator.error("controls-only retirement references a control outside the admitted case")
+        records = [record for record in receipts if record.get("gate") == gate]
+        holds_for_gate = [
+            record for record in records if record.get("action") == "hold" and record.get("state") == "ACKNOWLEDGED"
+        ]
+        releases = [
+            record for record in records if record.get("action") == "release" and record.get("state") == "ACKNOWLEDGED"
+        ]
+        deletes = [
+            record for record in records if record.get("action") == "delete" and record.get("state") == "ACKNOWLEDGED"
+        ]
+        if len(holds_for_gate) != 1 or len(releases) != 1 or len(deletes) != 1:
+            validator.error(f"control {gate} requires unique hold, release and deletion receipts")
+            continue
+        receipt_times = [
+            (
+                validator.number(record.get("started"), f"control {gate} {action} started"),
+                validator.number(record.get("time"), f"control {gate} {action} time"),
+            )
+            for action, record in zip(
+                ("hold", "release", "delete"), (holds_for_gate[0], releases[0], deletes[0]), strict=True
+            )
+        ]
+        (hold_started, held), (release_started, released), (delete_started, deleted) = receipt_times
+        if (
+            not hold_started <= release_started <= released <= delete_started <= deleted
+            or not hold_started <= held <= released
+            or (holds_for_gate[0]["state"] == "ACKNOWLEDGED" and held > release_started)
+        ):
+            validator.error(f"control {gate} has out-of-order retirement receipts")
+        settlement = settlements[resource["id"]]
+        evidence_uri = settlement["evidenceUri"]
+        receipt_uri = urlsplit(evidence_uri)
+        if (
+            settlement.get("gate") != gate
+            or settlement["settledAtMs"] != deleted * 1000
+            or evidence_uri not in collection["evidenceUris"]
+            or receipt_uri.scheme != "file"
+            or receipt_uri.netloc
+            or receipt_uri.query
+            or receipt_uri.fragment
+            or not receipt_uri.path.endswith(f"/{case_key(case_id)}/control-records.json")
+        ):
+            validator.error(f"control {gate} settlement does not match its retained deletion receipt")
+    return validator.errors
