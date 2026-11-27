@@ -17,7 +17,14 @@ from aws_durable_execution_conformance_tests.lmi.adjudication import (
     evaluate_evidence,
 )
 from aws_durable_execution_conformance_tests.lmi.evidence import validate_evidence, validate_retirement_evidence
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    deferred_service_requests,
+    unsettled_active_retries,
+    unsettled_deferred_requests,
+)
+from aws_durable_execution_conformance_tests.lmi.rules.engine import audit_cutoff
 from aws_durable_execution_conformance_tests.lmi.rules.replay import replay_checkpoint_timing
+from aws_durable_execution_conformance_tests.lmi.rules.retirement import undispatched_message
 
 _fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
 complete_retirement_events = _fixtures["complete_retirement_events"]
@@ -978,3 +985,230 @@ def test_every_terminal_history_row_that_supplies_fields_is_compared() -> None:
     }
     findings = _cleanup_behavior_errors(original, snapshot, standard=True)
     assert f"ASSERTION: service history {arn}.result differs from the fixture expectation" in findings
+
+
+def _wait_completing_during_wrapper_teardown() -> dict[str, Any]:
+    """The SDK decides PENDING at 33ms, the WAIT completes at 37ms, and the wrapper returns at 40ms."""
+    value = replay_evidence()
+    victim = value["attempts"][0]
+    value["events"].append(event(victim, "invocation_end", 33, outcome="PENDING"))
+    for operations in (value["replay"]["after"], value["histories"][0]["operations"]):
+        next(item for item in operations if item["type"] == "WAIT")["endedAtMs"] = 37
+    return value
+
+
+def test_cleanup_reconcile_counts_a_repeated_pending_decision_once() -> None:
+    # Reconciliation concatenates every snapshot's events, so the frozen
+    # invocation_end appears once per snapshot; it is still one observation.
+    value = _wait_completing_during_wrapper_teardown()
+    assert evaluate_evidence(value, retirement_evidence=deepcopy(value), cleanup_evidence={}, standard=True) == []
+
+
+def test_cleanup_reconcile_falls_back_to_the_wrapper_return_for_conflicting_pending_decisions() -> None:
+    value = _wait_completing_during_wrapper_teardown()
+    snapshot = deepcopy(value)
+    victim = snapshot["attempts"][0]
+    snapshot["events"].append(event(victim, "invocation_end", 34, outcome="PENDING"))
+    findings = evaluate_evidence(value, retirement_evidence=snapshot, cleanup_evidence={}, standard=True)
+    assert "ASSERTION: cleanup resume does not follow the observed wait or callback completion" in findings
+
+
+def _active_retry_capture(attempt: Any = 2) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A lifecycle 3 capture whose victim retry is still running at the 200ms cutoff.
+
+    The frozen observation keeps the retry's in-window events and dispatched
+    checkpoint and marks it ``activeAtObservationEnd``. The independent
+    retirement snapshot retains those records and adds the same native start,
+    its end after the cutoff and the observed outcome.
+    """
+    frozen = standard_retirement_snapshot("deadline_evidence")
+    victim = frozen["attempts"][0]
+    owner = {"requestId": "in-flight", "ownerRequestId": "in-flight", "executionArn": victim["executionArn"]}
+    retry = {**victim, "requestId": "in-flight", "attempt": attempt, "startedAtMs": 100, "activeAtObservationEnd": True}
+    del retry["endedAtMs"], retry["outcome"]
+    frozen["attempts"].append(retry)
+    frozen["events"] += [
+        {**owner, "kind": "wrapper_enter", "atMs": 100},
+        {**owner, "kind": "task_start", "taskId": "root", "atMs": 100.1},
+    ]
+    checkpoint = {
+        **owner,
+        "kind": "request",
+        "method": "CheckpointDurableExecution",
+        "outcome": "DISPATCHED",
+        "callId": "retry-call",
+        "atMs": 150,
+    }
+    frozen["sdkRequests"].append(checkpoint)
+    frozen["events"] += [{**checkpoint, "kind": "checkpoint_call"}, {**checkpoint, "kind": "checkpoint_exit"}]
+    invocation = {"kind": "invocation", "id": "in-flight", "ownerCaseId": frozen["caseId"]}
+    frozen["resourcesCreated"].append(invocation)
+    resequence(frozen)
+    snapshot = deepcopy(frozen)
+    snapshot["observationEndedAtMs"] = 206
+    snapshot["collection"]["watermarks"] = {key: 206 for key in snapshot["collection"]["watermarks"]}
+    settled = snapshot["attempts"][-1]
+    del settled["activeAtObservationEnd"]
+    settled.update(endedAtMs=205, outcome="FAILED")
+    snapshot["events"] += [
+        {**owner, "kind": "task_exit", "taskId": "root", "atMs": 204.9},
+        {**owner, "kind": "wrapper_return", "atMs": 205},
+    ]
+    snapshot["retirement"]["resources"].append(
+        {**invocation, "settledAtMs": 208, "outcome": "QUIESCENT", "evidenceUri": "memory://service"}
+    )
+    resequence(snapshot)
+    return frozen, snapshot
+
+
+@pytest.mark.parametrize("attempt", [2, 2.0])
+def test_active_retry_passes_when_independent_retirement_proves_its_completion(attempt: Any) -> None:
+    # Integer-valued wire fields accept any finite integral JSON spelling.
+    frozen, snapshot = _active_retry_capture(attempt)
+    assert frozen["observationEndedAtMs"] == 200
+    assert any("independent retirement audit" in error for error in validate_evidence(frozen, phase="final"))
+    assert audit_cutoff(frozen, snapshot) == []
+    assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == []
+
+
+@pytest.mark.parametrize("attempt", [1.5, True])
+def test_active_retry_ordinal_must_be_an_integral_number(attempt: Any) -> None:
+    frozen, _ = _active_retry_capture(attempt)
+    assert "INCOMPLETE: attempt in-flight cannot represent an active retry at observation end" in validate_evidence(
+        frozen, phase="observations"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "finding"),
+    [
+        ("different-native-start", "Retirement did not reconcile an active retry with its actual service completion"),
+        ("ended-at-cutoff", "Retirement did not reconcile an active retry with its actual service completion"),
+        ("ended-before-cutoff", "Retirement did not reconcile an active retry with its actual service completion"),
+        ("missing-outcome", "attempt in-flight has no recognized invocation outcome"),
+        ("unrecognized-outcome", "attempt in-flight has no recognized invocation outcome"),
+        ("changed-pre-cutoff-event", "Retirement disagrees on pre-cutoff events for an active retry"),
+        ("unrecorded-pre-cutoff-sdk-request", "Retirement disagrees on pre-cutoff SDK requests for an active retry"),
+    ],
+)
+def test_active_retry_stays_incomplete_when_independent_retirement_disagrees(mutation: str, finding: str) -> None:
+    frozen, snapshot = _active_retry_capture()
+    settled = snapshot["attempts"][-1]
+    if mutation == "different-native-start":
+        # Still before every retained event, so only the start comparison differs.
+        settled["startedAtMs"] = 99
+    elif mutation == "ended-at-cutoff":
+        settled["endedAtMs"] = 200
+    elif mutation == "ended-before-cutoff":
+        settled["endedAtMs"] = 150
+    elif mutation == "missing-outcome":
+        del settled["outcome"]
+    elif mutation == "unrecognized-outcome":
+        settled["outcome"] = "RUNNING"
+    elif mutation == "unrecorded-pre-cutoff-sdk-request":
+        # Only the retirement snapshot retains the dispatched checkpoint.
+        frozen["sdkRequests"] = [row for row in frozen["sdkRequests"] if row.get("callId") != "retry-call"]
+        frozen["events"] = [row for row in frozen["events"] if row.get("callId") != "retry-call"]
+    else:
+        task_start = next(
+            row for row in snapshot["events"] if row["requestId"] == "in-flight" and row["kind"] == "task_start"
+        )
+        task_start["atMs"] = 100.2
+    assert f"INCOMPLETE: {finding}" in audit_cutoff(frozen, snapshot)
+    findings = evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True)
+    assert f"INCOMPLETE: {finding}" in findings, findings
+
+
+def test_active_retry_tolerates_a_renumbered_pre_cutoff_sdk_request_sequence() -> None:
+    """A retirement snapshot may renumber the active retry's SDK request `sequence` without reordering it.
+
+    The cumulative-snapshot rule permits renumbering sequences across a later
+    snapshot as long as relative order is preserved; it does not pin a
+    specific integer. `sequence` must stay metadata for the pre-cutoff
+    SDK-request comparison here, the same way it already is for events,
+    instead of being compared as an ordinary field.
+    """
+    frozen, snapshot = _active_retry_capture()
+    frozen_request = next(row for row in frozen["sdkRequests"] if row.get("callId") == "retry-call")
+    snapshot_request = next(row for row in snapshot["sdkRequests"] if row.get("callId") == "retry-call")
+    frozen_request["sequence"] = 0
+    snapshot_request["sequence"] = 5
+    assert audit_cutoff(frozen, snapshot) == []
+    assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == []
+
+
+def test_retirement_only_undispatched_discovery_stays_incomplete_alongside_an_active_retry() -> None:
+    """A retirement-only UNDISPATCHED discovery must still surface when ``audit_cutoff`` also audits an active retry.
+
+    Every other retirement-only UNDISPATCHED test exercises only ``audit_cutoff``'s
+    early return (``return rejected``), because none of them has a retry active
+    at the cutoff. This builds on ``_active_retry_capture``, whose victim retry
+    is active at the cutoff, so ``cutoff_obligations`` reports it and
+    ``audit_cutoff`` instead reaches the obligation path
+    (``return [*errors, *rejected]``). A capture with a settled active retry
+    plus a retirement-only UNDISPATCHED retry must still adjudicate incomplete
+    there, not pass silently.
+    """
+    frozen, snapshot = _active_retry_capture()
+    cutoff_ms = frozen["observationEndedAtMs"]
+    resource = {"id": "service-retry", "kind": "invocation", "ownerCaseId": frozen["caseId"]}
+    snapshot["resourcesCreated"].append(deepcopy(resource))
+    snapshot["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": frozen["attempts"][0]["executionArn"],
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 99,
+            "startedAtMs": cutoff_ms + 1,
+            "settledAtMs": cutoff_ms + 2,
+            "evidenceUri": frozen["collection"]["evidenceUris"][0],
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    message = f"INCOMPLETE: {undispatched_message(snapshot['retirement']['resources'][-1])}"
+    assert validate_retirement_evidence(snapshot) == []
+    assert audit_cutoff(frozen, snapshot) == [message]
+    assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == [message]
+
+
+@pytest.mark.parametrize("factory", ["failure_evidence", "deadline_evidence", "evidence"])
+def test_retirement_only_undispatched_discovery_is_reported_incomplete(factory: str) -> None:
+    """A service retry first discovered only in the independent retirement snapshot, proven UNDISPATCHED.
+
+    It has no frozen attempt, no deferred inventory entry and no active retry,
+    so no cutoff obligation would otherwise require an independent audit.
+    Behavior validation must still report it incomplete instead of letting it
+    pass adjudication silently (it never satisfies a role, attempt or
+    deferred-request obligation).
+    """
+    frozen = standard_retirement_snapshot(factory, requirement=2)
+    cutoff_ms = frozen["observationEndedAtMs"]
+    assert not deferred_service_requests(frozen)
+    assert not any(attempt.get("activeAtObservationEnd") for attempt in frozen["attempts"])
+    snapshot = deepcopy(frozen)
+    resource = {"id": "service-retry", "kind": "invocation", "ownerCaseId": frozen["caseId"]}
+    snapshot["resourcesCreated"].append(deepcopy(resource))
+    snapshot["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": frozen["attempts"][0]["executionArn"],
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 99,
+            "startedAtMs": cutoff_ms + 1,
+            "settledAtMs": cutoff_ms + 2,
+            "evidenceUri": frozen["collection"]["evidenceUris"][0],
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    message = f"INCOMPLETE: {undispatched_message(snapshot['retirement']['resources'][-1])}"
+    assert validate_retirement_evidence(snapshot) == []
+    deferred = deferred_service_requests(frozen)
+    assert unsettled_deferred_requests(deferred, snapshot) == set()
+    assert unsettled_active_retries(frozen, snapshot) == set()
+    assert audit_cutoff(frozen, snapshot) == [message]
+    status, findings, _ = adjudicate_evidence(
+        "COLLECTED", [], frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True
+    )
+    assert status == "INCOMPLETE_EVIDENCE", findings
+    assert message in findings
+    assert all(item.startswith("INCOMPLETE:") for item in findings), findings

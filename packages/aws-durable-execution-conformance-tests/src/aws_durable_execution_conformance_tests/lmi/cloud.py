@@ -175,8 +175,11 @@ class Cloud:
         self.terminal_histories: set[str] = set()
         self.execution_results: dict[str, dict[str, Any]] = {}
         self.cutoff_results: dict[str, dict[str, Any]] = {}
+        self.suspension_mode = "callback"
         self.control_records: list[dict[str, Any]] = []
         self.source_uris: set[str] = set()
+        self.observation_ended_at: float | None = None
+        self.retired_at: float | None = None
         self.control_prefix = f"runs/{manifest['run']}/control/"
         if case_context is not None:
             owner = case_key(case_context.scenario.case_id)
@@ -773,7 +776,7 @@ class Cloud:
                 assert json.loads(result["Result"]) == item["marker"], "Result crossed execution boundaries"
             self.phase(item, "WRAPPER_RETURN")
         else:
-            # Outcome verification happens later, once collection builds evidence from this wrapper event.
+            # The shared validator compares the retained outcome with the binding's expectation.
             self.poll(
                 lambda: any(event["phase"] in {"WRAPPER_RETURN", "WRAPPER_RAISE"} for event in self.for_item(item))
             )
