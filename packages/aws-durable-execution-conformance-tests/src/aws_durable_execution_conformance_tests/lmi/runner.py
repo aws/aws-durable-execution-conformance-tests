@@ -19,6 +19,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_re
 from .artifacts import (
     case_key,
     case_output_directory,
+    mark_run_output_directory,
     owner_lock,
     same_owner_lock,
     save,
@@ -148,6 +149,11 @@ def run(deployment: Mapping[str, Any], directory: Path, *, manifest_factory: Cal
         directory.mkdir(parents=True, exist_ok=True)
         if any(directory.iterdir()):
             raise ValueError("Shared run output must be empty; preserve prior attempts and failure evidence")
+        # Before anything else -- including the case-output.json pointer below --
+        # so this directory stays visible to a files-only upload even when the
+        # first coverage profile's manifest_factory or revision check fails
+        # before any per-coverage plan is written.
+        mark_run_output_directory(directory)
         location = deployment.get("deploymentArtifactDirectory")
         if isinstance(location, str) and location:
             artifacts = Path(location).resolve()
