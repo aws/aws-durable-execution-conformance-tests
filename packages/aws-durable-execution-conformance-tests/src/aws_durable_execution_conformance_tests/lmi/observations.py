@@ -246,6 +246,8 @@ def check_controls(events):
 
 
 def overlap(events, markers, count, environment=None, *, runtime, replacement=False):
+    # A runtime-supported worker retirement can have no final diagnostic. Recovery
+    # and full-capacity placement must therefore also be asserted by the driver.
     if runtime not in {"python", "java", "javascript"}:
         raise ValueError("Unknown runtime placement model")
     blocked = [e for e in select(events, "BLOCKED") if e["marker"] in markers]
@@ -289,6 +291,3 @@ def overlap(events, markers, count, environment=None, *, runtime, replacement=Fa
                 continue
             return env
     raise PlacementError(f"No {count}-request {runtime} overlap in one execution environment")
-
-    # A runtime-supported worker retirement can have no final diagnostic. Recovery
-    # and full-capacity placement must therefore also be asserted by the driver.
