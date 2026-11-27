@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run artifacts, redaction and deterministic case namespaces."""
 
+import errno
 import json
 import os
 import subprocess
@@ -26,12 +27,38 @@ def scrub(value):
     return value
 
 
+def _sync_directory(path: Path) -> None:
+    """Persist a directory's entries, such as a newly created or replaced file.
+
+    Shared with ``app.py`` (imported from there), so this is the single place
+    that tolerates filesystems that reject a directory fsync outright.
+    """
+    if os.name == "nt":
+        return  # Windows cannot open a directory for fsync.
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        # Some filesystems cannot fsync a directory at all; nothing more is possible.
+        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    finally:
+        os.close(descriptor)
+
+
 def save(path, data, *, exclusive=False):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    parent = path.parent
+    # Only the ancestors this call actually creates need a fresh parent sync;
+    # an already-existing directory's entry is already durable.
+    created = [directory for directory in (parent, *parent.parents) if not directory.exists()]
+    parent.mkdir(parents=True, exist_ok=True)
+    for directory in created:
+        if directory.parent != directory:
+            _sync_directory(directory.parent)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        with tempfile.NamedTemporaryFile(mode="w", dir=parent, delete=False) as stream:
             temporary = Path(stream.name)
             json.dump(scrub(data), stream, indent=2, default=str)
             stream.write("\n")
@@ -44,6 +71,9 @@ def save(path, data, *, exclusive=False):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    # The name is in place for either mode now: fsync the directory so a host
+    # crash cannot leave the new or replaced entry missing or stale.
+    _sync_directory(parent)
 
 
 def clear_run_artifacts(artifacts: Path, *, preserve: frozenset[str] = frozenset()) -> Path | None:
