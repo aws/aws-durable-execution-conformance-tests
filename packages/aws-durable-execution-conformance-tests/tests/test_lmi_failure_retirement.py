@@ -387,6 +387,40 @@ def _run_standard_cleanup_discovery(
     return result
 
 
+@pytest.mark.parametrize("retry_attempts", [0, 1])
+def test_runtime_retirement_ignores_only_proven_rejected_peer_attempts(retry_attempts: int) -> None:
+    class RejectedPeerAdapter(FailureAdapter):
+        async def start(self, context: ScenarioContext) -> None:
+            await super().start(context)
+            if context.scenario.case_id == "failed":
+                context.record_attempt(
+                    "peer-marker",
+                    role="peer",
+                    marker="peer-marker",
+                    source="driver-invoke",
+                    functionArn=context.profile.resource_id,
+                    durableExecutionName="peer-name",
+                    dispatchState="REJECTED",
+                    rejectionCode="AccessDeniedException",
+                    retryAttempts=retry_attempts,
+                )
+                raise RuntimeError(PHASE_FAILURE)
+
+    adapter = RejectedPeerAdapter()
+    scheduler = ResourceScheduler()
+    first = replace(_case("failed"), roles=("victim", "peer"))
+    failed, following = asyncio.run(
+        run_and_adjudicate(
+            [first, _case("next")], [PROFILE], adapter, run_id="run", validator=_validator, scheduler=scheduler
+        )
+    )
+    assert failed.status == "INFRASTRUCTURE_ERROR"
+    assert any(PHASE_FAILURE in error for error in failed.errors)
+    assert failed.attempts[-1]["dispatchState"] == "REJECTED"
+    assert following.status == ("PASSED" if retry_attempts == 0 else "INFRASTRUCTURE_ERROR"), failed.errors
+    assert (scheduler.quarantine_reason(PROFILE.resource_id) is None) is (retry_attempts == 0)
+
+
 @pytest.mark.parametrize("path", ["normal", "independent"])
 @pytest.mark.parametrize("partial", [{}, {"watermarks": {}}, {"watermarks": {"lifecycle": 100}}, {"evidenceUris": []}])
 def test_cleanup_accepts_absent_and_partial_envelope_metadata(path: str, partial: dict[str, Any]) -> None:

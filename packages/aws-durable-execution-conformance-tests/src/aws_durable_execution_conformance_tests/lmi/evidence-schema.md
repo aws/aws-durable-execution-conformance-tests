@@ -420,7 +420,9 @@ The rules judge its behavior, and before a target is reused collection requires
 the adapter's retirement snapshot to establish physical retirement and to settle
 the native owner of every SDK record seen in any snapshot. A journaled launch
 without an identified invocation request also keeps its target quarantined,
-because no snapshot can show that it ended.
+because no snapshot can show that it ended, unless the adapter recorded a
+definite Invoke rejection for it (`dispatchState` `REJECTED` with no retries):
+that launch never started.
 
 Collection holds each target through physical retirement of its own cases. It
 finishes profiles only after every case in the run has ended its retirement
