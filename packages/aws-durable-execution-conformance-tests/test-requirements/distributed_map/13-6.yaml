@@ -1,0 +1,62 @@
+---
+# 13.6: Distributed map failure beyond a zero tolerated failure count
+description: Distributed map with a tolerated-failure-count of zero and one item failure exceeds
+  tolerance, so the run fails; the operation still resolves with a summary and the execution
+  succeeds
+handler: |
+  Handler invokes the distributed map operation over an inline source of two items, the first
+  "fail", with max-concurrency 1 and a completion config that tolerates zero failures. The
+  processor function reports a per-item outcome and fails any item whose value is "fail". The
+  first item fails permanently, so the run ends FAILED. The handler does not ask the summary to
+  rethrow and returns a projection of the summary:
+  {status, failureCount, readCount, totalCount, sourceExhausted}.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the completion config, the invocation completes, and the execution
+    suspends until the service records the terminal event. The invocation then completes returning
+    the projection. The execution succeeds.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: FAILED
+    failureCount: 1
+    readCount: 2
+    totalCount: 2
+    sourceExhausted: true
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailureCount: 0
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapFailed
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapFailedDetails:
+      SuccessCount: '*'
+      FailureCount: 1
+      ReadCount: 2
+      TotalCount: 2
+      SourceExhausted: true
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

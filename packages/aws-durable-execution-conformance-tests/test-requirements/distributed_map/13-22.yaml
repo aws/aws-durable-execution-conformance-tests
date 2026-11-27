@@ -1,0 +1,53 @@
+---
+# 13.22: Distributed map sends the processor max retry duration
+description: Distributed map given a processor max retry duration of 120 seconds writes it to the
+  start checkpoint and a one-item run succeeds
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item, with
+  max-concurrency 1 and a batch processor whose max retry duration is 120 seconds. The processor
+  reports a per-item outcome and succeeds the item.
+  The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the processor with a max retry duration of 120 seconds, the invocation
+    completes, and the execution suspends until the service records the terminal event. The
+    invocation then completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+        MaxRetryDurationSeconds: 120
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

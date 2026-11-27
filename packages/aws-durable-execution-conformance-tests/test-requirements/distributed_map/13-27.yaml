@@ -1,0 +1,63 @@
+---
+# 13.27: Distributed map result accessors with a mix of outcomes
+description: Distributed map with inline result collection resolves with a result whose accessors
+  report the failure flag, the succeeded and failed items, the outputs and the errors in input order
+handler: |
+  Handler invokes the distributed map operation over an inline source of three items
+  ["output", "no-output", "fail"], with inline result collection, max-concurrency 1, and a
+  completion config that tolerates one failure. The processor reports a per-item outcome for each
+  item: "output" succeeds with its value as the output, "no-output" succeeds with no output, and
+  "fail" fails with error type "ItemFailedError" and message "item failed". The handler returns
+  {hasFailure, succeededCount, failedCount, results, errors}, built with the result's accessors:
+  the has-failure flag, the length of the succeeded items, the length of the failed items, the
+  outputs of the succeeded items (null for no output), and the failed items' errors as
+  {errorType, errorMessage}.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends until the service
+    records the terminal event. The invocation then completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    hasFailure: true
+    succeededCount: 2
+    failedCount: 1
+    results:
+      - output
+      - null
+    errors:
+      - errorType: ItemFailedError
+        errorMessage: item failed
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailureCount: 1
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

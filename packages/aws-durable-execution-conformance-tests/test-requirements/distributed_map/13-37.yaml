@@ -1,0 +1,50 @@
+---
+# 13.37: Distributed map sends the durable execution name prefix
+description: Distributed map with a durable processor sends the configured durable execution name
+  prefix and a one-item run succeeds
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item, with
+  max-concurrency 1. The processor is a durable function, and the durable execution name prefix is
+  "dmap-names". The item succeeds.
+  The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the name prefix, then the invocation completes and the execution
+    suspends. The service records the terminal event. The invocation completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        DurableExecutionNamePrefix: dmap-names
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

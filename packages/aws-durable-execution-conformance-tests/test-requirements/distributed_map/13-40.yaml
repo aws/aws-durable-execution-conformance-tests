@@ -1,0 +1,59 @@
+---
+# 13.40: Distributed map resolves with a failed summary when the reader function cannot be invoked
+description: Distributed map whose reader function does not exist resolves with a failed summary
+  although the terminal state carries no total count
+handler: |
+  Handler starts a distributed map run whose source is a reader function with the fixed name
+  "dmap-reader-not-deployed", and no function with that name exists. The processor is a valid
+  function and max-concurrency is 1. The run is created and then fails before reading, so its
+  terminal state carries a run ARN, SourceExhausted false, zero counts and no TotalCount. The SDK
+  resolves this as a FAILED summary without a total count; it does not throw. The handler does not
+  ask the summary to rethrow and returns
+  {status, successCount, failureCount, readCount, sourceExhausted}.
+invocations: |
+  - Handler starts the distributed map run. The SDK checkpoints DistributedMapStarted, then the
+    invocation completes and the execution suspends. The service records the terminal event with a
+    run ARN, SourceExhausted false, zero counts and no TotalCount. The invocation completes
+    returning the FAILED summary projection, and the execution succeeds.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: FAILED
+    successCount: 0
+    failureCount: 0
+    readCount: 0
+    sourceExhausted: false
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: READER_FUNCTION
+      Processor:
+        FunctionName: '*'
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapFailed
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapFailedDetails:
+      SuccessCount: 0
+      FailureCount: 0
+      ReadCount: 0
+      SourceExhausted: false
+    $absent:
+      - [DistributedMapFailedDetails, TotalCount]
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

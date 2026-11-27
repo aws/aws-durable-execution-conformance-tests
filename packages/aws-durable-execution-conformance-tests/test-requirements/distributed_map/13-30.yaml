@@ -1,0 +1,53 @@
+---
+# 13.30: Distributed map sends unlimited retry attempts as -1
+description: Distributed map whose processor sets max retry attempts to the unlimited value sends -1
+  as the processor's max retry attempts
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item, with
+  max-concurrency 1 and a batch processor whose max retry attempts is the SDK's unlimited value, which
+  is sent as -1. The processor reports a per-item outcome and succeeds every item.
+  The handler returns {status, successCount, readCount} from the summary.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the processor with a max retry attempts of -1, then the invocation
+    completes and the execution suspends. The service records the terminal event. The invocation
+    completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 1
+    readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+        MaxRetryAttempts: -1
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      ReadCount: 1
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

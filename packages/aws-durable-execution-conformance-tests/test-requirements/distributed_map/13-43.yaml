@@ -1,0 +1,55 @@
+---
+# 13.43: Distributed map throw-if-error on a succeeded run with a tolerated item failure
+description: Distributed map with inline result collection whose run succeeds with one tolerated
+  item failure; asking the result to rethrow raises the failed item's error
+handler: |
+  Handler invokes the distributed map operation over an inline source of two items ["ok", "fail"],
+  with inline result collection, max-concurrency 1, and a completion config that tolerates one
+  failure. The processor reports a per-item outcome: "ok" succeeds, and "fail" fails with error type
+  "ItemFailedError" and message "item failed". The run completes SUCCEEDED with one failed item.
+  The handler asks the result to rethrow inside a try block and catches the thrown error. It returns
+  {threw, messageHasItemError}: threw is true when an error was thrown, and messageHasItemError is
+  true when the error message contains "item failed".
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends until the service
+    records the terminal event. The result's rethrow raises the failed item's error, which the
+    handler catches. The invocation completes returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    threw: true
+    messageHasItemError: true
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailureCount: 1
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

@@ -1,0 +1,32 @@
+---
+# 13.3: Distributed map rejects a max-items-to-read of zero
+description: Distributed map given a max-items-to-read of 0, below the minimum of 1, is rejected
+  before any checkpoint and the execution fails
+handler: |
+  Handler invokes the distributed map operation over an inline source of a few small items, with a
+  processor function that succeeds every item, a positive max-concurrency, and a max-items-to-read
+  of 0. The minimum max-items-to-read is 1, so the SDK rejects the configuration before writing any
+  checkpoint. The error is not caught, so the execution fails.
+invocations: |
+  - Handler invokes the distributed map with a max-items-to-read of 0. The SDK rejects the
+    max-items-to-read before starting the operation, so no DistributedMap event is checkpointed. The
+    error propagates uncaught and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+    ErrorMessage: '${/(?i).*max.?items.*/}'
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+          ErrorMessage: '${/(?i).*max.?items.*/}'

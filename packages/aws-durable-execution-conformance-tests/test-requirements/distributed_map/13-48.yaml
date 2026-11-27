@@ -1,0 +1,64 @@
+---
+# 13.48: Distributed map inside a child context is parented to the child context
+description: Distributed map invoked from a child context records the child context as the parent
+  of the start checkpoint
+handler: |
+  Handler runs a child context. The child context invokes the distributed map operation over an
+  inline source of one item, with max-concurrency 1, and returns the summary status. The processor
+  function reports a per-item outcome and succeeds every item. The handler returns the child
+  context's result.
+invocations: |
+  - Handler runs the child context. The SDK checkpoints ContextStarted (SubType RunInChildContext).
+    The child context invokes the distributed map, and the SDK checkpoints DistributedMapStarted
+    (SubType DistributedMap) with ParentId pointing to the child context. The invocation completes
+    and the execution suspends until the service records the terminal event.
+  - Replay 1: Re-invoked after the terminal event. The child context returns "SUCCEEDED", the SDK
+    checkpoints ContextSucceeded, and the invocation completes returning "SUCCEEDED".
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: ContextStarted
+    SubType: RunInChildContext
+    EventId: 2
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextStartedDetails: {}
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 3
+    Id: ${ID1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 4
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 5
+    Id: ${ID1}
+    ParentId: ${CTX1}
+    EventTimestamp: '*'
+  - EventType: ContextSucceeded
+    SubType: RunInChildContext
+    EventId: 6
+    Id: ${CTX1}
+    EventTimestamp: '*'
+    ContextSucceededDetails:
+      Result:
+        Payload: '"SUCCEEDED"'
+  - EventType: InvocationCompleted
+    EventId: 7
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

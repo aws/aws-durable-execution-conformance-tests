@@ -1,0 +1,51 @@
+---
+# 13.7: Distributed map with inline result collection returns results in input order
+description: Distributed map with inline result collection retains each item's result and the handler
+  returns the collected results in input order
+handler: |
+  Handler invokes the distributed map operation over an inline source ["a", "b", "c"] with
+  max-concurrency 1 and inline result collection. The processor function reports a per-item outcome
+  and returns each item's value unchanged. The handler returns the collected successful results as
+  a list in input order.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying inline result collection, the invocation completes, and the execution
+    suspends until the service records the terminal event. The invocation then completes returning
+    ["a", "b", "c"].
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - a
+    - b
+    - c
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

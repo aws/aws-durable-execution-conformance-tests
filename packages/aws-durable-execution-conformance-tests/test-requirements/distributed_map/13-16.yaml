@@ -1,0 +1,50 @@
+---
+# 13.16: Distributed map durable processor
+description: Distributed map whose processor is a durable function returns the processor's outputs
+  in input order
+handler: |
+  Handler invokes the distributed map operation over an inline source ["a", "b", "c"], with inline
+  result collection and max-concurrency 1. The processor is a durable function. It runs one durable
+  step, reports a per-item outcome for each item, and returns the item's value unchanged. The
+  handler returns the collected results in input order.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends until the service
+    records the terminal event. The invocation then completes returning ["a", "b", "c"].
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    - a
+    - b
+    - c
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      ResultCollection:
+        Mode: INLINE
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

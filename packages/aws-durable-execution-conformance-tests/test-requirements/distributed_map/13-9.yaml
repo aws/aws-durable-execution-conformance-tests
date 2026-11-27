@@ -1,0 +1,67 @@
+---
+# 13.9: Distributed map is not restarted on a later replay
+description: A distributed map followed by a wait replays without restarting the run; the history
+  records the run's start exactly once
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item with
+  max-concurrency 1. The processor function reports a per-item outcome and succeeds the item. After
+  the map resolves, the handler waits one second, then returns the run's success count. On the
+  replay after the wait, the SDK reads the completed run from history and does not start it again.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends until the service
+    records the terminal event.
+  - Replay 1: The SDK checkpoints WaitStarted with a one-second duration, and the execution
+    suspends again.
+  - Replay 2: The SDK checkpoints WaitSucceeded without starting the run again, and the invocation
+    completes returning 1.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

@@ -1,0 +1,52 @@
+---
+# 13.44: Distributed map writes inline items through a custom item serdes
+description: Distributed map whose inline source has a custom item serdes records the serdes output
+  as the item in the start checkpoint
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item "x", with
+  max-concurrency 1. The inline source has a custom item serdes. The serdes is a real, non-identity
+  implementation: it serializes any item to the string "wrapped:" followed by the item. The processor
+  function reports a per-item outcome and succeeds every item. The handler returns the summary
+  status.
+invocations: |
+  - Handler invokes the distributed map. The SDK serializes the item through the custom serdes and
+    checkpoints DistributedMapStarted (SubType DistributedMap) carrying "wrapped:x" as the inline
+    item. The invocation completes and the execution suspends until the service records the terminal
+    event. The invocation then completes returning "SUCCEEDED".
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: SUCCEEDED
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+        InlineSourceConfig:
+          Items:
+            Payload:
+              - 'wrapped:x'
+            Truncated: false
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

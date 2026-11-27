@@ -1,0 +1,65 @@
+---
+# 13.49: Distributed map over an empty inline source
+description: Distributed map over an empty inline source resolving with a succeeded summary whose
+  counts are all zero and whose source-exhausted flag is true
+handler: |
+  Handler invokes the distributed map operation over an inline source of zero items, with
+  max-concurrency 1 and no result collection. The processor function reports a per-item outcome
+  and succeeds every item; it is never invoked because the source has no items. The handler returns
+  a projection of the summary: {status, successCount, failureCount, readCount, totalCount,
+  sourceExhausted}.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying an empty list of inline items, the invocation completes, and the
+    execution suspends until the service records the terminal event. The invocation then completes
+    returning the projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: SUCCEEDED
+    successCount: 0
+    failureCount: 0
+    readCount: 0
+    totalCount: 0
+    sourceExhausted: true
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+        InlineSourceConfig:
+          Items:
+            Payload: []
+            Truncated: false
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+    $absent:
+      - [DistributedMapStartedDetails, CompletionConfig]
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 0
+      FailureCount: 0
+      ReadCount: 0
+      TotalCount: 0
+      SourceExhausted: true
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

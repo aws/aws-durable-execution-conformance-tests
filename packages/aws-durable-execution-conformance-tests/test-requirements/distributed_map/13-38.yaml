@@ -1,0 +1,33 @@
+---
+# 13.38: Distributed map rejects an empty CSV headers list
+description: Distributed map whose CSV source is given an empty headers list is rejected before the
+  run starts and the execution fails
+handler: |
+  Handler invokes the distributed map operation over an S3 object source in CSV format. The source
+  is given column headers, so the file is read as having no header row, but the headers list is
+  empty. A given headers list must hold at least one name, so the configuration is rejected before
+  any run is created, so the object key can be any key. The error is not caught, so the execution
+  fails.
+invocations: |
+  - Handler invokes the distributed map with the CSV source and an empty headers list. The
+    configuration is rejected, so no DistributedMap event is recorded. The error propagates uncaught
+    and the execution fails.
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '*'
+    ErrorMessage: '${/(?i).*headers.*empty.*/}'
+ExpectedExecutionHistory:
+  - EventType: InvocationCompleted
+    EventId: 2
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 3
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'
+          ErrorMessage: '${/(?i).*headers.*empty.*/}'

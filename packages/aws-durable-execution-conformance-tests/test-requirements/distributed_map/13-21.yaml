@@ -1,0 +1,59 @@
+---
+# 13.21: Distributed map run timeout drains in-flight work before ending TIMED_OUT
+description: Distributed map with a timeout of 1 second and a processor slower than that resolves
+  with a TIMED_OUT summary
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item with
+  max-concurrency 1 and a timeout of 1 second. The processor function waits 10 seconds, then
+  reports the item as succeeded, so its function timeout must be longer than 10 seconds. The
+  handler does not ask the summary to rethrow and returns a projection of the summary:
+  {status, failureCount, totalCount, readCount, sourceExhausted}.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap) carrying the timeout, the invocation completes, and the execution suspends
+    until the service records the terminal event. The invocation then completes returning the
+    projection, and the execution succeeds.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    status: TIMED_OUT
+    failureCount: 0
+    totalCount: 1
+    readCount: 1
+    sourceExhausted: true
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      TimeoutSeconds: 1
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapTimedOut
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapTimedOutDetails:
+      SuccessCount: '*'
+      FailureCount: 0
+      ReadCount: 1
+      TotalCount: 1
+      SourceExhausted: true
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

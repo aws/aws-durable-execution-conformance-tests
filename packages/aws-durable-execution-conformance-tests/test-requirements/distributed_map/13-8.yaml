@@ -1,0 +1,57 @@
+---
+# 13.8: Distributed map throw-if-error propagates a failed run to the execution
+description: Distributed map where the run fails and the handler asks the summary to rethrow,
+  propagating the failure uncaught so the execution fails
+handler: |
+  Handler invokes the distributed map operation over an inline source of two items, the first
+  "fail", with max-concurrency 1 and a completion config that tolerates zero failures. The processor
+  function reports a per-item outcome and fails any item whose value is "fail", so the run completes
+  FAILED. The handler then asks the summary to rethrow. The rethrown error is not caught, so the
+  execution fails.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends while the run executes.
+    The service records the terminal event with a failed run. The handler asks the summary to
+    rethrow, the error propagates uncaught, and the execution fails.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: FAILED
+  Error:
+    ErrorType: '${/.*DistributedMap.*/}'
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailureCount: 0
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapFailed
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: InvocationCompleted
+    EventId: 5
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: ExecutionFailed
+    EventId: 6
+    EventTimestamp: '*'
+    ExecutionFailedDetails:
+      Error:
+        Payload:
+          ErrorType: '*'

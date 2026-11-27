@@ -1,0 +1,70 @@
+---
+# 13.46: Distributed map failed run is not restarted on a later replay
+description: A distributed map run that fails, followed by a wait, replays without restarting the
+  run; the failed summary is rebuilt from history and the run's start is recorded exactly once
+handler: |
+  Handler invokes the distributed map operation over an inline source of one item "fail", with
+  max-concurrency 1 and a completion config that tolerates zero failures. The processor function
+  reports a per-item outcome and fails any item whose value is "fail", so the run completes FAILED.
+  The handler does not ask the summary to rethrow. It waits one second, then returns the summary
+  status.
+invocations: |
+  - Handler invokes the distributed map. The SDK checkpoints DistributedMapStarted (SubType
+    DistributedMap), the invocation completes, and the execution suspends while the run executes.
+  - Replay 1: Re-invoked after the service records the terminal event with a failed run. The SDK
+    checkpoints WaitStarted with a one-second duration, and the execution suspends again.
+  - Replay 2: Re-invoked after the wait. The SDK checkpoints WaitSucceeded without starting the run
+    again, rebuilds the failed summary from history, and the invocation completes returning the
+    projection.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result: FAILED
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+      CompletionConfig:
+        ToleratedFailureCount: 0
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapFailed
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+  - EventType: WaitStarted
+    SubType: Wait
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitStartedDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: WaitSucceeded
+    SubType: Wait
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    WaitSucceededDetails:
+      Duration: 1
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'

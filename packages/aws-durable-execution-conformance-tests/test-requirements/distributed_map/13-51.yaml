@@ -1,0 +1,105 @@
+---
+# 13.51: Multiple sequential distributed maps
+description: Two distributed maps in sequence in one handler, each suspending and resuming, each
+  with its own operation and its own succeeded summary
+handler: |
+  Handler invokes the distributed map operation twice in sequence, each with max-concurrency 1 and
+  no result collection. The first runs over an inline source of two items, "a" and "b". After it
+  resolves, the second runs over an inline source of one item, "c". The processor function reports
+  a per-item outcome and succeeds every item. The handler returns
+  {first: {status, successCount, readCount}, second: {status, successCount, readCount}}, built
+  from the two summaries.
+invocations: |
+  - Handler invokes the first distributed map. The SDK checkpoints DistributedMapStarted, the
+    invocation completes, and the execution suspends.
+  - Replay 1: Re-invoked because the first distributed map completed. The SDK replays it, then
+    the handler invokes the second distributed map. The SDK checkpoints a second
+    DistributedMapStarted, the invocation completes, and the execution suspends.
+  - Replay 2: Re-invoked because the second distributed map completed. The SDK replays both
+    distributed maps, the invocation completes returning the projection, and the execution
+    succeeds.
+AsyncInvoke: true
+Input: null
+ExpectedResult:
+  ExecutionStatus: SUCCEEDED
+  Result:
+    first:
+      status: SUCCEEDED
+      successCount: 2
+      readCount: 2
+    second:
+      status: SUCCEEDED
+      successCount: 1
+      readCount: 1
+ExpectedExecutionHistory:
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 2
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+        InlineSourceConfig:
+          Items:
+            Payload:
+              - '"a"'
+              - '"b"'
+            Truncated: false
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 3
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 4
+    Id: ${ID1}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 2
+      FailureCount: 0
+      ReadCount: 2
+      TotalCount: 2
+      SourceExhausted: true
+  - EventType: DistributedMapStarted
+    SubType: DistributedMap
+    EventId: 5
+    Id: ${ID2}
+    EventTimestamp: '*'
+    DistributedMapStartedDetails:
+      MaxConcurrency: 1
+      Source:
+        Type: INLINE
+        InlineSourceConfig:
+          Items:
+            Payload:
+              - '"c"'
+            Truncated: false
+      Processor:
+        FunctionName: '*'
+        FunctionResponseTypes:
+          - REPORT_BATCH_ITEM_OUTCOMES
+  - EventType: InvocationCompleted
+    EventId: 6
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
+  - EventType: DistributedMapSucceeded
+    SubType: DistributedMap
+    EventId: 7
+    Id: ${ID2}
+    EventTimestamp: '*'
+    DistributedMapSucceededDetails:
+      SuccessCount: 1
+      FailureCount: 0
+      ReadCount: 1
+      TotalCount: 1
+      SourceExhausted: true
+  - EventType: InvocationCompleted
+    EventId: 8
+    EventTimestamp: '*'
+    InvocationCompletedDetails: '*'
