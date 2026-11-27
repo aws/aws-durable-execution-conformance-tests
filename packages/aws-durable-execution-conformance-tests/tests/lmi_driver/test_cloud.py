@@ -16,6 +16,7 @@ from botocore.stub import ANY, Stubber
 from aws_durable_execution_conformance_tests.lmi import cloud as module
 from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioContext
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
+from aws_durable_execution_conformance_tests.lmi.summary import summarize
 
 
 @pytest.fixture
@@ -185,6 +186,40 @@ def test_requires_request_specific_service_timeout(driver, message):
         driver.history.return_value = events
         with pytest.raises(CollectionError):
             driver.platform_timeout({}, "request")
+
+
+def test_summary_never_claims_unexecuted_or_skipped_cloud_success(tmp_path):
+    assert "did not run" in summarize(tmp_path)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run": "current",
+                "commit": "sdk",
+                "runtime": "python3.14",
+                "concurrencies": {"c1": 1, "c2": 2},
+            }
+        )
+    )
+    shared = tmp_path / "shared/standard"
+    shared.mkdir(parents=True)
+    (shared / "report.json").write_text(
+        json.dumps(
+            {
+                "run": {"name": "current"},
+                "results": [
+                    {"id": "lmi-lifecycle-1", "status": "FAILED"},
+                    {"id": "lmi-lifecycle-2", "status": "UNCOVERED"},
+                ],
+                "ci": {"exit_code": 1},
+            }
+        )
+    )
+    summary = summarize(tmp_path)
+    assert "lmi-lifecycle-1: FAILED" in summary
+    assert "lmi-lifecycle-2: UNCOVERED" in summary
+    assert "PASS" not in summary
+    (tmp_path / "deploy-error.json").write_text(json.dumps({"type": "ProvisioningError"}))
+    assert "ProvisioningError" in summarize(tmp_path)
 
 
 def test_runs_share_functions_but_never_controls_or_event_prefixes(driver):
@@ -431,6 +466,44 @@ def test_collection_reads_history_after_sampling_status(driver):
     assert driver.terminal_histories == {"execution"}
     driver.collect(full_run=False)
     assert driver.terminal_histories == set()
+
+
+def test_summary_rejects_other_run_reports_and_requires_matching_cleanup(
+    tmp_path,
+):
+    config = {
+        "commit": "sdk",
+        "runtime": "python3.14",
+        "concurrencies": {"c1": 1, "c2": 2},
+        "run": "current",
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(config))
+    shared = tmp_path / "shared"
+    (shared / "standard").mkdir(parents=True)
+    (shared / "standard/report.json").write_text(
+        json.dumps(
+            {
+                "run": {"name": "previous"},
+                "results": [{"id": "lmi-lifecycle-1", "status": "PASSED"}],
+            }
+        )
+    )
+    receipt = shared / "cleanup.json"
+    receipt.write_text(json.dumps({"runId": "previous", "status": "CLEANUP_REQUESTED", "errors": []}))
+    summary = summarize(tmp_path)
+    assert "another run" in summary and "PASSED" not in summary
+    assert "Run cleanup not confirmed" in summary
+    receipt.write_text(json.dumps({"runId": "current", "status": "CLEANUP_REQUESTED", "errors": []}))
+    assert "Run-scoped cleanup requests completed" in summarize(tmp_path)
+
+
+def test_summary_does_not_accept_a_report_without_deployment_identity(tmp_path):
+    shared = tmp_path / "shared/standard"
+    shared.mkdir(parents=True)
+    (shared / "report.json").write_text(json.dumps({"results": [{"id": "lmi-lifecycle-1", "status": "PASSED"}]}))
+    summary = summarize(tmp_path)
+    assert "Deployment identity is missing" in summary
+    assert "PASSED" not in summary
 
 
 @pytest.mark.parametrize(
@@ -878,6 +951,21 @@ def test_live_drain_retries_stop_after_a_running_execution_begins_pausing(driver
     )
 
 
+def test_summary_does_not_report_acceptance_from_previous_manifest(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.artifacts import case_key, save
+
+    save(tmp_path / "manifest.json", {"run": "previous"})
+    save(
+        tmp_path / "shared/standard/report.json",
+        {"run": {"name": "previous"}, "results": [{"id": "old-test", "status": "PASS"}]},
+    )
+    save(tmp_path / "cleanup" / case_key("new") / "cleanup.json", {"runId": "new", "status": "NO_CASES"})
+    output = summarize(tmp_path, expected_run="new")
+    assert "Current cloud acceptance is unavailable" in output
+    assert "old-test" not in output
+    assert "No scenario work was recorded" in output
+
+
 @pytest.mark.parametrize("code", ["AccessDenied", "ExpiredToken"])
 def test_first_attempt_denied_hold_is_a_rejected_receipt(driver, code):
     driver.s3.put_object.side_effect = ClientError(
@@ -925,6 +1013,33 @@ def test_invalid_marker_is_rejected_before_control_or_invoke(driver, marker):
     driver.s3.put_object.assert_not_called()
     driver.lam.invoke.assert_not_called()
     assert not (driver.artifacts_dir / "invocations").exists()
+
+
+@pytest.mark.parametrize("phase", ["collection", "partialCollection"])
+def test_optional_collection_returns_inside_outer_phase_budget(driver, monkeypatch, phase):
+    import asyncio
+
+    from aws_durable_execution_conformance_tests.lmi.coordinator import _bounded
+    from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
+
+    from .test_shared_partial_evidence import context
+
+    ctx = context()
+    driver.case_context = ctx
+    driver.manifest["driverTimeout"] = 120
+    scenario = ScenarioDriver(ctx, driver, runtime="python", fixtures={})
+    read = Mock(return_value=False)
+    monkeypatch.setattr(scenario, "seconds", lambda *_: 0.01)
+    monkeypatch.setattr(scenario, "_collect_observation", read)
+
+    async def exercise():
+        residual: list[asyncio.Task[Any]] = []
+        await _bounded(asyncio.to_thread(scenario.collect), phase, 0.5, ctx, residual)
+        assert residual == []
+        assert ctx._collection_deadline is None
+
+    asyncio.run(exercise())
+    read.assert_called_once()
 
 
 def test_service_history_retains_native_completion_from_longer_snapshot(driver):
@@ -1482,3 +1597,29 @@ def test_cutoff_stop_and_completion_race_use_deadline_transport(driver):
     transport.stop_durable_execution.assert_called_once()
     driver.lam.get_durable_execution.assert_not_called()
     driver.lam.stop_durable_execution.assert_not_called()
+
+
+def test_summary_reads_direct_run_matched_cli_report(tmp_path):
+    saved = tmp_path / "shared"
+    saved.mkdir()
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run": "unit",
+                "commit": "commit",
+                "runtime": "python",
+                "concurrencies": {"c1": 1},
+            }
+        )
+    )
+    (saved / "manifest.json").write_text(json.dumps({"runId": "unit"}))
+    (saved / "report.json").write_text(
+        json.dumps(
+            {
+                "run": {"name": "unit"},
+                "results": [{"id": "fixture", "status": "PASSED"}],
+                "ci": {"exit_code": 0},
+            }
+        )
+    )
+    assert "fixture: PASSED" in summarize(tmp_path)

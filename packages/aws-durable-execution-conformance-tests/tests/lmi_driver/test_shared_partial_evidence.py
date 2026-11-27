@@ -1,16 +1,23 @@
 # SPDX-FileCopyrightText: 2026-present Amazon.com, Inc. or its affiliates.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Shared deadline-step case fixture; a final read bound alone cannot prove quiescence."""
+"""Partial observations remain separate from facts collected after cleanup."""
 
+import asyncio
+from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any, cast
+from unittest.mock import Mock, patch
 
+import pytest
+
+from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter, _Case
 from aws_durable_execution_conformance_tests.lmi.coordinator import (
     Profile,
     Scenario,
     ScenarioContext,
 )
+from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
 
 from .support import build_evidence
 
@@ -29,6 +36,131 @@ def context():
         ),
         profile,
     )
+
+
+def adapter(tmp_path, *, read_fails=False, final_retirement=None, retire_fails=False, final_write_fails=False):
+    calls: list[tuple[Any, ...]] = []
+    cloud = SimpleNamespace(observation_ended_at=None)
+
+    def read(**options):
+        calls.append(("read", options))
+        if read_fails:
+            raise OSError("source unavailable")
+
+    cloud.collect = read
+    cloud._save = lambda name, value: calls.append(("save", name, deepcopy(value)))
+    cloud.begin_retirement = lambda: calls.append(("retirement",))
+    cloud.release_all = lambda: calls.append(("release",))
+    callback = {"kind": "callback", "id": "discovered-during-retirement"}
+
+    def retire():
+        if retire_fails:
+            cloud.resources = [callback]
+            raise OSError("retirement read failed")
+        return True
+
+    cloud.resources = []
+    driver = SimpleNamespace(
+        cloud=cloud,
+        collect=Mock(side_effect=AssertionError("must not wait for quiescence")),
+        retire=retire,
+    )
+
+    def build(ctx, observed, *, phase):
+        calls.append(("build", phase))
+        if phase == "final" and final_write_fails:
+            observed.resources = [callback]
+            raise OSError("final evidence write failed")
+        return {
+            "events": [{"kind": "effect"}] if phase == "partial" else [{"kind": "effect"}, {"kind": "task_exit"}],
+            "collection": {"watermarks": {"lifecycle": 1}},
+            "collectionErrors": [],
+            "resourcesCreated": observed.resources,
+            **({"retirement": final_retirement or {"resources": []}} if phase == "final" else {}),
+        }
+
+    result = SharedAdapter(
+        {"sdk": {"deployment": {}, "artifacts_dir": str(tmp_path)}},
+        evidence_builder=build,
+        cloud_factory=Mock(),
+        driver_factory=Mock(),
+    )
+    result.cases["case"] = _Case(cast(ScenarioDriver, driver))
+    return result, cloud, calls
+
+
+def test_partial_capture_reads_once_without_waiting_for_cleanup(tmp_path):
+    value, cloud, calls = adapter(tmp_path)
+    partial = asyncio.run(value.collect_partial(context()))
+    assert [call[0] for call in calls] == ["read", "build", "save"]
+    assert calls[0] == ("read", {"full_run": False})
+    assert calls[1] == ("build", "partial")
+    assert partial["collection"]["watermarks"] == {}
+    assert calls[-1][1] == "shared-partial-evidence.json"
+    assert cloud.observation_ended_at is not None
+    assert partial["events"] == [{"kind": "effect"}]
+
+
+def test_partial_read_error_keeps_cached_observations_but_no_complete_watermark(
+    tmp_path,
+):
+    value, _, _ = adapter(tmp_path, read_fails=True)
+    partial = asyncio.run(value.collect_partial(context()))
+    assert partial["events"] == [{"kind": "effect"}]
+    assert partial["collection"]["watermarks"] == {}
+    assert any("source unavailable" in error for error in partial["collectionErrors"])
+
+
+def test_partial_collection_preserves_existing_behavior_cutoff(tmp_path):
+    value, cloud, _ = adapter(tmp_path, read_fails=True)
+    cloud.observation_ended_at = 100
+    partial = asyncio.run(value.collect_partial(context()))
+    assert cloud.observation_ended_at == 100
+    assert partial["collection"]["watermarks"] == {}
+
+
+def test_sdk_retirement_does_not_replace_the_pre_release_events(tmp_path):
+    async def exercise():
+        value, _, _ = adapter(tmp_path)
+        ctx = context()
+        ctx.evidence = deepcopy(await value.collect_partial(ctx))
+        await value.release(ctx)
+        assert await value.retire(ctx) is True
+        assert ctx.evidence["events"] == [{"kind": "effect"}]
+        assert ctx.retirement_evidence["events"] == [
+            {"kind": "effect"},
+            {"kind": "task_exit"},
+        ]
+        assert ctx.evidence["retirement"] == ctx.retirement_evidence["retirement"]
+
+    asyncio.run(exercise())
+
+
+def test_newly_discovered_callback_only_expands_retirement_snapshot(tmp_path):
+    async def exercise():
+        invocation = {"kind": "invocation", "id": "original"}
+        callback = {"kind": "callback", "id": "discovered-during-retirement"}
+        value, _, _ = adapter(tmp_path, final_retirement={"resources": [invocation, callback]})
+        ctx = context()
+        ctx.evidence = {"resourcesCreated": [invocation]}
+        assert await value.retire(ctx)
+        assert ctx.evidence["retirement"]["resources"] == [invocation]
+        assert ctx.retirement_evidence["retirement"]["resources"] == [invocation, callback]
+
+    asyncio.run(exercise())
+
+
+def test_failed_retirement_keeps_discovered_work_without_claiming_retirement(tmp_path):
+    value, _, calls = adapter(tmp_path, retire_fails=True)
+    ctx = context()
+    with pytest.raises(OSError, match="retirement read failed"):
+        asyncio.run(value.retire(ctx))
+    snapshot = ctx.retirement_evidence
+    assert snapshot["resourcesCreated"] == [{"kind": "callback", "id": "discovered-during-retirement"}]
+    assert snapshot["collection"]["watermarks"] == {}
+    assert "retirement" not in snapshot
+    assert not ctx.evidence
+    assert calls[-1] == ("save", "shared-partial-retirement-evidence.json", snapshot)
 
 
 def test_final_read_bound_alone_does_not_invent_quiescence(tmp_path):
@@ -79,3 +211,15 @@ def test_final_read_bound_alone_does_not_invent_quiescence(tmp_path):
     assert evidence["collectionErrors"]
     invocation = next(item for item in evidence["retirement"]["resources"] if item["kind"] == "invocation")
     assert invocation["outcome"] == "UNKNOWN"
+
+
+def test_final_evidence_write_failure_retains_discovered_callback(tmp_path):
+    value, _, calls = adapter(tmp_path, final_write_fails=True)
+    ctx = context()
+
+    with pytest.raises(OSError, match="final evidence write failed"):
+        asyncio.run(value.retire(ctx))
+
+    assert ctx.retirement_evidence["resourcesCreated"] == [{"kind": "callback", "id": "discovered-during-retirement"}]
+    assert ctx.retirement_evidence["collection"]["watermarks"] == {}
+    assert calls[-1][1] == "shared-partial-retirement-evidence.json"

@@ -18,8 +18,10 @@ from unittest.mock import Mock
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.adapter import SharedAdapter
 from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.configuration import MEMORY_GIB_PER_VCPU, configuration_identity
+from aws_durable_execution_conformance_tests.lmi.coordinator import Profile, Scenario, ScenarioContext
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
 from aws_durable_execution_conformance_tests.lmi.errors import ProvisioningError
 from aws_durable_execution_conformance_tests.lmi.runtime import (
@@ -36,7 +38,7 @@ from aws_durable_execution_conformance_tests.lmi.source_evidence import (
 )
 
 from .support import RUNTIME
-from .test_shared_adapter import deployment
+from .test_shared_adapter import FUNCTION, deployment
 
 FIXTURES = {
     "native-overlap": "barrier",
@@ -229,7 +231,7 @@ def test_derived_identity_equals_the_same_hash_built_from_an_explicit_runtime_an
 
 
 # ---------------------------------------------------------------------------
-# Verifier and evidence are derived from the plan.
+# Verifier, driver and evidence are derived from the plan.
 # ---------------------------------------------------------------------------
 
 
@@ -246,6 +248,38 @@ def test_cloud_default_verify_profile_uses_the_shared_verifier(tmp_path):
     bad = {**config, "Handler": "wrong.handler"}
     with pytest.raises(ProvisioningError):
         cloud.verify_profile(bad, scaling, manifest, "c1")
+
+
+def test_shared_adapter_default_driver_factory_uses_the_binding(tmp_path):
+    plan = {"runtime": "python", "sdk": {"deployment": deployment(), "artifacts_dir": str(tmp_path)}}
+    value = SharedAdapter(plan)
+    assert value.cloud_factory is Cloud
+    context = ScenarioContext(
+        "run",
+        Scenario("case", "lmi-lifecycle-1", "c1", "normal-return", roles=("victim",), coverage_profile="standard"),
+        Profile("c1", FUNCTION, 1, 1, "sdk", "config"),
+    )
+    driver = value.driver_factory(context, SimpleNamespace())
+    assert driver.fixtures == dict(RUNTIME.binding.fixtures)
+    assert driver.suspension_mode == "callback"
+    assert driver.callback_encoder("marker-value") == b"marker-value"
+
+
+def test_shared_adapter_default_driver_factory_honors_json_marker_callback_payload(tmp_path):
+    custom = {
+        **deployment(),
+        "fixtureBinding": {**deployment()["fixtureBinding"], "callbackPayload": "json-marker", "suspension": "wait"},
+    }
+    plan = {"runtime": "python", "sdk": {"deployment": custom, "artifacts_dir": str(tmp_path)}}
+    value = SharedAdapter(plan)
+    context = ScenarioContext(
+        "run",
+        Scenario("case", "lmi-lifecycle-1", "c1", "normal-return", roles=("victim",), coverage_profile="standard"),
+        Profile("c1", FUNCTION, 1, 1, "sdk", "config"),
+    )
+    driver = value.driver_factory(context, SimpleNamespace())
+    assert driver.suspension_mode == "wait"
+    assert driver.callback_encoder("marker-value") == json.dumps("marker-value").encode()
 
 
 @pytest.mark.parametrize("worker_identity_field,expected_value", [("process", "p-1"), ("worker", "w-1")])
@@ -395,8 +429,9 @@ def _reference_replay_effects(bodies: list[dict[str, Any]]) -> tuple[dict[str, i
     return allowances, missing
 
 
-# Every catalog scenario/role launch with #931's fixtures map: (catalog
-# scenario, role, fixture name passed to Cloud.start for that role).
+# Every catalog scenario/role launch the shared driver makes with #931's
+# fixtures map: (catalog scenario, role, fixture name the driver would pass
+# to Cloud.start for that role).
 _PR931_LAUNCHES = [
     ("native-overlap", "victim", _PR931_FIXTURES["native-overlap"]),
     ("native-overlap", "peer", _PR931_FIXTURES["native-overlap"]),

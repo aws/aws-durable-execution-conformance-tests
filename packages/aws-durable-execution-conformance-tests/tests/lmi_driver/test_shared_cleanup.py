@@ -6,6 +6,7 @@
 import hashlib
 import io
 import json
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +15,8 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 from aws_durable_execution_conformance_tests.lmi import artifacts as artifacts_module
 from aws_durable_execution_conformance_tests.lmi import runner as shared
 from aws_durable_execution_conformance_tests.lmi.errors import CollectionError
+
+from .test_shared_adapter import deployment as _not_implemented_deployment
 
 
 @pytest.fixture(autouse=True)
@@ -372,6 +375,31 @@ def test_offline_profile_recovery_honors_custom_root_and_receipt(tmp_path, state
     assert storage.delete_object.call_count == int(released)
 
 
+def test_run_persists_relative_binding_source_as_absolute(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+
+    working_directory = tmp_path / "original-cwd"
+    working_directory.mkdir()
+    monkeypatch.chdir(working_directory)
+    binding_source = working_directory / "journals"
+    output = tmp_path / "run-output"
+
+    def factory(*_):
+        return {"runId": "run", "sdk": {"deployment": {"conformanceRevision": "commit"}, "artifacts_dir": "journals"}}
+
+    def stop_before_runtime(path):
+        assert json.loads(path.read_text())["sdk"]["artifacts_dir"] == str(binding_source)
+        assert binding_source.is_dir()
+        raise RuntimeError("stop before runtime")
+
+    monkeypatch.setattr(app, "load_manifest", stop_before_runtime)
+    with pytest.raises(RuntimeError, match="stop before runtime"):
+        shared.run({"run": "run"}, output, manifest_factory=factory)
+    monkeypatch.chdir(tmp_path)
+    plan = json.loads((output / "standard/manifest.json").read_text())
+    assert shared.sdk_artifact_directory(output / "standard", plan) == binding_source
+
+
 def _profile_recovery_fixture(tmp_path, record):
     """Build the custom-root layout test_offline_profile_recovery_* needs, then write `record`."""
     target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
@@ -560,3 +588,176 @@ def test_unavailable_recorded_output_is_failed_without_creating_destination(tmp_
     assert str(destination) in saved.read_text()
     assert not destination.exists()
     factory.assert_not_called()
+
+
+def _declare_every_case_not_implemented(deployment, coverage, output):
+    """A ``manifest_factory`` shaped like ``make_manifest``'s, but with every
+    scenario declared ``not_implemented``.
+
+    This is the real-world trigger for the missing-journal-root defect:
+    with no active scenario, ``_collect_and_adjudicate`` returns before an
+    adapter is ever constructed, so nothing is written under the SDK
+    artifact directory ``sdk_plan_with_artifact_directory`` creates.
+    """
+    plan = shared.make_manifest(
+        deployment, coverage, output, artifact_id="sha256:test-artifact", conformance_revision=deployment["commit"]
+    )
+    plan["scenarios"] = [dict(case, not_implemented="fixture skip") for case in plan["scenarios"]]
+    return plan
+
+
+def _copy_files_only(source, destination):
+    """Simulate a files-only artifact upload/download (e.g. ``actions/upload-artifact``).
+
+    That action uploads only files -- a directory holding no files is
+    dropped entirely -- and skips hidden files by default, so parent
+    directories are recreated only for the files actually copied.
+    """
+    for path in source.rglob("*"):
+        relative = path.relative_to(source)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(path.read_bytes())
+
+
+def test_cleanup_survives_a_files_only_upload_when_every_case_is_not_implemented(tmp_path):
+    """The in-tree SDK journal root's marker keeps it visible to a files-only
+    artifact upload/download even though no adapter ever ran, so cleanup on
+    the downloaded copy does not fail closed on a missing directory.
+    """
+    deployment = _not_implemented_deployment()
+    output = tmp_path / "run-output"
+    # NOT_IMPLEMENTED is strict-blocking for build_report, not itself a defect.
+    assert shared.run(deployment, output, manifest_factory=_declare_every_case_not_implemented) == 1
+
+    source_root = output / "standard" / "source"
+    # A hidden marker would be dropped by the upload, as `_copy_files_only` models.
+    assert not artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER.startswith(".")
+    marker = source_root / artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER
+    assert marker.is_file()
+    assert json.loads(marker.read_text()) == {"kind": "lmi-sdk-artifacts"}
+    assert not any(p for p in source_root.iterdir() if p.name != artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER)
+
+    downloaded = tmp_path / "downloaded"
+    _copy_files_only(output, downloaded)
+    # The files-only copy still preserves the (otherwise-empty) journal root.
+    assert (downloaded / "standard" / "source" / artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER).is_file()
+
+    storage, service = Mock(), Mock()
+    storage.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+    assert (
+        shared.cleanup(deployment, downloaded, client_factory=lambda name, _: storage if name == "s3" else service) == 0
+    )
+    report = json.loads((downloaded / "cleanup.json").read_text())
+    assert report["status"] == "CLEANUP_REQUESTED"
+    assert report["errors"] == []
+
+
+def test_cleanup_still_fails_closed_when_the_journal_root_is_genuinely_missing(tmp_path):
+    """Without the marker (or any other file), a files-only copy drops the
+    empty journal root entirely, and cleanup must keep refusing that case.
+    """
+    target = "arn:aws:lambda:us-west-2:123:function:owned:$LATEST.PUBLISHED"
+    deployment = {"run": "run", "bucket": "private", "region": "us-west-2", "functions": {"c1": target}}
+    root = tmp_path / "downloaded"
+    (root / "standard").mkdir(parents=True)
+    (root / "standard" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "runId": "run",
+                "sdk": {"artifacts_dir_relative": "source"},
+                "profiles": [{"profile_id": "c1", "resource_id": target}],
+                "scenarios": [],
+            }
+        )
+    )
+    storage, service = Mock(), Mock()
+    storage.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+    assert shared.cleanup(deployment, root, client_factory=lambda name, _: storage if name == "s3" else service) == 1
+    report = json.loads((root / "cleanup.json").read_text())
+    assert report["status"] == "FAILED"
+    assert any("unavailable" in error for error in report["errors"])
+    service.stop_durable_execution.assert_not_called()
+
+
+def test_sdk_plan_with_artifact_directory_marker_is_idempotent(tmp_path):
+    """A second call on the same in-tree root leaves exactly one identical marker."""
+    plan: dict[str, Any] = {"sdk": {}}
+    first = artifacts_module.sdk_plan_with_artifact_directory(tmp_path, plan)
+    root = tmp_path / first["sdk"]["artifacts_dir_relative"]
+    marker = root / artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER
+    assert marker.is_file()
+    original = marker.read_text()
+
+    second = artifacts_module.sdk_plan_with_artifact_directory(tmp_path, first)
+    assert second["sdk"]["artifacts_dir_relative"] == first["sdk"]["artifacts_dir_relative"]
+    assert sorted(p.name for p in root.iterdir()) == [artifacts_module.SDK_ARTIFACT_DIRECTORY_MARKER]
+    assert marker.read_text() == original
+
+
+def test_sdk_plan_with_artifact_directory_does_not_mark_an_external_root(tmp_path):
+    """An external (absolute, out-of-tree) SDK artifact directory belongs to the
+    SDK, not this runner, and must not be written into.
+    """
+    external = tmp_path / "external-sdk-root"
+    plan = {"sdk": {"artifacts_dir": str(external)}}
+    directory = tmp_path / "coverage"
+    directory.mkdir()
+    result = artifacts_module.sdk_plan_with_artifact_directory(directory, plan)
+    assert "artifacts_dir_relative" not in result["sdk"]
+    assert external.is_dir()
+    assert list(external.iterdir()) == []
+
+
+def test_cleanup_reports_no_cases_after_a_pre_output_run_failure(tmp_path):
+    """A manifest_factory failure on the very first coverage profile leaves the
+    shared run-output directory holding only an empty per-coverage
+    subdirectory. Its own keep-alive marker -- independent of the per-coverage
+    SDK journal root's -- must keep that directory visible to a files-only
+    upload, so cleanup on the downloaded copy reports NO_CASES just like it
+    does on the original host, instead of failing on an unavailable output
+    directory.
+    """
+    artifacts_dir = tmp_path / "artifacts"
+    deployment = {
+        "run": "run-pre-output-failure",
+        "commit": "commit-sha",
+        "bucket": "bucket",
+        "region": "us-west-2",
+        "functions": {"c1": "arn:aws:lambda:us-west-2:123:function:fn1:$LATEST.PUBLISHED"},
+        "deploymentArtifactDirectory": str(artifacts_dir),
+    }
+    output_root = artifacts_dir / "shared"
+
+    def failing_factory(_deployment, _coverage, _output):
+        raise RuntimeError("boom before any plan is written")
+
+    with pytest.raises(RuntimeError, match="boom before any plan is written"):
+        shared.run(deployment, output_root, manifest_factory=failing_factory)
+
+    # The shared directory holds only its own marker and an empty "standard/".
+    assert not artifacts_module.RUN_OUTPUT_MARKER.startswith(".")
+    assert artifacts_module.RUN_OUTPUT_MARKER not in {"manifest.json", "cleanup.json"}
+    assert (output_root / artifacts_module.RUN_OUTPUT_MARKER).is_file()
+    assert sorted(p.name for p in output_root.iterdir()) == [artifacts_module.RUN_OUTPUT_MARKER, "standard"]
+    assert list((output_root / "standard").iterdir()) == []
+
+    # A retry into the same directory is, and remains, rejected: the leftover
+    # empty "standard/" alone already fails the emptiness check, with or
+    # without the new marker, so this behavior is unchanged by the fix.
+    with pytest.raises(ValueError, match="must be empty"):
+        shared.run(deployment, output_root, manifest_factory=failing_factory)
+
+    downloaded = tmp_path / "downloaded"
+    _copy_files_only(artifacts_dir, downloaded)
+    # The files-only copy drops the empty "standard/" but keeps "shared/" itself.
+    assert (downloaded / "shared" / artifacts_module.RUN_OUTPUT_MARKER).is_file()
+    assert not (downloaded / "shared" / "standard").exists()
+
+    downloaded_deployment = {**deployment, "deploymentArtifactDirectory": str(downloaded)}
+    factory = Mock(side_effect=AssertionError("No cloud calls are needed when no case manifest was recorded"))
+    assert shared.cleanup(downloaded_deployment, client_factory=factory) == 0
+    factory.assert_not_called()
+    report = json.loads((downloaded / "shared" / "cleanup.json").read_text())
+    assert report["status"] == "NO_CASES"

@@ -858,37 +858,41 @@ from aws_durable_execution_conformance_tests.lmi import app
 
 never = threading.Event()
 mode = sys.argv.pop(1)
-adjudicate = app.adjudicate_collected_evidence
 
 
-def blocking_adjudication(manifest, collected, **kwargs):
+async def blocking_collection(manifest, **kwargs):
     # Work this run started that never returns, holding a non-daemon thread.
     threading.Thread(target=never.wait, name="blocked-worker").start()
     if mode == "argument-error":
         raise OSError("disk gone")
     if mode == "crash":
-        raise RuntimeError("adjudication crashed")
-    return adjudicate(manifest, collected, **kwargs)
+        raise RuntimeError("collection crashed")
+    return []
 
 
-app.adjudicate_collected_evidence = blocking_adjudication
+app.collect_and_adjudicate = blocking_collection
 app.run(sys.argv[1:])
 """
 
 
 @pytest.mark.parametrize(
     ("mode", "code", "message"),
-    [("report", 1, "RESULTS:"), ("argument-error", 2, "disk gone"), ("crash", 1, "RuntimeError: adjudication crashed")],
+    [("report", 1, "RESULTS:"), ("argument-error", 2, "disk gone"), ("crash", 1, "RuntimeError: collection crashed")],
 )
 def test_cli_exits_even_when_a_worker_thread_stays_blocked(tmp_path, mode, code, message):
     source = tmp_path / "manifest.json"
-    source.write_text(json.dumps(manifest()))
-    collected = tmp_path / "collected-evidence.json"
-    collected.write_text("[]")
+    # --collect validates the shared plan before claiming the output, so the
+    # manifest carries a valid deployment; app.collect_and_adjudicate is then
+    # replaced wholesale by the blocking fake.
+    plan = _valid_shared_catalog_plan()
+    # --collect resolves a relative artifacts_dir against the working
+    # directory; keep the subprocess's artifacts inside tmp_path.
+    plan["sdk"]["artifacts_dir"] = str(tmp_path / "artifacts")
+    source.write_text(json.dumps(plan))
     output = tmp_path / "out"
     started = time.monotonic()
     # Without a bounded exit, interpreter shutdown joins the worker forever.
-    arguments = [mode, "--manifest", str(source), "--collected-evidence", str(collected), "--output", str(output)]
+    arguments = [mode, "--manifest", str(source), "--collect", "--output", str(output)]
     completed = subprocess.run(
         [sys.executable, "-c", _BLOCKED_WORKER_CLI, *arguments],
         capture_output=True,
@@ -929,6 +933,165 @@ def test_cli_exit_is_unchanged_without_blocked_threads(tmp_path, monkeypatch, th
     with pytest.raises(SystemExit) as exc:
         run(["--manifest", str(source), "--collected-evidence", str(collected), "--output", str(tmp_path / "out")])
     assert exc.value.code == 1
+
+
+def test_shared_runner_reports_even_when_leftover_work_ignores_cancellation(tmp_path, monkeypatch, capsys):
+    from aws_durable_execution_conformance_tests.lmi import app, runner
+
+    cancellations: list[float] = []
+    leftovers: list[asyncio.Task[None]] = []
+
+    async def stubborn() -> None:
+        # Bounded so that a regression fails the timing check instead of hanging.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                cancellations.append(time.monotonic())
+
+    async def run_cases(*args: Any, **kwargs: Any) -> list[Any]:
+        # The coordinator abandons adapter work that outlives its harness budget.
+        leftovers.append(asyncio.get_running_loop().create_task(stubborn()))
+        return []
+
+    def plan(_deployment: Any, _coverage: str, output: Path) -> dict[str, Any]:
+        from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
+
+        runtime = RuntimeDefinition(
+            "python",
+            "fixture.handler",
+            binding=FixtureBinding(fixtures={}, failure_error_type="ValueError", worker_identity="process"),
+        )
+        return {
+            **manifest(),
+            "sdk": {
+                "deployment": {**runtime.to_manifest(), "conformanceRevision": "conformance-commit"},
+                "artifacts_dir": str(output / "source"),
+            },
+        }
+
+    monkeypatch.setattr(app, "_RESIDUAL_TASK_GRACE_SECONDS", 0.2)
+    output = tmp_path / "out"
+    started = time.monotonic()
+    with (
+        # runner.run always uses the built-in SharedAdapter now; stub its
+        # construction instead of the old module:factory sys.modules trick.
+        patch("aws_durable_execution_conformance_tests.lmi.adapter.SharedAdapter", lambda _manifest: object()),
+        patch("aws_durable_execution_conformance_tests.lmi.coordinator.run_scenarios", side_effect=run_cases),
+    ):
+        exit_code = runner.run({}, output, manifest_factory=plan)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, elapsed
+    assert exit_code == 1
+    assert cancellations, "the leftover task was never cancelled"
+    assert not leftovers[0].done()
+    assert "abandoned 1 task(s) that ignored cancellation" in capsys.readouterr().err
+    for coverage in runner.COVERAGE_PROFILES:
+        assert json.loads((output / coverage / "report.json").read_text())["ci"]["exit_code"] == 1
+        assert (output / coverage / "report.xml").is_file()
+
+
+_BLOCKED_WORKER_RUNNER_CLI = """
+import sys
+import threading
+from pathlib import Path
+
+from aws_durable_execution_conformance_tests.lmi import app, runner
+from aws_durable_execution_conformance_tests.lmi.catalog import requirements
+from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
+
+never = threading.Event()
+
+
+def base_manifest():
+    return {
+        "schemaVersion": 1,
+        "runId": "run-1",
+        "runtime": "python",
+        "capabilityProfile": "lifecycle",
+        "profiles": [
+            {
+                "profile_id": f"native-{n}",
+                "resource_id": f"arn:function:{n}",
+                "capacity": n,
+                "native_concurrency": n,
+                "artifact_id": "sdk-commit",
+                "configuration_id": f"config-{n}",
+            }
+            for n in (1, 2)
+        ],
+        "scenarios": [
+            {
+                "case_id": definition["scenario"],
+                "requirement_id": req,
+                "profile_id": "native-2",
+                "scenario": definition["scenario"],
+                **(
+                    {"behavior_budgets": {name: 5 for name in definition["behaviorBudgets"]}}
+                    if definition.get("behaviorBudgets")
+                    else {}
+                ),
+            }
+            for req, definition in requirements("lifecycle").items()
+        ],
+    }
+
+
+def plan(_deployment, _coverage, output):
+    runtime = RuntimeDefinition(
+        "python",
+        "fixture.handler",
+        binding=FixtureBinding(fixtures={}, failure_error_type="ValueError", worker_identity="process"),
+    )
+    return {
+        **base_manifest(),
+        "sdk": {
+            "deployment": {**runtime.to_manifest(), "conformanceRevision": "commit-sha"},
+            "artifacts_dir": str(output / "source"),
+        },
+    }
+
+
+async def blocking_collection(manifest, **kwargs):
+    # Work this run started that never returns, holding a non-daemon thread.
+    threading.Thread(target=never.wait, name="blocked-worker").start()
+    return []
+
+
+app.collect_and_adjudicate = blocking_collection
+output_dir = Path(sys.argv[1])
+raise SystemExit(runner.run({}, output_dir, manifest_factory=plan))
+"""
+
+
+def test_shared_runner_cli_exits_even_when_a_worker_thread_stays_blocked(tmp_path):
+    """``raise SystemExit(runner.run(...))`` is the Python SDK's entry point.
+
+    Without a bounded exit, interpreter shutdown would join the blocked
+    worker thread forever after ``runner.run`` has already written its
+    reports.
+    """
+    from aws_durable_execution_conformance_tests.lmi import runner
+
+    output = tmp_path / "out"
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", _BLOCKED_WORKER_RUNNER_CLI, str(output)],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+        timeout=60,
+        check=False,
+    )
+    assert time.monotonic() - started < 30
+    assert completed.returncode == 1, completed.stderr
+    assert "exiting without waiting for still-running threads: blocked-worker" in completed.stderr, completed.stderr
+    assert "RESULTS:" in completed.stdout
+    for coverage in runner.COVERAGE_PROFILES:
+        assert json.loads((output / coverage / "report.json").read_text())["ci"]["exit_code"] == 1
+        assert (output / coverage / "report.xml").is_file()
 
 
 @pytest.mark.parametrize("stubborn", [False, True])
@@ -1384,7 +1547,29 @@ def test_cli_requires_an_evidence_source(tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
         run(["--manifest", str(source), "--output", str(tmp_path / "out")])
     assert error.value.code == 2
-    assert "the following arguments are required: --collected-evidence" in capsys.readouterr().err
+    assert "one of the arguments --collect --collected-evidence is required" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_rejects_collect_and_collected_evidence_together(tmp_path, capsys):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
+    with pytest.raises(SystemExit) as error:
+        run(
+            [
+                "--manifest",
+                str(source),
+                "--collect",
+                "--collected-evidence",
+                str(collected),
+                "--output",
+                str(tmp_path / "out"),
+            ]
+        )
+    assert error.value.code == 2
+    assert "not allowed with argument --collect" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
 
 
@@ -1407,15 +1592,110 @@ def test_unused_profile_recovery_policy_matches_collection_and_adjudication_admi
         assert asyncio.run(_collect_and_adjudicate(plan, _unused_adapter, audit_dir=tmp_path)) == []
 
 
-def test_public_collection_refuses_the_shared_catalog_without_an_sdk_suite(tmp_path):
+def test_public_collection_requires_suite_and_adapter_factory_together(tmp_path):
     from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
 
     # A valid catalog plan: without the guard, the factory would run after the claim.
     load_adapter = MagicMock(side_effect=AssertionError("adapter constructed"))
-    with pytest.raises(TypeError, match="SDK-owned suite"):
-        asyncio.run(collect_and_adjudicate(manifest(), audit_dir=tmp_path, suite=None, adapter_factory=load_adapter))  # type: ignore[arg-type]
+    # adapter_factory alone: rejected before this ever becomes a built-in
+    # shared-catalog run, so its own pre-claim checks never run either.
+    with pytest.raises(TypeError, match="suite and adapter_factory together"):
+        asyncio.run(collect_and_adjudicate(manifest(), audit_dir=tmp_path, adapter_factory=load_adapter))
     load_adapter.assert_not_called()
     assert list(tmp_path.iterdir()) == []
+    # suite alone: rejected the same way, before any suite-type check runs.
+    with pytest.raises(TypeError, match="suite and adapter_factory together"):
+        asyncio.run(collect_and_adjudicate(manifest(), audit_dir=tmp_path, suite=object()))  # type: ignore[arg-type]
+    assert list(tmp_path.iterdir()) == []
+    # Both given, but suite is not an SDK-owned SuiteDefinition.
+    with pytest.raises(TypeError, match="SDK-owned suite definition"):
+        asyncio.run(
+            collect_and_adjudicate(manifest(), audit_dir=tmp_path, suite=object(), adapter_factory=load_adapter)  # type: ignore[arg-type]
+        )
+    load_adapter.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_public_collection_rejects_a_shared_catalog_plan_missing_deployment_fields(tmp_path):
+    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+
+    with patch("aws_durable_execution_conformance_tests.lmi.adapter.SharedAdapter") as shared_adapter:
+        shared_adapter.side_effect = AssertionError("adapter constructed")
+        # Neither suite nor adapter_factory: the built-in collector path, whose
+        # manifest() plan has no sdk.deployment at all.
+        with pytest.raises(ValueError, match=r"sdk\.deployment"):
+            asyncio.run(collect_and_adjudicate(manifest(), audit_dir=tmp_path))
+        shared_adapter.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def _valid_shared_catalog_plan() -> dict[str, Any]:
+    from aws_durable_execution_conformance_tests.lmi.runtime import FixtureBinding, RuntimeDefinition
+
+    runtime = RuntimeDefinition(
+        "python",
+        "fixture.handler",
+        binding=FixtureBinding(fixtures={}, failure_error_type="ValueError", worker_identity="process"),
+    )
+    plan = manifest()
+    plan["sdk"] = {
+        "deployment": {**runtime.to_manifest(), "conformanceRevision": "commit-sha"},
+        "artifacts_dir": "artifacts",
+    }
+    return plan
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda plan: plan["sdk"].pop("deployment"), r"sdk\.deployment"),
+        (
+            lambda plan: plan["sdk"]["deployment"].pop("runtimeModel"),
+            "valid deployment runtime and fixture binding",
+        ),
+        (
+            lambda plan: plan["sdk"]["deployment"]["fixtureBinding"].update(workerIdentity="invalid"),
+            "valid deployment runtime and fixture binding",
+        ),
+        (lambda plan: plan["sdk"]["deployment"].update(runtimeModel="java"), "runtimeModel does not match"),
+        (
+            lambda plan: plan["sdk"]["deployment"].update(conformanceRevision="unverified"),
+            "verified conformanceRevision",
+        ),
+        (lambda plan: plan["sdk"].pop("artifacts_dir"), r"sdk\.artifacts_dir"),
+        # The helper's relative artifacts_dir: cleanup could never resolve it.
+        (lambda plan: None, r"absolute sdk\.artifacts_dir"),
+    ],
+)
+def test_public_collection_rejects_an_invalid_shared_catalog_plan_before_claiming(tmp_path, mutate, match):
+    from aws_durable_execution_conformance_tests.lmi.app import collect_and_adjudicate
+
+    plan = _valid_shared_catalog_plan()
+    mutate(plan)
+    with patch("aws_durable_execution_conformance_tests.lmi.adapter.SharedAdapter") as shared_adapter:
+        shared_adapter.side_effect = AssertionError("adapter constructed")
+        with pytest.raises(ValueError, match=match):
+            asyncio.run(collect_and_adjudicate(plan, audit_dir=tmp_path))
+        shared_adapter.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_collect_rejects_an_invalid_shared_catalog_plan_before_claiming(tmp_path, capsys):
+    plan = _valid_shared_catalog_plan()
+    del plan["sdk"]["deployment"]
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    output = tmp_path / "out"
+    with patch("aws_durable_execution_conformance_tests.lmi.adapter.SharedAdapter") as shared_adapter:
+        shared_adapter.side_effect = AssertionError("adapter constructed")
+        with pytest.raises(SystemExit) as error:
+            run(["--manifest", str(source), "--collect", "--output", str(output)])
+        shared_adapter.assert_not_called()
+    assert error.value.code == 2
+    assert "sdk.deployment" in capsys.readouterr().err
+    # The plan is rejected before the CLI creates or claims its output
+    # directory, so not even manifest.json is written.
+    assert not output.exists()
 
 
 def test_collection_skips_the_adapter_when_every_case_is_not_implemented(tmp_path):
@@ -1673,6 +1953,48 @@ def test_collected_evidence_binds_conformance_revision(matches):
     assert result["status"] == ("PASSED" if matches else "INCOMPLETE_EVIDENCE"), result["errors"]
     if not matches:
         assert "INCOMPLETE: evidence conformance revision does not match the admitted plan" in result["errors"]
+
+
+def test_collection_cli_persists_canonical_binding_directory(tmp_path, monkeypatch):
+    from aws_durable_execution_conformance_tests.lmi import app
+    from aws_durable_execution_conformance_tests.lmi.artifacts import sdk_artifact_directory
+
+    plan = _valid_shared_catalog_plan()
+    plan["sdk"]["artifacts_dir"] = "case-journals"
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(plan))
+    working = tmp_path / "original-cwd"
+    working.mkdir()
+    output = tmp_path / "test-output"
+    monkeypatch.chdir(working)
+
+    async def inspect(manifest, **kwargs):
+        expected = str(working / "case-journals")
+        assert manifest["sdk"]["artifacts_dir"] == expected
+        assert json.loads((kwargs["audit_dir"] / "manifest.json").read_text())["sdk"]["artifacts_dir"] == expected
+        raise RuntimeError("validated before dispatch")
+
+    monkeypatch.setattr(app, "collect_and_adjudicate", inspect)
+    with pytest.raises(RuntimeError, match="validated before dispatch"):
+        app.run(["--manifest", str(path), "--collect", "--output", str(output)])
+    monkeypatch.chdir(tmp_path)
+    old_plan = {"sdk": {"artifacts_dir": "case-journals"}}
+    with pytest.raises(ValueError, match="original location is unresolved"):
+        sdk_artifact_directory(output, old_plan)
+
+
+def test_cli_replay_never_normalizes_sdk_artifact_paths(tmp_path):
+    """Unlike --collect, --collected-evidence never imports SDK code or resolves paths."""
+    plan = manifest()
+    plan["sdk"] = {"artifacts_dir": "case-journals"}
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(plan))
+    collected = tmp_path / "collected-evidence.json"
+    collected.write_text("[]")
+    output = tmp_path / "out"
+    with pytest.raises(SystemExit):
+        run(["--manifest", str(source), "--collected-evidence", str(collected), "--output", str(output)])
+    assert json.loads((output / "manifest.json").read_text())["sdk"]["artifacts_dir"] == "case-journals"
 
 
 def test_collection_audit_directory_is_claimed_before_adapter_load(tmp_path):

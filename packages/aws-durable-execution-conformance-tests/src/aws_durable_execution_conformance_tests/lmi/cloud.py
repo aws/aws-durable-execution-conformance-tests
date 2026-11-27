@@ -170,6 +170,7 @@ class Cloud:
         self.case_context = case_context
         self.cancel_event = Event()
         self._history_lock = Lock()
+        self._retiring = False
         self.request_roles: dict[str, str] = {}
         self.raw_histories: dict[str, list[dict[str, Any]]] = {}
         self.terminal_histories: set[str] = set()
@@ -249,6 +250,11 @@ class Cloud:
         """Request cooperative stop before joining this case's blocking worker."""
         self.cancel_event.set()
 
+    def begin_retirement(self) -> None:
+        """Called only after the cancelled phase worker has actually exited."""
+        self._retiring = True
+        self.cancel_event.clear()
+
     def wait(self, seconds: float) -> None:
         self.check_active()
         remaining = self._remaining_collection_time()
@@ -266,6 +272,10 @@ class Cloud:
             raise CollectionError("Artifact path is outside the run directory")
         save(path, data, exclusive=exclusive)
         self.source_uris.add(path.as_uri())
+
+    @property
+    def fence_storage(self):
+        return client("s3", self.manifest["region"], single_attempt=True) if self.single_attempt_fences else self.s3
 
     def _require_execution_target(self, arn: str) -> None:
         if self.case_context is not None and not arn.startswith(
@@ -411,6 +421,8 @@ class Cloud:
         marker=None,
     ):
         self.check_active()
+        if self._retiring:
+            raise CollectionError("A retiring case cannot launch new executions")
         if self.configuration not in self.manifest["functions"]:
             raise ProvisioningError("Select a deployed concurrency configuration before Invoke")
         marker = marker or scenario + "-" + uuid.uuid4().hex[:12]

@@ -800,6 +800,32 @@ def test_withdraw_attempt_restores_the_attempt_when_the_sink_fails():
     assert [item["attemptId"] for item in context.attempts] == ["launch"]
 
 
+def test_withdraw_attempt_runs_on_the_coordinator_loop_from_a_worker_thread():
+    import threading
+
+    from aws_durable_execution_conformance_tests.lmi.adapter import _CoordinatorLoopContext
+
+    async def exercise():
+        sink_threads: set[int] = set()
+
+        def sink(ctx):
+            sink_threads.add(threading.get_ident())
+
+        context = ScenarioContext("run", case("one"), PROFILE, _on_attempt=sink)
+        context.record_attempt("launch", source="driver-invoke")
+        threaded = _CoordinatorLoopContext(context, asyncio.get_running_loop())
+
+        def worker():
+            assert threading.current_thread() is not threading.main_thread()
+            threaded.withdraw_attempt("launch")
+
+        await asyncio.to_thread(worker)
+        assert sink_threads == {threading.get_ident()}
+        assert context.attempts == []
+
+    asyncio.run(exercise())
+
+
 def test_withdraw_attempt_refuses_a_non_last_attempt():
     context = ScenarioContext("run", case("cohort", roles=("victim", "peer")), PROFILE)
     context.record_attempt("first", role="victim", source="driver-invoke")

@@ -4,9 +4,11 @@
 """Deployment, placement and manifest APIs accept every supported runtime model."""
 
 from copy import deepcopy
+from typing import cast
 
 import pytest
 
+from aws_durable_execution_conformance_tests.lmi.cloud import Cloud
 from aws_durable_execution_conformance_tests.lmi.configuration import configuration_identity
 from aws_durable_execution_conformance_tests.lmi.deployment import DeploymentManager
 from aws_durable_execution_conformance_tests.lmi.errors import PlacementError, ProvisioningError
@@ -89,6 +91,22 @@ def test_same_process_runtime_overlap_requires_distinct_requests_and_shared_work
     if runtime == "javascript":
         with pytest.raises(PlacementError):
             overlap(alive([first, {**second, "worker": "other"}]), {"a", "b"}, 2, runtime=runtime)
+
+
+def test_fixture_routes_are_sdk_defined():
+    from aws_durable_execution_conformance_tests.lmi.scenarios import ScenarioDriver
+
+    from .test_shared_adapter import ScriptCloud, context
+
+    cloud = ScriptCloud(2)
+    driver = ScenarioDriver(
+        context(scenario="native-overlap", roles=("victim", "peer"), native=2),
+        cast(Cloud, cloud),
+        runtime="java",
+        fixtures={"native-overlap": "nativeBarrier", "peer": "recoveryPeer"},
+    )
+    driver.start()
+    assert [action[1] for action in cloud.actions if action[0] == "start"] == ["nativeBarrier", "nativeBarrier"]
 
 
 def test_fault_identity_does_not_depend_on_a_python_fixture_name(tmp_path):

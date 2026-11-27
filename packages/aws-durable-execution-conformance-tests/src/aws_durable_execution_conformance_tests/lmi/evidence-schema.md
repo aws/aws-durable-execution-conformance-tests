@@ -454,16 +454,17 @@ conformance; adjudication never contacts AWS.
 
 Collection runs through the Python API `lmi.app.collect_and_adjudicate`, with a
 manifest as described under
-[Manifest](#manifest). The CLI does not
-collect, so it never loads or runs collection code. Only SDK-owned suites
-collect through this API: the caller passes its `suite` definition and an
-`adapter_factory`. The factory receives a separate
-copy of the admitted manifest and returns an adapter implementing
-`lmi.coordinator.ScenarioAdapter`: `prepare` and `finish` for each profile that
-an active case uses, and `start`, `place`, `execute`, `collect`, `release`, and
-`retire` for each case. The factory is called only after the manifest is
-admitted and the audit directory is claimed, and never when every case is
-`not_implemented`.
+[Manifest](#manifest). `suite` and `adapter_factory` are given together, for an
+SDK-owned suite collected with the SDK's own collector; passing only one of
+them is rejected with `TypeError` before anything is validated, claimed or
+constructed. The factory receives a separate copy of the admitted manifest and
+returns an adapter implementing `lmi.coordinator.ScenarioAdapter`: `prepare`
+and `finish` for each profile that an active case uses, and `start`, `place`,
+`execute`, `collect`, `release`, and `retire` for each case. It is called only
+after the manifest is admitted and the audit directory is claimed, and never
+when every case is `not_implemented`. (An SDK-owned suite may wrap the
+internal shared driver in its own factory, but `SharedAdapter` carries no
+compatibility guarantee.)
 
 Load the manifest with `load_manifest(path, suite=suite)`, which applies the same
 admission and normalization as collection, and use that admitted manifest for
@@ -479,6 +480,25 @@ results = await collect_and_adjudicate(
 report = build_report(manifest, results, suite=suite)
 ```
 
+With neither `suite` nor `adapter_factory`, `collect_and_adjudicate` collects
+the `lmi-lifecycle` catalog itself, with the built-in shared driver derived
+from `sdk.deployment`'s fixture binding (see [REUSE.md](REUSE.md)). That
+requires a verified `conformanceRevision`, a deployment whose runtime fields,
+fixture binding and `runtimeModel` agree with the manifest's `runtime`, and an
+absolute `sdk.artifacts_dir`, all checked before the audit directory is
+claimed. The CLI's `--collect` flag uses this path and resolves a relative
+`sdk.artifacts_dir` first. Its output directory must be empty; the CLI writes
+`lmi-collection/manifest.json` itself:
+
+```sh
+durable-execution-conformance lmi-lifecycle --manifest manifest.json --collect --output lmi-collection
+```
+
+The CLI gives leftover tasks and executor threads a bounded grace period after
+collection returns, then exits with its exit code without waiting for threads
+it started (skipping atexit hooks); adapters must finish their own cleanup in
+`retire` and `finish`, since nothing joins a thread they leave running.
+
 Choose an empty audit directory, and use a separate one for every run. The
 runner journals attempts to `attempts.jsonl` before dispatch and publishes case
 outcomes to `results.jsonl`, including predeclared skips. Both JSONL journals
@@ -488,7 +508,8 @@ verdict. After all targets are released or quarantined, the runner writes frozen
 observations and separate cleanup evidence to `collected-evidence.json`, reads
 the file back, and adjudicates it. `collect_and_adjudicate` returns the
 adjudicated results; the caller reports them against the admitted manifest with
-`build_report(manifest, results, suite=suite)` and `reporters.write_report`.
+`build_report(manifest, results, suite=suite)` and `reporters.write_report`, as
+the CLI does for `--collect`.
 
 A collection manifest may also set `scenarioConcurrency`, the most cases the run
 executes at once (default 8), and `budgets`, harness time limits in seconds:
@@ -498,18 +519,18 @@ target capacity (300), `placement` for `start` and `place` (120), `execution`
 `retire` and each target's `finish` (120). These bound the harness, not SDK
 cleanup or delivery.
 
-Collection trusts its adapter, here the SDK-owned suite's own collector. The
-coordinator records the adapter's own reports, such as launches, inventories and
-retirement, without auditing them against earlier snapshots, its launch journal,
-the admitted case, or other cases, so adapter defects are caught by the
-adapter's own tests. SDK fixture output that the adapter relays stays untrusted.
-The rules judge its behavior, and before a target is reused collection requires
-the adapter's retirement snapshot to establish physical retirement and to settle
-the native owner of every SDK record seen in any snapshot. A journaled launch
-without an identified invocation request also keeps its target quarantined,
-because no snapshot can show that it ended, unless the adapter recorded a
-definite Invoke rejection for it (`dispatchState` `REJECTED` with no retries):
-that launch never started.
+Collection trusts its adapter: the built-in shared AWS driver for catalog runs,
+or an SDK-owned suite's own collector. The coordinator records the adapter's own
+reports, such as launches, inventories and retirement, without auditing them
+against earlier snapshots, its launch journal, the admitted case, or other
+cases, so adapter defects are caught by the adapter's own tests. SDK fixture
+output that the adapter relays stays untrusted. The rules judge its behavior,
+and before a target is reused collection requires the adapter's retirement
+snapshot to establish physical retirement and to settle the native owner of
+every SDK record seen in any snapshot. A journaled launch without an identified
+invocation request also keeps its target quarantined, because no snapshot can
+show that it ended, unless the adapter recorded a definite Invoke rejection for
+it (`dispatchState` `REJECTED` with no retries): that launch never started.
 
 Collection holds each target through physical retirement of its own cases. It
 finishes profiles only after every case in the run has ended its retirement
@@ -543,7 +564,9 @@ pass the bundle to the CLI with `--collected-evidence`:
 durable-execution-conformance lmi-lifecycle --manifest lmi-collection/manifest.json --collected-evidence lmi-collection/collected-evidence.json --output lmi-adjudication
 ```
 
-The CLI admits only the `lmi-lifecycle` suite. An SDK-owned suite adjudicates
+Whether collecting with `--collect` or re-adjudicating with
+`--collected-evidence`, the CLI admits only the `lmi-lifecycle` catalog; replay
+never normalizes paths, imports SDK code or contacts AWS. An SDK-owned suite adjudicates
 its bundle again in Python. It loads the collection's own manifest with
 `load_manifest(Path("lmi-collection/manifest.json"), suite=suite)` and the bundle
 with `load_collected_evidence(Path("lmi-collection/collected-evidence.json"))`,

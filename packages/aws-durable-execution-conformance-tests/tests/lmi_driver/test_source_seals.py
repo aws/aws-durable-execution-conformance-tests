@@ -24,7 +24,7 @@ from aws_durable_execution_conformance_tests.lmi.source_evidence import (
     undispatched_requests,
 )
 
-from .support import build_evidence
+from .support import ScenarioDriver, build_evidence
 from .test_shared_adapter import context
 
 LAUNCHES = [{"arn": "execution", "marker": "marker", "native_requests": ["native"]}]
@@ -554,6 +554,18 @@ def test_undispatched_requests_rejects_duplicate_or_foreign_completions():
     assert undispatched_requests((), HISTORIES, [foreign_launch]) == {}
 
 
+def test_undispatched_request_rejected_as_a_launchs_only_request_still_fences(tmp_path):
+    # Open question 4 is deliberately left unimplemented: a launch whose only
+    # native request was rejected still has no non-empty native_requests, so
+    # the driver's quiescent() check keeps the fence regardless of the proof.
+    ctx, cloud = cloud_source(tmp_path)
+    cloud.events.clear()
+    cloud.invocations[0]["native_requests"] = []
+    cloud.raw_histories["execution"] = [rejected_completion("native", 4, 0.1, 0.5)]
+    cloud.refresh = lambda **_: list(cloud.events.values())
+    assert not ScenarioDriver(ctx, cloud).quiescent()
+
+
 def test_seal_is_required_even_when_service_reports_native_completion(tmp_path):
     ctx, cloud = cloud_source(tmp_path)
     cloud.events.pop(max(cloud.events))
@@ -876,6 +888,23 @@ def test_malformed_task_id_does_not_hide_verified_resources(tmp_path):
     assert {row["kind"] for row in evidence["resourcesCreated"]} == {"invocation", "execution", "callback"}
 
 
+def test_malformed_task_id_keeps_the_driver_from_quiescing():
+    from .test_shared_adapter import seal_fixture_events, settled_cloud
+
+    driver, events = settled_cloud()
+    assert driver.quiescent()
+    events.append(
+        {
+            "phase": "CONFORMANCE",
+            "request": "native",
+            "execution": "execution",
+            "observation": {"kind": "task_start", "taskId": [], "requestId": "native"},
+        }
+    )
+    seal_fixture_events(events)
+    assert not driver.quiescent()
+
+
 @pytest.mark.parametrize("missing_end", [False, True])
 @pytest.mark.parametrize(
     ("status", "request_at", "pause_at", "expected_status"),
@@ -974,6 +1003,34 @@ def test_deadline_history_proof_does_not_substitute_for_a_missing_native_seal(tm
     observation = build_evidence(ctx, cloud)
     assert observation["collection"]["watermarks"] == {"history": 1000}
     assert any("Missing ledger seals" in pending for pending in observation["collection"]["pending"])
+
+
+def test_observation_collection_rereads_stale_normal_return_history_without_stopping(tmp_path, monkeypatch):
+    ctx, cloud = cloud_source(tmp_path)
+    monkeypatch.setattr("aws_durable_execution_conformance_tests.lmi.scenarios.time", SimpleNamespace(time=lambda: 1))
+    complete = cloud.raw_histories["execution"]
+    calls = []
+    cutoff = []
+
+    def collect(*, full_run):
+        assert not full_run
+        calls.append("read")
+        cutoff.append(cloud.observation_ended_at)
+        cloud.raw_histories["execution"] = complete[:-1] if len(calls) == 1 else complete
+
+    def poll(predicate, **options):
+        assert not predicate()
+        assert predicate()
+
+    cloud.wait = lambda _: None
+    cloud.collect = collect
+    cloud.poll = poll
+    cloud.stop_victim_after_cutoff = pytest.fail
+    driver = ScenarioDriver(ctx, cloud)
+    driver.collect()
+    assert calls == ["read", "read"]
+    assert cutoff == [1, 1]
+    assert build_evidence(ctx, cloud)["collection"]["watermarks"]["history"] == 1000
 
 
 def test_first_attempt_for_each_role_is_preserved_even_with_late_service_start():
@@ -1203,6 +1260,60 @@ def test_builder_checks_the_public_suspension_checkpoint_and_service_wakeup_tie(
     )
 
 
+@pytest.mark.parametrize("old_callback", [False, True, "stale-history"])
+def test_terminal_callback_without_resume_preserves_physical_retirement(tmp_path, monkeypatch, old_callback):
+    from unittest.mock import Mock
+
+    ctx, cloud = cloud_source(tmp_path)
+    ctx.scenario = ctx.scenario.__class__(
+        "case",
+        "lmi-lifecycle-5",
+        ctx.profile.profile_id,
+        "suspension-retry",
+        roles=("victim", "resume"),
+        coverage_profile="standard",
+    )
+    actor = cloud.invocations[0]
+    actor.update(role="victim", runner=Mock())
+    cloud.history = lambda _: cloud.raw_histories["execution"]
+    cloud.for_item = lambda _: list(cloud.events.values())
+    cloud.collect = lambda **_: None
+    cloud.poll = lambda predicate, **_: predicate()
+    candidate = Mock(return_value="expired")
+    if old_callback:
+        monkeypatch.setattr("aws_durable_execution_conformance_tests.lmi.scenarios.pending_callback", candidate)
+    if old_callback == "stale-history":
+        original = cloud.raw_histories["execution"]
+        stale = [row for row in original if row.get("EventType") != "ExecutionSucceeded"]
+        snapshots = iter([original, stale])
+        cloud.history = lambda _: next(snapshots)
+
+        def poll(predicate, **_):
+            assert not predicate()
+            assert predicate()
+
+        cloud.poll = poll
+        from aws_durable_execution_conformance_tests.lmi import scenarios
+
+        actual_seals = scenarios.ledger_seal_status
+        seals = iter(
+            [
+                (set(), {"missing"}, []),
+                actual_seals(tuple(cloud.events.values()), cloud.raw_histories, cloud.invocations, set()),
+            ]
+        )
+        with monkeypatch.context() as scoped:
+            scoped.setattr(scenarios, "ledger_seal_status", lambda *args: next(seals))
+            ScenarioDriver(ctx, cloud)._callback(actor)
+    else:
+        ScenarioDriver(ctx, cloud)._callback(actor)
+    candidate.assert_not_called()
+    actor["runner"].send_callback_success.assert_not_called()
+    final = build_evidence(ctx, cloud, phase="final")
+    assert final["collectionErrors"] == []
+    assert validate_retirement_evidence(final) == []
+
+
 def test_failed_native_pending_does_not_authorize_callback():
     from aws_durable_execution_conformance_tests.lmi.observations import pending_callback
 
@@ -1354,6 +1465,22 @@ def test_old_pause_cycle_cannot_identify_a_new_pausing_witness(tmp_path):
     observed = build_evidence(ctx, cloud)
     assert observed["histories"][0]["status"] is None
     assert "history" not in observed["collection"]["watermarks"]
+
+
+def test_shared_run_rejects_missing_revision_before_admission(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from aws_durable_execution_conformance_tests.lmi import app
+    from aws_durable_execution_conformance_tests.lmi.runner import run
+
+    factory = Mock(return_value={"sdk": {"deployment": {}}})
+    admission = Mock()
+    monkeypatch.setattr(app, "collect_and_adjudicate", admission)
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match="verified conformanceRevision"):
+        run({}, output, manifest_factory=factory)
+    factory.assert_called_once()
+    admission.assert_not_called()
 
 
 def test_sealed_stream_without_wrapper_is_an_observation_error(tmp_path):
