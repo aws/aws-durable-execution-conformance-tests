@@ -10,6 +10,7 @@ from typing import Any, Literal
 import pytest
 
 from aws_durable_execution_conformance_tests.lmi.evidence import (
+    EvidenceValidator,
     _Evidence,
     same_json,
     validate_common_evidence,
@@ -496,6 +497,128 @@ def test_dispatch_after_wrapper_return_is_rejected() -> None:
     value = warm_evidence()
     value["sdkRequests"][0]["atMs"] = 60
     assert any("after admission closed" in error for error in validate_evidence(value))
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+@pytest.mark.parametrize(
+    ("keep_peer_return", "at", "outcome", "expected"),
+    [
+        (True, 100, "DISPATCHED", "ASSERTION: request request-peer dispatched SDK work after admission closed"),
+        (
+            False,
+            100,
+            "DISPATCHED",
+            "INCOMPLETE: request request-peer dispatched SDK work after its recorded end without closure evidence",
+        ),
+        (False, 41, "DISPATCHED", None),
+        (False, 42, "DISPATCHED", None),
+        (False, 100, "REJECTED", None),
+    ],
+)
+def test_late_peer_dispatch(
+    phase: Literal["observations", "final"],
+    validate: EvidenceValidator,
+    keep_peer_return: bool,
+    at: int,
+    outcome: str,
+    expected: str | None,
+) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    if not keep_peer_return:
+        value["events"].remove(
+            next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+        )
+    value["sdkRequests"].append(event(peer, "request", at, method="CheckpointDurableExecution", outcome=outcome))
+
+    assert validate(value, phase=phase) == ([expected] if expected is not None else [])
+
+
+@pytest.mark.parametrize("phase", ["observations", "final"])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_dispatch_after_recorded_end_before_explicit_closure_is_allowed(
+    phase: Literal["observations", "final"], validate: EvidenceValidator
+) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    closure = next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    closure.update(kind="admission_closed", atMs=50)
+    value["sdkRequests"].append(event(peer, "request", 45, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+
+    assert validate(value, phase=phase) == []
+
+
+@pytest.mark.parametrize("ended", [False, -1])
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_malformed_recorded_end_does_not_order_dispatch(validate: EvidenceValidator, ended: Any) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    value["events"].remove(
+        next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    )
+    peer["endedAtMs"] = ended
+
+    errors = validate(value)
+    assert "INCOMPLETE: attempt request-peer.endedAtMs must be a finite non-negative number" in errors, errors
+    assert not any("after its recorded end" in error for error in errors), errors
+
+
+def test_malformed_sdk_requests_keep_disposal_wrapper_diagnostics() -> None:
+    value = evidence(2)
+    value["events"].append(event(value["attempts"][0], "wrapper_raise", 41))
+    value["sdkRequests"] = None
+
+    errors = validate_evidence(value)
+    assert "INCOMPLETE: sdkRequests must be an array" in errors, errors
+    assert "INCOMPLETE: disposal needs exactly one wrapper exit for the selected victim" in errors, errors
+
+
+@pytest.mark.parametrize("requests", ["valid", None])
+def test_facade_no_late_dispatch_keeps_its_no_argument_call(requests: str | None) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    value["events"].remove(
+        next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    )
+    value["sdkRequests"].append(event(peer, "request", 100, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+    validator = _Evidence(value)
+    validator.common()
+    validator.errors.clear()
+    if requests is None:
+        validator.value = {**value, "sdkRequests": None}
+
+    validator.no_late_dispatch()
+    expected = "INCOMPLETE: request request-peer dispatched SDK work after its recorded end without closure evidence"
+    assert validator.errors == ([expected] if requests == "valid" else [])
+
+
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_malformed_dispatch_time_does_not_order_dispatch(validate: EvidenceValidator) -> None:
+    value = evidence()
+    peer = value["attempts"][1]
+    value["events"].remove(
+        next(e for e in value["events"] if e["requestId"] == peer["requestId"] and e["kind"] == "wrapper_return")
+    )
+    peer.update(startedAtMs=0, endedAtMs=0.5)
+    next(request for request in value["sdkRequests"] if request["requestId"] == peer["requestId"])["atMs"] = True
+
+    errors = validate(value)
+    assert "INCOMPLETE: sdkRequest.atMs must be a finite non-negative number" in errors, errors
+    assert not any("after its recorded end" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("validate", [validate_evidence, validate_common_evidence])
+def test_unvalidated_recorded_end_keeps_the_closure_assertion(validate: EvidenceValidator) -> None:
+    value = evidence()
+    victim = value["attempts"][0]
+    # common() rejects an active attempt with an end without validating that end.
+    victim.update(activeAtObservationEnd=True, endedAtMs=10**400)
+    value["sdkRequests"].append(event(victim, "request", 41, method="CheckpointDurableExecution", outcome="DISPATCHED"))
+
+    errors = validate(value)
+    assert "INCOMPLETE: attempt request-victim cannot represent an active retry at observation end" in errors, errors
+    assert "ASSERTION: request request-victim dispatched SDK work after admission closed" in errors, errors
 
 
 @pytest.mark.parametrize(("sequence", "late"), [(None, True), (9, False), (11, True)])

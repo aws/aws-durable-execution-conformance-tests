@@ -268,7 +268,7 @@ def common(view: CaseView, *, validate_behavior: bool = True, allow_no_launches:
             view.error("deferred service request is outside the observed execution inventory")
     collection(view, observation_end)
     if validate_behavior:
-        no_late_dispatch(view)
+        no_late_dispatch(view, sdk_requests)
 
 
 def collection(view: CaseView, observation_end: float | None = None) -> Mapping[str, Any]:
@@ -395,9 +395,11 @@ def histories(view: CaseView, *, check_expectations: bool = True, allow_no_launc
         view.error("histories and expectedHistories must cover every launched execution exactly")
 
 
-def no_late_dispatch(view: CaseView) -> None:
+def no_late_dispatch(view: CaseView, sdk_requests: Sequence[Mapping[str, Any]] | None = None) -> None:
+    if sdk_requests is None:
+        sdk_requests = mappings(view.value.get("sdkRequests"))
     disposal = view.value.get("requirementId") in ("lmi-lifecycle-2", "lmi-lifecycle-7")
-    for request_id in view.attempts:
+    for request_id, attempt in view.attempts.items():
         closures = [
             event
             for event in view.events
@@ -405,9 +407,25 @@ def no_late_dispatch(view: CaseView) -> None:
             and event.get("kind") in ("wrapper_return", "wrapper_raise", "admission_closed")
             and isinstance(event.get("atMs"), (float, int))
         ]
-        if not closures:
+        closed = min((event["atMs"] for event in closures), default=None)
+        # common() reports malformed times; they cannot order a dispatch after the recorded end.
+        ended = timestamp(attempt.get("endedAtMs"))
+        for request in sdk_requests:
+            if (
+                request.get("requestId") != request_id
+                or request.get("outcome") != "DISPATCHED"
+                or not isinstance(at := request.get("atMs"), (float, int))
+            ):
+                continue
+            dispatched = timestamp(at)
+            if closed is not None and at >= closed:
+                late_boundaries = [boundary for boundary in closures if view.at_or_after(request, boundary)]
+                if late_boundaries:
+                    view.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
+            elif closed is None and ended is not None and dispatched is not None and dispatched > ended:
+                view.error(f"request {request_id} dispatched SDK work after its recorded end without closure evidence")
+        if closed is None:
             continue
-        closed = min(event["atMs"] for event in closures)
         wrapper = None
         if disposal and request_id == view.selected.get("victim", {}).get("requestId"):
             exits = [event for event in closures if event["kind"] != "admission_closed"]
@@ -415,17 +433,6 @@ def no_late_dispatch(view: CaseView) -> None:
                 wrapper = exits[0]
             elif len(exits) > 1:
                 view.error("disposal needs exactly one wrapper exit for the selected victim")
-        for request in view.value.get("sdkRequests", []):
-            if (
-                isinstance(request, Mapping)
-                and request.get("requestId") == request_id
-                and request.get("outcome") == "DISPATCHED"
-                and isinstance(request.get("atMs"), (float, int))
-                and request["atMs"] >= closed
-            ):
-                late_boundaries = [boundary for boundary in closures if view.at_or_after(request, boundary)]
-                if late_boundaries:
-                    view.error(f"request {request_id} dispatched SDK work after admission closed", "ASSERTION")
         for event in view.events:
             if (
                 event.get("requestId") == request_id
