@@ -444,13 +444,14 @@ def _conflicting_values_binding() -> FixtureBinding:
     return binding(replay_effects=(ReplayEffect(operation="item", count=2, values=(1,)),))
 
 
-@pytest.mark.parametrize("second", [2, True, 1.0])
+@pytest.mark.parametrize("second", [2, True, 1.5])
 def test_binding_replay_effect_policy_zeroes_an_id_that_reports_a_different_value(second: Any):
     # The same operation ID cannot own two different (or unexpected) keys: a
     # later body with a different value must not be mistaken for a repeat of
     # the first, so its allowance drops to 0 instead of silently keeping the
-    # first owned count. True and 1.0 compare equal to 1 in Python but are not
-    # the integer the binding declares.
+    # first owned count. True compares equal to 1 in Python but is not the
+    # integer the binding declares, and a fractional value is not an integer
+    # at all; neither normalizes to the key the first body owns.
     bodies = [
         {"operation": "item", "operationId": "x", "value": 1},
         {"operation": "item", "operationId": "x", "value": second},
@@ -466,6 +467,33 @@ def test_binding_replay_effect_policy_keeps_an_id_that_repeats_its_value():
     bodies = [
         {"operation": "item", "operationId": "x", "value": 1},
         {"operation": "item", "operationId": "x", "value": 1},
+    ]
+    allowances, missing = _binding_replay_effect_policy(_conflicting_values_binding())(bodies)
+    assert allowances == {"x": 2}
+    assert missing == []
+
+
+@pytest.mark.parametrize("first", [1.0, 1e0])
+def test_binding_replay_effect_policy_accepts_an_equivalent_integral_float_value(first: Any):
+    # An integral JSON float (1.0, 1e0) is the same wire value as the int 1,
+    # independently of which spelling a handler's JSON serializer emits
+    # (Jackson doubles, for example, emit 1.0). It must own the same key as
+    # a body reporting the int, not zero the allowance or report it missing.
+    bodies = [
+        {"operation": "item", "operationId": "x", "value": first},
+        {"operation": "item", "operationId": "x", "value": first},
+    ]
+    allowances, missing = _binding_replay_effect_policy(_conflicting_values_binding())(bodies)
+    assert allowances == {"x": 2}
+    assert missing == []
+
+
+def test_binding_replay_effect_policy_treats_an_integral_float_and_its_int_as_the_same_owner():
+    # A mix of spellings for the same logical value must still count as one
+    # repeated key for the same ID, not a conflicting later key.
+    bodies = [
+        {"operation": "item", "operationId": "x", "value": 1},
+        {"operation": "item", "operationId": "x", "value": 1.0},
     ]
     allowances, missing = _binding_replay_effect_policy(_conflicting_values_binding())(bodies)
     assert allowances == {"x": 2}

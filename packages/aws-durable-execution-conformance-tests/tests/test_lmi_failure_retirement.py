@@ -30,6 +30,7 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
     validate_evidence,
     validate_retirement_evidence,
 )
+from aws_durable_execution_conformance_tests.lmi.rules.cutoff import unsettled_active_retries
 
 run_and_adjudicate = run_path(str(Path(__file__).with_name("test_lmi_coordinator.py")))["run_and_adjudicate"]
 _evidence_fixtures = run_path(str(Path(__file__).with_name("test_lmi_evidence.py")))
@@ -3928,6 +3929,288 @@ def test_in_place_retirement_rejects_an_undispatched_proof_for_a_different_reque
     assert first.status == "INFRASTRUCTURE_ERROR", first.errors
     assert scheduler.quarantine_reason(PROFILE.resource_id)
     assert any("does not cover deferred service request(s): unsettled-deferral" in error for error in first.errors), (
+        first.errors
+    )
+    assert adapter.finished == [False]
+
+
+def _add_active_retry(observed: dict[str, Any]) -> dict[str, Any]:
+    """Add a retry active at the cutoff, with no in-window events or SDK requests of its own.
+
+    This is the shape ``unsettled_active_retries`` must catch directly: native
+    admission landed before the cutoff but nothing else about this retry (no
+    event, no SDK request) is in the frozen evidence, so
+    ``_cleanup_record_errors`` has nothing to key on.
+    """
+    victim = observed["attempts"][0]
+    cutoff = observed["observationEndedAtMs"]
+    retry = {
+        **victim,
+        "requestId": "in-flight-retry",
+        "attempt": 2,
+        "startedAtMs": cutoff - 50,
+        "activeAtObservationEnd": True,
+    }
+    del retry["endedAtMs"], retry["outcome"]
+    observed["attempts"].append(retry)
+    return retry
+
+
+def _settle_active_retry(final: dict[str, Any], *, execution_arn: str | None = None) -> None:
+    """Complete ``in-flight-retry`` in an independent retirement snapshot after the frozen cutoff.
+
+    Keeps the retry's native admission (``startedAtMs``) before the cutoff,
+    matching ``_add_active_retry``, but the P1 scenario this guards against is
+    specifically native admission landing before the cutoff with wrapper
+    initialization landing after it: every event (entry, root task exit,
+    wrapper return) is strictly after the cutoff, so the frozen evidence's
+    complete absence of in-window events or SDK requests for this retry is
+    exactly what the snapshot must independently reconcile, not an artifact of
+    the fixture. Also settles the retirement resource and advances the
+    snapshot's own ``observationEndedAtMs`` past it, exactly as a later
+    cumulative snapshot may.
+    """
+    victim = final["attempts"][0]
+    arn = execution_arn if execution_arn is not None else victim["executionArn"]
+    cutoff = final["observationEndedAtMs"]
+    started, ended = cutoff - 50, cutoff + 100
+    retry = {
+        **victim,
+        "requestId": "in-flight-retry",
+        "executionArn": arn,
+        "attempt": 2,
+        "startedAtMs": started,
+        "endedAtMs": ended,
+        "outcome": "SUCCEEDED",
+    }
+    final["attempts"].append(retry)
+    owner = {"requestId": "in-flight-retry", "ownerRequestId": "in-flight-retry", "executionArn": arn}
+    wrapper_enter_at = cutoff + 10
+    final["events"] += [
+        {**owner, "kind": "wrapper_enter", "atMs": wrapper_enter_at},
+        {**owner, "kind": "task_start", "taskId": "root", "atMs": wrapper_enter_at + 0.1},
+        {**owner, "kind": "task_exit", "taskId": "root", "atMs": ended - 0.1},
+        {**owner, "kind": "wrapper_return", "atMs": ended, "outcome": "SUCCEEDED"},
+    ]
+    final["resourcesCreated"].append({"id": "in-flight-retry", "kind": "invocation", "ownerCaseId": final["caseId"]})
+    final["retirement"]["resources"].append(
+        {
+            "id": "in-flight-retry",
+            "kind": "invocation",
+            "ownerCaseId": final["caseId"],
+            "executionArn": arn,
+            "settledAtMs": ended + 100,
+            "evidenceUri": "memory://retirement-source",
+            "outcome": "QUIESCENT",
+        }
+    )
+    if arn != victim["executionArn"]:
+        # A separate, otherwise fully settled execution: the ARN mismatch
+        # itself, not an incomplete inventory, must be what the coverage
+        # check rejects.
+        final["histories"].append(
+            {"executionArn": arn, "ownerCaseId": final["caseId"], "status": "SUCCEEDED", "operations": []}
+        )
+        final["resourcesCreated"].append({"id": arn, "kind": "execution", "ownerCaseId": final["caseId"]})
+        final["retirement"]["resources"].append(
+            {
+                "id": arn,
+                "kind": "execution",
+                "ownerCaseId": final["caseId"],
+                "settledAtMs": ended + 100,
+                "evidenceUri": "memory://retirement-source",
+                "outcome": "SUCCEEDED",
+            }
+        )
+    final["observationEndedAtMs"] = max(final["observationEndedAtMs"], ended + 1)
+    final["collection"]["watermarks"] = {
+        key: max(value, final["observationEndedAtMs"]) for key, value in final["collection"]["watermarks"].items()
+    }
+    _resequence(final)
+
+
+def _active_retry_evidence(cutoff: Any = 100) -> dict[str, Any]:
+    return {
+        "attempts": [
+            {"requestId": "r", "executionArn": "arn", "startedAtMs": 90, "activeAtObservationEnd": True},
+        ],
+        "observationEndedAtMs": cutoff,
+    }
+
+
+def _settled_attempt(
+    *, execution_arn: str = "arn", ended_at_ms: Any = 150, outcome: str = "SUCCEEDED"
+) -> dict[str, Any]:
+    return {
+        "requestId": "r",
+        "executionArn": execution_arn,
+        "startedAtMs": 90,
+        "endedAtMs": ended_at_ms,
+        "outcome": outcome,
+    }
+
+
+def test_unsettled_active_retries_reports_an_omitted_retry() -> None:
+    assert unsettled_active_retries(_active_retry_evidence(), {"attempts": []}) == {"r"}
+
+
+def test_unsettled_active_retries_rejects_a_settled_attempt_on_a_different_execution_arn() -> None:
+    retirement_evidence = {"attempts": [_settled_attempt(execution_arn="other-arn")]}
+    assert unsettled_active_retries(_active_retry_evidence(), retirement_evidence) == {"r"}
+
+
+def test_unsettled_active_retries_tolerates_a_frozen_attempt_with_no_execution_arn() -> None:
+    # The frozen attempt itself omits executionArn (malformed upstream); the
+    # lookup key (requestId, None) is still well-defined, so this reports the
+    # retry unsettled rather than raising.
+    evidence = {
+        "attempts": [{"requestId": "r", "startedAtMs": 90, "activeAtObservationEnd": True}],
+        "observationEndedAtMs": 100,
+    }
+    assert unsettled_active_retries(evidence, {"attempts": []}) == {"r"}
+
+
+def test_unsettled_active_retries_rejects_an_ended_at_ms_at_or_before_the_cutoff() -> None:
+    retirement_evidence = {"attempts": [_settled_attempt(ended_at_ms=100)]}
+    assert unsettled_active_retries(_active_retry_evidence(cutoff=100), retirement_evidence) == {"r"}
+
+
+def test_unsettled_active_retries_rejects_a_non_numeric_cutoff() -> None:
+    retirement_evidence = {"attempts": [_settled_attempt()]}
+    assert unsettled_active_retries(_active_retry_evidence(cutoff="not-a-number"), retirement_evidence) == {"r"}
+
+
+def test_unsettled_active_retries_accepts_a_fully_settled_retry() -> None:
+    retirement_evidence = {"attempts": [_settled_attempt()]}
+    assert unsettled_active_retries(_active_retry_evidence(), retirement_evidence) == set()
+
+
+def test_unsettled_active_retries_does_not_raise_on_a_malformed_deferred_inventory() -> None:
+    # The active set must come from evidence["attempts"] directly, not from
+    # cutoff_obligations (which also parses the deferred inventory and raises
+    # ValueError on a malformed one): a malformed deferredServiceRequests
+    # elsewhere in the same frozen evidence must not stop this check from
+    # reporting the active retry's own coverage.
+    evidence = {**_active_retry_evidence(), "collection": {"deferredServiceRequests": "not-a-list"}}
+    retirement_evidence = {"attempts": [_settled_attempt()]}
+    assert unsettled_active_retries(evidence, retirement_evidence) == set()
+
+
+def test_in_place_retirement_must_cover_the_frozen_active_retry() -> None:
+    """A retry active at the cutoff that the independent snapshot cannot account for keeps the fence.
+
+    Unlike the deferred-request gap, an active retry can have no in-window
+    events or SDK requests at all, so ``_cleanup_record_errors`` has nothing
+    to key on; only a direct check of the frozen attempts inventory can catch
+    an omission before the lease frees the target.
+    """
+
+    class OmittedActiveRetryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                _add_active_retry(observed)
+            return observed
+
+    adapter = OmittedActiveRetryAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any("does not cover active retry request(s): in-flight-retry" in error for error in first.errors), (
+        first.errors
+    )
+    assert adapter.finished == [False]
+
+
+def test_in_place_retirement_accepts_an_active_retry_settled_as_an_attempt() -> None:
+    """The coverage check must not fence an active retry the snapshot settles as its own attempt."""
+
+    class SettledActiveRetryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                _add_active_retry(observed)
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                _settle_active_retry(context.retirement_evidence)
+            return True
+
+    adapter = SettledActiveRetryAdapter(phase="assertion")
+    (first, next_case), scheduler = _run(adapter)
+    # A conforming settlement must pass cleanly: no active-retry-related
+    # INCOMPLETE finding from the coordinator's own coverage check, and none
+    # from adjudication's separate audit_cutoff (which would report a
+    # pre-cutoff event/SDK-request disagreement if the fixture leaked an
+    # in-window record for this retry).
+    assert first.status == "PASSED", first.errors
+    assert not any("active retry" in error for error in first.errors), first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id) is None
+    assert adapter.finished == [True]
+    assert next_case.status == "PASSED", next_case.errors
+
+
+def test_in_place_retirement_rejects_an_active_retry_still_marked_active() -> None:
+    """A snapshot that still shows the retry active at the cutoff keeps the fence.
+
+    This is an audit-layer regression, not coverage of ``unsettled_active_retries``
+    itself: ``validate_retirement_evidence`` rejects any submitted attempt still
+    carrying ``activeAtObservationEnd`` (``rules/common.py``'s ``common(...,
+    validate_behavior=False)``), so the coordinator never reaches the coverage
+    check for this case. It still must keep fencing the target if that earlier
+    rejection is ever loosened.
+    """
+
+    class StillActiveRetryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                _add_active_retry(observed)
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                final = context.retirement_evidence
+                _settle_active_retry(final)
+                settled = next(attempt for attempt in final["attempts"] if attempt["requestId"] == "in-flight-retry")
+                settled["activeAtObservationEnd"] = True
+            return True
+
+    adapter = StillActiveRetryAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert adapter.finished == [False]
+
+
+def test_in_place_retirement_rejects_an_active_retry_settled_on_a_different_execution_arn() -> None:
+    """A settled attempt with the same requestId but a different executionArn does not count as coverage."""
+
+    class MismatchedArnActiveRetryAdapter(FailureAdapter):
+        def observations(self, context: ScenarioContext) -> dict[str, Any]:
+            observed = super().observations(context)
+            if context.scenario.case_id == "failed":
+                observed["behaviorErrors"] = []
+                _add_active_retry(observed)
+            return observed
+
+        async def retire(self, context: ScenarioContext) -> bool:
+            await super().retire(context)
+            if context.scenario.case_id == "failed":
+                _settle_active_retry(context.retirement_evidence, execution_arn="arn:execution:some-other")
+            return True
+
+    adapter = MismatchedArnActiveRetryAdapter(phase="assertion")
+    (first, _), scheduler = _run(adapter)
+    assert first.status == "INFRASTRUCTURE_ERROR", first.errors
+    assert scheduler.quarantine_reason(PROFILE.resource_id)
+    assert any("does not cover active retry request(s): in-flight-retry" in error for error in first.errors), (
         first.errors
     )
     assert adapter.finished == [False]
