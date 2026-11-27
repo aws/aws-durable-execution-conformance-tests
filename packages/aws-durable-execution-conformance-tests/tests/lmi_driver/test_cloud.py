@@ -656,6 +656,22 @@ def test_invoke_rejection_only_clears_intent_without_retries(driver, retries, co
     assert bool(driver.invocations) is not rejected
 
 
+def test_credential_provider_error_on_invoke_keeps_the_launch_unreconciled(driver, tmp_path):
+    # A retrying Lambda client can raise an STS refresh failure after an
+    # attempt that started the launch, so it is not a proven Invoke rejection.
+    driver.lam.invoke = Mock(
+        side_effect=ClientError(
+            {"Error": {"Code": "ExpiredTokenException"}, "ResponseMetadata": {"RetryAttempts": 0}},
+            "AssumeRoleWithWebIdentity",
+        )
+    )
+    with pytest.raises(CollectionError, match="invocation API failed"):
+        driver.start("fixture")
+    (journal,) = (tmp_path / "invocations").glob("*.json")
+    assert json.loads(journal.read_text())["dispatchState"] == "SUBMITTED"
+    assert driver.invocations
+
+
 def test_settlement_retries_visibility_independently_of_peer(driver):
     driver.invocations = [{"arn": "first"}, {"arn": "peer"}]
     driver.lam.get_durable_execution = Mock(

@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import errno
 import json
 import math
 import os
@@ -25,6 +24,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn
 
+from aws_durable_execution_conformance_tests.lmi.artifacts import _sync_directory
 from aws_durable_execution_conformance_tests.lmi.catalog import CAPABILITIES, COVERAGE_PROFILES, RUNTIMES, requirements
 from aws_durable_execution_conformance_tests.lmi.evidence import (
     RECOVERY_POLICIES,
@@ -429,21 +429,6 @@ def _audit_append_boundary(stream: BinaryIO) -> int:
 def _append_audit(path: Path, record: Mapping[str, Any]) -> None:
     """Persist before dispatch; sink failure must abort the launch."""
     _append_audit_row(path, _dump_json(record, compact=True))
-
-
-def _sync_directory(path: Path) -> None:
-    """Persist a directory's entries, such as a newly created journal file."""
-    if os.name == "nt":
-        return  # Windows cannot open a directory for fsync.
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    except OSError as exc:
-        # Some filesystems cannot fsync a directory at all; nothing more is possible.
-        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
-            raise
-    finally:
-        os.close(descriptor)
 
 
 def _sync_file(path: Path) -> None:
