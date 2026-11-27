@@ -106,6 +106,45 @@ def sdk_artifact_directory(coverage_directory: Path, plan: Mapping[str, Any], *,
     return path
 
 
+def _write_keep_alive_marker(root: Path, name: str, kind: str) -> None:
+    """Idempotently write a small, visible keep-alive file into ``root``.
+
+    ``name`` must not start with a dot: a files-only artifact upload (e.g.
+    ``actions/upload-artifact``) uploads only files, skips hidden ones, and
+    so drops a directory that ends up holding none. Writing a marker like
+    this into an otherwise-empty, run-owned directory keeps it visible to
+    such an upload. ``save`` already makes the write atomic and repeat
+    calls with the same ``kind`` idempotent.
+    """
+    save(root / name, {"kind": kind})
+
+
+# Written into an in-tree SDK journal root right after it is created or
+# ensured, so a files-only artifact upload still keeps the directory when
+# no case ever ran and nothing else was written into it. Never written into
+# an external (absolute, out-of-tree) SDK artifact directory, which belongs
+# to the SDK, not this runner.
+SDK_ARTIFACT_DIRECTORY_MARKER = "sdk-artifacts.json"
+
+
+def _mark_in_tree_sdk_artifact_directory(root: Path) -> None:
+    _write_keep_alive_marker(root, SDK_ARTIFACT_DIRECTORY_MARKER, "lmi-sdk-artifacts")
+
+
+# Written into the shared run-output directory right after its emptiness is
+# confirmed and before anything else (including the deployment's
+# case-output.json pointer) is saved, so a manifest_factory or revision
+# failure on the very first coverage profile -- which otherwise leaves this
+# directory holding only an empty per-coverage subdirectory -- still keeps
+# it visible to a files-only upload. Must not collide with "manifest.json"
+# (saved_case_plans' direct-CLI case) or "cleanup.json" (read by summary).
+RUN_OUTPUT_MARKER = "run-output.json"
+
+
+def mark_run_output_directory(root: Path) -> None:
+    _write_keep_alive_marker(root, RUN_OUTPUT_MARKER, "lmi-run-output")
+
+
 def sdk_plan_with_artifact_directory(directory: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
     root = sdk_artifact_directory(directory, plan, live=True)
     root.mkdir(parents=True, exist_ok=True)
@@ -113,6 +152,7 @@ def sdk_plan_with_artifact_directory(directory: Path, plan: Mapping[str, Any]) -
     sdk.pop("artifacts_dir_relative", None)
     if root.is_relative_to(base := directory.resolve()):
         sdk["artifacts_dir_relative"] = str(root.relative_to(base))
+        _mark_in_tree_sdk_artifact_directory(root)
     return {**plan, "sdk": sdk}
 
 
