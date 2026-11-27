@@ -18,6 +18,7 @@ from aws_durable_execution_conformance_tests.lmi.observations import (
     is_undispatched_rejection,
 )
 from aws_durable_execution_conformance_tests.lmi.source_evidence import (
+    _quiescent,
     ledger_seal_status,
     requests_after_cutoff,
     undispatched_requests,
@@ -171,6 +172,90 @@ def test_service_rejected_before_dispatch_settles_as_undispatched_and_stays_inco
         and "TooManyRequestsException" in error
         for error in errors
     )
+
+
+@pytest.mark.parametrize("call_kind", ["checkpoint_call", "poll_call"])
+def test_rejected_sdk_call_without_an_exit_settles_quiescent(tmp_path, call_kind):
+    """A rejected `checkpoint_call`/`poll_call` with no exit may still settle as quiescent.
+
+    A matching REJECTED SDK request corroborates it: the SDK never obtained a
+    transport response to exit on, the same corroboration evidence-schema.md
+    documents for a rejected start.
+    """
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "admission_probe", "probe": "operation", "outcome": "REJECTED", "atMs": 410},
+        {"kind": call_kind, "callId": "closed", "outcome": "REJECTED", "atMs": 411},
+    )
+    frozen = build_evidence(ctx, cloud)
+    assert frozen["collectionErrors"] == []
+    assert not any(
+        "has not established a complete observation window" in pending
+        for pending in frozen["collection"].get("pending", [])
+    )
+    assert frozen["collection"]["watermarks"] == {"lifecycle": 1000, "sdkRequests": 1000, "history": 1000}
+    rejected_requests = [row for row in frozen["sdkRequests"] if row.get("outcome") == "REJECTED"]
+    assert len(rejected_requests) == 1
+    assert rejected_requests[0]["callId"] == "closed"
+
+    final = build_evidence(ctx, cloud, phase="final")
+    assert final["collectionErrors"] == []
+    settlement = next(item for item in final["retirement"]["resources"] if item["id"] == "native")
+    assert settlement["outcome"] == "QUIESCENT"
+    assert validate_retirement_evidence(final) == []
+
+
+@pytest.mark.parametrize("call_kind", ["checkpoint_call", "poll_call"])
+def test_dispatched_call_without_an_exit_stays_pending_and_unknown(tmp_path, call_kind):
+    """Unlike a corroborated rejection, a dispatched call with no exit never settles."""
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": call_kind, "callId": "open", "outcome": "DISPATCHED", "atMs": 411},
+    )
+    frozen = build_evidence(ctx, cloud)
+    assert any(
+        "has not established a complete observation window" in pending
+        for pending in frozen["collection"].get("pending", [])
+    )
+
+    final = build_evidence(ctx, cloud, phase="final")
+    settlement = next(item for item in final["retirement"]["resources"] if item["id"] == "native")
+    assert settlement["outcome"] == "UNKNOWN"
+
+
+def _in_progress_events():
+    return [
+        {"requestId": "native", "kind": "wrapper_enter", "atMs": 100},
+        {"requestId": "native", "kind": "task_start", "taskId": "root", "atMs": 110},
+        {"requestId": "native", "kind": "task_exit", "taskId": "root", "atMs": 300},
+        {"requestId": "native", "kind": "wrapper_return", "atMs": 400},
+    ]
+
+
+def test_quiescent_rejects_an_unmatched_rejected_call_without_sdk_requests():
+    events = [
+        *_in_progress_events(),
+        {"requestId": "native", "kind": "checkpoint_call", "callId": "closed", "outcome": "REJECTED", "atMs": 411},
+    ]
+    assert _quiescent("native", events, sdk_requests=[]) is False
+
+
+def test_quiescent_rejects_two_rejected_starts_sharing_a_call_id():
+    events = [
+        *_in_progress_events(),
+        {"requestId": "native", "kind": "checkpoint_call", "callId": "closed", "outcome": "REJECTED", "atMs": 411},
+        {"requestId": "native", "kind": "checkpoint_call", "callId": "closed", "outcome": "REJECTED", "atMs": 412},
+    ]
+    sdk_requests = [
+        {
+            "requestId": "native",
+            "callId": "closed",
+            "method": "CheckpointDurableExecution",
+            "outcome": "REJECTED",
+            "atMs": 411,
+        }
+    ]
+    assert _quiescent("native", events, sdk_requests) is False
 
 
 def _unbound_wrapper_enter(sequence, request, *, marker="marker", execution="execution"):

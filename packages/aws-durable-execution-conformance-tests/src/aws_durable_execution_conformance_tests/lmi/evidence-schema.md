@@ -149,6 +149,8 @@ and execution identity in `collection.deferredServiceRequests`. Adjudication
 requires the capture's independent retirement evidence to contain every
 deferred request and its actual completion.
 A service retry first discovered during retirement also joins that inventory.
+If that retirement-only discovery is instead proven `UNDISPATCHED`, adjudication
+reports it INCOMPLETE rather than treating it as a settled deferred completion.
 Collection audits its quiescence, and adjudication checks late SDK dispatches
 against the retirement evidence. A single document cannot prove these
 obligations, so `validate_evidence` reports such a case incomplete;
