@@ -1137,6 +1137,40 @@ def test_active_retry_tolerates_a_renumbered_pre_cutoff_sdk_request_sequence() -
     assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == []
 
 
+def test_retirement_only_undispatched_discovery_stays_incomplete_alongside_an_active_retry() -> None:
+    """A retirement-only UNDISPATCHED discovery must still surface when ``audit_cutoff`` also audits an active retry.
+
+    Every other retirement-only UNDISPATCHED test exercises only ``audit_cutoff``'s
+    early return (``return rejected``), because none of them has a retry active
+    at the cutoff. This builds on ``_active_retry_capture``, whose victim retry
+    is active at the cutoff, so ``cutoff_obligations`` reports it and
+    ``audit_cutoff`` instead reaches the obligation path
+    (``return [*errors, *rejected]``). A capture with a settled active retry
+    plus a retirement-only UNDISPATCHED retry must still adjudicate incomplete
+    there, not pass silently.
+    """
+    frozen, snapshot = _active_retry_capture()
+    cutoff_ms = frozen["observationEndedAtMs"]
+    resource = {"id": "service-retry", "kind": "invocation", "ownerCaseId": frozen["caseId"]}
+    snapshot["resourcesCreated"].append(deepcopy(resource))
+    snapshot["retirement"]["resources"].append(
+        {
+            **resource,
+            "executionArn": frozen["attempts"][0]["executionArn"],
+            "serviceErrorType": "TooManyRequestsException",
+            "sourceEventId": 99,
+            "startedAtMs": cutoff_ms + 1,
+            "settledAtMs": cutoff_ms + 2,
+            "evidenceUri": frozen["collection"]["evidenceUris"][0],
+            "outcome": "UNDISPATCHED",
+        }
+    )
+    message = f"INCOMPLETE: {undispatched_message(snapshot['retirement']['resources'][-1])}"
+    assert validate_retirement_evidence(snapshot) == []
+    assert audit_cutoff(frozen, snapshot) == [message]
+    assert evaluate_evidence(frozen, retirement_evidence=snapshot, cleanup_evidence={}, standard=True) == [message]
+
+
 @pytest.mark.parametrize("factory", ["failure_evidence", "deadline_evidence", "evidence"])
 def test_retirement_only_undispatched_discovery_is_reported_incomplete(factory: str) -> None:
     """A service retry first discovered only in the independent retirement snapshot, proven UNDISPATCHED.

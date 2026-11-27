@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from aws_durable_execution_conformance_tests.lmi.rules import common as common_rules
-from aws_durable_execution_conformance_tests.lmi.rules.common import (
-    _has_matching_sdk_request,
-    normalize_retirement_events,
-)
+from aws_durable_execution_conformance_tests.lmi.rules.common import normalize_retirement_events
 from aws_durable_execution_conformance_tests.lmi.rules.controls import (
     case_key,
     controls_only_retirement,
@@ -84,14 +81,10 @@ def observed_retirement_work(view: CaseView, retirement: Mapping[str, Any], end:
             candidates = [
                 item for item in ends if item.get("requestId") == request_id and item.get(identity) == work_id
             ]
-            rejected = (
-                start_kind in _CALL_METHODS
-                and start.get("outcome") == "REJECTED"
-                and _has_matching_sdk_request(
-                    start, _CALL_METHODS[start_kind], "REJECTED", view.value.get("sdkRequests", [])
-                )
+            settled = common_rules.rejected_call_settled(
+                start_kind, [start], candidates, view.value.get("sdkRequests", [])
             )
-            if key in seen or (len(candidates) != 1 and not (rejected and not candidates)):
+            if key in seen or (len(candidates) != 1 and not settled):
                 view.error(f"retirement lacks a unique completed {start_kind}/{end_kind} interval")
             elif candidates:
                 completion = candidates[0]

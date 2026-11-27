@@ -36,6 +36,7 @@ from aws_durable_execution_conformance_tests.lmi.rules.common import rejected_ca
 from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.rules.cutoff import active_retry_interval, requests_after_cutoff
 from aws_durable_execution_conformance_tests.lmi.rules.values import (
+    _CALL_METHODS,
     CUTOFF_ACTIVE_STATUSES,
     _decimal_identity,
     _decode_json_wire,
@@ -1114,26 +1115,28 @@ def _causal_order(events: list[dict[str, Any]]) -> None:
 
 
 def _sdk_requests(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The SDK requests ``build_evidence`` would derive from ``events``, for an in-progress quiescence check.
+    """The SDK requests derived from ``events``; ``build_evidence``'s single source for ``evidence["sdkRequests"]``.
 
-    Pure and side-effect free: unlike the loop that fills ``evidence["sdkRequests"]``,
-    it does not record invalid-outcome errors. Callers that already hold the
-    built evidence should pass its ``sdkRequests`` directly instead of calling this.
+    Pure and side-effect free: it does not record invalid-outcome errors.
+    ``build_evidence`` calls this once, before the built evidence exists, for
+    its in-progress quiescence check, then reuses that same result as
+    ``evidence["sdkRequests"]``. Callers that already hold the built evidence
+    should pass its ``sdkRequests`` directly instead of calling this again.
     """
     return [
         {
             **event,
-            "method": "CheckpointDurableExecution"
-            if event["kind"] == "checkpoint_call"
-            else "GetDurableExecutionState",
+            "method": _CALL_METHODS[kind],
+            # Legacy transport-boundary hooks only emit a call on dispatch.
             "outcome": event.get("outcome", "DISPATCHED"),
         }
         for event in events
-        if event.get("kind") in {"checkpoint_call", "poll_call"}
+        # Callers may pass unvalidated observations, so a non-string kind is skipped, not hashed.
+        if isinstance(kind := event.get("kind"), str) and kind in _CALL_METHODS
     ]
 
 
-def _quiescent(request: str, events: list[dict[str, Any]], sdk_requests: Sequence[Mapping[str, Any]] = ()) -> bool:
+def _quiescent(request: str, events: list[dict[str, Any]], *, sdk_requests: Sequence[Mapping[str, Any]]) -> bool:
     local = [event for event in events if event.get("requestId") == request]
     if any(_invalid_work_identity(event) for event in local):
         return False
@@ -1758,7 +1761,7 @@ def build_evidence(
         )
     errors.extend(history_errors + attempt_errors)
     _causal_order(events)
-    in_progress_sdk_requests = _sdk_requests(events)
+    sdk_requests = _sdk_requests(events)
 
     if missing:
         pending.append("Missing ledger seals or wrapper entries for native requests: " + ", ".join(sorted(missing)))
@@ -1767,7 +1770,7 @@ def build_evidence(
         or not known
         or not all(
             item.get("activeAtObservationEnd") is True
-            or _quiescent(item["requestId"], events, in_progress_sdk_requests)
+            or _quiescent(item["requestId"], events, sdk_requests=sdk_requests)
             for item in attempts
         )
     ):
@@ -1821,7 +1824,7 @@ def build_evidence(
         "histories": histories,
         "expectedHistories": expected,
         "observationEndedAtMs": ended,
-        "sdkRequests": [],
+        "sdkRequests": sdk_requests,
         "collection": {
             "watermarks": watermarks,
             "evidenceUris": sorted(cloud.source_uris),
@@ -1915,25 +1918,11 @@ def build_evidence(
                 evidence["replay"]["suspensionCheckpointMatches"] = matches
         if projection_errors:
             evidence["replay"]["projectionErrors"] = projection_errors
-    for event in events:
-        if event.get("kind") in {"checkpoint_call", "poll_call"}:
-            # Legacy transport-boundary hooks only emit a call on dispatch.
-            outcome = event.get("outcome", "DISPATCHED")
-            if outcome not in ("DISPATCHED", "REJECTED"):
-                errors.append(f"SDK request {event.get('callId')} has an invalid outcome")
-            evidence["sdkRequests"].append(
-                {
-                    # Keep every event field, including the per-request
-                    # `sequence` `_causal_order` assigned: `no_late_dispatch`
-                    # needs it to order a same-millisecond dispatch against
-                    # `wrapper_return`/`admission_closed`.
-                    **event,
-                    "method": "CheckpointDurableExecution"
-                    if event["kind"] == "checkpoint_call"
-                    else "GetDurableExecutionState",
-                    "outcome": outcome,
-                }
-            )
+    # Like every collection error, an invalid outcome empties the watermarks
+    # below; checking it here keeps collectionErrors in their existing order.
+    for request in evidence["sdkRequests"]:
+        if request["outcome"] not in ("DISPATCHED", "REJECTED"):
+            errors.append(f"SDK request {request.get('callId')} has an invalid outcome")
     verified_executions = {
         arn: launch for launch in cloud.invocations if isinstance(arn := launch.get("arn"), str) and arn
     }
@@ -2067,7 +2056,9 @@ def build_evidence(
                         )
                 else:
                     item["outcome"] = (
-                        "QUIESCENT" if _quiescent(resource["id"], events, evidence["sdkRequests"]) else "UNKNOWN"
+                        "QUIESCENT"
+                        if _quiescent(resource["id"], events, sdk_requests=evidence["sdkRequests"])
+                        else "UNKNOWN"
                     )
             elif resource["kind"] == "execution":
                 item["outcome"] = cloud.execution_results.get(resource["id"], {}).get("Status", "UNKNOWN")

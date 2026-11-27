@@ -223,6 +223,17 @@ def test_dispatched_call_without_an_exit_stays_pending_and_unknown(tmp_path, cal
     assert settlement["outcome"] == "UNKNOWN"
 
 
+def test_invalid_sdk_call_outcome_is_a_collection_error_that_withholds_watermarks(tmp_path):
+    ctx, cloud = cloud_source(
+        tmp_path,
+        {"kind": "poll_call", "callId": "odd", "outcome": "TIMEOUT", "atMs": 411},
+        {"kind": "poll_exit", "callId": "odd", "atMs": 412},
+    )
+    frozen = build_evidence(ctx, cloud)
+    assert "SDK request odd has an invalid outcome" in frozen["collectionErrors"]
+    assert frozen["collection"]["watermarks"] == {}
+
+
 def _in_progress_events():
     return [
         {"requestId": "native", "kind": "wrapper_enter", "atMs": 100},
@@ -255,7 +266,7 @@ def test_quiescent_rejects_two_rejected_starts_sharing_a_call_id():
             "atMs": 411,
         }
     ]
-    assert _quiescent("native", events, sdk_requests) is False
+    assert _quiescent("native", events, sdk_requests=sdk_requests) is False
 
 
 def _unbound_wrapper_enter(sequence, request, *, marker="marker", execution="execution"):
@@ -1459,3 +1470,13 @@ def test_cutoff_rules_accept_only_integral_retry_ordinals(ordinal, retry):
     assert active_retry_interval(attempt, 1000, "execution") is retry
     late = {**attempt, "nativeStartedAtMs": 1100}
     assert requests_after_cutoff([late], 1000) == ({"in-flight"} if retry else set())
+
+
+@pytest.mark.parametrize("kind", [[], {}, None, 7])
+def test_sdk_requests_skip_a_malformed_kind(kind):
+    from aws_durable_execution_conformance_tests.lmi.source_evidence import _sdk_requests
+
+    call = {"kind": "poll_call", "requestId": "native", "callId": "c", "atMs": 1}
+    assert _sdk_requests([{"kind": kind, "requestId": "native"}, call]) == [
+        {**call, "method": "GetDurableExecutionState", "outcome": "DISPATCHED"}
+    ]
