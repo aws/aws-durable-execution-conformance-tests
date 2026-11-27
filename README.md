@@ -67,8 +67,14 @@ distribution.
 
 ## Running Conformance
 
-To collect and adjudicate Lambda Managed Instances evidence, see the
-[LMI lifecycle runner and evidence contract](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/evidence-schema.md#collection).
+Coordinated multi-invocation Lambda Managed Instances checks are a separate,
+optional suite run with `durable-execution-conformance lmi-lifecycle`; ordinary
+`--suite all` runs do not include them. See the
+[LMI guide](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/README.md)
+for manifests, collection and fixture bindings, persistent deployments and the
+reusable workflow, and the
+[LMI lifecycle runner and evidence contract](packages/aws-durable-execution-conformance-tests/src/aws_durable_execution_conformance_tests/lmi/evidence-schema.md#collection)
+for collection and adjudication.
 
 The runner accepts a SAM template whose functions map to requirement IDs with
 `TestingMetadata.TestDescription`:
