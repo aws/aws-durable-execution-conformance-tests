@@ -38,8 +38,10 @@ from aws_durable_execution_conformance_tests.lmi.evidence import (
 )
 from aws_durable_execution_conformance_tests.lmi.rules.controls import invoke_rejection_proven
 from aws_durable_execution_conformance_tests.lmi.rules.cutoff import (
+    cutoff_obligations,
     deferred_service_requests,
     requests_after_cutoff,
+    unsettled_active_retries,
     unsettled_deferred_requests,
 )
 from aws_durable_execution_conformance_tests.lmi.rules.retention import _cleanup_record_errors
@@ -535,8 +537,10 @@ class ScenarioAdapter(Protocol):
     ``deferredServiceRequests``) describes only the collection window of the
     snapshot that carries it: the retirement snapshot carries no deferred
     inventory of its own and instead settles the frozen evidence's deferred
-    inventory; every deferred service request it does not independently settle
-    or prove ``UNDISPATCHED`` keeps the target fenced.
+    inventory and its retries active at the cutoff; every deferred service
+    request it does not independently settle or prove ``UNDISPATCHED``, and
+    every active-at-cutoff retry it does not independently settle, keeps the
+    target fenced.
 
     An optional ``collect_partial(context)`` returns a bounded read-only snapshot of
     every observation so far after a non-cancelled phase failure, before fault
@@ -985,11 +989,8 @@ async def run_scenarios(
                         evidence.setdefault("collection", {})["deferredServiceRequests"] = [
                             {"requestId": request, "executionArn": arn} for request, arn in sorted(deferred.items())
                         ]
-                    frozen_deferred_requests = deferred_service_requests(evidence)
-                    full_runtime_audit_required = bool(frozen_deferred_requests) or any(
-                        isinstance(item, Mapping) and item.get("activeAtObservationEnd") is True
-                        for item in (evidence["attempts"] if isinstance(evidence.get("attempts"), list) else [])
-                    )
+                    frozen_active_retries, frozen_deferred_requests = cutoff_obligations(evidence)
+                    full_runtime_audit_required = bool(frozen_deferred_requests) or bool(frozen_active_retries)
                 except Exception as exc:
                     cleanup_errors.append(f"Deferred service request reconciliation: {type(exc).__name__}: {exc}")
                     full_runtime_audit_required = True
@@ -1017,13 +1018,28 @@ async def run_scenarios(
                                 # deferred inventory: a deferred request absent from
                                 # this independent audit was never proven settled or
                                 # UNDISPATCHED, so quiescence is not established for it.
-                                unsettled = unsettled_deferred_requests(frozen_deferred_requests, retirement_evidence)
-                                if unsettled:
+                                unsettled_deferred = unsettled_deferred_requests(
+                                    frozen_deferred_requests, retirement_evidence
+                                )
+                                if unsettled_deferred:
                                     cleanup_errors.append(
                                         "Independent retirement evidence does not cover deferred service "
-                                        f"request(s): {', '.join(sorted(unsettled))}"
+                                        f"request(s): {', '.join(sorted(unsettled_deferred))}"
                                     )
-                                else:
+                                # Likewise for every retry active at the cutoff: such a
+                                # retry can have no in-window events or SDK requests of
+                                # its own, so only a direct check of the frozen attempts
+                                # inventory against the independent snapshot can catch
+                                # an omitted one before the lease frees the target for
+                                # reuse. (A snapshot that still marks the retry active is
+                                # already rejected earlier, by validate_retirement_evidence.)
+                                unsettled_active = unsettled_active_retries(evidence, retirement_evidence)
+                                if unsettled_active:
+                                    cleanup_errors.append(
+                                        "Independent retirement evidence does not cover active retry "
+                                        f"request(s): {', '.join(sorted(unsettled_active))}"
+                                    )
+                                if not unsettled_deferred and not unsettled_active:
                                     physical_retirement_verified = True
                     except (Exception, asyncio.CancelledError) as exc:
                         cleanup_errors.append(f"Independent retirement validation: {type(exc).__name__}: {exc}")

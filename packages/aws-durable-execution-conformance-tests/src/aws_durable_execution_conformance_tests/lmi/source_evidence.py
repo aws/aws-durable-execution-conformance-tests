@@ -1569,11 +1569,19 @@ def _binding_replay_effect_policy(binding: FixtureBinding) -> ReplayEffectPolicy
         first_keys: dict[str, tuple[str, int | None] | None] = {}
         for body in bodies:
             name, identity = body["operation"], body["operationId"]
-            value = body.get("value") if name in valued_operations else None
+            valued = name in valued_operations
+            raw_value = body.get("value") if valued else None
+            # A finite integral JSON number is the owner key regardless of its
+            # wire spelling (``1``, ``1.0``, ``1e0``); normalizing to ``int``
+            # here keeps ``first_keys``, ``owners`` and ``missing`` comparing
+            # and naming the canonical value, not a serializer's rounding.
+            value = int(raw_value) if valued and is_json_integer(raw_value) else raw_value
             key = (name, value)
-            valid = not (name in valued_operations and type(value) is not int) and key in expected
+            # ``valid`` keeps the comparison type-strict: a bool, a fractional
+            # value, a non-finite value or a string never satisfies a declared
+            # integer allowance, even though some compare equal to one in Python.
+            valid = (not valued or is_json_integer(raw_value)) and key in expected
             if identity in first_keys:
-                # ``valid`` keeps the comparison type-strict: True and 1.0 equal 1.
                 if not valid or key != first_keys[identity]:
                     allowances[identity] = 0
                 continue
